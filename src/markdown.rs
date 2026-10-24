@@ -8,8 +8,10 @@ use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, T
 pub enum Segment {
     /// Pango markup.
     Text(String),
-    /// Text to show as is, in monospace; `lang` is the fence's info string ("table" for tables).
+    /// Text to show as is, in monospace; `lang` is the fence's info string.
     Code { lang: String, code: String },
+    /// Rows of cells (Pango markup), the first one the header.
+    Table(Vec<Vec<String>>),
 }
 
 pub fn segments(markdown: &str) -> Vec<Segment> {
@@ -49,14 +51,22 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
                         row.push(String::new());
                     }
                 }
-                Event::Text(t) | Event::Code(t) => {
+                Event::Text(t) => {
                     if let Some(cell) = rows.last_mut().and_then(|row| row.last_mut()) {
-                        cell.push_str(&t);
+                        cell.push_str(&escape(&t));
                     }
                 }
+                Event::Code(t) => {
+                    if let Some(cell) = rows.last_mut().and_then(|row| row.last_mut()) {
+                        cell.push_str(&format!("<tt>{}</tt>", escape(&t)));
+                    }
+                }
+                Event::Start(Tag::Strong) => push_cell(rows, "<b>"),
+                Event::End(TagEnd::Strong) => push_cell(rows, "</b>"),
+                Event::Start(Tag::Emphasis) => push_cell(rows, "<i>"),
+                Event::End(TagEnd::Emphasis) => push_cell(rows, "</i>"),
                 Event::End(TagEnd::Table) => {
-                    let rows = table.take().unwrap_or_default();
-                    out.push(Segment::Code { lang: "table".to_owned(), code: layout_table(&rows) });
+                    out.push(Segment::Table(table.take().unwrap_or_default()));
                 }
                 _ => {}
             }
@@ -148,29 +158,10 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
     out
 }
 
-/// Cells padded to their column's width, a rule under the header.
-fn layout_table(rows: &[Vec<String>]) -> String {
-    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let widths: Vec<usize> = (0..columns)
-        .map(|c| rows.iter().filter_map(|row| row.get(c)).map(|cell| cell.chars().count()).max().unwrap_or(0))
-        .collect();
-    let mut out = String::new();
-    for (i, row) in rows.iter().enumerate() {
-        let cells: Vec<String> = (0..columns)
-            .map(|c| {
-                let cell = row.get(c).map(String::as_str).unwrap_or("");
-                format!("{cell}{}", " ".repeat(widths[c] - cell.chars().count()))
-            })
-            .collect();
-        out.push_str(cells.join("  │  ").trim_end());
-        out.push('\n');
-        if i == 0 {
-            let rule: Vec<String> = widths.iter().map(|w| "─".repeat(*w)).collect();
-            out.push_str(&rule.join("──┼──"));
-            out.push('\n');
-        }
+fn push_cell(rows: &mut [Vec<String>], markup: &str) {
+    if let Some(cell) = rows.last_mut().and_then(|row| row.last_mut()) {
+        cell.push_str(markup);
     }
-    out.trim_end().to_owned()
 }
 
 #[cfg(test)]
@@ -209,11 +200,11 @@ mod tests {
     }
 
     #[test]
-    fn tables_are_laid_out_in_columns() {
-        let s = segments("| a | bb |\n|---|---|\n| ccc | d |");
+    fn tables_keep_their_rows_and_inline_styles() {
+        let s = segments("| a | **bb** |\n|---|---|\n| `c<` | d |");
         assert_eq!(
             s,
-            vec![Segment::Code { lang: "table".into(), code: "a    │  bb\n─────┼────\nccc  │  d".into() }]
+            vec![Segment::Table(vec![vec!["a".into(), "<b>bb</b>".into()], vec!["<tt>c&lt;</tt>".into(), "d".into()]])]
         );
     }
 

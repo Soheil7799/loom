@@ -67,7 +67,7 @@ impl Files {
         }
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
-        let open_button = gtk::Button::with_label("Open…");
+        let open_button = gtk::Button::from_icon_name("document-open-symbolic");
         open_button.add_css_class("flat");
         open_button.set_tooltip_text(Some("Open any file (Ctrl+O; Ctrl+P to find one by name)"));
         header.append(&agent_tab);

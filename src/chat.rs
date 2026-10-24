@@ -19,6 +19,9 @@ pub struct Chat {
     pub root: gtk::Box,
     title: gtk::Label,
     place: gtk::Label,
+    dot: gtk::Box,
+    context: gtk::LevelBar,
+    starting: gtk::Label,
     state: gtk::Label,
     mode: gtk::Button,
     usage: gtk::Label,
@@ -111,14 +114,19 @@ impl Chat {
         let title = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         title.add_css_class("title");
         let place = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).build();
-        place.add_css_class("dim");
-        place.add_css_class("small");
-        names.append(&title);
+        place.add_css_class("place");
+        let title_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        dot.add_css_class("dot");
+        dot.set_valign(gtk::Align::Center);
+        title_line.append(&dot);
+        title_line.append(&title);
+        names.append(&title_line);
         names.append(&place);
         let state = gtk::Label::new(None);
         state.add_css_class("dim");
-        let mode = gtk::Button::with_label("default");
-        mode.add_css_class("pill");
+        let mode = gtk::Button::with_label("Mode");
+        mode.add_css_class("mode");
         mode.add_css_class("flat");
         mode.set_tooltip_text(Some("Permission mode (Shift+Tab in the input)"));
         mode.set_valign(gtk::Align::Center);
@@ -126,17 +134,29 @@ impl Chat {
         usage.add_css_class("dim");
         usage.add_css_class("small");
         usage.set_tooltip_text(Some("Context window in use"));
+        let context = gtk::LevelBar::builder().min_value(0.0).max_value(1.0).valign(gtk::Align::Center).visible(false).build();
+        context.add_css_class("context-bar");
         let options = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         options.set_valign(gtk::Align::Center);
+        context.set_mode(gtk::LevelBarMode::Continuous);
+        // LevelBar's own offsets colour it; loom's CSS does that instead.
+        for name in ["low", "high", "full"] {
+            context.remove_offset_value(Some(name));
+        }
         header.append(&names);
         header.append(&state);
+        header.append(&context);
         header.append(&usage);
         root.append(&header);
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
         list.add_css_class("messages");
+        let starting = gtk::Label::builder().visible(false).halign(gtk::Align::Center).build();
+        starting.add_css_class("starting-note");
+        list.append(&starting);
         let clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
         clamp.append(&list);
+        clamp.set_layout_manager(Some(crate::column::ColumnLayout::new(880)));
         let scroller = gtk::ScrolledWindow::builder()
             .child(&clamp)
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -175,7 +195,7 @@ impl Chat {
             .build();
         // The hint shown while the input is empty (a text view has none of its own).
         let placeholder = gtk::Label::builder()
-            .label("Message Claude…   @ a file · / a command · Shift+Enter new line")
+            .label("Ask Claude…   @ to add a file · / for commands")
             .xalign(0.0)
             .valign(gtk::Align::Start)
             .margin_start(14)
@@ -222,7 +242,10 @@ impl Chat {
         let input_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         input_box.add_css_class("input-box");
         input_box.append(&composer);
-        root.append(&input_box);
+        let input_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        input_column.append(&input_box);
+        input_column.set_layout_manager(Some(crate::column::ColumnLayout::new(920)));
+        root.append(&input_column);
 
         let completion_list = gtk::ListBox::new();
         completion_list.add_css_class("completion");
@@ -239,6 +262,9 @@ impl Chat {
             root,
             title,
             place,
+            dot,
+            context,
+            starting,
             state,
             mode,
             usage,
@@ -519,17 +545,40 @@ impl Chat {
 
     // ---- header ---------------------------------------------------------------------------
 
-    pub fn set_title(&self, title: &str, place: &str) {
+    /// `place` is shown; `full` (the whole path) is its tooltip.
+    pub fn set_title(&self, title: &str, place: &str, full: &str) {
         self.title.set_label(title);
         self.place.set_label(place);
+        self.place.set_tooltip_text(Some(full));
     }
 
-    pub fn set_state(&self, text: &str) {
+    /// `text` beside the title, and the status dot (a css class: working, blocked…).
+    pub fn set_state(&self, text: &str, class: &str) {
         self.state.set_label(text);
+        for c in ["working", "starting", "blocked", "done", "failed", "suspended", "idle"] {
+            self.dot.remove_css_class(c);
+        }
+        self.dot.add_css_class(class);
+    }
+
+    /// While the agent starts, the empty conversation says so.
+    pub fn set_starting(&self, text: Option<&str>) {
+        self.starting.set_label(text.unwrap_or(""));
+        // Only an empty conversation needs it (a resumed one fills in by itself).
+        let empty = self.list.first_child().and_then(|c| c.next_sibling()).is_none();
+        self.starting.set_visible(text.is_some() && empty);
     }
 
     pub fn set_mode(&self, mode: &str) {
-        self.mode.set_label(mode);
+        let name = match mode {
+            "default" => "Ask first",
+            "acceptEdits" => "Accept edits",
+            "plan" => "Plan",
+            "auto" => "Auto",
+            "bypassPermissions" => "Bypass",
+            other => other,
+        };
+        self.mode.set_label(&format!("Mode · {name}"));
         for class in ["plan-mode", "accept-mode", "bypass-mode"] {
             self.mode.remove_css_class(class);
         }
@@ -562,7 +611,9 @@ impl Chat {
             list.append(&heading);
             // "Model · Opus", "Effort · High": short, and saying what it is.
             let short = current_name.split(" (").next().unwrap_or(&current_name).to_owned();
-            let label = format!("{} · {short}", option["name"].as_str().unwrap_or(id));
+            let name = option["name"].as_str().unwrap_or(id);
+            let is_default = short.eq_ignore_ascii_case("default") || short.eq_ignore_ascii_case("off");
+            let label = if is_default { name.to_owned() } else { format!("{name} · {short}") };
             let button = gtk::MenuButton::builder().label(&label).build();
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
@@ -652,13 +703,28 @@ impl Chat {
 
     pub fn set_usage(&self, used: u64, size: u64) {
         let k = |n: u64| if n >= 1000 { format!("{}k", n / 1000) } else { n.to_string() };
-        self.usage.set_label(&if size > 0 { format!("{} / {}", k(used), k(size)) } else { k(used) });
+        if size == 0 {
+            self.usage.set_label(&k(used));
+            self.context.set_visible(false);
+            return;
+        }
+        let share = used as f64 / size as f64;
+        self.usage.set_label(&format!("{}%", (share * 100.0).round() as u32));
+        self.usage.set_tooltip_text(Some(&format!("Context: {} of {} tokens", k(used), k(size))));
+        self.context.set_value(share.min(1.0));
+        self.context.set_visible(true);
+        if share > 0.8 {
+            self.context.add_css_class("full");
+        } else {
+            self.context.remove_css_class("full");
+        }
     }
 
     // ---- messages -------------------------------------------------------------------------
 
     pub fn clear(&self) {
-        while let Some(child) = self.list.first_child() {
+        // Everything but the "starting" note, which stays first.
+        while let Some(child) = self.starting.next_sibling() {
             self.list.remove(&child);
         }
         *self.last.borrow_mut() = Last::None;
@@ -880,6 +946,7 @@ impl Message {
             match segment {
                 Segment::Text(markup) => self.body.append(&text_label(&markup)),
                 Segment::Code { code, .. } => self.body.append(&code_label(&code)),
+                Segment::Table(rows) => self.body.append(&table_view(&rows)),
             }
         }
     }
@@ -898,10 +965,13 @@ impl ToolCard {
         kind.add_css_class("kind");
         let title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         title.add_css_class("tool-title");
+        let chevron = gtk::Label::new(Some("›"));
+        chevron.add_css_class("chevron");
         row.append(&glyph);
         row.append(&spinner);
         row.append(&kind);
         row.append(&title);
+        row.append(&chevron);
         let toggle = gtk::Button::builder().child(&row).hexpand(true).build();
         toggle.add_css_class("flat");
         toggle.add_css_class("tool-toggle");
@@ -945,15 +1015,23 @@ impl ToolCard {
         if let Some(title) = update["title"].as_str() {
             self.title.set_label(&tool_title(title));
             self.title.set_tooltip_text(Some(title));
+            // Claude Code's own plumbing (finding tools, its todo list, shown as the plan)
+            // says nothing to the reader.
+            let plumbing = matches!(title, "ToolSearch" | "TodoWrite");
+            self.root.set_visible(!plumbing);
+        }
+        if update["status"].as_str() == Some("failed") {
+            self.root.set_visible(true);
         }
         if let Some(kind) = update["kind"].as_str() {
             self.kind.set_label(match kind {
                 "execute" => "run",
                 "fetch" => "web",
                 "think" => "think",
-                "other" => "tool",
+                "other" => "",
                 other => other,
             });
+            self.kind.set_visible(kind != "other");
         }
         if let Some(status) = update["status"].as_str() {
             let running = status == "in_progress";
@@ -1006,6 +1084,7 @@ impl ToolCard {
                             match segment {
                                 Segment::Text(markup) => self.detail.append(&text_label(&markup)),
                                 Segment::Code { code, .. } => self.detail.append(&code_label(&code)),
+                                Segment::Table(rows) => self.detail.append(&table_view(&rows)),
                             }
                         }
                     }
@@ -1059,6 +1138,25 @@ pub fn any_digit(c: char) -> Option<u32> {
         0x0660..=0x0669 => Some(c as u32 - 0x0660),
         _ => c.to_digit(10),
     }
+}
+
+/// A Markdown table: a header row in small caps, hairlines between rows.
+fn table_view(rows: &[Vec<String>]) -> gtk::Grid {
+    let grid = gtk::Grid::new();
+    grid.add_css_class("md-table");
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            let label = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).use_markup(true).build();
+            label.set_markup(cell);
+            label.set_wrap_mode(pango::WrapMode::WordChar);
+            label.set_focusable(false);
+            label.add_css_class(if r == 0 { "table-head" } else { "table-cell" });
+            label.set_hexpand(true);
+            grid.attach(&label, c as i32, r as i32, 1, 1);
+        }
+    }
+    // Cells wrap, so a wide table narrows rather than widening the chat.
+    grid
 }
 
 /// A wrapping, selectable label for Pango markup.

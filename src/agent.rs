@@ -318,10 +318,19 @@ impl Agent {
     }
 
     fn refresh_header(&self) {
-        let place = self.cwd.to_string_lossy().replace(&*gtk::glib::home_dir().to_string_lossy(), "~");
-        self.chat.set_title(&self.title(), &place);
-        self.chat.set_state(self.status.get().describe());
+        let full = self.cwd.to_string_lossy().into_owned();
+        // "project / subfolder", else the folder name: the full path is the tooltip.
+        let project = self.project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let place = match self.cwd.strip_prefix(&self.project) {
+            Ok(rest) if !rest.as_os_str().is_empty() => format!("{project} / {}", rest.display()),
+            _ => project,
+        };
+        let status = self.status.get();
+        self.chat.set_title(&self.title(), &place, &full.replace(&*gtk::glib::home_dir().to_string_lossy(), "~"));
+        self.chat.set_state(status.describe(), status.css());
         self.chat.set_mode(&self.mode.borrow());
+        let note = format!("Starting Claude in {place}…");
+        self.chat.set_starting((status == Status::Starting).then_some(note.as_str()));
     }
 
     // ---- lifecycle ------------------------------------------------------------------------

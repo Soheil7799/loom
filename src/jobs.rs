@@ -45,6 +45,7 @@ pub struct Tray {
     /// Pinned terminals, side by side; hidden when nothing is pinned.
     pub dock: gtk::Box,
     chips: gtk::Box,
+    hint: gtk::Label,
     jobs: RefCell<Vec<Rc<Job>>>,
     by_terminal: RefCell<HashMap<String, Rc<Job>>>,
     cwd: PathBuf,
@@ -69,7 +70,7 @@ impl Tray {
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
         dock.set_visible(false);
-        Rc::new(Tray { bar, dock, chips, jobs: RefCell::default(), by_terminal: RefCell::default(), cwd })
+        Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), by_terminal: RefCell::default(), cwd })
     }
 
     /// The job showing an agent's command (made on first sight of `terminal_id`).
@@ -192,6 +193,7 @@ impl Tray {
             }
         });
         self.chips.append(&chip);
+        self.hint.set_visible(false);
         self.jobs.borrow_mut().push(job.clone());
         self.trim();
         job
@@ -242,6 +244,7 @@ impl Tray {
         job.popover.unparent();
         self.chips.remove(&job.chip);
         self.jobs.borrow_mut().retain(|other| !Rc::ptr_eq(other, job));
+        self.hint.set_visible(self.jobs.borrow().is_empty());
         self.by_terminal.borrow_mut().retain(|_, other| !Rc::ptr_eq(other, job));
     }
 

@@ -1,0 +1,184 @@
+/* loom's look. Colours are the GTK theme's (noctalia/matugen write them), so it follows the
+ * wallpaper; status colours are loom's own, and "waiting" is picked at runtime to stay apart
+ * from the accent (theme.rs). Type steps: 0.78 labels, 0.88 secondary, 1 body, 1.2 titles. */
+
+@define-color loom_ok #87d96c;
+@define-color loom_warn #ffcc66;
+@define-color loom_err #f28779;
+@define-color loom_line alpha(@window_fg_color, 0.07);
+
+window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
+.mono, .tool-title, .chip, .code-block, .diff label, .table-cell.mono { font-family: "JetBrains Mono", Vazirmatn, monospace; }
+.dim { opacity: 0.68; }
+.small { font-size: 0.88em; }
+.title { font-weight: 700; }
+window.loom scrolledwindow undershoot, window.loom scrolledwindow overshoot { background: none; }
+
+/* Keyboard focus is always visible. */
+.agents row:focus-visible, .picker-list row:focus-visible, .file-list row:focus-visible,
+button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible {
+  outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px;
+}
+
+/* ---- sidebar ---------------------------------------------------------------------------- */
+.sidebar { background: @sidebar_bg_color; border-right: 1px solid @loom_line; }
+.sidebar-top { padding: 14px 12px 8px 16px; }
+.brand { font-weight: 800; letter-spacing: 0.06em; font-size: 1.05em; }
+.sidebar-bottom { padding: 6px; border-top: 1px solid @loom_line; }
+.sidebar-bottom button:not(:hover):not(:checked) { background: none; box-shadow: none; }
+.sidebar-bottom button.icon { min-width: 30px; min-height: 30px; padding: 0; }
+.agents { background: transparent; }
+.agents row { border-radius: 8px; margin: 1px 6px; padding: 6px 10px; }
+.agents row.agent-row { margin: 1px 6px 1px 14px; padding: 6px 10px; }
+.agents row.agent-row:hover:not(:selected) { background: alpha(@window_fg_color, 0.05); }
+.agents row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.agents row:selected .agent-title { font-weight: 600; }
+.agents row.project-row { margin: 14px 6px 2px 6px; padding: 2px 6px 2px 8px; }
+.agents row.project-row:hover { background: alpha(@window_fg_color, 0.04); }
+.project-row .arrow { opacity: 0.6; font-size: 0.78em; min-width: 12px; }
+.project-name { font-size: 0.78em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.68; }
+.project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
+.project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
+.badge-wait { color: @loom_wait; font-size: 0.78em; font-weight: 700; }
+.badge-busy { color: @accent_color; font-size: 0.78em; font-weight: 700; }
+.agents row.empty-row { margin: 0 6px 0 22px; padding: 4px 8px; }
+.sidebar-empty { padding: 18px 18px; }
+.agent-title { font-weight: 500; }
+.inbox-button { color: @loom_wait; font-weight: 700; }
+.inbox { padding: 6px; }
+.inbox-agent { font-weight: 700; }
+.menu { padding: 4px; }
+button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
+
+/* Status: shape and colour both (a waiting agent is a ring, not just another hue). */
+.dot { min-width: 9px; min-height: 9px; border-radius: 99px; background: alpha(@window_fg_color, 0.25); }
+.dot.working { background: @accent_color; animation: pulse 1.4s ease-in-out infinite; }
+.dot.starting { background: alpha(@accent_color, 0.45); }
+.dot.blocked { background: @loom_wait; box-shadow: 0 0 0 2px alpha(@loom_wait, 0.35); }
+.dot.done { background: @loom_ok; }
+.dot.failed { background: @loom_err; }
+.dot.suspended { background: transparent; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.4); }
+@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
+
+/* ---- chat ------------------------------------------------------------------------------- */
+.chat { background: @view_bg_color; }
+.header { padding: 10px 18px; border-bottom: 1px solid @loom_line; }
+.chat.active .header { border-bottom-color: alpha(@accent_color, 0.5); }
+.chat.inactive .header .title { opacity: 0.6; }
+.header .title { font-size: 1.05em; }
+.header .place { font-size: 0.88em; opacity: 0.68; }
+.context-bar { min-width: 40px; }
+.context-bar trough { min-height: 4px; border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
+.context-bar block.filled { border-radius: 99px; background: alpha(@window_fg_color, 0.45); }
+.context-bar.full block.filled { background: @loom_warn; }
+.messages { padding: 18px 28px 24px 28px; }
+.msg-user { background: alpha(@window_fg_color, 0.055); border: 1px solid alpha(@window_fg_color, 0.07); border-radius: 12px; padding: 10px 14px; }
+.msg-agent { padding: 0 2px; }
+.thought { opacity: 0.68; }
+.notice { font-style: italic; opacity: 0.75; }
+.notice.error { color: @loom_err; opacity: 1; }
+.starting-note { padding: 40px 0; opacity: 0.68; }
+.code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 10px; font-size: 0.88em; }
+.md-table { border-radius: 8px; border: 1px solid @loom_line; }
+.md-table .table-head { font-size: 0.78em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.68; padding: 6px 12px; border-bottom: 1px solid @loom_line; }
+.md-table .table-cell { padding: 5px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.04); }
+
+/* Tool calls: quiet rows; only what changed (a diff) or failed draws the eye. */
+.tool-card { border-radius: 8px; background: transparent; }
+.tool-card:hover { background: alpha(@window_fg_color, 0.035); }
+.tool-toggle { padding: 2px 8px; border-radius: 8px; }
+.tool-title { font-size: 0.88em; opacity: 0.85; }
+.tool-card .chevron { opacity: 0.45; font-size: 0.88em; }
+.kind { font-size: 0.78em; font-weight: 700; opacity: 0.55; text-transform: uppercase; }
+.glyph { opacity: 0.85; }
+.glyph.done { color: @loom_ok; }
+.glyph.failed { color: @loom_err; }
+.tool-detail { padding: 4px 12px 10px 28px; }
+.diff { background: alpha(@window_fg_color, 0.035); border-radius: 8px; padding: 6px 10px; }
+.diff-add { color: @loom_ok; }
+.diff-del { color: @loom_err; }
+.permission-card { border: 1px solid alpha(@loom_wait, 0.6); background: alpha(@loom_wait, 0.07); border-radius: 10px; padding: 12px; }
+button.suggested { background: alpha(@accent_color, 0.85); color: @accent_fg_color; }
+.plan { padding: 8px 28px; border-top: 1px solid @loom_line; font-size: 0.88em; }
+.plan .done { opacity: 0.5; }
+.plan .current { font-weight: 700; }
+.turn-footer { font-size: 0.78em; opacity: 0.6; margin: -4px 0 4px 2px; }
+button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.78em; opacity: 0; border-radius: 6px; }
+.code-wrap button.copy { margin: 4px; background: alpha(@window_bg_color, 0.8); }
+.msg-wrap:hover button.copy, .code-wrap:hover button.copy { opacity: 0.8; }
+
+/* Composer. */
+.input-box { padding: 10px 18px 14px 18px; }
+.composer { border-radius: 16px; background: alpha(@window_fg_color, 0.045); border: 1px solid alpha(@window_fg_color, 0.09); }
+.composer:focus-within { border-color: alpha(@accent_color, 0.55); background: alpha(@window_fg_color, 0.06); }
+textview.input, textview.input text { background: transparent; }
+.placeholder { opacity: 0.55; }
+.composer-bar { padding: 2px 8px 8px 8px; }
+.composer-bar menubutton.chip-picker > button, .composer-bar button.mode { min-height: 24px; padding: 0 10px; border-radius: 99px; font-size: 0.88em; background: alpha(@window_fg_color, 0.06); }
+.composer-bar menubutton.chip-picker > button:hover, .composer-bar button.mode:hover { background: alpha(@window_fg_color, 0.12); }
+.composer-bar button.mode.plan-mode { color: @accent_color; }
+.composer-bar button.mode.accept-mode { color: @loom_warn; }
+.composer-bar button.mode.bypass-mode { color: @loom_err; box-shadow: inset 0 0 0 1px alpha(@loom_err, 0.6); }
+button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
+button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
+button.send.stop { background: @loom_err; color: @window_bg_color; }
+.working { font-size: 0.88em; opacity: 0.75; margin-left: 6px; }
+.completion row { padding: 3px 8px; }
+.option-list { padding: 4px; min-width: 240px; }
+.option-heading { font-size: 0.78em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
+
+/* ---- tray, files, scratch --------------------------------------------------------------- */
+.tray { padding: 4px 8px; min-height: 26px; border-top: 1px solid @loom_line; background: @sidebar_bg_color; }
+.tray .hint { font-size: 0.78em; opacity: 0.6; margin-right: 6px; }
+.chip { padding: 2px 10px; min-height: 0; border-radius: 99px; font-size: 0.88em; }
+.dock { padding: 6px; background: @sidebar_bg_color; }
+.docked, .peek-frame { padding: 4px; }
+button.small { padding: 0 8px; min-height: 22px; font-size: 0.88em; }
+.files { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
+.panel-header { padding: 8px 12px; }
+.tab { padding: 2px 10px; min-height: 0; border-radius: 99px; font-weight: 600; }
+.tab:checked { background: alpha(@accent_color, 0.18); }
+.file-list { background: transparent; }
+.file-row { padding: 4px 6px; }
+.badge { font-size: 0.78em; font-weight: 700; padding: 0 6px; border-radius: 99px; }
+.badge.new { background: alpha(@loom_ok, 0.22); }
+.badge.edited { background: alpha(@accent_color, 0.22); }
+.dirty { color: @loom_warn; }
+.editor { font-family: "JetBrains Mono", Vazirmatn, monospace; }
+.editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.88em; }
+.tree row { padding: 1px 6px; }
+.tree .folder { font-weight: 600; }
+.changes-view { padding: 6px 10px; }
+.repo-line { font-family: "JetBrains Mono", monospace; font-size: 0.88em; opacity: 0.8; padding: 2px 2px; }
+.git-code { font-family: "JetBrains Mono", monospace; font-size: 0.78em; font-weight: 700; min-width: 22px; padding: 0 4px; border-radius: 4px; }
+.git-code.modified { color: @accent_color; background: alpha(@accent_color, 0.12); }
+.git-code.added { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
+.git-code.deleted { color: @loom_err; background: alpha(@loom_err, 0.12); }
+.scratch { background: @window_bg_color; border-radius: 12px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+window.loom paned > separator { background: none; background-color: shade(@window_bg_color, 1.6); color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
+.prefix-hint { background: alpha(@window_bg_color, 0.95); border: 1px solid alpha(@accent_color, 0.6); border-radius: 99px; padding: 6px 16px; font-size: 0.88em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+
+/* ---- pickers, help, welcome, settings --------------------------------------------------- */
+.picker { padding: 4px; }
+.picker-list { background: transparent; }
+.switcher-list row, .picker-list row { padding: 7px 10px; border-radius: 7px; }
+.help { padding: 6px; }
+.keycap { font-family: "JetBrains Mono", monospace; font-size: 0.78em; padding: 1px 7px; border-radius: 5px; background: alpha(@window_fg_color, 0.08); }
+.welcome { padding: 32px; }
+.welcome-title { font-size: 2.2em; font-weight: 800; letter-spacing: 0.04em; }
+.welcome-actions { margin-top: 22px; min-width: 420px; }
+button.welcome-action, button.welcome-project { padding: 10px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
+button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
+.welcome-heading { margin-top: 22px; font-size: 0.78em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; }
+window.prefs scrolledwindow, window.prefs viewport, window.prefs stack { background: @window_bg_color; }
+.prefs-sidebar { background: @sidebar_bg_color; padding: 8px 0; }
+.prefs-page { padding: 28px 36px; }
+.prefs-heading { font-size: 1.2em; font-weight: 700; margin-bottom: 4px; }
+.prefs-section { font-size: 0.78em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px 4px; }
+.prefs-group { background: alpha(@window_fg_color, 0.035); border-radius: 12px; }
+.prefs-row { padding: 12px 16px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
+.prefs-row:last-child { border-bottom: none; }
+.prefs-title { font-weight: 500; }
+.about-name { font-size: 1.8em; font-weight: 800; letter-spacing: 0.04em; }
+.about-blurb { margin: 6px 0; }

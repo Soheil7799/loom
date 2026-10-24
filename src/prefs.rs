@@ -58,11 +58,11 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     window.add_css_class("prefs");
 
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(120).hexpand(true).build();
-    stack.add_titled(&page(&general(&s)), Some("general"), "General");
-    stack.add_titled(&page(&agents(&s)), Some("agents"), "Agents");
-    stack.add_titled(&page(&appearance(&s)), Some("appearance"), "Appearance");
-    stack.add_titled(&page(&keyboard()), Some("keyboard"), "Keyboard");
-    stack.add_titled(&page(&about()), Some("about"), "About");
+    stack.add_titled(&page("General", &general(&s)), Some("general"), "General");
+    stack.add_titled(&page("Agents", &agents(&s)), Some("agents"), "Agents");
+    stack.add_titled(&page("Appearance", &appearance(&s)), Some("appearance"), "Appearance");
+    stack.add_titled(&page("Keyboard", &keyboard()), Some("keyboard"), "Keyboard");
+    stack.add_titled(&page("", &about()), Some("about"), "About");
     let sidebar = gtk::StackSidebar::builder().stack(&stack).width_request(170).build();
     sidebar.add_css_class("prefs-sidebar");
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -83,8 +83,13 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     window.present();
 }
 
-fn page(content: &gtk::Box) -> gtk::ScrolledWindow {
+fn page(title: &str, content: &gtk::Box) -> gtk::ScrolledWindow {
     content.add_css_class("prefs-page");
+    if !title.is_empty() {
+        let heading = gtk::Label::builder().label(title).xalign(0.0).build();
+        heading.add_css_class("prefs-heading");
+        content.prepend(&heading);
+    }
     gtk::ScrolledWindow::builder().child(content).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build()
 }
 
@@ -142,7 +147,12 @@ fn general(s: &Settings) -> gtk::Box {
         let minutes = spin.value() as u64;
         settings::update(|s| s.idle_minutes = minutes);
     });
-    row(&memory, "Suspend idle agents after (minutes)", "An agent you aren't looking at stops after this long and frees its memory; opening it resumes the conversation. 0 keeps every agent running.", &idle);
+    let idle_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let unit = gtk::Label::new(Some("min"));
+    unit.add_css_class("dim");
+    idle_box.append(&idle);
+    idle_box.append(&unit);
+    row(&memory, "Suspend idle agents after", "An agent you aren't looking at stops after this long and frees its memory; opening it resumes the conversation. 0 keeps every agent running.", &idle_box);
     content.append(&memory);
 
     let notifications = section("Notifications");

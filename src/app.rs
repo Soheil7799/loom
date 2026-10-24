@@ -113,11 +113,13 @@ impl App {
         new_button.add_css_class("flat");
         new_button.set_hexpand(true);
         new_button.set_tooltip_text(Some("Start an agent in another folder (Ctrl+Shift+N)"));
-        let settings_button = gtk::Button::with_label("⚙");
+        let settings_button = gtk::Button::from_icon_name("emblem-system-symbolic");
         settings_button.add_css_class("flat");
+        settings_button.add_css_class("icon");
         settings_button.set_tooltip_text(Some("Settings (Ctrl+,)"));
-        let help_button = gtk::MenuButton::builder().label("?").tooltip_text("Keys (Ctrl+/)").build();
+        let help_button = gtk::MenuButton::builder().icon_name("help-about-symbolic").always_show_arrow(false).tooltip_text("Keys (Ctrl+/)").build();
         help_button.add_css_class("flat");
+        help_button.add_css_class("icon");
         bottom.append(&new_button);
         bottom.append(&settings_button);
         bottom.append(&help_button);
@@ -241,6 +243,7 @@ impl App {
             files_were_open: Cell::new(false),
             scale_css,
         });
+        crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
         this.apply_settings(&settings::get());
         this.restore();
@@ -883,6 +886,7 @@ impl App {
             agent.start();
         }
         *self.pinned.borrow_mut() = Some(agent.clone());
+        self.mark_active();
     }
 
     /// Puts the pinned agent back with the others; returns it.
@@ -895,6 +899,7 @@ impl App {
             self.chat_stack.set_visible_child(&agent.chat.root);
             agent.chat.input.grab_focus();
         }
+        self.mark_active();
         Some(agent)
     }
 
@@ -1275,6 +1280,21 @@ impl App {
 
     // ---- sidebar, menus, inbox, welcome ---------------------------------------------------
 
+    /// The pane with the keyboard shows it; with two side by side, the other one recedes.
+    fn mark_active(&self) {
+        let focused = self.focused.borrow().clone();
+        let pinned = self.pinned.borrow().clone();
+        for agent in self.agents.borrow().iter() {
+            let root = &agent.chat.root;
+            root.remove_css_class("active");
+            root.remove_css_class("inactive");
+            if pinned.is_some() {
+                let is_focused = focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, agent));
+                root.add_css_class(if is_focused { "active" } else { "inactive" });
+            }
+        }
+    }
+
     fn activate_row(self: &Rc<Self>, index: usize) {
         enum Do {
             Toggle(PathBuf),
@@ -1381,10 +1401,23 @@ impl App {
                 rows.push(Row::Agent(agent.clone()));
             }
         }
+        if projects.is_empty() {
+            let hint = gtk::Label::builder()
+                .label("No projects yet.\nCtrl+Shift+N starts an agent in a folder.")
+                .xalign(0.0)
+                .wrap(true)
+                .build();
+            hint.add_css_class("dim");
+            hint.add_css_class("small");
+            hint.add_css_class("sidebar-empty");
+            let row = gtk::ListBoxRow::builder().child(&hint).selectable(false).activatable(false).build();
+            self.list.append(&row);
+        }
         *self.rows.borrow_mut() = rows;
         if agents.is_empty() {
             self.fill_welcome();
         }
+        self.mark_active();
     }
 
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
@@ -1400,7 +1433,7 @@ impl App {
         let working = agents.iter().filter(|a| matches!(a.status(), Status::Working | Status::Starting)).count();
         if waiting > 0 {
             let badge = gtk::Label::new(Some(&format!("⚑ {waiting}")));
-            badge.add_css_class("badge-warn");
+            badge.add_css_class("badge-wait");
             badge.set_tooltip_text(Some("waiting for you"));
             line.append(&badge);
         }
@@ -1410,10 +1443,11 @@ impl App {
             badge.set_tooltip_text(Some("working"));
             line.append(&badge);
         }
-        if waiting == 0 && working == 0 && !agents.is_empty() {
-            let count = gtk::Label::new(Some(&agents.len().to_string()));
+        if project.collapsed && !agents.is_empty() {
+            let count = gtk::Label::new(Some(&format!("({})", agents.len())));
             count.add_css_class("dim");
             count.add_css_class("small");
+            count.set_tooltip_text(Some("agents in it"));
             line.append(&count);
         }
         let add = gtk::Button::with_label("+");
