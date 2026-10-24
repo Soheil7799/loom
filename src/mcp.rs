@@ -4,7 +4,10 @@
 //!
 //! LOOM_SOCKET and LOOM_AGENT, set by loom when it starts the agent, say where and who.
 
+use std::collections::HashMap;
 use std::io::{BufRead, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -13,16 +16,43 @@ use crate::control;
 
 const PROTOCOL: &str = "2025-06-18";
 
+/// Calls in flight, by request id: set to stop one (the client cancelled it).
+type Running = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
+
 pub fn run() -> i32 {
     let socket = std::env::var("LOOM_SOCKET").unwrap_or_default();
     let agent: u32 = std::env::var("LOOM_AGENT").ok().and_then(|a| a.parse().ok()).unwrap_or(0);
     let stdin = std::io::stdin();
-    let mut stdout = std::io::stdout();
+    let stdout = Arc::new(Mutex::new(std::io::stdout()));
+    let running: Running = Arc::default();
+    let send = |stdout: &Arc<Mutex<std::io::Stdout>>, response: Value| {
+        let mut out = stdout.lock().unwrap_or_else(|e| e.into_inner());
+        writeln!(out, "{response}").and_then(|()| out.flush()).is_ok()
+    };
     for line in stdin.lock().lines() {
         let Ok(line) = line else { break };
         let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
-        let Some(id) = message.get("id").cloned() else { continue }; // notifications need no answer
         let method = message["method"].as_str().unwrap_or("");
+        if method == "notifications/cancelled" {
+            let id = message["params"]["requestId"].to_string();
+            if let Some(flag) = running.lock().unwrap_or_else(|e| e.into_inner()).get(&id) {
+                flag.store(true, Ordering::Relaxed);
+            }
+            continue;
+        }
+        let Some(id) = message.get("id").cloned() else { continue }; // notifications need no answer
+        // Tool calls run side by side (a long loom_wait must not hold up the next call).
+        if method == "tools/call" {
+            let cancelled = Arc::new(AtomicBool::new(false));
+            running.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), cancelled.clone());
+            let (socket, stdout, running, params) = (socket.clone(), stdout.clone(), running.clone(), message["params"].clone());
+            std::thread::spawn(move || {
+                let result = call_tool(&socket, agent, &params, &cancelled);
+                running.lock().unwrap_or_else(|e| e.into_inner()).remove(&id.to_string());
+                send(&stdout, json!({ "jsonrpc": "2.0", "id": id, "result": result }));
+            });
+            continue;
+        }
         let reply = match method {
             "initialize" => Ok(json!({
                 "protocolVersion": message["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
@@ -32,14 +62,13 @@ pub fn run() -> i32 {
             })),
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({ "tools": tools() })),
-            "tools/call" => Ok(call_tool(&socket, agent, &message["params"])),
             _ => Err(json!({ "code": -32601, "message": format!("unknown method {method}") })),
         };
         let response = match reply {
             Ok(result) => json!({ "jsonrpc": "2.0", "id": id, "result": result }),
             Err(error) => json!({ "jsonrpc": "2.0", "id": id, "error": error }),
         };
-        if writeln!(stdout, "{response}").and_then(|()| stdout.flush()).is_err() {
+        if !send(&stdout, response) {
             break;
         }
     }
@@ -107,10 +136,10 @@ fn tools() -> Value {
     ])
 }
 
-fn call_tool(socket: &str, agent: u32, params: &Value) -> Value {
+fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -> Value {
     let args = &params["arguments"];
     let result = match params["name"].as_str().unwrap_or("") {
-        "loom_wait" => wait(socket, agent, args),
+        "loom_wait" => wait(socket, agent, args, cancelled),
         "loom_run" => control::call(socket, agent, "run_job", args.clone()).map(|v| {
             format!("Started job {} in loom's tray. Use loom_wait or loom_output to follow it.", v["name"].as_str().unwrap_or("?"))
         }),
@@ -128,7 +157,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value) -> Value {
     }
 }
 
-fn wait(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
+fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
     let timeout = Duration::from_secs(args["timeout_seconds"].as_u64().unwrap_or(120).min(1800));
     let until = args["until"].as_str().filter(|u| !u.is_empty());
     let lines = args["lines"].as_u64().unwrap_or(40);
@@ -149,6 +178,9 @@ fn wait(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
                 "it exited".to_owned()
             };
             return Ok(format!("Stopped waiting: {why}.\n{}", describe_job(short)));
+        }
+        if cancelled.load(Ordering::Relaxed) {
+            return Err("cancelled".to_owned());
         }
         std::thread::sleep(Duration::from_millis(500));
     }

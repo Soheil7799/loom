@@ -31,6 +31,11 @@ pub struct Job {
     /// None while running; Some(exit code, if known) once done.
     outcome: Cell<Option<Option<i64>>>,
     pid: Cell<Option<glib::Pid>>,
+    /// Asked to run again while still running: the exit starts it (one restart, however
+    /// many times it was asked).
+    restart_pending: Cell<bool>,
+    /// SIGKILL, if SIGTERM was not enough.
+    kill_timer: RefCell<Option<glib::SourceId>>,
     /// Where it runs, if not the project folder.
     cwd: RefCell<Option<PathBuf>>,
     /// Between asking VTE to spawn and hearing back.
@@ -109,14 +114,13 @@ impl Tray {
     /// `restart` is false.
     pub fn run_named(self: &Rc<Self>, name: &str, command: &str, restart: bool, cwd: Option<PathBuf>) -> Result<Rc<Job>, String> {
         if let Some(job) = self.named(name) {
-            *job.cwd.borrow_mut() = cwd;
             if job.is_running() && !restart {
                 return Err(format!("job {name} is still running (stop it, or pass restart)"));
             }
-            job.stop();
+            *job.cwd.borrow_mut() = cwd;
             *job.command.borrow_mut() = Some(command.to_owned());
             job.chip.set_tooltip_text(Some(command));
-            job.restart_when_stopped();
+            job.restart();
             return Ok(job);
         }
         let job = self.add(name, Some(command.to_owned()), command);
@@ -167,6 +171,8 @@ impl Tray {
             outcome: Cell::new(None),
             pid: Cell::new(None),
             spawning: Cell::new(false),
+            restart_pending: Cell::new(false),
+            kill_timer: RefCell::default(),
             cwd: RefCell::default(),
             docked: RefCell::default(),
             tray: Rc::downgrade(self),
@@ -178,6 +184,14 @@ impl Tray {
             job.term.connect_child_exited(move |_, status| {
                 let Some(job) = weak.upgrade() else { return };
                 job.pid.set(None);
+                if let Some(timer) = job.kill_timer.borrow_mut().take() {
+                    timer.remove();
+                }
+                // Asked to run again: this exit was the old run's.
+                if job.restart_pending.take() {
+                    job.start();
+                    return;
+                }
                 // A wait status: the exit code in the second byte when the low 7 bits are 0.
                 let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
                 job.finish(Some(i64::from(code)));
@@ -256,7 +270,9 @@ impl Tray {
                 if jobs.len() <= KEEP {
                     return;
                 }
-                jobs.iter().find(|job| job.outcome.get().is_some() && job.docked.borrow().is_none()).cloned()
+                jobs.iter()
+                    .find(|job| job.command.borrow().is_none() && job.outcome.get().is_some() && job.docked.borrow().is_none())
+                    .cloned()
             };
             match old {
                 Some(job) => self.remove(&job),
@@ -323,7 +339,7 @@ impl Job {
             b
         };
         if self.command.borrow().is_some() {
-            header.append(&button("Rerun", "Run the command again", |_, job| job.start()));
+            header.append(&button("Rerun", "Run the command again", |_, job| job.restart()));
             header.append(&button("Stop", "Stop the command", |_, job| job.stop()));
         }
         if docked {
@@ -368,21 +384,18 @@ impl Job {
         self.outcome.get().flatten()
     }
 
-    /// Starts again as soon as the current run has exited (at once if none runs).
-    fn restart_when_stopped(self: &Rc<Self>) {
+    /// Runs the command again: at once if nothing runs, else once the current run has
+    /// exited (it is stopped). Its old output goes now, so nobody reads it as the new run's.
+    pub fn restart(self: &Rc<Self>) {
         if self.pid.get().is_none() && !self.spawning.get() {
             self.start();
             return;
         }
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-            let Some(job) = weak.upgrade() else { return glib::ControlFlow::Break };
-            if job.pid.get().is_some() || job.spawning.get() {
-                return glib::ControlFlow::Continue;
-            }
-            job.start();
-            glib::ControlFlow::Break
-        });
+        self.restart_pending.set(true);
+        self.term.reset(true, true);
+        self.outcome.set(None);
+        self.status.set_label("restarting");
+        self.terminate();
     }
 
     pub fn is_running(&self) -> bool {
@@ -406,11 +419,11 @@ impl Job {
     /// (Re)starts a command run from here.
     fn start(self: &Rc<Self>) {
         let Some(command) = self.command.borrow().clone() else { return };
-        if self.spawning.get() || (self.outcome.get().is_none() && self.pid.get().is_some()) {
+        if self.spawning.get() || self.pid.get().is_some() {
             return;
         }
-        self.spawning.set(true);
         let Some(tray) = self.tray.upgrade() else { return };
+        self.spawning.set(true);
         self.term.reset(true, true);
         self.outcome.set(None);
         self.dot.remove_css_class("done");
@@ -432,7 +445,13 @@ impl Job {
                 let Some(job) = weak.upgrade() else { return };
                 job.spawning.set(false);
                 match result {
-                    Ok(pid) => job.pid.set(Some(pid)),
+                    Ok(pid) => {
+                        job.pid.set(Some(pid));
+                        // Asked to restart (or stop) while it was starting: that applies now.
+                        if job.restart_pending.get() {
+                            job.terminate();
+                        }
+                    }
                     Err(err) => {
                         job.feed(&format!("loom: could not start: {err}\n"));
                         job.finish(Some(127));
@@ -442,12 +461,33 @@ impl Job {
         );
     }
 
-    pub fn stop(&self) {
-        // The pid stays until the exit is seen: a process that ignores SIGTERM can be stopped
-        // again, and is not run twice.
-        if let Some(pid) = self.pid.get() {
-            // SAFETY: plain kill(2); the shell VTE started leads its own session and group.
-            unsafe { libc::kill(-pid.0, libc::SIGTERM) };
+    /// Stops it (and any restart it was waiting for).
+    pub fn stop(self: &Rc<Self>) {
+        self.restart_pending.set(false);
+        self.terminate();
+    }
+
+    /// SIGTERM to its process group, SIGKILL 3 s later if it is still there. The pid stays
+    /// until the exit is seen, so it is never run twice.
+    fn terminate(self: &Rc<Self>) {
+        let Some(pid) = self.pid.get() else { return };
+        // SAFETY: plain kill(2); the shell VTE started leads its own session and group.
+        unsafe { libc::kill(-pid.0, libc::SIGTERM) };
+        let group = pid.0;
+        let weak = Rc::downgrade(self);
+        let timer = glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
+            // Fired: the handle is spent (removing it later would be an error).
+            if let Some(job) = weak.upgrade() {
+                job.kill_timer.borrow_mut().take();
+                if job.pid.get().is_none_or(|p| p.0 != group) {
+                    return;
+                }
+            }
+            // SAFETY: as above; a group already gone just gives ESRCH.
+            unsafe { libc::kill(-group, libc::SIGKILL) };
+        });
+        if let Some(old) = self.kill_timer.borrow_mut().replace(timer) {
+            old.remove();
         }
     }
 }

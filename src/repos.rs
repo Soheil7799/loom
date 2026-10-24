@@ -45,8 +45,10 @@ pub fn repo_of(path: &Path) -> Option<PathBuf> {
 
 /// Branch, changed files and upstream distance (None if git can't read it).
 pub fn status(repo: &Path) -> Option<Repo> {
+    // No optional locks (an agent's own `git commit` must not find index.lock taken), and
+    // file names as they are (Persian ones would come out as octal escapes otherwise).
     let output = Command::new("git")
-        .args(["-C"])
+        .args(["--no-optional-locks", "-c", "core.quotePath=false", "-C"])
         .arg(repo)
         .args(["status", "--porcelain=v1", "--branch", "--untracked-files=normal"])
         .output()
@@ -86,12 +88,15 @@ pub fn under(dir: &Path) -> Vec<PathBuf> {
     if dir.join(".git").exists() {
         found.push(dir.to_owned());
     }
-    walk(dir, 0, &mut found);
+    let mut visited = 0;
+    walk(dir, 0, &mut found, &mut visited);
     found
 }
 
-fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
-    if depth >= 3 || found.len() >= 60 {
+/// At most 3 levels down, 60 repos, 2000 folders looked at (a project at ~ stays quick).
+fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>, visited: &mut usize) {
+    *visited += 1;
+    if depth >= 3 || found.len() >= 60 || *visited > 2000 {
         return;
     }
     let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -110,7 +115,7 @@ fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
         if sub.join(".git").exists() {
             found.push(sub.clone());
         }
-        walk(&sub, depth + 1, found);
+        walk(&sub, depth + 1, found, visited);
     }
 }
 

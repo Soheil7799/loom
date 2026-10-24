@@ -75,6 +75,16 @@ impl Scratch {
         let term = term::new(&self.stack);
         term.set_vexpand(false);
         term.set_hexpand(false);
+        let leave = gtk::EventControllerFocus::new();
+        let weak = Rc::downgrade(self);
+        leave.connect_leave(move |_| {
+            if let Some(scratch) = weak.upgrade()
+                && crate::settings::get().scratch_autohide
+            {
+                scratch.hide();
+            }
+        });
+        term.add_controller(leave);
         // VTE asks for 80x24 cells otherwise: a note, not a window.
         term.set_size(72, 12);
         self.stack.add_child(&term);

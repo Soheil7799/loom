@@ -683,9 +683,9 @@ impl App {
         ];
         for agent in self.agents_in_order() {
             let weak = weak.clone();
-            let target = agent.clone();
+            let target = Rc::downgrade(&agent);
             let mut choice = Choice::new(format!("Go to {}", agent.title()), project_name(&agent.project), move || {
-                if let Some(app) = weak.upgrade() {
+                if let (Some(app), Some(target)) = (weak.upgrade(), target.upgrade()) {
                     app.focus(&target);
                 }
             });
@@ -711,9 +711,9 @@ impl App {
         let mut choices = Vec::new();
         for agent in self.agents_in_order() {
             let weak = weak.clone();
-            let target = agent.clone();
+            let target = Rc::downgrade(&agent);
             let mut choice = Choice::new(agent.title(), project_name(&agent.project), move || {
-                if let Some(app) = weak.upgrade() {
+                if let (Some(app), Some(target)) = (weak.upgrade(), target.upgrade()) {
                     app.focus(&target);
                 }
             });
@@ -746,6 +746,7 @@ impl App {
             self.focus(agent);
             if let Some(pinned) = layout.pinned.and_then(|p| agents.get(p)).filter(|p| !Rc::ptr_eq(p, agent)) {
                 self.pin(pinned);
+                self.save();
             }
         }
         self.refresh_sidebar();
@@ -1013,6 +1014,12 @@ impl App {
     }
 
     fn remove_agent(self: &Rc<Self>, agent: &Rc<Agent>) {
+        self.remove_agent_then(agent, true);
+    }
+
+    /// Closes `agent`; `refocus` moves focus on to the next one (not when several close at
+    /// once: each would be started only to be closed).
+    fn remove_agent_then(self: &Rc<Self>, agent: &Rc<Agent>, refocus: bool) {
         let order = self.agents_in_order();
         let position = order.iter().position(|a| Rc::ptr_eq(a, agent)).unwrap_or(0);
         let focused_left = self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent));
@@ -1035,6 +1042,8 @@ impl App {
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         if focused_left {
             *self.focused.borrow_mut() = None;
+        }
+        if focused_left && refocus {
             let order = self.agents_in_order();
             match order.get(position.min(order.len().saturating_sub(1))) {
                 Some(next) => self.focus(next),
@@ -1068,14 +1077,18 @@ impl App {
         let go = move || {
             let Some(app) = weak.upgrade() else { return };
             for agent in &agents {
-                app.remove_agent(agent);
+                app.remove_agent_then(agent, false);
             }
             app.projects.borrow_mut().retain(|p| p.path != path);
+            // Focus moves to what is left (only now, so no closing agent is started first).
+            let next = if app.focused.borrow().is_none() { app.agents_in_order().into_iter().next() } else { None };
+            match next {
+                Some(next) => app.focus(&next),
+                None if app.agents.borrow().is_empty() => app.show_welcome(),
+                None => {}
+            }
             app.refresh_sidebar();
             app.save();
-            if app.agents.borrow().is_empty() {
-                app.show_welcome();
-            }
         };
         if busy == 0 {
             go();
@@ -1256,12 +1269,11 @@ impl App {
                 }
                 // Shown without taking the keyboard from what the user is doing.
                 let focus = GtkWindowExt::focus(&self.window);
-                self.files.root.set_visible(true);
-                self.files.open_file(&path);
+                let opened = self.files.open_for_agent(&path);
                 if let Some(widget) = focus {
                     widget.grab_focus();
                 }
-                Ok(json!({}))
+                opened.map(|()| json!({}))
             }
             "notify" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;
@@ -1346,20 +1358,28 @@ impl App {
                 item("Remove from the sidebar", Box::new(move |app| app.remove_project(&p4)));
             }
             Some(Row::Agent(agent)) => {
-                let (a1, a2, a3, a4, a5) = (agent.clone(), agent.clone(), agent.clone(), agent.clone(), agent.clone());
-                item("Rename…", Box::new(move |app| {
-                    app.focus(&a1);
+                let target = Rc::downgrade(agent);
+                let with = |f: fn(&Rc<App>, &Rc<Agent>)| -> Box<dyn Fn(&Rc<App>)> {
+                    let target = target.clone();
+                    Box::new(move |app| {
+                        if let Some(agent) = target.upgrade() {
+                            f(app, &agent);
+                        }
+                    })
+                };
+                item("Rename…", with(|app, agent| {
+                    app.focus(agent);
                     app.begin_rename();
                 }));
-                item("Show beside the focused one", Box::new(move |app| {
-                    app.pin(&a2);
+                item("Show beside the focused one", with(|app, agent| {
+                    app.pin(agent);
                     app.save();
                 }));
-                item("Restart", Box::new(move |_| a3.restart()));
-                item("Suspend (free its memory)", Box::new(move |_| {
-                    a4.suspend();
+                item("Restart", with(|_, agent| agent.restart()));
+                item("Suspend (free its memory)", with(|_, agent| {
+                    agent.suspend();
                 }));
-                item("Close", Box::new(move |app| app.close_agent(&a5)));
+                item("Close", with(|app, agent| app.close_agent(agent)));
             }
             None => return,
         }
@@ -1488,9 +1508,9 @@ impl App {
             go.add_css_class("flat");
             go.add_css_class("inbox-agent");
             let weak = Rc::downgrade(self);
-            let target = agent.clone();
+            let target = Rc::downgrade(&agent);
             go.connect_clicked(move |_| {
-                if let Some(app) = weak.upgrade() {
+                if let (Some(app), Some(target)) = (weak.upgrade(), target.upgrade()) {
                     app.inbox.popdown();
                     app.focus(&target);
                 }
@@ -1504,10 +1524,12 @@ impl App {
                 for (oi, (name, kind)) in options.iter().enumerate() {
                     let button = gtk::Button::with_label(name);
                     button.add_css_class(if kind.starts_with("allow") { "suggested" } else { "plain" });
-                    let target = agent.clone();
+                    let target = Rc::downgrade(&agent);
                     let weak = Rc::downgrade(self);
                     button.connect_clicked(move |_| {
-                        target.answer_serial(serial, oi);
+                        if let Some(target) = target.upgrade() {
+                            target.answer_serial(serial, oi);
+                        }
                         if let Some(app) = weak.upgrade() {
                             app.refresh_inbox();
                         }

@@ -53,9 +53,15 @@ pub fn serve(path: PathBuf, handle: impl Fn(u32, &str, &Value) -> Result<Value, 
     PATH.with(|p| *p.borrow_mut() = Some(path));
     let (tx, rx) = async_channel::unbounded::<Request>();
     std::thread::spawn(move || {
-        for stream in listener.incoming().flatten() {
-            let tx = tx.clone();
-            std::thread::spawn(move || connection(stream, tx));
+        for stream in listener.incoming() {
+            match stream {
+                Ok(stream) => {
+                    let tx = tx.clone();
+                    std::thread::spawn(move || connection(stream, tx));
+                }
+                // Out of file descriptors, say: wait rather than spin.
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(200)),
+            }
         }
     });
     glib::spawn_future_local(async move {

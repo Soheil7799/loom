@@ -97,7 +97,7 @@ struct ToolCard {
 }
 
 pub struct PermissionCard {
-    buttons: gtk::Box,
+    buttons: gtk::FlowBox,
     answer: gtk::Label,
 }
 
@@ -864,7 +864,14 @@ impl Chat {
             detail.add_css_class("code-block");
             root.append(&detail);
         }
-        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        // Options wrap onto more lines rather than widen the chat.
+        let buttons = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .column_spacing(6)
+            .row_spacing(6)
+            .homogeneous(false)
+            .max_children_per_line(8)
+            .build();
         for (i, (id, name, kind)) in options.iter().enumerate() {
             let button = gtk::Button::with_label(&format!("{}  {name}", i + 1));
             button.add_css_class(if kind.starts_with("allow") { "suggested" } else { "plain" });
@@ -874,7 +881,8 @@ impl Chat {
             buttons.append(&button);
         }
         root.append(&buttons);
-        let answer = gtk::Label::builder().xalign(0.0).visible(false).build();
+        let answer = gtk::Label::builder().xalign(0.0).visible(false).wrap(true).build();
+        answer.set_wrap_mode(pango::WrapMode::WordChar);
         answer.add_css_class("dim");
         root.append(&answer);
         self.list.append(&root);
@@ -900,6 +908,7 @@ impl Chat {
                 .label(format!("{mark}  {}", entry["content"].as_str().unwrap_or("")))
                 .xalign(0.0)
                 .wrap(true)
+                .wrap_mode(pango::WrapMode::WordChar)
                 .build();
             label.add_css_class(class);
             self.plan.append(&label);

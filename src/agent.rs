@@ -11,6 +11,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use gtk::prelude::*;
+use gtk::{gio, glib};
 use serde_json::{Value, json};
 
 use crate::acp::{self, Conn, Incoming};
@@ -66,6 +67,15 @@ pub enum Event {
     Done,
 }
 
+/// The latest repo's status as last read (None: git could not), and when.
+#[derive(Clone)]
+struct RepoCache {
+    path: PathBuf,
+    repo: Option<crate::repos::Repo>,
+    /// None: out of date (an edit or command finished since).
+    read_at: Option<Instant>,
+}
+
 struct Pending {
     serial: u64,
     rpc: Value,
@@ -103,7 +113,9 @@ pub struct Agent {
     /// The git repos it has read or changed files in, latest first.
     repos: RefCell<Vec<PathBuf>>,
     /// The latest repo's git status, and when it was read.
-    repo_status: RefCell<Option<(Instant, crate::repos::Repo)>>,
+    repo_status: RefCell<Option<RepoCache>>,
+    /// A git status read is under way (off the main thread).
+    reading_repo: Cell<bool>,
     /// Commands in the tray still running for this agent.
     jobs: RefCell<Vec<Rc<crate::jobs::Job>>>,
     /// Files a tool call will write, kept until it completes (a refused edit writes nothing).
@@ -141,6 +153,7 @@ impl Agent {
             files: RefCell::default(),
             repos: RefCell::default(),
             repo_status: RefCell::default(),
+            reading_repo: Cell::new(false),
             jobs: RefCell::default(),
             planned: RefCell::default(),
             unseen: Cell::new(false),
@@ -238,26 +251,46 @@ impl Agent {
         self.repos.borrow().clone()
     }
 
-    /// The latest repo's status (read again when older than a few seconds).
-    pub fn repo(&self) -> Option<crate::repos::Repo> {
+    /// The latest repo's status as last read. Never waits on git: a stale or missing one is
+    /// read again in the background, and the agent reports Changed when it arrives.
+    pub fn repo(self: &Rc<Self>) -> Option<crate::repos::Repo> {
         let path = self.repos.borrow().first().cloned()?;
-        let fresh = self
-            .repo_status
-            .borrow()
-            .as_ref()
-            .filter(|(at, repo)| repo.path == path && at.elapsed().as_secs() < 4)
-            .map(|(_, repo)| repo.clone());
-        if fresh.is_some() {
-            return fresh;
+        let cached = self.repo_status.borrow().clone().filter(|c| c.path == path);
+        let fresh = cached.as_ref().and_then(|c| c.read_at).is_some_and(|at| at.elapsed().as_secs() < 5);
+        // A suspended agent changes nothing: what was read last stays.
+        if !fresh && !self.reading_repo.get() && (self.status.get() != Status::Suspended || cached.is_none()) {
+            self.reading_repo.set(true);
+            let weak = Rc::downgrade(self);
+            let reading = path.clone();
+            glib::spawn_future_local(async move {
+                let found = gio::spawn_blocking(move || crate::repos::status(&reading)).await.ok().flatten();
+                let Some(agent) = weak.upgrade() else { return };
+                agent.reading_repo.set(false);
+                let before = agent.repo_status.borrow().as_ref().filter(|c| c.path == path).map(|c| c.repo.clone());
+                let changed = before.as_ref() != Some(&found);
+                *agent.repo_status.borrow_mut() = Some(RepoCache { path, repo: found, read_at: Some(Instant::now()) });
+                if changed {
+                    agent.emit(Event::Changed);
+                }
+            });
         }
-        let repo = crate::repos::status(&path)?;
-        *self.repo_status.borrow_mut() = Some((Instant::now(), repo.clone()));
-        Some(repo)
+        cached.and_then(|c| c.repo)
+    }
+
+    /// The repo's status is out of date (kept on screen until the new one is read).
+    fn repo_changed(&self) {
+        if let Some(cache) = self.repo_status.borrow_mut().as_mut() {
+            cache.read_at = None;
+        }
     }
 
     /// Notes that it touched `path`; its repo moves to the front.
     fn touched(self: &Rc<Self>, path: &Path) {
         let Some(repo) = crate::repos::repo_of(path) else { return };
+        // Only the project's repos (a note read in another one doesn't make it "where it works").
+        if !repo.starts_with(&self.project) && !self.project.starts_with(&repo) {
+            return;
+        }
         let mut repos = self.repos.borrow_mut();
         if repos.first() == Some(&repo) {
             return;
@@ -266,7 +299,6 @@ impl Agent {
         repos.insert(0, repo);
         repos.truncate(8);
         drop(repos);
-        self.repo_status.borrow_mut().take();
         if !self.replaying.get() {
             self.emit(Event::Changed);
         }
@@ -427,7 +459,7 @@ impl Agent {
     /// loom's own MCP server (`loom mcp`), told how to reach this app and which agent it
     /// serves: its tools run jobs in the tray, open files for the user, notify.
     fn mcp_servers(&self) -> Value {
-        let (Some(socket), Ok(exe)) = (crate::control::current(), std::env::current_exe()) else { return json!([]) };
+        let (Some(socket), Some(exe)) = (crate::control::current(), own_program()) else { return json!([]) };
         json!([{
             "name": "loom",
             "command": exe.to_string_lossy(),
@@ -808,7 +840,7 @@ impl Agent {
         }
         // A finished edit or command changes the repo's status.
         if update["status"].as_str() == Some("completed") {
-            self.repo_status.borrow_mut().take();
+            self.repo_changed();
         }
 
         // Files: noted from the diffs, kept once the call completes.
@@ -900,6 +932,17 @@ impl Agent {
             self.jobs.borrow_mut().retain(|j| !Rc::ptr_eq(j, &job));
         }
     }
+}
+
+/// This program's path, for agents to start `loom mcp`. Replaced on disk while running (a
+/// reinstall), /proc reports it with " (deleted)": the new file at that path is the one.
+fn own_program() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let text = exe.to_string_lossy();
+    Some(match text.strip_suffix(" (deleted)") {
+        Some(path) => PathBuf::from(path),
+        None => exe,
+    })
 }
 
 fn message(error: &Value) -> String {

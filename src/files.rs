@@ -46,6 +46,8 @@ pub struct Files {
     agent_repos: RefCell<Vec<PathBuf>>,
     shown_changes: RefCell<Vec<PathBuf>>,
     filling: Cell<bool>,
+    /// Bumped by each Changes fill: an answer from git for an older one is dropped.
+    changes_round: Cell<u64>,
     tree: gtk::ListView,
     /// The folder the tree shows.
     project: RefCell<PathBuf>,
@@ -196,6 +198,7 @@ impl Files {
             agent_repos: RefCell::default(),
             shown_changes: RefCell::default(),
             filling: Cell::new(false),
+            changes_round: Cell::new(0),
             tree,
             project: RefCell::default(),
         });
@@ -308,14 +311,16 @@ impl Files {
 
     /// Shows `entries` (the focused agent's files), where Open… starts, and the project
     /// the tree shows.
-    pub fn show(&self, base: &Path, project: &Path, entries: &[(PathBuf, Mark)]) {
+    pub fn show(self: &Rc<Self>, base: &Path, project: &Path, entries: &[(PathBuf, Mark)]) {
         *self.base.borrow_mut() = base.to_owned();
         if *self.project.borrow() != project {
             *self.project.borrow_mut() = project.to_owned();
-            if self.views.visible_child_name().as_deref() == Some("project") {
-                self.fill_tree();
-            } else {
-                self.tree.set_model(None::<&gtk::SelectionModel>);
+            // Another project: the tree and the repos are its, read again when shown.
+            self.tree.set_model(None::<&gtk::SelectionModel>);
+            match self.views.visible_child_name().as_deref() {
+                Some("project") => self.fill_tree(),
+                Some("changes") => self.fill_repos(),
+                _ => {}
             }
         }
         *self.shown.borrow_mut() = entries.to_vec();
@@ -354,6 +359,7 @@ impl Files {
         let path = path.as_path();
         if self.open.borrow().as_deref() == Some(path) {
             // Already open: show it as it is (reading it again would drop unsaved typing).
+            self.reload_if_changed();
             self.editor_box.set_visible(true);
             self.view.grab_focus();
             return;
@@ -365,16 +371,37 @@ impl Files {
         self.load(path);
     }
 
-    fn load(&self, path: &Path) {
+    /// An agent shows the user a file: never at the cost of their unsaved typing, and it
+    /// hears whether it worked.
+    pub fn open_for_agent(&self, path: &Path) -> Result<(), String> {
+        let current = self.open.borrow().clone();
+        if current.as_deref() == Some(path) {
+            self.reload_if_changed();
+            self.root.set_visible(true);
+            self.editor_box.set_visible(true);
+            return Ok(());
+        }
+        if self.buffer.is_modified() {
+            return Err("the user has unsaved changes in another file in loom's editor; mention the file instead".into());
+        }
+        if !self.load(path) {
+            return Err(format!("{} could not be opened (not UTF-8 text, or unreadable)", path.display()));
+        }
+        self.root.set_visible(true);
+        Ok(())
+    }
+
+    /// Reads `path` into the editor; false if it could not be read as text.
+    fn load(&self, path: &Path) -> bool {
         let text = match std::fs::read(path).map(String::from_utf8) {
             Ok(Ok(text)) => text,
             Ok(Err(_)) => {
                 self.notice(&format!("{} is not UTF-8 text; open it elsewhere.", path.display()));
-                return;
+                return false;
             }
             Err(err) => {
                 self.notice(&format!("Could not open {}: {err}", path.display()));
-                return;
+                return false;
             }
         };
         let languages = sourceview::LanguageManager::default();
@@ -397,6 +424,7 @@ impl Files {
         self.opened_at.set(modified_time(path));
         self.editor_box.set_visible(true);
         self.view.grab_focus();
+        true
     }
 
     /// Light or dark scheme to suit the window.
@@ -475,7 +503,9 @@ impl Files {
         let window = self.view.root().and_then(|root| root.downcast::<gtk::Window>().ok());
         let focus = window.as_ref().and_then(|w| GtkWindowExt::focus(w));
         let offset = self.buffer.cursor_position();
-        self.load(&path);
+        if !self.load(&path) {
+            return;
+        }
         self.buffer.place_cursor(&self.buffer.iter_at_offset(offset));
         // Loading grabbed focus; a reload gives it back (to the chat, say).
         if let Some(widget) = focus {
@@ -511,7 +541,7 @@ impl Files {
     }
 
     /// The focused agent's repos (latest first): the Changes tab starts on the first.
-    pub fn set_repos(&self, repos: Vec<PathBuf>) {
+    pub fn set_repos(self: &Rc<Self>, repos: Vec<PathBuf>) {
         if *self.agent_repos.borrow() == repos {
             return;
         }
@@ -521,18 +551,33 @@ impl Files {
         }
     }
 
-    /// Offers the agent's repos, then every other repo in the project.
-    fn fill_repos(&self) {
+    /// Offers the agent's repos, then every other repo in the project (found off the main
+    /// thread: a big project takes a moment).
+    fn fill_repos(self: &Rc<Self>) {
+        let round = self.changes_round.get() + 1;
+        self.changes_round.set(round);
+        let project = self.project.borrow().clone();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let walked = project.clone();
+            let found = gio::spawn_blocking(move || crate::repos::under(&walked)).await.unwrap_or_default();
+            let Some(files) = weak.upgrade() else { return };
+            if files.changes_round.get() == round {
+                files.offer_repos(&project, found);
+            }
+        });
+    }
+
+    fn offer_repos(self: &Rc<Self>, project: &Path, found: Vec<PathBuf>) {
         let mut repos = self.agent_repos.borrow().clone();
-        for repo in crate::repos::under(&self.project.borrow()) {
+        for repo in found {
             if !repos.contains(&repo) {
                 repos.push(repo);
             }
         }
-        let project = self.project.borrow().clone();
         let names: Vec<String> = repos
             .iter()
-            .map(|r| match r.strip_prefix(&project) {
+            .map(|r| match r.strip_prefix(project) {
                 Ok(rest) if !rest.as_os_str().is_empty() => rest.to_string_lossy().into_owned(),
                 _ => r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
             })
@@ -546,18 +591,37 @@ impl Files {
         self.fill_changes();
     }
 
-    fn fill_changes(&self) {
-        while let Some(row) = self.changes.row_at_index(0) {
-            self.changes.remove(&row);
-        }
+    fn fill_changes(self: &Rc<Self>) {
         let repo = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned();
         let Some(repo) = repo else {
+            while let Some(row) = self.changes.row_at_index(0) {
+                self.changes.remove(&row);
+            }
             self.repo_line.set_label("No git repository in this project.");
             self.shown_changes.borrow_mut().clear();
             return;
         };
-        let Some(status) = crate::repos::status(&repo) else {
+        let round = self.changes_round.get() + 1;
+        self.changes_round.set(round);
+        self.repo_line.set_label("Reading git status…");
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let reading = repo.clone();
+            let status = gio::spawn_blocking(move || crate::repos::status(&reading)).await.ok().flatten();
+            let Some(files) = weak.upgrade() else { return };
+            if files.changes_round.get() == round {
+                files.show_changes_of(&repo, status);
+            }
+        });
+    }
+
+    fn show_changes_of(&self, repo: &Path, status: Option<crate::repos::Repo>) {
+        while let Some(row) = self.changes.row_at_index(0) {
+            self.changes.remove(&row);
+        }
+        let Some(status) = status else {
             self.repo_line.set_label("git could not read this repository.");
+            self.shown_changes.borrow_mut().clear();
             return;
         };
         let mut line = format!("⎇ {}", status.branch);
