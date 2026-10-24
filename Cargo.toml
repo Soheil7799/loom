@@ -1,0 +1,21 @@
+[package]
+name = "loom"
+version = "0.1.0"
+edition = "2024"
+description = "A light, keyboard-first home for coding agents (GTK4 + ACP)"
+license = "MIT"
+
+[dependencies]
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+sourceview = { package = "sourceview5", version = "0.11" }
+vte = { package = "vte4", version = "0.10" }
+async-channel = "2"
+serde_json = "1"
+pulldown-cmark = { version = "0.13", default-features = false }
+libc = "0.2"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
