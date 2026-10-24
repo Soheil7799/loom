@@ -180,6 +180,8 @@ impl Chat {
             .valign(gtk::Align::Start)
             .margin_start(14)
             .margin_top(10)
+            .margin_end(14)
+            .ellipsize(pango::EllipsizeMode::End)
             .can_target(false)
             .build();
         placeholder.add_css_class("placeholder");
@@ -193,14 +195,23 @@ impl Chat {
         attach.add_css_class("flat");
         attach.add_css_class("round");
         attach.set_tooltip_text(Some("Mention a file (or drop files here)"));
-        let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).width_chars(4).build();
         working.add_css_class("working");
         let send = gtk::Button::with_label("↑");
         send.add_css_class("send");
         send.set_tooltip_text(Some("Send (Enter)"));
+        let pickers = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        pickers.append(&options);
+        pickers.append(&mode);
+        let pickers_scroller = gtk::ScrolledWindow::builder()
+            .child(&pickers)
+            .hscrollbar_policy(gtk::PolicyType::External)
+            .vscrollbar_policy(gtk::PolicyType::Never)
+            .propagate_natural_width(true)
+            .min_content_width(60)
+            .build();
         toolbar.append(&attach);
-        toolbar.append(&options);
-        toolbar.append(&mode);
+        toolbar.append(&pickers_scroller);
         toolbar.append(&working);
         toolbar.append(&send);
 

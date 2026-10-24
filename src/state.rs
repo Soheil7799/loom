@@ -58,6 +58,14 @@ fn path(app_id: &str) -> PathBuf {
     })
 }
 
+/// A path with a leading ~ made absolute.
+pub fn expand(path: &std::path::Path) -> PathBuf {
+    match path.strip_prefix("~") {
+        Ok(rest) => glib::home_dir().join(rest),
+        Err(_) => path.to_owned(),
+    }
+}
+
 /// $XDG_STATE_HOME/loom (~/.local/state/loom).
 pub fn dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")

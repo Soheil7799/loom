@@ -55,6 +55,7 @@ fn tools() -> Value {
             "inputSchema": { "type": "object", "properties": {
                 "name": name,
                 "command": { "type": "string", "description": "Shell command (bash -c)" },
+                "cwd": { "type": "string", "description": "Folder to run in (e.g. one repo of the project), relative to yours; default the project folder" },
                 "restart": { "type": "boolean", "description": "Stop the job if it is still running and start this instead (default false)" }
             }, "required": ["name", "command"] }
         },

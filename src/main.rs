@@ -16,6 +16,7 @@ mod mcp;
 mod picker;
 mod prefs;
 mod quickopen;
+mod repos;
 mod scratch;
 mod settings;
 mod state;
@@ -132,6 +133,12 @@ window.loom paned > separator { background: none; background-color: shade(@windo
 .tab:checked { background: alpha(@accent_color, 0.22); }
 .tree row { padding: 1px 6px; }
 .tree .folder { font-weight: 600; }
+.changes-view { padding: 6px 10px; }
+.repo-line { font-family: "JetBrains Mono", monospace; font-size: 0.85em; opacity: 0.8; padding: 2px 2px; }
+.git-code { font-family: "JetBrains Mono", monospace; font-size: 0.78em; font-weight: 700; min-width: 22px; padding: 0 4px; border-radius: 4px; }
+.git-code.modified { color: @accent_color; background: alpha(@accent_color, 0.12); }
+.git-code.added { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
+.git-code.deleted { color: @loom_err; background: alpha(@loom_err, 0.12); }
 .editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.88em; }
 .switcher-list row, .picker-list row { padding: 7px 10px; border-radius: 7px; }
 .picker { padding: 4px; }

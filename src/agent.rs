@@ -100,6 +100,10 @@ pub struct Agent {
     pending: RefCell<Vec<Pending>>,
     asked: Cell<u64>,
     files: RefCell<Vec<(PathBuf, Mark)>>,
+    /// The git repos it has read or changed files in, latest first.
+    repos: RefCell<Vec<PathBuf>>,
+    /// The latest repo's git status, and when it was read.
+    repo_status: RefCell<Option<(Instant, crate::repos::Repo)>>,
     /// Commands in the tray still running for this agent.
     jobs: RefCell<Vec<Rc<crate::jobs::Job>>>,
     /// Files a tool call will write, kept until it completes (a refused edit writes nothing).
@@ -135,6 +139,8 @@ impl Agent {
             pending: RefCell::default(),
             asked: Cell::new(0),
             files: RefCell::default(),
+            repos: RefCell::default(),
+            repo_status: RefCell::default(),
             jobs: RefCell::default(),
             planned: RefCell::default(),
             unseen: Cell::new(false),
@@ -171,6 +177,10 @@ impl Agent {
             weak.upgrade().is_some_and(|agent| agent.answer(0, option))
         }));
         agent.chat.set_cwd(&agent.cwd);
+        // Started inside a repo: that is where it works until it touches another.
+        if let Some(repo) = crate::repos::repo_of(&agent.cwd) {
+            agent.repos.borrow_mut().push(repo);
+        }
         agent.refresh_header();
         agent
     }
@@ -221,6 +231,45 @@ impl Agent {
     pub fn restart(self: &Rc<Self>) {
         self.stop();
         self.start();
+    }
+
+    /// The repos it worked in, latest first.
+    pub fn repos(&self) -> Vec<PathBuf> {
+        self.repos.borrow().clone()
+    }
+
+    /// The latest repo's status (read again when older than a few seconds).
+    pub fn repo(&self) -> Option<crate::repos::Repo> {
+        let path = self.repos.borrow().first().cloned()?;
+        let fresh = self
+            .repo_status
+            .borrow()
+            .as_ref()
+            .filter(|(at, repo)| repo.path == path && at.elapsed().as_secs() < 4)
+            .map(|(_, repo)| repo.clone());
+        if fresh.is_some() {
+            return fresh;
+        }
+        let repo = crate::repos::status(&path)?;
+        *self.repo_status.borrow_mut() = Some((Instant::now(), repo.clone()));
+        Some(repo)
+    }
+
+    /// Notes that it touched `path`; its repo moves to the front.
+    fn touched(self: &Rc<Self>, path: &Path) {
+        let Some(repo) = crate::repos::repo_of(path) else { return };
+        let mut repos = self.repos.borrow_mut();
+        if repos.first() == Some(&repo) {
+            return;
+        }
+        repos.retain(|r| *r != repo);
+        repos.insert(0, repo);
+        repos.truncate(8);
+        drop(repos);
+        self.repo_status.borrow_mut().take();
+        if !self.replaying.get() {
+            self.emit(Event::Changed);
+        }
     }
 
     pub fn files(&self) -> Vec<(PathBuf, Mark)> {
@@ -732,6 +781,26 @@ impl Agent {
     fn tool(self: &Rc<Self>, update: &Value) {
         self.chat.tool(update);
         let id = update["toolCallId"].as_str().unwrap_or("").to_owned();
+
+        // Where it works: the repos of the files it reads and writes.
+        let absolute = |p: &str| {
+            let p = Path::new(p);
+            if p.is_absolute() { p.to_owned() } else { self.cwd.join(p) }
+        };
+        for location in update["locations"].as_array().into_iter().flatten() {
+            if let Some(path) = location["path"].as_str() {
+                self.touched(&absolute(path));
+            }
+        }
+        for item in update["content"].as_array().into_iter().flatten() {
+            if let Some(path) = item["path"].as_str() {
+                self.touched(&absolute(path));
+            }
+        }
+        // A finished edit or command changes the repo's status.
+        if update["status"].as_str() == Some("completed") {
+            self.repo_status.borrow_mut().take();
+        }
 
         // Files: noted from the diffs, kept once the call completes.
         if let Some(content) = update["content"].as_array() {

@@ -537,6 +537,7 @@ impl App {
             "find" => self.find_file(),
             "nevis" => self.files.open_in_nevis(),
             "tree" => self.files.show_project(),
+            "changes" => self.files.show_changes(),
             "close" => self.close_focused(),
             "reopen" => self.reopen_closed(),
             "rename" => {
@@ -599,8 +600,10 @@ impl App {
         self.picker.open("Open a file in this project…", choices);
     }
 
+    /// The scratch terminal opens where the agent works: its latest repo, else the project.
     fn toggle_scratch(self: &Rc<Self>) {
-        if !self.scratch.toggle(&self.current_project()) {
+        let place = self.focused_agent().and_then(|a| a.repos().first().cloned()).unwrap_or_else(|| self.current_project());
+        if !self.scratch.toggle(&place) {
             self.focus_input();
         }
     }
@@ -665,6 +668,7 @@ impl App {
                 a.files.choose();
             }),
             act("Project files (tree)", "", |a| a.files.show_project()),
+            act("Git changes in this project", "", |a| a.files.show_changes()),
             act("Open the file in nevis", "Ctrl+Shift+O", |a| a.files.open_in_nevis()),
             act("Scratch terminal", "Ctrl+`", |a| a.toggle_scratch()),
             act("Run a command in the tray…", "Ctrl+J", |a| a.ask_command()),
@@ -826,13 +830,18 @@ impl App {
             project.collapsed = false;
         }
         self.show_tray(&agent.project, &agent.tray);
-        self.files.show(&agent.cwd, &agent.project, &agent.files());
+        self.show_files(&agent);
         if matches!(agent.status(), Status::Suspended | Status::Failed) {
             agent.start();
         }
         agent.chat.input.grab_focus();
         self.refresh_sidebar();
         self.save();
+    }
+
+    fn show_files(&self, agent: &Rc<Agent>) {
+        self.files.show(&agent.cwd, &agent.project, &agent.files());
+        self.files.set_repos(agent.repos());
     }
 
     fn is_pinned(&self, agent: &Rc<Agent>) -> bool {
@@ -1087,11 +1096,14 @@ impl App {
             Event::Changed => {
                 self.refresh_sidebar();
                 self.refresh_inbox();
+                if agent.focused.get() {
+                    self.files.set_repos(agent.repos());
+                }
             }
             Event::Session => self.save(),
             Event::Files => {
                 if agent.focused.get() {
-                    self.files.show(&agent.cwd, &agent.project, &agent.files());
+                    self.show_files(&agent);
                     if !self.files.root.is_visible() && !agent.files().is_empty() {
                         self.files.root.set_visible(true);
                     }
@@ -1201,7 +1213,19 @@ impl App {
             "run_job" => {
                 let name = name()?;
                 let command = params["command"].as_str().filter(|c| !c.trim().is_empty()).ok_or("a command is needed")?;
-                tray()?.run_named(&name, command, params["restart"].as_bool().unwrap_or(false))?;
+                // A folder of its own: a repo inside the project, say (relative to the agent's).
+                let cwd = match params["cwd"].as_str().filter(|c| !c.is_empty()) {
+                    Some(dir) => {
+                        let base = agent.as_ref().map(|a| a.cwd.clone()).unwrap_or_default();
+                        let dir = base.join(crate::state::expand(Path::new(dir)));
+                        if !dir.is_dir() {
+                            return Err(format!("{} is not a folder", dir.display()));
+                        }
+                        Some(dir)
+                    }
+                    None => None,
+                };
+                tray()?.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd)?;
                 Ok(json!({ "name": name }))
             }
             "job_output" => {
@@ -1220,6 +1244,7 @@ impl App {
             "open_file" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;
                 let path = Path::new(params["path"].as_str().ok_or("a path is needed")?);
+                let path = &crate::state::expand(path);
                 let path = if path.is_absolute() { path.to_owned() } else { agent.cwd.join(path) };
                 if !path.is_file() {
                     return Err(format!("{} is not a file", path.display()));
@@ -1554,19 +1579,20 @@ fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
     let title = gtk::Label::builder().label(agent.title()).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
     title.add_css_class("agent-title");
     names.append(&title);
-    let sub = match status {
+    let state = match status {
         Status::Idle if agent.unseen.get() => "done".to_owned(),
         Status::Blocked => "needs you".to_owned(),
         Status::Idle => String::new(),
         other => other.describe().to_owned(),
     };
-    // Where it works, when that is a subfolder of the project.
-    let place = agent.cwd.strip_prefix(&agent.project).ok().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_string_lossy().into_owned());
-    let sub = match (sub.is_empty(), place) {
-        (true, Some(place)) => place,
-        (false, Some(place)) => format!("{sub} · {place}"),
-        (_, None) => sub,
+    // Where it works: the repo it last touched (name when it isn't the project itself), its
+    // branch and changes; else the subfolder it runs in.
+    let place = match agent.repo() {
+        Some(repo) if repo.path == agent.project => repo.summary(),
+        Some(repo) => format!("{} · {}", repo.name(), repo.summary()),
+        None => agent.cwd.strip_prefix(&agent.project).ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
     };
+    let sub = [state, place].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     if !sub.is_empty() {
         let sub = gtk::Label::builder().label(sub).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         sub.add_css_class("dim");

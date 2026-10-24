@@ -36,6 +36,16 @@ pub struct Files {
     shown: RefCell<Vec<(PathBuf, Mark)>>,
     views: gtk::Stack,
     project_tab: gtk::ToggleButton,
+    /// Changes: the repo picked, its branch line, and its changed files.
+    changes_tab: gtk::ToggleButton,
+    repo_pick: gtk::DropDown,
+    repo_line: gtk::Label,
+    changes: gtk::ListBox,
+    /// The repos offered: the agent's (latest first), then the others in the project.
+    repos: RefCell<Vec<PathBuf>>,
+    agent_repos: RefCell<Vec<PathBuf>>,
+    shown_changes: RefCell<Vec<PathBuf>>,
+    filling: Cell<bool>,
     tree: gtk::ListView,
     /// The folder the tree shows.
     project: RefCell<PathBuf>,
@@ -50,7 +60,8 @@ impl Files {
         header.add_css_class("panel-header");
         let agent_tab = gtk::ToggleButton::builder().label("Agent").active(true).tooltip_text("Files the agent wrote").build();
         let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").build();
-        for tab in [&agent_tab, &project_tab] {
+        let changes_tab = gtk::ToggleButton::builder().label("Changes").group(&agent_tab).tooltip_text("Git status of the repos in this project").build();
+        for tab in [&agent_tab, &project_tab, &changes_tab] {
             tab.add_css_class("flat");
             tab.add_css_class("tab");
         }
@@ -61,6 +72,7 @@ impl Files {
         open_button.set_tooltip_text(Some("Open any file (Ctrl+O; Ctrl+P to find one by name)"));
         header.append(&agent_tab);
         header.append(&project_tab);
+        header.append(&changes_tab);
         header.append(&spacer);
         header.append(&open_button);
         root.append(&header);
@@ -82,9 +94,28 @@ impl Files {
         let tree = gtk::ListView::builder().factory(&tree_factory()).build();
         tree.add_css_class("tree");
         let tree_scroller = gtk::ScrolledWindow::builder().child(&tree).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        let repo_pick = gtk::DropDown::from_strings(&[]);
+        repo_pick.set_hexpand(true);
+        let refresh = gtk::Button::with_label("↻");
+        refresh.add_css_class("flat");
+        refresh.set_tooltip_text(Some("Read git status again"));
+        let pick_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        pick_line.append(&repo_pick);
+        pick_line.append(&refresh);
+        let repo_line = gtk::Label::builder().xalign(0.0).build();
+        repo_line.add_css_class("repo-line");
+        let changes = gtk::ListBox::new();
+        changes.add_css_class("file-list");
+        let changes_scroller = gtk::ScrolledWindow::builder().child(&changes).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        let changes_view = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        changes_view.add_css_class("changes-view");
+        changes_view.append(&pick_line);
+        changes_view.append(&repo_line);
+        changes_view.append(&changes_scroller);
         let views = gtk::Stack::new();
         views.add_named(&agent_view, Some("agent"));
         views.add_named(&tree_scroller, Some("project"));
+        views.add_named(&changes_view, Some("changes"));
         views.set_size_request(-1, 120);
 
         let editor_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -157,6 +188,14 @@ impl Files {
             shown: RefCell::default(),
             views,
             project_tab: project_tab.clone(),
+            changes_tab: changes_tab.clone(),
+            repo_pick,
+            repo_line,
+            changes,
+            repos: RefCell::default(),
+            agent_repos: RefCell::default(),
+            shown_changes: RefCell::default(),
+            filling: Cell::new(false),
             tree,
             project: RefCell::default(),
         });
@@ -173,6 +212,37 @@ impl Files {
             {
                 files.views.set_visible_child_name("project");
                 files.fill_tree();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        changes_tab.connect_toggled(move |tab| {
+            if let Some(files) = weak.upgrade()
+                && tab.is_active()
+            {
+                files.views.set_visible_child_name("changes");
+                files.fill_repos();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        files.repo_pick.connect_selected_notify(move |_| {
+            if let Some(files) = weak.upgrade()
+                && !files.filling.get()
+            {
+                files.fill_changes();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        refresh.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.fill_changes();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        files.changes.connect_row_activated(move |_, row| {
+            let Some(files) = weak.upgrade() else { return };
+            let path = files.shown_changes.borrow().get(row.index() as usize).cloned();
+            if let Some(path) = path.filter(|p| p.is_file()) {
+                files.open_file(&path);
             }
         });
         let weak = Rc::downgrade(&files);
@@ -438,6 +508,91 @@ impl Files {
             (info.file_type() == gio::FileType::Directory).then(|| file_of(info).map(|f| folder(&f)))?
         });
         self.tree.set_model(Some(&gtk::SingleSelection::new(Some(model))));
+    }
+
+    /// The focused agent's repos (latest first): the Changes tab starts on the first.
+    pub fn set_repos(&self, repos: Vec<PathBuf>) {
+        if *self.agent_repos.borrow() == repos {
+            return;
+        }
+        *self.agent_repos.borrow_mut() = repos;
+        if self.views.visible_child_name().as_deref() == Some("changes") {
+            self.fill_repos();
+        }
+    }
+
+    /// Offers the agent's repos, then every other repo in the project.
+    fn fill_repos(&self) {
+        let mut repos = self.agent_repos.borrow().clone();
+        for repo in crate::repos::under(&self.project.borrow()) {
+            if !repos.contains(&repo) {
+                repos.push(repo);
+            }
+        }
+        let project = self.project.borrow().clone();
+        let names: Vec<String> = repos
+            .iter()
+            .map(|r| match r.strip_prefix(&project) {
+                Ok(rest) if !rest.as_os_str().is_empty() => rest.to_string_lossy().into_owned(),
+                _ => r.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+            })
+            .collect();
+        let names: Vec<&str> = names.iter().map(String::as_str).collect();
+        self.filling.set(true);
+        self.repo_pick.set_model(Some(&gtk::StringList::new(&names)));
+        self.repo_pick.set_selected(0);
+        self.filling.set(false);
+        *self.repos.borrow_mut() = repos;
+        self.fill_changes();
+    }
+
+    fn fill_changes(&self) {
+        while let Some(row) = self.changes.row_at_index(0) {
+            self.changes.remove(&row);
+        }
+        let repo = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned();
+        let Some(repo) = repo else {
+            self.repo_line.set_label("No git repository in this project.");
+            self.shown_changes.borrow_mut().clear();
+            return;
+        };
+        let Some(status) = crate::repos::status(&repo) else {
+            self.repo_line.set_label("git could not read this repository.");
+            return;
+        };
+        let mut line = format!("⎇ {}", status.branch);
+        if status.ahead > 0 {
+            line.push_str(&format!("   ↑{} to push", status.ahead));
+        }
+        if status.behind > 0 {
+            line.push_str(&format!("   ↓{} to pull", status.behind));
+        }
+        line.push_str(&if status.changes.is_empty() { "   · clean".to_owned() } else { format!("   · {} changed", status.changes.len()) });
+        self.repo_line.set_label(&line);
+        let mut paths = Vec::new();
+        for (code, file) in &status.changes {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.add_css_class("file-row");
+            let badge = gtk::Label::new(Some(code));
+            badge.add_css_class("git-code");
+            badge.add_css_class(match code.chars().next() {
+                Some('?') | Some('A') => "added",
+                Some('D') => "deleted",
+                _ => "modified",
+            });
+            let name = gtk::Label::builder().label(file).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
+            row.append(&badge);
+            row.append(&name);
+            self.changes.append(&row);
+            paths.push(repo.join(file));
+        }
+        *self.shown_changes.borrow_mut() = paths;
+    }
+
+    /// Switches to the Changes view.
+    pub fn show_changes(&self) {
+        self.root.set_visible(true);
+        self.changes_tab.set_active(true);
     }
 
     /// Switches to the project tree (devhooks).

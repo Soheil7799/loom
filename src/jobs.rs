@@ -31,6 +31,8 @@ pub struct Job {
     /// None while running; Some(exit code, if known) once done.
     outcome: Cell<Option<Option<i64>>>,
     pid: Cell<Option<glib::Pid>>,
+    /// Where it runs, if not the project folder.
+    cwd: RefCell<Option<PathBuf>>,
     /// Between asking VTE to spawn and hearing back.
     spawning: Cell<bool>,
     docked: RefCell<Option<gtk::Box>>,
@@ -104,8 +106,9 @@ impl Tray {
     /// Runs `command` as the job `name`: the same chip again if there is one (never two
     /// jobs of one name, like herdr's named panes). Err if it is still running and
     /// `restart` is false.
-    pub fn run_named(self: &Rc<Self>, name: &str, command: &str, restart: bool) -> Result<Rc<Job>, String> {
+    pub fn run_named(self: &Rc<Self>, name: &str, command: &str, restart: bool, cwd: Option<PathBuf>) -> Result<Rc<Job>, String> {
         if let Some(job) = self.named(name) {
+            *job.cwd.borrow_mut() = cwd;
             if job.is_running() && !restart {
                 return Err(format!("job {name} is still running (stop it, or pass restart)"));
             }
@@ -116,6 +119,7 @@ impl Tray {
             return Ok(job);
         }
         let job = self.add(name, Some(command.to_owned()), command);
+        *job.cwd.borrow_mut() = cwd;
         job.start();
         Ok(job)
     }
@@ -162,6 +166,7 @@ impl Tray {
             outcome: Cell::new(None),
             pid: Cell::new(None),
             spawning: Cell::new(false),
+            cwd: RefCell::default(),
             docked: RefCell::default(),
             tray: Rc::downgrade(self),
         });
@@ -410,7 +415,7 @@ impl Job {
         self.dot.add_css_class("working");
         self.status.set_label("running");
         let weak = Rc::downgrade(self);
-        let cwd = tray.cwd.to_string_lossy().into_owned();
+        let cwd = self.cwd.borrow().clone().unwrap_or_else(|| tray.cwd.clone()).to_string_lossy().into_owned();
         self.term.spawn_async(
             vte::PtyFlags::DEFAULT,
             Some(&cwd),
