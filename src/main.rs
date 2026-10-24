@@ -10,6 +10,7 @@ mod devhooks;
 mod files;
 mod jobs;
 mod markdown;
+mod quickopen;
 mod scratch;
 mod state;
 mod term;
@@ -25,7 +26,8 @@ const CSS: &str = r#"
 @define-color loom_warn #ffcc66;
 @define-color loom_err #f28779;
 
-window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; }
+window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
+.sidebar-bottom button:not(:hover):not(:checked) { background: none; box-shadow: none; }
 .mono, .tool-title, .chip, .code-block, .diff label, .help { font-family: "JetBrains Mono", Vazirmatn, monospace; }
 .dim { opacity: 0.6; }
 .small { font-size: 0.85em; }
@@ -102,8 +104,13 @@ button.small { padding: 0 8px; min-height: 22px; font-size: 0.85em; }
 .editor { font-family: "JetBrains Mono", Vazirmatn, monospace; font-size: 0.95em; }
 
 .scratch { background: @window_bg_color; border-radius: 12px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
-paned > separator { background: alpha(@window_fg_color, 0.08); min-width: 1px; min-height: 1px; }
+window.loom paned > separator { background: rgba(128, 128, 128, 0.18); min-width: 1px; min-height: 1px; }
 .prefix-hint { background: alpha(@window_bg_color, 0.95); border: 1px solid alpha(@accent_color, 0.6); border-radius: 99px; padding: 6px 16px; font-size: 0.88em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.tab { padding: 2px 10px; min-height: 0; border-radius: 99px; font-weight: 600; }
+.tab:checked { background: alpha(@accent_color, 0.22); }
+.tree row { padding: 1px 6px; }
+.tree .folder { font-weight: 600; }
+.editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.88em; }
 .switcher-list row { padding: 6px 10px; border-radius: 6px; }
 .help { padding: 6px; font-size: 0.9em; }
 "#;
@@ -116,7 +123,8 @@ fn main() -> glib::ExitCode {
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);
         if let Some(display) = gdk::Display::default() {
-            gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_APPLICATION);
+            // Above the user's GTK stylesheet (which it reads colours from), like nevis's chrome.
+            gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_USER + 2);
         }
     });
     app.connect_activate(|app| {

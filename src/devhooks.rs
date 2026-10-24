@@ -14,6 +14,7 @@
 //! - `agent:<n>`: focus the n-th agent (from 1)
 //! - `new:<folder>`: start an agent in a folder
 //! - `key:<letter>`: Ctrl+B then that key (shift for capitals)
+//! - `find`: Ctrl+P · `tree`: the files panel's project view
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `quit`
 

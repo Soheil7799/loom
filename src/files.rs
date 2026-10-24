@@ -1,5 +1,6 @@
 //! The files side panel: what the focused agent created or changed (an .env to fill in, a
-//! document it wrote), and an editor to open them in without leaving the app.
+//! document it wrote) or the whole project as a tree, and an editor to open them in without
+//! leaving the app.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
@@ -33,6 +34,11 @@ pub struct Files {
     /// Where Open… starts.
     base: RefCell<PathBuf>,
     shown: RefCell<Vec<(PathBuf, Mark)>>,
+    views: gtk::Stack,
+    project_tab: gtk::ToggleButton,
+    tree: gtk::ListView,
+    /// The folder the tree shows.
+    project: RefCell<PathBuf>,
 }
 
 impl Files {
@@ -42,12 +48,20 @@ impl Files {
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header.add_css_class("panel-header");
-        let title = gtk::Label::builder().label("Files").xalign(0.0).hexpand(true).build();
-        title.add_css_class("title");
+        let agent_tab = gtk::ToggleButton::builder().label("Agent").active(true).tooltip_text("Files the agent wrote").build();
+        let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").build();
+        for tab in [&agent_tab, &project_tab] {
+            tab.add_css_class("flat");
+            tab.add_css_class("tab");
+        }
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
         let open_button = gtk::Button::with_label("Open…");
         open_button.add_css_class("flat");
-        open_button.set_tooltip_text(Some("Open any file (Ctrl+O)"));
-        header.append(&title);
+        open_button.set_tooltip_text(Some("Open any file (Ctrl+O; Ctrl+P to find one by name)"));
+        header.append(&agent_tab);
+        header.append(&project_tab);
+        header.append(&spacer);
         header.append(&open_button);
         root.append(&header);
 
@@ -60,14 +74,18 @@ impl Files {
             .margin_bottom(12)
             .build();
         empty.add_css_class("dim");
-        let list_scroller = gtk::ScrolledWindow::builder()
-            .child(&list)
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .propagate_natural_height(true)
-            .max_content_height(260)
-            .build();
-        root.append(&empty);
-        root.append(&list_scroller);
+        let list_scroller = gtk::ScrolledWindow::builder().child(&list).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        let agent_view = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        agent_view.append(&empty);
+        agent_view.append(&list_scroller);
+
+        let tree = gtk::ListView::builder().factory(&tree_factory()).build();
+        tree.add_css_class("tree");
+        let tree_scroller = gtk::ScrolledWindow::builder().child(&tree).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        let views = gtk::Stack::new();
+        views.add_named(&agent_view, Some("agent"));
+        views.add_named(&tree_scroller, Some("project"));
+        views.set_size_request(-1, 120);
 
         let editor_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         editor_box.set_visible(false);
@@ -99,12 +117,23 @@ impl Files {
         view.set_left_margin(6);
         view.add_css_class("editor");
         let view_scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
+        editor_box.set_size_request(-1, 200);
         editor_box.append(&editor_header);
         let message = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
         message.add_css_class("editor-message");
         editor_box.append(&message);
         editor_box.append(&view_scroller);
-        root.append(&editor_box);
+        // The lists above, the editor below; with no file open the lists take it all.
+        let split = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Vertical)
+            .start_child(&views)
+            .end_child(&editor_box)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .vexpand(true)
+            .position(220)
+            .build();
+        root.append(&split);
 
         let files = Rc::new(Files {
             root,
@@ -121,6 +150,36 @@ impl Files {
             warned: Cell::new(None),
             base: RefCell::new(glib::home_dir()),
             shown: RefCell::default(),
+            views,
+            project_tab: project_tab.clone(),
+            tree,
+            project: RefCell::default(),
+        });
+        let views = files.views.clone();
+        agent_tab.connect_toggled(move |tab| {
+            if tab.is_active() {
+                views.set_visible_child_name("agent");
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        project_tab.connect_toggled(move |tab| {
+            if let Some(files) = weak.upgrade()
+                && tab.is_active()
+            {
+                files.views.set_visible_child_name("project");
+                files.fill_tree();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        files.tree.connect_activate(move |tree, position| {
+            let Some(files) = weak.upgrade() else { return };
+            let Some(row) = tree.model().and_then(|m| m.item(position)).and_downcast::<gtk::TreeListRow>() else { return };
+            let Some(info) = row.item().and_downcast::<gio::FileInfo>() else { return };
+            if info.file_type() == gio::FileType::Directory {
+                row.set_expanded(!row.is_expanded());
+            } else if let Some(path) = file_of(&info).and_then(|f| f.path()) {
+                files.open_file(&path);
+            }
         });
 
         let weak = Rc::downgrade(&files);
@@ -166,9 +225,18 @@ impl Files {
         files
     }
 
-    /// Shows `entries` (the focused agent's files) and where Open… starts.
-    pub fn show(&self, base: &Path, entries: &[(PathBuf, Mark)]) {
+    /// Shows `entries` (the focused agent's files), where Open… starts, and the project
+    /// the tree shows.
+    pub fn show(&self, base: &Path, project: &Path, entries: &[(PathBuf, Mark)]) {
         *self.base.borrow_mut() = base.to_owned();
+        if *self.project.borrow() != project {
+            *self.project.borrow_mut() = project.to_owned();
+            if self.views.visible_child_name().as_deref() == Some("project") {
+                self.fill_tree();
+            } else {
+                self.tree.set_model(None::<&gtk::SelectionModel>);
+            }
+        }
         *self.shown.borrow_mut() = entries.to_vec();
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
@@ -348,9 +416,80 @@ impl Files {
         });
     }
 
+    /// The project's folders and files, read as folders open (only when shown).
+    fn fill_tree(&self) {
+        if self.tree.model().is_some() {
+            return;
+        }
+        let root = gio::File::for_path(&*self.project.borrow());
+        let model = gtk::TreeListModel::new(folder(&root), false, false, |item| {
+            let info = item.downcast_ref::<gio::FileInfo>()?;
+            (info.file_type() == gio::FileType::Directory).then(|| file_of(info).map(|f| folder(&f)))?
+        });
+        self.tree.set_model(Some(&gtk::SingleSelection::new(Some(model))));
+    }
+
+    /// Switches to the project tree (devhooks).
+    pub fn show_project(&self) {
+        self.root.set_visible(true);
+        self.project_tab.set_active(true);
+    }
+
     pub fn has_unsaved(&self) -> bool {
         self.buffer.is_modified()
     }
+}
+
+/// A folder's entries, folders first then by name, without the ones never worth showing
+/// (dotfiles stay: an .env is often the point).
+fn folder(dir: &gio::File) -> gio::ListModel {
+    let list = gtk::DirectoryList::new(Some("standard::name,standard::display-name,standard::type"), Some(dir));
+    let filter = gtk::CustomFilter::new(|item| {
+        item.downcast_ref::<gio::FileInfo>()
+            .is_some_and(|info| !crate::quickopen::SKIP.contains(&info.name().to_string_lossy().as_ref()))
+    });
+    let sorter = gtk::CustomSorter::new(|a, b| {
+        let (Some(a), Some(b)) = (a.downcast_ref::<gio::FileInfo>(), b.downcast_ref::<gio::FileInfo>()) else {
+            return gtk::Ordering::Equal;
+        };
+        let folder = |i: &gio::FileInfo| i.file_type() != gio::FileType::Directory;
+        let key = |i: &gio::FileInfo| (folder(i), i.display_name().to_lowercase());
+        key(a).cmp(&key(b)).into()
+    });
+    let filtered = gtk::FilterListModel::new(Some(list), Some(filter));
+    gtk::SortListModel::new(Some(filtered), Some(sorter)).upcast()
+}
+
+/// The file a DirectoryList entry stands for.
+fn file_of(info: &gio::FileInfo) -> Option<gio::File> {
+    info.attribute_object("standard::file").and_downcast::<gio::File>()
+}
+
+/// Tree rows: an expander arrow, then the name.
+fn tree_factory() -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let label = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        let expander = gtk::TreeExpander::builder().child(&label).build();
+        item.set_child(Some(&expander));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let Some(row) = item.item().and_downcast::<gtk::TreeListRow>() else { return };
+        let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else { return };
+        expander.set_list_row(Some(&row));
+        let Some(info) = row.item().and_downcast::<gio::FileInfo>() else { return };
+        if let Some(label) = expander.child().and_downcast::<gtk::Label>() {
+            label.set_label(&info.display_name());
+            if info.file_type() == gio::FileType::Directory {
+                label.add_css_class("folder");
+            } else {
+                label.remove_css_class("folder");
+            }
+        }
+    });
+    factory
 }
 
 fn modified_time(path: &Path) -> Option<SystemTime> {

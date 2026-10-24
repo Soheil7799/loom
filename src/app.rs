@@ -13,6 +13,7 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use crate::agent::{Agent, Event, Status};
 use crate::files::Files;
 use crate::jobs::Tray;
+use crate::quickopen::QuickOpen;
 use crate::scratch::Scratch;
 use crate::state::{self, Saved};
 
@@ -47,6 +48,7 @@ pub struct App {
     run: gtk::Popover,
     run_entry: gtk::Entry,
     help: gtk::Popover,
+    quick_open: Rc<QuickOpen>,
     quitting: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
     prefix: Cell<bool>,
@@ -179,6 +181,7 @@ impl App {
         let help = gtk::Popover::builder().child(&help_text()).build();
         help_button.set_popover(Some(&help));
 
+        let chat_stack_for_quick = chat_stack.clone();
         let this = Rc::new(App {
             app: app.clone(),
             app_id,
@@ -206,6 +209,7 @@ impl App {
             run,
             run_entry,
             help,
+            quick_open: QuickOpen::new(&chat_stack_for_quick),
             quitting: Cell::new(false),
             prefix: Cell::new(false),
             prefix_hint,
@@ -375,6 +379,7 @@ impl App {
                 self.files.choose();
             }
             (true, false, false, gdk::Key::l) => self.focus_input(),
+            (true, false, false, gdk::Key::p) => self.find_file(),
             (true, false, false, gdk::Key::backslash) => self.toggle_split(),
             (true, false, false, gdk::Key::slash) => self.help.popup(),
             (true, false, false, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
@@ -423,6 +428,8 @@ impl App {
             "help" => self.help.popup(),
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
+            "find" => self.find_file(),
+            "tree" => self.files.show_project(),
             "close" => self.close_focused(),
             "open" => {
                 self.files.root.set_visible(true);
@@ -484,6 +491,7 @@ impl App {
                 self.run_entry.grab_focus();
             }
             (_, gdk::Key::s) => self.open_switcher(),
+            (_, gdk::Key::g) => self.find_file(),
             (_, gdk::Key::i) => {
                 if self.inbox.is_visible() {
                     self.inbox.popup();
@@ -495,6 +503,16 @@ impl App {
             }
             _ => {}
         }
+    }
+
+    /// Ctrl+P: pick a file of the project in view and open it in the editor.
+    fn find_file(self: &Rc<Self>) {
+        let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
+        let files = self.files.clone();
+        self.quick_open.open(&project, move |path| {
+            files.root.set_visible(true);
+            files.open_file(&path);
+        });
     }
 
     fn toggle_scratch(self: &Rc<Self>) {
@@ -592,7 +610,7 @@ impl App {
         }
         let project = agent.project.clone();
         self.show_tray(&project, &agent.tray);
-        self.files.show(&agent.cwd, &agent.files());
+        self.files.show(&agent.cwd, &agent.project, &agent.files());
         if matches!(agent.status(), Status::Suspended | Status::Failed) {
             agent.start();
         }
@@ -768,7 +786,7 @@ impl App {
                 Some(next) => self.focus(next),
                 None => {
                     self.chat_stack.set_visible_child_name("empty");
-                    self.files.show(&glib::home_dir(), &[]);
+                    self.files.show(&glib::home_dir(), &glib::home_dir(), &[]);
                 }
             }
         }
@@ -786,7 +804,7 @@ impl App {
             Event::Session => self.save(),
             Event::Files => {
                 if agent.focused.get() {
-                    self.files.show(&agent.cwd, &agent.files());
+                    self.files.show(&agent.cwd, &agent.project, &agent.files());
                     if !self.files.root.is_visible() && !agent.files().is_empty() {
                         self.files.root.set_visible(true);
                     }
@@ -1081,6 +1099,7 @@ fn help_text() -> gtk::Label {
         ("Ctrl+J", "run a command in the tray"),
         ("Ctrl+Shift+J", "peek the newest job"),
         ("Ctrl+Shift+X", "clear finished jobs"),
+        ("Ctrl+P", "find a file in the project"),
         ("Ctrl+E / Ctrl+O", "files panel / open a file"),
         ("Ctrl+S", "save (in the editor)"),
         ("Ctrl+B then…", "herdr's prefix: v split, h/l swap,"),
