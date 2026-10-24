@@ -76,7 +76,7 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
                 Tag::Strong => text.push_str("<b>"),
                 Tag::Strikethrough => text.push_str("<s>"),
                 Tag::Link { dest_url, .. } => text.push_str(&format!("<a href=\"{}\">", escape(&dest_url))),
-                Tag::BlockQuote(_) => text.push_str("<i>"),
+                Tag::BlockQuote(_) => text.push_str("▎ "),
                 Tag::List(start) => {
                     if lists.is_empty() && !text.is_empty() && !text.ends_with("\n\n") {
                         text.push('\n');
@@ -113,12 +113,8 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
             },
             Event::End(tag) => match tag {
                 TagEnd::Heading(_) => text.push_str("</span>\n\n"),
-                TagEnd::Emphasis | TagEnd::BlockQuote(_) => {
-                    text.push_str("</i>");
-                    if matches!(tag, TagEnd::BlockQuote(_)) {
-                        text.push_str("\n\n");
-                    }
-                }
+                TagEnd::Emphasis => text.push_str("</i>"),
+                TagEnd::BlockQuote(_) => text.push_str("\n\n"),
                 TagEnd::Strong => text.push_str("</b>"),
                 TagEnd::Strikethrough => text.push_str("</s>"),
                 TagEnd::Link => text.push_str("</a>"),
@@ -219,6 +215,17 @@ mod tests {
             s,
             vec![Segment::Code { lang: "table".into(), code: "a    │  bb\n─────┼────\nccc  │  d".into() }]
         );
+    }
+
+    #[test]
+    fn a_code_block_in_a_quote_leaves_valid_markup() {
+        let s = segments("> look:\n>\n> ```\n> x\n> ```");
+        for segment in &s {
+            if let Segment::Text(markup) = segment {
+                assert!(gtk::pango::parse_markup(markup, '\0').is_ok(), "{markup}");
+            }
+        }
+        assert!(s.contains(&Segment::Code { lang: String::new(), code: "x".into() }));
     }
 
     #[test]

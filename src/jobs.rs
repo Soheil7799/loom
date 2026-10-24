@@ -367,7 +367,9 @@ impl Job {
     }
 
     fn stop(&self) {
-        if let Some(pid) = self.pid.take() {
+        // The pid stays until the exit is seen: a process that ignores SIGTERM can be stopped
+        // again, and is not run twice.
+        if let Some(pid) = self.pid.get() {
             // SAFETY: plain kill(2); the shell VTE started leads its own session and group.
             unsafe { libc::kill(-pid.0, libc::SIGTERM) };
         }

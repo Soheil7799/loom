@@ -7,6 +7,8 @@
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
 //! - `scratch`, `files`, `switcher`, `inbox`, `help`, `peek`: what their keys do
 //! - `run:<command>`: run a command in the tray
+//! - `open:<file>`: open a file in the editor (relative to the focused agent's folder)
+//! - `mode`: next permission mode
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
 //! - `agent:<n>`: focus the n-th agent (from 1)
 //! - `new:<folder>`: start an agent in a folder

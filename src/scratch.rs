@@ -21,7 +21,8 @@ pub struct Scratch {
 impl Scratch {
     pub fn new() -> Rc<Scratch> {
         let stack = gtk::Stack::new();
-        stack.set_size_request(660, 280);
+        stack.set_vexpand(false);
+        stack.set_hexpand(false);
         let title = gtk::Label::builder().xalign(0.0).build();
         title.add_css_class("dim");
         title.add_css_class("small");
@@ -72,6 +73,10 @@ impl Scratch {
             return term.clone();
         }
         let term = term::new(&self.stack);
+        term.set_vexpand(false);
+        term.set_hexpand(false);
+        // VTE asks for 80x24 cells otherwise: a note, not a window.
+        term.set_size(72, 12);
         self.stack.add_child(&term);
         spawn_shell(&term, project);
         // The shell exited (Ctrl+D): close, and start a fresh one next time.

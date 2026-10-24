@@ -546,13 +546,15 @@ impl PermissionCard {
 }
 
 impl Message {
-    /// Re-renders at most every 60 ms while text streams in.
+    /// Re-renders while text streams in: every 60 ms for short text, less often as it grows
+    /// (each render parses the whole message), up to every 600 ms.
     fn render_soon(self: &Rc<Self>) {
         if self.scheduled.replace(true) {
             return;
         }
+        let delay = (60 + self.text.borrow().len() as u64 / 40).min(600);
         let message = self.clone();
-        glib::timeout_add_local_once(Duration::from_millis(60), move || {
+        glib::timeout_add_local_once(Duration::from_millis(delay), move || {
             message.scheduled.set(false);
             message.render();
         });
@@ -709,7 +711,16 @@ impl ToolCard {
 
 /// 1–9 for those keys.
 fn digit(key: gdk::Key) -> Option<usize> {
-    key.to_unicode().and_then(|c| c.to_digit(10)).filter(|d| *d >= 1).map(|d| d as usize)
+    key.to_unicode().and_then(any_digit).filter(|d| *d >= 1).map(|d| d as usize)
+}
+
+/// The value of an ASCII, Persian (۱) or Arabic-Indic (١) digit.
+pub fn any_digit(c: char) -> Option<u32> {
+    match c as u32 {
+        0x06F0..=0x06F9 => Some(c as u32 - 0x06F0),
+        0x0660..=0x0669 => Some(c as u32 - 0x0660),
+        _ => c.to_digit(10),
+    }
 }
 
 /// A wrapping, selectable label for Pango markup.
@@ -767,6 +778,14 @@ mod tests {
     fn only_the_changed_middle_is_shown() {
         let d = changed_lines("a\nb\nc\nd", "a\nB\nc\nd");
         assert_eq!(d, vec![('-', "b"), ('+', "B")]);
+    }
+
+    #[test]
+    fn persian_digits_count() {
+        assert_eq!(super::any_digit('۱'), Some(1));
+        assert_eq!(super::any_digit('٣'), Some(3));
+        assert_eq!(super::any_digit('7'), Some(7));
+        assert_eq!(super::any_digit('a'), None);
     }
 
     #[test]

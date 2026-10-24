@@ -24,8 +24,11 @@ pub struct Files {
     dirty: gtk::Label,
     view: sourceview::View,
     buffer: sourceview::Buffer,
+    message: gtk::Label,
     open: RefCell<Option<PathBuf>>,
     opened_at: Cell<Option<SystemTime>>,
+    /// The next save may overwrite a file that changed on disk (the user was warned).
+    overwrite: Cell<bool>,
     /// Where Open… starts.
     base: RefCell<PathBuf>,
     shown: RefCell<Vec<(PathBuf, Mark)>>,
@@ -96,6 +99,9 @@ impl Files {
         view.add_css_class("editor");
         let view_scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
         editor_box.append(&editor_header);
+        let message = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
+        message.add_css_class("editor-message");
+        editor_box.append(&message);
         editor_box.append(&view_scroller);
         root.append(&editor_box);
 
@@ -108,8 +114,10 @@ impl Files {
             dirty,
             view,
             buffer,
+            message,
             open: RefCell::default(),
             opened_at: Cell::new(None),
+            overwrite: Cell::new(false),
             base: RefCell::new(glib::home_dir()),
             shown: RefCell::default(),
         });
@@ -192,15 +200,26 @@ impl Files {
     }
 
     pub fn open_file(&self, path: &Path) {
-        if self.buffer.is_modified() && self.open.borrow().as_deref() != Some(path) {
-            // One file at a time: keep what was typed rather than drop it silently.
-            self.save();
+        let path = if path.is_absolute() { path.to_owned() } else { self.base.borrow().join(path) };
+        let path = path.as_path();
+        if self.open.borrow().as_deref() == Some(path) {
+            // Already open: show it as it is (reading it again would drop unsaved typing).
+            self.editor_box.set_visible(true);
+            self.view.grab_focus();
+            return;
         }
+        // One file at a time: keep what was typed, and stay if it cannot be kept.
+        if self.buffer.is_modified() && !self.save() {
+            return;
+        }
+        self.load(path);
+    }
+
+    fn load(&self, path: &Path) {
         let text = match std::fs::read(path) {
             Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
-            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
             Err(err) => {
-                self.name.set_label(&format!("{}: {err}", path.display()));
+                self.notice(&format!("Could not open {}: {err}", path.display()));
                 return;
             }
         };
@@ -218,6 +237,8 @@ impl Files {
         self.buffer.set_modified(false);
         self.buffer.place_cursor(&self.buffer.start_iter());
         self.name.set_label(&path.to_string_lossy());
+        self.notice("");
+        self.overwrite.set(false);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
         self.editor_box.set_visible(true);
@@ -233,21 +254,43 @@ impl Files {
         self.buffer.set_style_scheme(schemes.scheme(id).as_ref());
     }
 
-    pub fn save(&self) {
-        let Some(path) = self.open.borrow().clone() else { return };
+    /// Writes the buffer out; false if it was not saved. A file changed on disk since it was
+    /// opened (the agent rewrote it) is not overwritten on the first try, only on the second.
+    pub fn save(&self) -> bool {
+        let Some(path) = self.open.borrow().clone() else { return true };
+        if !self.overwrite.get() && modified_time(&path) != self.opened_at.get() {
+            self.overwrite.set(true);
+            self.notice("Changed on disk since it was opened. Save again to overwrite it.");
+            return false;
+        }
         let text = self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
         match std::fs::write(&path, text.as_bytes()) {
             Ok(()) => {
                 self.buffer.set_modified(false);
                 self.opened_at.set(modified_time(&path));
+                self.overwrite.set(false);
+                self.notice("");
+                true
             }
-            Err(err) => self.name.set_label(&format!("Could not save {}: {err}", path.display())),
+            Err(err) => {
+                self.notice(&format!("Could not save: {err}"));
+                false
+            }
+        }
+    }
+
+    /// A line under the editor's header ("" hides it).
+    fn notice(&self, text: &str) {
+        self.message.set_label(text);
+        self.message.set_visible(!text.is_empty());
+        if !text.is_empty() {
+            self.editor_box.set_visible(true);
         }
     }
 
     fn close(&self) {
-        if self.buffer.is_modified() {
-            self.save();
+        if self.buffer.is_modified() && !self.save() {
+            return;
         }
         *self.open.borrow_mut() = None;
         self.editor_box.set_visible(false);
@@ -261,7 +304,7 @@ impl Files {
         }
         let had_focus = self.view.has_focus();
         let offset = self.buffer.cursor_position();
-        self.open_file(&path);
+        self.load(&path);
         self.buffer.place_cursor(&self.buffer.iter_at_offset(offset));
         if !had_focus {
             // Opening grabbed focus; a reload must not take it from the chat.

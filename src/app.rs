@@ -361,6 +361,10 @@ impl App {
             "inbox" => self.inbox.popup(),
             "help" => self.help.popup(),
             "peek" => self.current_tray().peek_latest(),
+            "open" => {
+                self.files.root.set_visible(true);
+                self.files.open_file(Path::new(argument));
+            }
             "mode" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.cycle_mode();
@@ -731,7 +735,8 @@ impl App {
                 }
             });
             self.inbox_list.append(&go);
-            for (qi, (title, options)) in questions.iter().enumerate() {
+            for (serial, title, options) in &questions {
+                let serial = *serial;
                 let label = gtk::Label::builder().label(title).xalign(0.0).wrap(true).max_width_chars(50).build();
                 self.inbox_list.append(&label);
                 let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -741,7 +746,7 @@ impl App {
                     let target = agent.clone();
                     let weak = Rc::downgrade(self);
                     button.connect_clicked(move |_| {
-                        target.answer(qi, oi);
+                        target.answer_serial(serial, oi);
                         if let Some(app) = weak.upgrade() {
                             app.refresh_inbox();
                         }

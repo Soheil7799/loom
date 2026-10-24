@@ -185,13 +185,19 @@ impl Agent {
         self.files.borrow().clone()
     }
 
-    /// Permission questions waiting, oldest first: (title, option names).
-    pub fn questions(&self) -> Vec<(String, Vec<(String, String)>)> {
+    /// Permission questions waiting, oldest first: (serial, title, option names and kinds).
+    pub fn questions(&self) -> Vec<(u64, String, Vec<(String, String)>)> {
         self.pending
             .borrow()
             .iter()
-            .map(|p| (p.title.clone(), p.options.iter().map(|(_, name, kind)| (name.clone(), kind.clone())).collect()))
+            .map(|p| (p.serial, p.title.clone(), p.options.iter().map(|(_, name, kind)| (name.clone(), kind.clone())).collect()))
             .collect()
+    }
+
+    /// Answers the question numbered `serial` (if still open) with option `option`.
+    pub fn answer_serial(self: &Rc<Self>, serial: u64, option: usize) -> bool {
+        let index = self.pending.borrow().iter().position(|p| p.serial == serial);
+        index.is_some_and(|index| self.answer(index, option))
     }
 
     fn set_status(self: &Rc<Self>, status: Status) {
@@ -288,18 +294,14 @@ impl Agent {
                 agent.emit(Event::Files);
                 match result {
                     Ok(result) => agent.session_ready(&result),
-                    Err(err) => {
-                        // A session that never got a prompt is never saved: nothing was lost.
-                        let gone = message(&err).contains("not found");
-                        let text = if gone {
-                            "The earlier conversation was empty; this is a new one.".to_owned()
-                        } else {
-                            format!("Could not resume this conversation ({}); starting a new one.", message(&err))
-                        };
-                        agent.chat.notice(&text, if gone { "dim" } else { "error" });
+                    // A session that never got a prompt is never saved: nothing was lost.
+                    Err(err) if message(&err).contains("not found") => {
+                        agent.chat.notice("The earlier conversation was empty; this is a new one.", "dim");
                         *agent.session_id.borrow_mut() = None;
                         agent.open_session();
                     }
+                    // Anything else keeps the session, to try again later.
+                    Err(err) => agent.fail(&format!("Could not resume this conversation: {}", message(&err))),
                 }
             });
         } else {
@@ -655,14 +657,23 @@ impl Agent {
         if self.replaying.get() {
             return;
         }
+        // The command itself, once known (the first report may carry only "Terminal"); the
+        // report that names it need not carry terminal data, and the adapter names a
+        // command's terminal after its tool call.
+        let name = update["rawInput"]["command"]
+            .as_str()
+            .map(str::to_owned)
+            .or_else(|| update["title"].as_str().filter(|t| *t != "Terminal").map(|t| t.replace('`', "")))
+            .map(|c| c.lines().next().unwrap_or(&c).to_owned());
+        if let (Some(name), Some(job)) = (&name, self.tray.agent_job_for(&id)) {
+            job.rename(name);
+        }
         let meta = &update["_meta"];
         let terminal = meta["terminal_info"]["terminal_id"]
             .as_str()
             .or_else(|| meta["terminal_output_delta"]["terminal_id"].as_str())
             .or_else(|| meta["terminal_exit"]["terminal_id"].as_str());
         let Some(terminal) = terminal else { return };
-        // The command itself, once known (the first report may carry only "Terminal").
-        let name = update["rawInput"]["command"].as_str().map(|c| c.lines().next().unwrap_or(c).to_owned());
         let job = match self.tray.agent_job_for(terminal) {
             Some(job) => {
                 if let Some(name) = &name {
