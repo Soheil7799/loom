@@ -89,10 +89,26 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
         "quit" => app.window.close(),
+        // Minimum widths down the widget tree (to find what holds a pane wide).
+        "measure" => measure(app.window.upcast_ref(), 0, argument.parse().unwrap_or(150)),
         "key" => app.prefix_key(argument),
         other => app.act(other, argument),
     }
     Ok(())
+}
+
+fn measure(widget: &gtk::Widget, depth: usize, threshold: i32) {
+    let (min, _, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
+    if min >= threshold && depth < 40 {
+        eprintln!("{}{} {} min={min}", "  ".repeat(depth), widget.type_().name(), widget.css_classes().join("."));
+        let mut child = widget.first_child();
+        while let Some(w) = child {
+            if w.is_visible() {
+                measure(&w, depth + 1, threshold);
+            }
+            child = w.next_sibling();
+        }
+    }
 }
 
 fn popovers(widget: &gtk::Widget, found: &mut Vec<gtk::Popover>) {

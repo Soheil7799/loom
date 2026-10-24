@@ -1116,7 +1116,9 @@ fn flat_values(options: &Value) -> Vec<(String, String, String)> {
 fn diff_view(item: &Value) -> gtk::Box {
     let view = gtk::Box::new(gtk::Orientation::Vertical, 0);
     view.add_css_class("diff");
-    let path = gtk::Label::builder().label(item["path"].as_str().unwrap_or("")).xalign(0.0).build();
+    // A long path must not hold the chat wide: it gives way from the left.
+    let full = item["path"].as_str().unwrap_or("");
+    let path = gtk::Label::builder().label(full).xalign(0.0).ellipsize(pango::EllipsizeMode::Start).tooltip_text(full).build();
     path.add_css_class("mono");
     path.add_css_class("dim");
     view.append(&path);
