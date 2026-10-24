@@ -31,6 +31,8 @@ pub struct Job {
     /// None while running; Some(exit code, if known) once done.
     outcome: Cell<Option<Option<i64>>>,
     pid: Cell<Option<glib::Pid>>,
+    /// Between asking VTE to spawn and hearing back.
+    spawning: Cell<bool>,
     docked: RefCell<Option<gtk::Box>>,
     tray: Weak<Tray>,
 }
@@ -130,6 +132,7 @@ impl Tray {
             status: status.clone(),
             outcome: Cell::new(None),
             pid: Cell::new(None),
+            spawning: Cell::new(false),
             docked: RefCell::default(),
             tray: Rc::downgrade(self),
         });
@@ -315,6 +318,10 @@ impl Job {
         self.term.feed(&term::crlf(data));
     }
 
+    pub fn is_running(&self) -> bool {
+        self.outcome.get().is_none()
+    }
+
     pub fn finish(&self, code: Option<i64>) {
         self.outcome.set(Some(code));
         for class in ["working", "done", "failed"] {
@@ -332,9 +339,10 @@ impl Job {
     /// (Re)starts a command run from here.
     fn start(self: &Rc<Self>) {
         let Some(command) = self.command.clone() else { return };
-        if self.outcome.get().is_none() && self.pid.get().is_some() {
+        if self.spawning.get() || (self.outcome.get().is_none() && self.pid.get().is_some()) {
             return;
         }
+        self.spawning.set(true);
         let Some(tray) = self.tray.upgrade() else { return };
         self.term.reset(true, true);
         self.outcome.set(None);
@@ -355,6 +363,7 @@ impl Job {
             None::<&gio::Cancellable>,
             move |result| {
                 let Some(job) = weak.upgrade() else { return };
+                job.spawning.set(false);
                 match result {
                     Ok(pid) => job.pid.set(Some(pid)),
                     Err(err) => {

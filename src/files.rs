@@ -27,8 +27,9 @@ pub struct Files {
     message: gtk::Label,
     open: RefCell<Option<PathBuf>>,
     opened_at: Cell<Option<SystemTime>>,
-    /// The next save may overwrite a file that changed on disk (the user was warned).
-    overwrite: Cell<bool>,
+    /// The on-disk version (mtime) the user was warned about: a second Save overwrites it,
+    /// a newer one warns again.
+    warned: Cell<Option<SystemTime>>,
     /// Where Open… starts.
     base: RefCell<PathBuf>,
     shown: RefCell<Vec<(PathBuf, Mark)>>,
@@ -117,7 +118,7 @@ impl Files {
             message,
             open: RefCell::default(),
             opened_at: Cell::new(None),
-            overwrite: Cell::new(false),
+            warned: Cell::new(None),
             base: RefCell::new(glib::home_dir()),
             shown: RefCell::default(),
         });
@@ -209,15 +210,19 @@ impl Files {
             return;
         }
         // One file at a time: keep what was typed, and stay if it cannot be kept.
-        if self.buffer.is_modified() && !self.save() {
+        if self.buffer.is_modified() && !self.save_quietly() {
             return;
         }
         self.load(path);
     }
 
     fn load(&self, path: &Path) {
-        let text = match std::fs::read(path) {
-            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        let text = match std::fs::read(path).map(String::from_utf8) {
+            Ok(Ok(text)) => text,
+            Ok(Err(_)) => {
+                self.notice(&format!("{} is not UTF-8 text; open it elsewhere.", path.display()));
+                return;
+            }
             Err(err) => {
                 self.notice(&format!("Could not open {}: {err}", path.display()));
                 return;
@@ -238,7 +243,7 @@ impl Files {
         self.buffer.place_cursor(&self.buffer.start_iter());
         self.name.set_label(&path.to_string_lossy());
         self.notice("");
-        self.overwrite.set(false);
+        self.warned.set(None);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
         self.editor_box.set_visible(true);
@@ -254,13 +259,29 @@ impl Files {
         self.buffer.set_style_scheme(schemes.scheme(id).as_ref());
     }
 
-    /// Writes the buffer out; false if it was not saved. A file changed on disk since it was
-    /// opened (the agent rewrote it) is not overwritten on the first try, only on the second.
+    /// Save (Ctrl+S, the button): writes the buffer out; false if it was not saved. A file
+    /// changed on disk since it was opened (the agent rewrote it) is overwritten only by a
+    /// second Save of that same version.
     pub fn save(&self) -> bool {
+        self.write(true)
+    }
+
+    /// Saving on the way to something else (opening another file, closing): never
+    /// overwrites a file changed on disk.
+    fn save_quietly(&self) -> bool {
+        self.write(false)
+    }
+
+    fn write(&self, explicit: bool) -> bool {
         let Some(path) = self.open.borrow().clone() else { return true };
-        if !self.overwrite.get() && modified_time(&path) != self.opened_at.get() {
-            self.overwrite.set(true);
-            self.notice("Changed on disk since it was opened. Save again to overwrite it.");
+        let on_disk = modified_time(&path);
+        if on_disk != self.opened_at.get() && !(explicit && on_disk.is_some() && self.warned.get() == on_disk) {
+            if explicit {
+                self.warned.set(on_disk);
+                self.notice("Changed on disk since it was opened. Save again to overwrite it.");
+            } else {
+                self.notice("Changed on disk since it was opened: Save (twice) to overwrite it, or Close after undoing your edits.");
+            }
             return false;
         }
         let text = self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
@@ -268,7 +289,7 @@ impl Files {
             Ok(()) => {
                 self.buffer.set_modified(false);
                 self.opened_at.set(modified_time(&path));
-                self.overwrite.set(false);
+                self.warned.set(None);
                 self.notice("");
                 true
             }
@@ -289,7 +310,7 @@ impl Files {
     }
 
     fn close(&self) {
-        if self.buffer.is_modified() && !self.save() {
+        if self.buffer.is_modified() && !self.save_quietly() {
             return;
         }
         *self.open.borrow_mut() = None;
@@ -302,15 +323,14 @@ impl Files {
         if self.buffer.is_modified() || modified_time(&path) == self.opened_at.get() {
             return;
         }
-        let had_focus = self.view.has_focus();
+        let window = self.view.root().and_then(|root| root.downcast::<gtk::Window>().ok());
+        let focus = window.as_ref().and_then(|w| GtkWindowExt::focus(w));
         let offset = self.buffer.cursor_position();
         self.load(&path);
         self.buffer.place_cursor(&self.buffer.iter_at_offset(offset));
-        if !had_focus {
-            // Opening grabbed focus; a reload must not take it from the chat.
-            if let Some(window) = self.view.root().and_then(|root| root.downcast::<gtk::Window>().ok()) {
-                GtkWindowExt::set_focus(&window, None::<&gtk::Widget>);
-            }
+        // Loading grabbed focus; a reload gives it back (to the chat, say).
+        if let Some(widget) = focus {
+            widget.grab_focus();
         }
     }
 

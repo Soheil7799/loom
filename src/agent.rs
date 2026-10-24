@@ -77,6 +77,8 @@ struct Pending {
 pub struct Agent {
     pub id: u32,
     pub cwd: PathBuf,
+    /// The repository it works in (see app::project_of).
+    pub project: PathBuf,
     pub chat: Rc<Chat>,
     pub tray: Rc<Tray>,
     session_id: RefCell<Option<String>>,
@@ -92,6 +94,8 @@ pub struct Agent {
     pending: RefCell<Vec<Pending>>,
     asked: Cell<u64>,
     files: RefCell<Vec<(PathBuf, Mark)>>,
+    /// Commands in the tray still running for this agent.
+    jobs: RefCell<Vec<Rc<crate::jobs::Job>>>,
     /// Files a tool call will write, kept until it completes (a refused edit writes nothing).
     planned: RefCell<HashMap<String, Vec<(PathBuf, Mark)>>>,
     /// A turn ended while someone looked elsewhere.
@@ -105,6 +109,7 @@ impl Agent {
     pub fn new(id: u32, saved: Saved, tray: Rc<Tray>) -> Rc<Agent> {
         let agent = Rc::new(Agent {
             id,
+            project: crate::app::project_of(&saved.cwd),
             cwd: saved.cwd,
             chat: Chat::new(),
             tray,
@@ -121,6 +126,7 @@ impl Agent {
             pending: RefCell::default(),
             asked: Cell::new(0),
             files: RefCell::default(),
+            jobs: RefCell::default(),
             planned: RefCell::default(),
             unseen: Cell::new(false),
             last_active: Cell::new(Instant::now()),
@@ -292,6 +298,10 @@ impl Agent {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.replaying.set(false);
                 agent.emit(Event::Files);
+                // The view was cleared for the replay: what was typed meanwhile goes back.
+                for text in agent.queue.borrow().iter() {
+                    agent.chat.user(text);
+                }
                 match result {
                     Ok(result) => agent.session_ready(&result),
                     // A session that never got a prompt is never saved: nothing was lost.
@@ -344,6 +354,7 @@ impl Agent {
         self.turn.set(false);
         self.queue.borrow_mut().clear();
         self.drop_questions("The agent stopped");
+        self.end_jobs();
         self.set_status(Status::Failed);
     }
 
@@ -365,6 +376,7 @@ impl Agent {
         self.turn.set(false);
         self.queue.borrow_mut().clear();
         self.drop_questions("Stopped");
+        self.end_jobs();
         self.status.set(Status::Suspended);
         self.refresh_header();
         self.emit(Event::Changed);
@@ -403,11 +415,16 @@ impl Agent {
             move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.turn.set(false);
+                // The process died with the turn: fail() has said so already.
+                if agent.conn.borrow().is_none() {
+                    return;
+                }
                 agent.last_active.set(Instant::now());
                 match result {
                     Ok(result) => {
                         if result["stopReason"].as_str() == Some("cancelled") {
                             agent.chat.notice("Stopped.", "dim");
+                            agent.end_jobs();
                         } else if let Some(reason) = result["stopReason"].as_str().filter(|r| *r != "end_turn") {
                             agent.chat.notice(&format!("Turn ended: {}", reason.replace('_', " ")), "dim");
                         }
@@ -497,6 +514,8 @@ impl Agent {
         question.card.resolve(&format!("→ {name}"));
         self.last_active.set(Instant::now());
         self.refresh_status();
+        // Still blocked on another question: the status did not change, the inbox did.
+        self.emit(Event::Changed);
         self.chat.input.grab_focus();
     }
 
@@ -535,6 +554,15 @@ impl Agent {
         self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone() });
         self.refresh_status();
         self.emit(Event::Asked(title));
+    }
+
+    /// Marks this agent's running commands ended: nothing more will be heard of them.
+    fn end_jobs(&self) {
+        for job in self.jobs.borrow_mut().drain(..) {
+            if job.is_running() {
+                job.finish(None);
+            }
+        }
     }
 
     fn drop_questions(&self, why: &str) {
@@ -684,6 +712,7 @@ impl Agent {
             None => {
                 let fallback = update["title"].as_str().unwrap_or("command").replace('`', "");
                 let job = self.tray.agent_job(terminal, name.as_deref().unwrap_or(&fallback), &self.title());
+                self.jobs.borrow_mut().push(job.clone());
                 let tray = self.tray.clone();
                 let shown = job.clone();
                 self.chat.tool_terminal(&id, Rc::new(move || tray.peek(&shown)));
@@ -697,6 +726,7 @@ impl Agent {
         }
         if meta.get("terminal_exit").is_some_and(|e| !e.is_null()) {
             job.finish(meta["terminal_exit"]["exit_code"].as_i64());
+            self.jobs.borrow_mut().retain(|j| !Rc::ptr_eq(j, &job));
         }
     }
 }

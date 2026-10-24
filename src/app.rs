@@ -380,6 +380,7 @@ impl App {
             "help" => self.help.popup(),
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
+            "close" => self.close_focused(),
             "open" => {
                 self.files.root.set_visible(true);
                 self.files.open_file(Path::new(argument));
@@ -395,7 +396,7 @@ impl App {
     }
 
     fn toggle_scratch(self: &Rc<Self>) {
-        let project = self.focused.borrow().as_ref().map(|a| project_of(&a.cwd)).unwrap_or_else(glib::home_dir);
+        let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
         if !self.scratch.toggle(&project) {
             self.focus_input();
         }
@@ -458,7 +459,7 @@ impl App {
 
     /// The tray of the project in view (home's when no agent is open).
     fn current_tray(&self) -> Rc<Tray> {
-        let project = self.focused.borrow().as_ref().map(|a| project_of(&a.cwd)).unwrap_or_else(glib::home_dir);
+        let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
         let tray = self.tray_for(&project);
         self.show_tray(&project, &tray);
         tray
@@ -484,10 +485,10 @@ impl App {
         if !self.is_pinned(agent) {
             self.chat_stack.set_visible_child(&agent.chat.root);
         }
-        let project = project_of(&agent.cwd);
+        let project = agent.project.clone();
         self.show_tray(&project, &agent.tray);
         self.files.show(&agent.cwd, &agent.files());
-        if agent.status() == Status::Suspended {
+        if matches!(agent.status(), Status::Suspended | Status::Failed) {
             agent.start();
         }
         agent.chat.input.grab_focus();
@@ -508,6 +509,7 @@ impl App {
             self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{}", agent.id)));
             if agent.focused.get() {
                 self.chat_stack.set_visible_child(&agent.chat.root);
+                agent.chat.input.grab_focus();
             }
             return;
         }
@@ -524,6 +526,8 @@ impl App {
         self.chat_stack.remove(&agent.chat.root);
         self.pinned_box.append(&agent.chat.root);
         self.pinned_box.set_visible(true);
+        agent.last_active.set(std::time::Instant::now());
+        agent.unseen.set(false);
         if agent.status() == Status::Suspended {
             agent.start();
         }
@@ -545,12 +549,12 @@ impl App {
         let agents = self.agents.borrow();
         let mut projects: Vec<PathBuf> = Vec::new();
         for agent in agents.iter() {
-            let project = project_of(&agent.cwd);
+            let project = agent.project.clone();
             if !projects.contains(&project) {
                 projects.push(project);
             }
         }
-        projects.iter().flat_map(|p| agents.iter().filter(move |a| project_of(&a.cwd) == *p).cloned()).collect()
+        projects.iter().flat_map(|p| agents.iter().filter(move |a| a.project == *p).cloned()).collect()
     }
 
     fn new_agent(self: &Rc<Self>, choose: bool) {
@@ -603,7 +607,8 @@ impl App {
     fn remove_agent(self: &Rc<Self>, agent: &Rc<Agent>) {
         let order = self.agents_in_order();
         let position = order.iter().position(|a| Rc::ptr_eq(a, agent)).unwrap_or(0);
-        if self.is_pinned(agent) {
+        let focused_left = self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent));
+        if self.is_pinned(agent) || (focused_left && self.pinned.borrow().is_some()) {
             self.toggle_split();
         }
         if self.previous.borrow().as_ref().is_some_and(|p| Rc::ptr_eq(p, agent)) {
@@ -629,7 +634,7 @@ impl App {
     }
 
     fn agent_event(self: &Rc<Self>, agent: &Rc<Agent>, event: Event) {
-        let looking = self.window.is_active() && agent.focused.get();
+        let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(agent));
         match event {
             Event::Changed => {
                 self.refresh_sidebar();
@@ -671,7 +676,8 @@ impl App {
         let limit = Duration::from_secs(minutes * 60);
         let agents = self.agents.borrow().clone();
         for agent in agents {
-            if agent.status() == Status::Idle && !agent.focused.get() && agent.last_active.get().elapsed() > limit {
+            let in_view = agent.focused.get() || self.is_pinned(&agent);
+            if agent.status() == Status::Idle && !in_view && agent.last_active.get().elapsed() > limit {
                 agent.suspend();
             }
         }
@@ -728,7 +734,7 @@ impl App {
         let mut last_project: Option<PathBuf> = None;
         let focused = self.focused.borrow().clone();
         for agent in self.agents_in_order() {
-            let project = project_of(&agent.cwd);
+            let project = agent.project.clone();
             if last_project.as_ref() != Some(&project) {
                 let header = gtk::Label::builder().label(project_name(&project)).xalign(0.0).build();
                 header.add_css_class("project-header");
@@ -837,7 +843,7 @@ impl App {
         }
         let query = self.switcher_entry.text().to_lowercase();
         for agent in self.agents_in_order() {
-            let project = project_name(&project_of(&agent.cwd));
+            let project = project_name(&agent.project.clone());
             let haystack = format!("{} {}", agent.title(), project).to_lowercase();
             if !query.split_whitespace().all(|word| haystack.contains(word)) {
                 continue;
@@ -879,15 +885,20 @@ fn project_name(project: &Path) -> String {
 }
 
 fn empty_page() -> gtk::Box {
+    // The page fills the pane (in the chat's colour); its text sits in the middle.
     let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    page.set_valign(gtk::Align::Center);
-    page.set_halign(gtk::Align::Center);
+    page.add_css_class("chat");
+    let middle = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    middle.set_valign(gtk::Align::Center);
+    middle.set_halign(gtk::Align::Center);
+    middle.set_vexpand(true);
     let title = gtk::Label::new(Some("No agents yet"));
     title.add_css_class("title");
     let hint = gtk::Label::new(Some("Ctrl+Shift+N starts one in a folder"));
     hint.add_css_class("dim");
-    page.append(&title);
-    page.append(&hint);
+    middle.append(&title);
+    middle.append(&hint);
+    page.append(&middle);
     page
 }
 

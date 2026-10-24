@@ -73,12 +73,12 @@ impl Conn {
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, rx) = async_channel::unbounded::<Option<Value>>();
         std::thread::spawn(move || {
-            for line in BufReader::new(stdout).lines() {
+            for line in BufReader::new(stdout).split(b'\n') {
                 let Ok(line) = line else { break };
-                if line.trim().is_empty() {
+                if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
                 }
-                match serde_json::from_str(&line) {
+                match serde_json::from_slice(&line) {
                     Ok(value) => {
                         if tx.send_blocking(Some(value)).is_err() {
                             return;
@@ -103,8 +103,8 @@ impl Conn {
                 match message {
                     Some(value) => conn.dispatch(value, &on_incoming),
                     None => {
-                        conn.fail_pending();
                         on_incoming(Incoming::Exited);
+                        conn.fail_pending();
                         break;
                     }
                 }
