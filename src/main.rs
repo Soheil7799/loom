@@ -104,7 +104,7 @@ button.small { padding: 0 8px; min-height: 22px; font-size: 0.85em; }
 .editor { font-family: "JetBrains Mono", Vazirmatn, monospace; font-size: 0.95em; }
 
 .scratch { background: @window_bg_color; border-radius: 12px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
-window.loom paned > separator { background: rgba(128, 128, 128, 0.18); min-width: 1px; min-height: 1px; }
+window.loom paned > separator { background: none; background-color: shade(@window_bg_color, 1.6); color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
 .prefix-hint { background: alpha(@window_bg_color, 0.95); border: 1px solid alpha(@accent_color, 0.6); border-radius: 99px; padding: 6px 16px; font-size: 0.88em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 .tab { padding: 2px 10px; min-height: 0; border-radius: 99px; font-weight: 600; }
 .tab:checked { background: alpha(@accent_color, 0.22); }
