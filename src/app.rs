@@ -48,6 +48,11 @@ pub struct App {
     run_entry: gtk::Entry,
     help: gtk::Popover,
     quitting: Cell<bool>,
+    /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
+    prefix: Cell<bool>,
+    prefix_hint: gtk::Label,
+    prefix_timeout: RefCell<Option<glib::SourceId>>,
+    files_were_open: Cell<bool>,
 }
 
 impl App {
@@ -96,7 +101,9 @@ impl App {
         sidebar.append(&bottom);
 
         // Middle: chat over the dock, the tray at the bottom.
-        let chat_stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(90).vexpand(true).build();
+        // No transition: switching agents is instant (and a crossfade breaks when the outgoing
+        // chat is moved to the split mid-fade).
+        let chat_stack = gtk::Stack::builder().vexpand(true).build();
         chat_stack.add_named(&empty_page(), Some("empty"));
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
@@ -142,6 +149,16 @@ impl App {
         let overlay = gtk::Overlay::builder().child(&body).build();
         let scratch = Scratch::new();
         overlay.add_overlay(&scratch.revealer);
+        let prefix_hint = gtk::Label::builder()
+            .label("Ctrl+B …   v split · h/l swap · j/k agents · c new · x close · z zoom · b sidebar · ? all")
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::End)
+            .margin_bottom(40)
+            .visible(false)
+            .can_target(false)
+            .build();
+        prefix_hint.add_css_class("prefix-hint");
+        overlay.add_overlay(&prefix_hint);
         window.set_child(Some(&overlay));
 
         // Pickers.
@@ -190,6 +207,10 @@ impl App {
             run_entry,
             help,
             quitting: Cell::new(false),
+            prefix: Cell::new(false),
+            prefix_hint,
+            prefix_timeout: RefCell::default(),
+            files_were_open: Cell::new(false),
         });
         this.wire(&new_button);
         this.restore();
@@ -301,20 +322,36 @@ impl App {
         let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
-        if !ctrl && !alt {
-            return glib::Propagation::Proceed;
-        }
         // The key on the first layout, so shortcuts work with the Persian one active too.
         let base = WidgetExt::display(&self.window)
             .translate_key(keycode, gdk::ModifierType::empty(), 0)
             .map_or(key, |(k, ..)| k)
             .to_lower();
+        if is_modifier(key) {
+            return glib::Propagation::Proceed;
+        }
+        if self.prefix.get() {
+            self.end_prefix();
+            self.prefixed(base, shift);
+            return glib::Propagation::Stop;
+        }
+        // Ctrl+B starts the prefix everywhere, terminals included (as in herdr).
+        if ctrl && !shift && !alt && base == gdk::Key::b {
+            self.start_prefix();
+            return glib::Propagation::Stop;
+        }
+        if !ctrl && !alt {
+            return glib::Propagation::Proceed;
+        }
         let in_terminal = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some());
 
         match (ctrl, shift, alt, base) {
             (true, false, false, gdk::Key::grave) => self.toggle_scratch(),
             (false, false, true, gdk::Key::Up) => self.step(-1),
             (false, false, true, gdk::Key::Down) => self.step(1),
+            (false, false, true, gdk::Key::Left | gdk::Key::Right) => self.swap(),
+            (true, false, false, gdk::Key::Tab) => self.step(1),
+            (true, true, false, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) => self.step(-1),
             // Everything else belongs to a focused terminal (Ctrl+W, Ctrl+K… mean something there).
             _ if in_terminal => return glib::Propagation::Proceed,
             (true, false, false, gdk::Key::n) => self.new_agent(false),
@@ -332,7 +369,6 @@ impl App {
             }
             (true, true, false, gdk::Key::j) => self.current_tray().peek_latest(),
             (true, true, false, gdk::Key::x) => self.current_tray().clear_finished(),
-            (true, false, false, gdk::Key::b) => self.sidebar.set_visible(!self.sidebar.is_visible()),
             (true, false, false, gdk::Key::e) => self.files.root.set_visible(!self.files.root.is_visible()),
             (true, false, false, gdk::Key::o) => {
                 self.files.root.set_visible(true);
@@ -354,6 +390,13 @@ impl App {
     }
 
     // ---- for devhooks ----------------------------------------------------------------------
+
+    pub fn prefix_key(self: &Rc<Self>, name: &str) {
+        let shift = name.chars().next().is_some_and(char::is_uppercase);
+        if let Some(key) = gdk::Key::from_name(name.to_lowercase()) {
+            self.prefixed(key, shift);
+        }
+    }
 
     pub fn focused_agent(&self) -> Option<Rc<Agent>> {
         self.focused.borrow().clone()
@@ -395,6 +438,65 @@ impl App {
         }
     }
 
+    fn start_prefix(self: &Rc<Self>) {
+        self.prefix.set(true);
+        self.prefix_hint.set_visible(true);
+        let weak = Rc::downgrade(self);
+        let timeout = glib::timeout_add_local_once(Duration::from_millis(2500), move || {
+            if let Some(app) = weak.upgrade() {
+                app.prefix_timeout.borrow_mut().take();
+                app.end_prefix();
+            }
+        });
+        if let Some(old) = self.prefix_timeout.borrow_mut().replace(timeout) {
+            old.remove();
+        }
+    }
+
+    fn end_prefix(&self) {
+        self.prefix.set(false);
+        self.prefix_hint.set_visible(false);
+        if let Some(timeout) = self.prefix_timeout.borrow_mut().take() {
+            timeout.remove();
+        }
+    }
+
+    /// The key after Ctrl+B: herdr's letters where it has one.
+    fn prefixed(self: &Rc<Self>, key: gdk::Key, shift: bool) {
+        match (shift, key) {
+            (_, gdk::Key::v | gdk::Key::minus | gdk::Key::backslash) => self.toggle_split(),
+            (_, gdk::Key::h | gdk::Key::l) => self.swap(),
+            (false, gdk::Key::j | gdk::Key::n) => self.step(1),
+            (false, gdk::Key::k | gdk::Key::p) => self.step(-1),
+            (false, gdk::Key::c) => self.new_agent(false),
+            (true, gdk::Key::n | gdk::Key::c) => self.new_agent(true),
+            (_, gdk::Key::x) => self.close_focused(),
+            (_, gdk::Key::z) => self.zoom(),
+            (_, gdk::Key::b) => self.sidebar.set_visible(!self.sidebar.is_visible()),
+            (_, gdk::Key::f | gdk::Key::e) => self.files.root.set_visible(!self.files.root.is_visible()),
+            (_, gdk::Key::o) => {
+                self.files.root.set_visible(true);
+                self.files.choose();
+            }
+            (_, gdk::Key::t | gdk::Key::grave) => self.toggle_scratch(),
+            (_, gdk::Key::r) => {
+                self.run.popup();
+                self.run_entry.grab_focus();
+            }
+            (_, gdk::Key::s) => self.open_switcher(),
+            (_, gdk::Key::i) => {
+                if self.inbox.is_visible() {
+                    self.inbox.popup();
+                }
+            }
+            (_, gdk::Key::question | gdk::Key::slash) => self.help.popup(),
+            (_, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
+                self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
+            }
+            _ => {}
+        }
+    }
+
     fn toggle_scratch(self: &Rc<Self>) {
         let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
         if !self.scratch.toggle(&project) {
@@ -411,13 +513,16 @@ impl App {
     // ---- agents ---------------------------------------------------------------------------
 
     fn restore(self: &Rc<Self>) {
-        let (saved, focused) = state::load(&self.app_id);
-        for saved in saved {
+        let layout = state::load(&self.app_id);
+        for saved in layout.agents {
             self.add_agent(saved);
         }
         let agents = self.agents.borrow().clone();
-        if let Some(agent) = agents.get(focused).or(agents.first()) {
+        if let Some(agent) = agents.get(layout.focused).or(agents.first()) {
             self.focus(agent);
+            if let Some(pinned) = layout.pinned.and_then(|p| agents.get(p)).filter(|p| !Rc::ptr_eq(p, agent)) {
+                self.pin(pinned);
+            }
         }
         self.refresh_sidebar();
     }
@@ -502,15 +607,8 @@ impl App {
 
     /// Shows the previous agent beside the focused one, or puts it back.
     fn toggle_split(self: &Rc<Self>) {
-        let pinned = self.pinned.borrow_mut().take();
-        if let Some(agent) = pinned {
-            self.pinned_box.remove(&agent.chat.root);
-            self.pinned_box.set_visible(false);
-            self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{}", agent.id)));
-            if agent.focused.get() {
-                self.chat_stack.set_visible_child(&agent.chat.root);
-                agent.chat.input.grab_focus();
-            }
+        if self.unpin().is_some() {
+            self.save();
             return;
         }
         let focused = self.focused.borrow().clone();
@@ -523,15 +621,60 @@ impl App {
             order.get((at + 1) % order.len()).cloned().filter(|a| !Rc::ptr_eq(a, focused))
         });
         let Some(agent) = candidate else { return };
+        self.pin(&agent);
+        self.save();
+    }
+
+    /// Shows `agent` beside the focused one (in place of any pinned before).
+    fn pin(self: &Rc<Self>, agent: &Rc<Agent>) {
+        if self.is_pinned(agent) || self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
+            return;
+        }
+        self.unpin();
         self.chat_stack.remove(&agent.chat.root);
         self.pinned_box.append(&agent.chat.root);
         self.pinned_box.set_visible(true);
         agent.last_active.set(std::time::Instant::now());
         agent.unseen.set(false);
-        if agent.status() == Status::Suspended {
+        if matches!(agent.status(), Status::Suspended | Status::Failed) {
             agent.start();
         }
-        *self.pinned.borrow_mut() = Some(agent);
+        *self.pinned.borrow_mut() = Some(agent.clone());
+    }
+
+    /// Puts the pinned agent back with the others; returns it.
+    fn unpin(&self) -> Option<Rc<Agent>> {
+        let agent = self.pinned.borrow_mut().take()?;
+        self.pinned_box.remove(&agent.chat.root);
+        self.pinned_box.set_visible(false);
+        self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{}", agent.id)));
+        if agent.focused.get() {
+            self.chat_stack.set_visible_child(&agent.chat.root);
+            agent.chat.input.grab_focus();
+        }
+        Some(agent)
+    }
+
+    /// The pinned agent and the focused one change places (focus moves across the split).
+    fn swap(self: &Rc<Self>) {
+        let Some(other) = self.unpin() else { return };
+        let Some(current) = self.focused.borrow().clone() else { return };
+        self.focus(&other);
+        self.pin(&current);
+        self.save();
+    }
+
+    /// Hides the sidebar and the files panel (and brings them back).
+    fn zoom(&self) {
+        let zoomed = !self.sidebar.is_visible() && !self.files.root.is_visible();
+        if zoomed {
+            self.sidebar.set_visible(true);
+            self.files.root.set_visible(self.files_were_open.get());
+        } else {
+            self.files_were_open.set(self.files.root.is_visible());
+            self.sidebar.set_visible(false);
+            self.files.root.set_visible(false);
+        }
     }
 
     fn step(self: &Rc<Self>, by: i32) {
@@ -609,7 +752,7 @@ impl App {
         let position = order.iter().position(|a| Rc::ptr_eq(a, agent)).unwrap_or(0);
         let focused_left = self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent));
         if self.is_pinned(agent) || (focused_left && self.pinned.borrow().is_some()) {
-            self.toggle_split();
+            self.unpin();
         }
         if self.previous.borrow().as_ref().is_some_and(|p| Rc::ptr_eq(p, agent)) {
             *self.previous.borrow_mut() = None;
@@ -686,8 +829,9 @@ impl App {
     fn save(&self) {
         let order = self.agents_in_order();
         let focused = self.focused.borrow().as_ref().and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, f))).unwrap_or(0);
-        let saved: Vec<Saved> = order.iter().map(|a| a.saved()).collect();
-        state::save(&self.app_id, &saved, focused);
+        let pinned = self.pinned.borrow().as_ref().and_then(|p| order.iter().position(|a| Rc::ptr_eq(a, p)));
+        let agents: Vec<Saved> = order.iter().map(|a| a.saved()).collect();
+        state::save(&self.app_id, &state::Layout { agents, focused, pinned });
     }
 
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
@@ -875,6 +1019,21 @@ impl App {
     }
 }
 
+fn is_modifier(key: gdk::Key) -> bool {
+    matches!(
+        key,
+        gdk::Key::Control_L
+            | gdk::Key::Control_R
+            | gdk::Key::Shift_L
+            | gdk::Key::Shift_R
+            | gdk::Key::Alt_L
+            | gdk::Key::Alt_R
+            | gdk::Key::Super_L
+            | gdk::Key::Super_R
+            | gdk::Key::ISO_Level3_Shift
+    )
+}
+
 /// The repository a folder belongs to (the nearest parent with .git), else the folder.
 pub fn project_of(cwd: &Path) -> PathBuf {
     cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd).to_owned()
@@ -908,6 +1067,8 @@ fn help_text() -> gtk::Label {
         ("Ctrl+Shift+N", "new agent in a folder"),
         ("Ctrl+K", "go to agent"),
         ("Alt+↑ / Alt+↓", "previous / next agent"),
+        ("Ctrl+Tab", "next agent (Shift: previous)"),
+        ("Alt+← / Alt+→", "swap with the agent beside"),
         ("Ctrl+1…9", "agent by position"),
         ("Ctrl+W", "close agent (conversation kept)"),
         ("Ctrl+\\", "previous agent beside this one"),
@@ -922,7 +1083,9 @@ fn help_text() -> gtk::Label {
         ("Ctrl+Shift+X", "clear finished jobs"),
         ("Ctrl+E / Ctrl+O", "files panel / open a file"),
         ("Ctrl+S", "save (in the editor)"),
-        ("Ctrl+B", "hide the sidebar"),
+        ("Ctrl+B then…", "herdr's prefix: v split, h/l swap,"),
+        ("", "j/k agents, c new, x close, z zoom,"),
+        ("", "b sidebar, f files, t scratch, r run"),
         ("Ctrl+L", "back to the input"),
     ];
     let markup: Vec<String> = keys

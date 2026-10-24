@@ -13,6 +13,7 @@
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
 //! - `agent:<n>`: focus the n-th agent (from 1)
 //! - `new:<folder>`: start an agent in a folder
+//! - `key:<letter>`: Ctrl+B then that key (shift for capitals)
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `quit`
 
@@ -55,6 +56,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
         "quit" => app.window.close(),
+        "key" => app.prefix_key(argument),
         other => app.act(other, argument),
     }
     Ok(())

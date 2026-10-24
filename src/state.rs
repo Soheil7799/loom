@@ -31,13 +31,22 @@ pub fn dir() -> PathBuf {
         .join("loom")
 }
 
-pub fn load(app_id: &str) -> (Vec<Saved>, usize) {
-    let Ok(text) = std::fs::read_to_string(path(app_id)) else { return (Vec::new(), 0) };
+/// The open agents, in order, and where to show them.
+#[derive(Debug, Default, PartialEq)]
+pub struct Layout {
+    pub agents: Vec<Saved>,
+    pub focused: usize,
+    /// The agent shown beside the focused one.
+    pub pinned: Option<usize>,
+}
+
+pub fn load(app_id: &str) -> Layout {
+    let Ok(text) = std::fs::read_to_string(path(app_id)) else { return Layout::default() };
     parse(&text)
 }
 
-fn parse(text: &str) -> (Vec<Saved>, usize) {
-    let Ok(value) = serde_json::from_str::<Value>(text) else { return (Vec::new(), 0) };
+fn parse(text: &str) -> Layout {
+    let Ok(value) = serde_json::from_str::<Value>(text) else { return Layout::default() };
     let agents = value["agents"]
         .as_array()
         .map(|agents| {
@@ -53,25 +62,31 @@ fn parse(text: &str) -> (Vec<Saved>, usize) {
                 .collect()
         })
         .unwrap_or_default();
-    (agents, value["focused"].as_u64().unwrap_or(0) as usize)
+    Layout {
+        agents,
+        focused: value["focused"].as_u64().unwrap_or(0) as usize,
+        pinned: value["pinned"].as_u64().map(|p| p as usize),
+    }
 }
 
-fn render(agents: &[Saved], focused: usize) -> String {
-    let agents: Vec<Value> = agents
+fn render(layout: &Layout) -> String {
+    let agents: Vec<Value> = layout
+        .agents
         .iter()
         .map(|a| json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title }))
         .collect();
-    serde_json::to_string_pretty(&json!({ "agents": agents, "focused": focused })).unwrap_or_default()
+    serde_json::to_string_pretty(&json!({ "agents": agents, "focused": layout.focused, "pinned": layout.pinned }))
+        .unwrap_or_default()
 }
 
-pub fn save(app_id: &str, agents: &[Saved], focused: usize) {
+pub fn save(app_id: &str, layout: &Layout) {
     let path = path(app_id);
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     // Written aside and renamed, so a crash mid-write can't lose the list.
     let temporary = path.with_extension("json.tmp");
-    if std::fs::write(&temporary, render(agents, focused)).is_ok() {
+    if std::fs::write(&temporary, render(layout)).is_ok() {
         let _ = std::fs::rename(&temporary, &path);
     }
 }
@@ -86,12 +101,20 @@ mod tests {
             Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into() },
             Saved { cwd: "/tmp".into(), session_id: None, title: String::new() },
         ];
-        assert_eq!(parse(&render(&agents, 1)), (agents, 1));
+        let layout = Layout { agents, focused: 1, pinned: Some(0) };
+        assert_eq!(parse(&render(&layout)), layout);
+    }
+
+    #[test]
+    fn files_from_before_pinning_read_without_a_pin() {
+        let layout = parse(r#"{ "agents": [{ "cwd": "/tmp" }], "focused": 0 }"#);
+        assert_eq!(layout.pinned, None);
+        assert_eq!(layout.agents.len(), 1);
     }
 
     #[test]
     fn a_broken_file_reads_as_empty() {
-        assert_eq!(parse("{nope"), (Vec::new(), 0));
+        assert_eq!(parse("{nope"), Layout::default());
     }
 
     #[test]

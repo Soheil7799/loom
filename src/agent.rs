@@ -306,7 +306,6 @@ impl Agent {
                     Ok(result) => agent.session_ready(&result),
                     // A session that never got a prompt is never saved: nothing was lost.
                     Err(err) if message(&err).contains("not found") => {
-                        agent.chat.notice("The earlier conversation was empty; this is a new one.", "dim");
                         *agent.session_id.borrow_mut() = None;
                         agent.open_session();
                     }
