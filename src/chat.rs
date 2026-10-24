@@ -22,6 +22,20 @@ pub struct Chat {
     state: gtk::Label,
     mode: gtk::Button,
     usage: gtk::Label,
+    /// Pickers for the session's settings (model, effort…).
+    options: gtk::Box,
+    show_thinking: Cell<bool>,
+    placeholder: gtk::Label,
+    send: gtk::Button,
+    working: gtk::Label,
+    working_since: Cell<Option<std::time::Instant>>,
+    latest: gtk::Button,
+    /// The agent's folder, and its files once listed (for @ mentions).
+    cwd: RefCell<std::path::PathBuf>,
+    project_files: RefCell<Option<Vec<String>>>,
+    /// What the open completion list offers: (text to insert, shown name, detail).
+    offered: RefCell<Vec<(String, String, String)>>,
+    thoughts: RefCell<Vec<glib::WeakRef<gtk::Expander>>>,
     scroller: gtk::ScrolledWindow,
     list: gtk::Box,
     plan: gtk::Box,
@@ -36,6 +50,8 @@ pub struct Chat {
     pub on_submit: Callback<String>,
     pub on_cancel: Callback<()>,
     pub on_cycle_mode: Callback<()>,
+    /// A session setting picked: (its id, the value).
+    pub on_option: Callback<(String, String)>,
     /// A digit typed into an empty input: answers the oldest permission question, if any
     /// (true when it did).
     pub on_answer: RefCell<Option<Rc<dyn Fn(usize) -> bool>>>,
@@ -73,6 +89,8 @@ struct ToolCard {
     revealer: gtk::Revealer,
     content: RefCell<Vec<Value>>,
     has_terminal_button: Cell<bool>,
+    /// Opened by itself once (a small diff shows without a click).
+    auto_opened: Cell<bool>,
 }
 
 pub struct PermissionCard {
@@ -108,10 +126,11 @@ impl Chat {
         usage.add_css_class("dim");
         usage.add_css_class("small");
         usage.set_tooltip_text(Some("Context window in use"));
+        let options = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        options.set_valign(gtk::Align::Center);
         header.append(&names);
         header.append(&state);
         header.append(&usage);
-        header.append(&mode);
         root.append(&header);
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -123,7 +142,16 @@ impl Chat {
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
             .build();
-        root.append(&scroller);
+        // "Jump to latest", while the reader is scrolled up.
+        let latest = gtk::Button::with_label("↓  Latest");
+        latest.add_css_class("latest");
+        latest.set_halign(gtk::Align::Center);
+        latest.set_valign(gtk::Align::End);
+        latest.set_margin_bottom(14);
+        latest.set_visible(false);
+        let scroll_area = gtk::Overlay::builder().child(&scroller).vexpand(true).build();
+        scroll_area.add_overlay(&latest);
+        root.append(&scroll_area);
 
         let plan = gtk::Box::new(gtk::Orientation::Vertical, 2);
         plan.add_css_class("plan");
@@ -143,11 +171,46 @@ impl Chat {
             .child(&input)
             .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(220)
+            .max_content_height(240)
             .build();
+        // The hint shown while the input is empty (a text view has none of its own).
+        let placeholder = gtk::Label::builder()
+            .label("Message Claude…   @ a file · / a command · Shift+Enter new line")
+            .xalign(0.0)
+            .valign(gtk::Align::Start)
+            .margin_start(14)
+            .margin_top(10)
+            .can_target(false)
+            .build();
+        placeholder.add_css_class("placeholder");
+        let field = gtk::Overlay::builder().child(&input_scroller).build();
+        field.add_overlay(&placeholder);
+
+        // Under the text: attach, the session's pickers and mode, what is happening, send.
+        let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        toolbar.add_css_class("composer-bar");
+        let attach = gtk::Button::with_label("@");
+        attach.add_css_class("flat");
+        attach.add_css_class("round");
+        attach.set_tooltip_text(Some("Mention a file (or drop files here)"));
+        let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        working.add_css_class("working");
+        let send = gtk::Button::with_label("↑");
+        send.add_css_class("send");
+        send.set_tooltip_text(Some("Send (Enter)"));
+        toolbar.append(&attach);
+        toolbar.append(&options);
+        toolbar.append(&mode);
+        toolbar.append(&working);
+        toolbar.append(&send);
+
+        let composer = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        composer.add_css_class("composer");
+        composer.append(&field);
+        composer.append(&toolbar);
         let input_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         input_box.add_css_class("input-box");
-        input_box.append(&input_scroller);
+        input_box.append(&composer);
         root.append(&input_box);
 
         let completion_list = gtk::ListBox::new();
@@ -168,6 +231,17 @@ impl Chat {
             state,
             mode,
             usage,
+            options,
+            show_thinking: Cell::new(true),
+            placeholder,
+            send: send.clone(),
+            working,
+            working_since: Cell::new(None),
+            latest: latest.clone(),
+            cwd: RefCell::default(),
+            project_files: RefCell::default(),
+            offered: RefCell::default(),
+            thoughts: RefCell::default(),
             scroller,
             list,
             plan,
@@ -182,9 +256,37 @@ impl Chat {
             on_submit: RefCell::default(),
             on_cancel: RefCell::default(),
             on_cycle_mode: RefCell::default(),
+            on_option: RefCell::default(),
             on_answer: RefCell::default(),
         });
         chat.wire();
+        let weak = Rc::downgrade(&chat);
+        send.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                if chat.working_since.get().is_some() && chat.input.buffer().char_count() == 0 {
+                    chat.call(&chat.on_cancel, ());
+                } else {
+                    chat.submit();
+                }
+            }
+        });
+        let weak = Rc::downgrade(&chat);
+        attach.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.input.buffer().insert_at_cursor("@");
+                chat.input.grab_focus();
+            }
+        });
+        let weak = Rc::downgrade(&chat);
+        latest.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.stick.set(true);
+                let adj = chat.scroller.vadjustment();
+                adj.set_value(adj.upper() - adj.page_size());
+                chat.latest.set_visible(false);
+                chat.input.grab_focus();
+            }
+        });
         chat
     }
 
@@ -192,8 +294,11 @@ impl Chat {
         // Follow the bottom while it is in view; leave the reader alone once they scroll up.
         let adjustment = self.scroller.vadjustment();
         let stick = self.stick.clone();
+        let latest = self.latest.clone();
         adjustment.connect_value_changed(move |adj| {
-            stick.set(adj.value() >= adj.upper() - adj.page_size() - 40.0);
+            let at_bottom = adj.value() >= adj.upper() - adj.page_size() - 40.0;
+            stick.set(at_bottom);
+            latest.set_visible(!at_bottom && adj.upper() > adj.page_size() * 1.2);
         });
         let stick = self.stick.clone();
         adjustment.connect_upper_notify(move |adj| {
@@ -218,9 +323,21 @@ impl Chat {
         });
         self.input.add_controller(keys);
 
+        let drop = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
+        let input = self.input.clone();
+        drop.connect_drop(move |_, value, _, _| {
+            let Ok(files) = value.get::<gtk::gdk::FileList>() else { return false };
+            let mentions: Vec<String> = files.files().iter().filter_map(|f| f.path()).map(|p| format!("@{} ", p.display())).collect();
+            input.buffer().insert_at_cursor(&mentions.concat());
+            input.grab_focus();
+            true
+        });
+        self.input.add_controller(drop);
+
         let weak = Rc::downgrade(self);
-        self.input.buffer().connect_changed(move |_| {
+        self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
+                chat.placeholder.set_visible(buffer.char_count() == 0);
                 chat.update_completion();
             }
         });
@@ -289,35 +406,76 @@ impl Chat {
         *self.commands.borrow_mut() = commands;
     }
 
-    /// The commands the input's "/word" matches, best first.
-    fn matches(&self) -> Vec<(String, String)> {
+    /// Where the agent works (for @ file mentions).
+    pub fn set_cwd(&self, cwd: &std::path::Path) {
+        *self.cwd.borrow_mut() = cwd.to_owned();
+        self.project_files.borrow_mut().take();
+    }
+
+    /// What the text before the cursor asks to complete: a "/command" (the whole input) or
+    /// an "@file" (the word at the cursor). Returns the offered (insert, name, detail) and
+    /// the character range the choice replaces.
+    fn matches(&self) -> (Vec<(String, String, String)>, (i32, i32)) {
         let buffer = self.input.buffer();
-        let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
-        let Some(word) = text.strip_prefix('/') else { return Vec::new() };
-        if word.contains(char::is_whitespace) {
-            return Vec::new();
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        let before = buffer.text(&buffer.start_iter(), &cursor, false).to_string();
+        let none = (Vec::new(), (0, 0));
+        // "/word" as the whole input so far.
+        if let Some(word) = before.strip_prefix('/')
+            && !word.contains(char::is_whitespace)
+        {
+            let commands = self.commands.borrow();
+            let mut found: Vec<&(String, String)> = commands.iter().filter(|(name, _)| name.starts_with(word)).collect();
+            found.extend(commands.iter().filter(|(name, _)| !name.starts_with(word) && name.contains(word)));
+            let offered = found
+                .into_iter()
+                .take(8)
+                .map(|(name, description)| (format!("/{name} "), format!("/{name}"), description.lines().next().unwrap_or("").to_owned()))
+                .collect();
+            return (offered, (0, cursor.offset()));
         }
-        let commands = self.commands.borrow();
-        let mut found: Vec<&(String, String)> = commands.iter().filter(|(name, _)| name.starts_with(word)).collect();
-        found.extend(commands.iter().filter(|(name, _)| !name.starts_with(word) && name.contains(word)));
-        found.into_iter().take(8).cloned().collect()
+        // "@part" just before the cursor.
+        let Some(at) = before.rfind('@') else { return none };
+        let word = &before[at + 1..];
+        if word.contains(char::is_whitespace) || (at > 0 && !before[..at].ends_with(char::is_whitespace)) {
+            return none;
+        }
+        if self.project_files.borrow().is_none() {
+            let files = crate::quickopen::list_files(&self.cwd.borrow());
+            *self.project_files.borrow_mut() = Some(files);
+        }
+        let files = self.project_files.borrow();
+        let mut ranked: Vec<(i64, &String)> =
+            files.iter().flatten().filter_map(|f| crate::picker::score(word, f).map(|s| (s, f))).collect();
+        ranked.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.len().cmp(&b.1.len())));
+        let offered = ranked
+            .into_iter()
+            .take(8)
+            .map(|(_, f)| {
+                let (dir, name) = f.rsplit_once('/').map_or(("", f.as_str()), |(d, n)| (d, n));
+                (format!("@{f} "), name.to_owned(), dir.to_owned())
+            })
+            .collect();
+        let start = before[..at].chars().count() as i32;
+        (offered, (start, cursor.offset()))
     }
 
     fn update_completion(&self) {
-        let found = self.matches();
+        let (found, _) = self.matches();
         while let Some(row) = self.completion_list.row_at_index(0) {
             self.completion_list.remove(&row);
         }
         if found.is_empty() {
             self.completion.popdown();
+            *self.offered.borrow_mut() = found;
             return;
         }
-        for (name, description) in &found {
+        for (_, name, description) in &found {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let name = gtk::Label::new(Some(&format!("/{name}")));
+            let name = gtk::Label::new(Some(name));
             name.add_css_class("mono");
             let description = gtk::Label::builder()
-                .label(description.lines().next().unwrap_or(""))
+                .label(description)
                 .ellipsize(pango::EllipsizeMode::End)
                 .max_width_chars(60)
                 .xalign(0.0)
@@ -327,6 +485,7 @@ impl Chat {
             row.append(&description);
             self.completion_list.append(&row);
         }
+        *self.offered.borrow_mut() = found;
         if let Some(first) = self.completion_list.row_at_index(0) {
             self.completion_list.select_row(Some(&first));
         }
@@ -334,9 +493,14 @@ impl Chat {
     }
 
     fn complete(&self, index: i32) {
-        let found = self.matches();
-        if let Some((name, _)) = found.get(index.max(0) as usize) {
-            self.input.buffer().set_text(&format!("/{name} "));
+        let (found, (start, end)) = self.matches();
+        if let Some((insert, _, _)) = found.get(index.max(0) as usize) {
+            let buffer = self.input.buffer();
+            let mut from = buffer.iter_at_offset(start);
+            let mut to = buffer.iter_at_offset(end);
+            buffer.delete(&mut from, &mut to);
+            let mut at = buffer.iter_at_offset(start);
+            buffer.insert(&mut at, insert);
         }
         self.completion.popdown();
         self.input.grab_focus();
@@ -364,6 +528,115 @@ impl Chat {
             "bypassPermissions" => self.mode.add_css_class("bypass-mode"),
             _ => {}
         }
+    }
+
+    /// Session settings as pickers: each `{id, name, currentValue, options}` (options flat or
+    /// in groups). The mode has its own pill, so it is left out here.
+    pub fn set_options(&self, options: &Value) {
+        while let Some(child) = self.options.first_child() {
+            self.options.remove(&child);
+        }
+        for option in options.as_array().into_iter().flatten() {
+            let Some(id) = option["id"].as_str().filter(|id| *id != "mode") else { continue };
+            let values = flat_values(&option["options"]);
+            if values.is_empty() {
+                continue;
+            }
+            let current = option["currentValue"].as_str().unwrap_or("");
+            let current_name = values.iter().find(|(v, _, _)| v == current).map_or(current.to_owned(), |(_, n, _)| n.clone());
+            let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            list.add_css_class("option-list");
+            let heading = gtk::Label::builder().label(option["name"].as_str().unwrap_or(id)).xalign(0.0).build();
+            heading.add_css_class("option-heading");
+            list.append(&heading);
+            // "Model · Opus", "Effort · High": short, and saying what it is.
+            let short = current_name.split(" (").next().unwrap_or(&current_name).to_owned();
+            let label = format!("{} · {short}", option["name"].as_str().unwrap_or(id));
+            let button = gtk::MenuButton::builder().label(&label).build();
+            button.add_css_class("chip-picker");
+            button.add_css_class("flat");
+            button.set_tooltip_text(option["description"].as_str().or(option["name"].as_str()));
+            let popover = gtk::Popover::builder().child(&list).build();
+            for (value, name, description) in values {
+                let line = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                let title = gtk::Label::builder().label(if value == current { format!("✓  {name}") } else { format!("    {name}") }).xalign(0.0).build();
+                line.append(&title);
+                if !description.is_empty() {
+                    let detail = gtk::Label::builder().label(&description).xalign(0.0).wrap(true).max_width_chars(44).build();
+                    detail.add_css_class("dim");
+                    detail.add_css_class("small");
+                    detail.set_margin_start(22);
+                    line.append(&detail);
+                }
+                let item = gtk::Button::builder().child(&line).build();
+                item.add_css_class("flat");
+                item.add_css_class("menu-item");
+                let callback = self.on_option.borrow().clone();
+                let (id, popover_ref) = (id.to_owned(), popover.clone());
+                item.connect_clicked(move |_| {
+                    popover_ref.popdown();
+                    if let Some(callback) = &callback {
+                        callback((id.clone(), value.clone()));
+                    }
+                });
+                list.append(&item);
+            }
+            button.set_popover(Some(&popover));
+            self.options.append(&button);
+        }
+    }
+
+    /// A turn runs (Some: since when) or not: the composer says so, and send becomes stop.
+    pub fn set_working(self: &Rc<Self>, since: Option<std::time::Instant>) {
+        let was = self.working_since.replace(since);
+        self.send.set_label(if since.is_some() { "■" } else { "↑" });
+        self.send.set_tooltip_text(Some(if since.is_some() { "Stop (Esc)" } else { "Send (Enter)" }));
+        if since.is_some() {
+            self.send.add_css_class("stop");
+        } else {
+            self.send.remove_css_class("stop");
+            self.working.set_label("");
+        }
+        if since.is_some() && was.is_none() {
+            self.tick_working();
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_seconds_local(1, move || {
+                let Some(chat) = weak.upgrade() else { return glib::ControlFlow::Break };
+                if chat.working_since.get().is_none() {
+                    return glib::ControlFlow::Break;
+                }
+                chat.tick_working();
+                glib::ControlFlow::Continue
+            });
+        }
+    }
+
+    fn tick_working(&self) {
+        if let Some(since) = self.working_since.get() {
+            self.working.set_label(&format!("Working · {} · Esc to stop", elapsed(since.elapsed().as_secs())));
+        }
+    }
+
+    /// A quiet line under a finished turn: how long it took.
+    pub fn turn_done(&self, seconds: u64) {
+        if seconds < 3 {
+            return;
+        }
+        let label = gtk::Label::builder().label(format!("Worked for {}", elapsed(seconds))).xalign(0.0).build();
+        label.add_css_class("turn-footer");
+        self.list.append(&label);
+        *self.last.borrow_mut() = Last::None;
+    }
+
+    pub fn set_show_thinking(&self, show: bool) {
+        self.show_thinking.set(show);
+        self.thoughts.borrow_mut().retain(|weak| match weak.upgrade() {
+            Some(expander) => {
+                expander.set_visible(show);
+                true
+            }
+            None => false,
+        });
     }
 
     pub fn set_usage(&self, used: u64, size: u64) {
@@ -427,7 +700,27 @@ impl Chat {
         match kind {
             Kind::Agent => {
                 body.add_css_class("msg-agent");
-                self.list.append(&body);
+                let wrap = gtk::Overlay::builder().child(&body).build();
+                wrap.add_css_class("msg-wrap");
+                let copy = gtk::Button::with_label("copy");
+                copy.add_css_class("copy");
+                copy.add_css_class("flat");
+                copy.set_halign(gtk::Align::End);
+                copy.set_valign(gtk::Align::Start);
+                copy.set_tooltip_text(Some("Copy the message (Markdown)"));
+                wrap.add_overlay(&copy);
+                self.list.append(&wrap);
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false) });
+                let weak = Rc::downgrade(&message);
+                copy.connect_clicked(move |button| {
+                    if let Some(message) = weak.upgrade() {
+                        button.clipboard().set_text(message.text.borrow().trim());
+                        button.set_label("copied");
+                        let button = button.clone();
+                        glib::timeout_add_local_once(Duration::from_millis(1200), move || button.set_label("copy"));
+                    }
+                });
+                return message;
             }
             Kind::User => {
                 body.add_css_class("msg-user");
@@ -437,6 +730,8 @@ impl Chat {
                 let expander = gtk::Expander::new(Some("Thinking"));
                 expander.add_css_class("thought");
                 expander.set_child(Some(&body));
+                expander.set_visible(self.show_thinking.get());
+                self.thoughts.borrow_mut().push(expander.downgrade());
                 self.list.append(&expander);
             }
         }
@@ -620,6 +915,7 @@ impl ToolCard {
             revealer,
             content: RefCell::default(),
             has_terminal_button: Cell::new(false),
+            auto_opened: Cell::new(false),
         });
         let weak = Rc::downgrade(&card);
         toggle.connect_clicked(move |_| {
@@ -636,7 +932,7 @@ impl ToolCard {
 
     fn update(&self, update: &Value) {
         if let Some(title) = update["title"].as_str() {
-            self.title.set_label(&title.replace('`', ""));
+            self.title.set_label(&tool_title(title));
             self.title.set_tooltip_text(Some(title));
         }
         if let Some(kind) = update["kind"].as_str() {
@@ -670,6 +966,16 @@ impl ToolCard {
         }
         if let Some(content) = update["content"].as_array() {
             *self.content.borrow_mut() = content.clone();
+            let small_diff = content.iter().any(|c| c["type"] == "diff")
+                && content
+                    .iter()
+                    .filter(|c| c["type"] == "diff")
+                    .map(|c| changed_lines(c["oldText"].as_str().unwrap_or(""), c["newText"].as_str().unwrap_or("")).len())
+                    .sum::<usize>()
+                    <= 40;
+            if small_diff && !self.auto_opened.replace(true) {
+                self.revealer.set_reveal_child(true);
+            }
             if self.revealer.reveals_child() {
                 self.render_detail();
             }
@@ -709,6 +1015,27 @@ impl ToolCard {
     }
 }
 
+/// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
+fn tool_title(title: &str) -> String {
+    let title = title.replace('`', "");
+    if let Some(rest) = title.strip_prefix("mcp__")
+        && let Some((server, tool)) = rest.split_once("__")
+    {
+        let tool = tool.strip_prefix(&format!("{server}_")).unwrap_or(tool);
+        return format!("{server} · {}", tool.replace('_', " "));
+    }
+    title
+}
+
+/// "42s", "3m 05s", "1h 02m".
+fn elapsed(seconds: u64) -> String {
+    match seconds {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m {:02}s", s / 60, s % 60),
+        s => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
 /// 1–9 for those keys.
 fn digit(key: gdk::Key) -> Option<usize> {
     key.to_unicode().and_then(any_digit).filter(|d| *d >= 1).map(|d| d as usize)
@@ -732,12 +1059,46 @@ fn text_label(markup: &str) -> gtk::Label {
     label
 }
 
-fn code_label(code: &str) -> gtk::Label {
+/// A code block: monospace, selectable, with a copy button in its corner.
+fn code_label(code: &str) -> gtk::Overlay {
     let label = gtk::Label::builder().label(code).xalign(0.0).wrap(true).selectable(true).build();
     label.set_wrap_mode(pango::WrapMode::Char);
     label.add_css_class("code-block");
     label.set_focusable(false);
-    label
+    let copy = gtk::Button::with_label("copy");
+    copy.add_css_class("copy");
+    copy.add_css_class("flat");
+    copy.set_halign(gtk::Align::End);
+    copy.set_valign(gtk::Align::Start);
+    copy.set_tooltip_text(Some("Copy to the clipboard"));
+    let text = code.to_owned();
+    copy.connect_clicked(move |button| {
+        button.clipboard().set_text(&text);
+        button.set_label("copied");
+        let button = button.clone();
+        glib::timeout_add_local_once(Duration::from_millis(1200), move || button.set_label("copy"));
+    });
+    let overlay = gtk::Overlay::builder().child(&label).build();
+    overlay.add_css_class("code-wrap");
+    overlay.add_overlay(&copy);
+    overlay
+}
+
+/// The values of a select option, groups flattened: (value, name, description).
+fn flat_values(options: &Value) -> Vec<(String, String, String)> {
+    let mut out = Vec::new();
+    for entry in options.as_array().into_iter().flatten() {
+        if let Some(group) = entry["options"].as_array() {
+            out.extend(flat_values(&Value::Array(group.clone())));
+        } else if let Some(value) = entry["value"].as_str() {
+            out.push((
+                value.to_owned(),
+                entry["name"].as_str().unwrap_or(value).to_owned(),
+                entry["description"].as_str().unwrap_or("").to_owned(),
+            ));
+        }
+    }
+    out
 }
 
 /// The lines between what the old and new text share at either end, as removed and added.
@@ -778,6 +1139,13 @@ mod tests {
     fn only_the_changed_middle_is_shown() {
         let d = changed_lines("a\nb\nc\nd", "a\nB\nc\nd");
         assert_eq!(d, vec![('-', "b"), ('+', "B")]);
+    }
+
+    #[test]
+    fn mcp_tools_read_as_server_and_tool() {
+        assert_eq!(super::tool_title("mcp__loom__loom_run"), "loom · run");
+        assert_eq!(super::tool_title("mcp__github__create_issue"), "github · create issue");
+        assert_eq!(super::tool_title("`ls -la`"), "ls -la");
     }
 
     #[test]

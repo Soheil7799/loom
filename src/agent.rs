@@ -83,6 +83,12 @@ pub struct Agent {
     pub tray: Rc<Tray>,
     session_id: RefCell<Option<String>>,
     title: RefCell<String>,
+    /// The title was given by hand.
+    named: Cell<bool>,
+    /// The session's settings (model, effort…) as the agent describes them.
+    config: RefCell<Value>,
+    /// The session was opened new (not resumed): the default mode applies.
+    fresh: Cell<bool>,
     status: Cell<Status>,
     conn: RefCell<Option<Rc<Conn>>>,
     ready: Cell<bool>,
@@ -115,6 +121,9 @@ impl Agent {
             tray,
             session_id: RefCell::new(saved.session_id),
             title: RefCell::new(saved.title),
+            named: Cell::new(saved.named),
+            config: RefCell::new(Value::Null),
+            fresh: Cell::new(false),
             status: Cell::new(Status::Suspended),
             conn: RefCell::default(),
             ready: Cell::new(false),
@@ -152,9 +161,16 @@ impl Agent {
             }
         }));
         let weak = Rc::downgrade(&agent);
+        *agent.chat.on_option.borrow_mut() = Some(Rc::new(move |(id, value): (String, String)| {
+            if let Some(agent) = weak.upgrade() {
+                agent.set_option(&id, &value);
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
         *agent.chat.on_answer.borrow_mut() = Some(Rc::new(move |option| {
             weak.upgrade().is_some_and(|agent| agent.answer(0, option))
         }));
+        agent.chat.set_cwd(&agent.cwd);
         agent.refresh_header();
         agent
     }
@@ -184,7 +200,27 @@ impl Agent {
     }
 
     pub fn saved(&self) -> Saved {
-        Saved { cwd: self.cwd.clone(), session_id: self.session_id.borrow().clone(), title: self.title.borrow().clone() }
+        Saved {
+            cwd: self.cwd.clone(),
+            session_id: self.session_id.borrow().clone(),
+            title: self.title.borrow().clone(),
+            named: self.named.get(),
+        }
+    }
+
+    /// Names the agent by hand (empty: back to the agent's own titles).
+    pub fn rename(self: &Rc<Self>, title: &str) {
+        *self.title.borrow_mut() = title.trim().to_owned();
+        self.named.set(!title.trim().is_empty());
+        self.refresh_header();
+        self.emit(Event::Session);
+        self.emit(Event::Changed);
+    }
+
+    /// Stops the process and starts it again, resuming the conversation.
+    pub fn restart(self: &Rc<Self>) {
+        self.stop();
+        self.start();
     }
 
     pub fn files(&self) -> Vec<(PathBuf, Mark)> {
@@ -288,13 +324,14 @@ impl Agent {
         let Some(conn) = self.conn.borrow().clone() else { return };
         let cwd = self.cwd.to_string_lossy().into_owned();
         let session = self.session_id.borrow().clone();
+        let servers = self.mcp_servers();
         let weak = Rc::downgrade(self);
         if let Some(session) = session {
             // The conversation comes back as updates; start from an empty view.
             self.chat.clear();
             self.files.borrow_mut().clear();
             self.replaying.set(true);
-            conn.request("session/load", json!({ "sessionId": session, "cwd": cwd, "mcpServers": [] }), move |result| {
+            conn.request("session/load", json!({ "sessionId": session, "cwd": cwd, "mcpServers": servers }), move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.replaying.set(false);
                 agent.emit(Event::Files);
@@ -314,10 +351,11 @@ impl Agent {
                 }
             });
         } else {
-            conn.request("session/new", json!({ "cwd": cwd, "mcpServers": [] }), move |result| {
+            conn.request("session/new", json!({ "cwd": cwd, "mcpServers": servers }), move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 match result {
                     Ok(result) => {
+                        agent.fresh.set(true);
                         *agent.session_id.borrow_mut() = result["sessionId"].as_str().map(str::to_owned);
                         agent.emit(Event::Session);
                         agent.session_ready(&result);
@@ -328,7 +366,45 @@ impl Agent {
         }
     }
 
+    /// loom's own MCP server (`loom mcp`), told how to reach this app and which agent it
+    /// serves: its tools run jobs in the tray, open files for the user, notify.
+    fn mcp_servers(&self) -> Value {
+        let (Some(socket), Ok(exe)) = (crate::control::current(), std::env::current_exe()) else { return json!([]) };
+        json!([{
+            "name": "loom",
+            "command": exe.to_string_lossy(),
+            "args": ["mcp"],
+            "env": [
+                { "name": "LOOM_SOCKET", "value": socket.to_string_lossy() },
+                { "name": "LOOM_AGENT", "value": self.id.to_string() }
+            ]
+        }])
+    }
+
+    /// Shows the session's settings (model, effort…) as pickers in the header.
+    fn set_config(&self, options: &Value) {
+        if !options.is_array() {
+            return;
+        }
+        *self.config.borrow_mut() = options.clone();
+        self.chat.set_options(options);
+    }
+
+    fn set_option(self: &Rc<Self>, id: &str, value: &str) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else { return };
+        let weak = Rc::downgrade(self);
+        let name = id.to_owned();
+        conn.request("session/set_config_option", json!({ "sessionId": session, "configId": id, "value": value }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            match result {
+                Ok(result) => agent.set_config(&result["configOptions"]),
+                Err(err) => agent.chat.notice(&format!("Could not change {name}: {}", message(&err)), "error"),
+            }
+        });
+    }
+
     fn session_ready(self: &Rc<Self>, result: &Value) {
+        self.set_config(&result["configOptions"]);
         if let Some(modes) = result.get("modes").filter(|m| !m.is_null()) {
             *self.modes.borrow_mut() = modes["availableModes"]
                 .as_array()
@@ -341,7 +417,28 @@ impl Agent {
         self.ready.set(true);
         self.refresh_header();
         self.refresh_status();
+        // A new conversation starts in the mode chosen in the settings.
+        let wanted = crate::settings::get().default_mode;
+        if self.fresh.replace(false) && !wanted.is_empty() && *self.mode.borrow() != wanted && self.modes.borrow().contains(&wanted) {
+            self.set_mode(&wanted);
+        }
         self.send_next();
+    }
+
+    fn set_mode(self: &Rc<Self>, mode: &str) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else { return };
+        let weak = Rc::downgrade(self);
+        let next = mode.to_owned();
+        conn.request("session/set_mode", json!({ "sessionId": session, "modeId": next }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            match result {
+                Ok(_) => {
+                    *agent.mode.borrow_mut() = next.clone();
+                    agent.refresh_header();
+                }
+                Err(err) => agent.chat.notice(&format!("Could not change mode: {}", message(&err)), "error"),
+            }
+        });
     }
 
     fn fail(self: &Rc<Self>, text: &str) {
@@ -354,6 +451,7 @@ impl Agent {
         self.queue.borrow_mut().clear();
         self.drop_questions("The agent stopped");
         self.end_jobs();
+        self.chat.set_working(None);
         self.set_status(Status::Failed);
     }
 
@@ -376,6 +474,7 @@ impl Agent {
         self.queue.borrow_mut().clear();
         self.drop_questions("Stopped");
         self.end_jobs();
+        self.chat.set_working(None);
         self.status.set(Status::Suspended);
         self.refresh_header();
         self.emit(Event::Changed);
@@ -406,6 +505,8 @@ impl Agent {
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
+        let started = Instant::now();
+        self.chat.set_working(Some(started));
         self.refresh_status();
         let weak = Rc::downgrade(self);
         conn.request(
@@ -414,6 +515,7 @@ impl Agent {
             move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.turn.set(false);
+                agent.chat.set_working(None);
                 // The process died with the turn: fail() has said so already.
                 if agent.conn.borrow().is_none() {
                     return;
@@ -430,6 +532,7 @@ impl Agent {
                     }
                     Err(err) => agent.chat.notice(&format!("Error: {}", message(&err)), "error"),
                 }
+                agent.chat.turn_done(started.elapsed().as_secs());
                 if !agent.focused.get() {
                     agent.unseen.set(true);
                 }
@@ -470,18 +573,7 @@ impl Agent {
         let current = self.mode.borrow().clone();
         let next = cycle.iter().position(|m| **m == current).map_or(0, |i| (i + 1) % cycle.len());
         let next = cycle[next].clone();
-        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else { return };
-        let weak = Rc::downgrade(self);
-        conn.request("session/set_mode", json!({ "sessionId": session, "modeId": next }), move |result| {
-            let Some(agent) = weak.upgrade() else { return };
-            match result {
-                Ok(_) => {
-                    *agent.mode.borrow_mut() = next.clone();
-                    agent.refresh_header();
-                }
-                Err(err) => agent.chat.notice(&format!("Could not change mode: {}", message(&err)), "error"),
-            }
-        });
+        self.set_mode(&next);
     }
 
     // ---- permission questions -------------------------------------------------------------
@@ -620,8 +712,10 @@ impl Agent {
                     self.refresh_header();
                 }
             }
+            "config_option_update" => self.set_config(&update["configOptions"]),
             "session_info_update" => {
-                if let Some(title) = update["title"].as_str().filter(|t| !t.is_empty()) {
+                // A name given by hand stays.
+                if let Some(title) = update["title"].as_str().filter(|t| !t.is_empty() && !self.named.get()) {
                     *self.title.borrow_mut() = title.to_owned();
                     self.refresh_header();
                     self.emit(Event::Session);

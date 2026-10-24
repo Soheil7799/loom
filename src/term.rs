@@ -8,7 +8,7 @@ pub const FONT: &str = "JetBrains Mono, Vazirmatn 10";
 
 pub fn new(widget_for_colors: &impl IsA<gtk::Widget>) -> vte::Terminal {
     let term = vte::Terminal::new();
-    term.set_font(Some(&pango::FontDescription::from_string(FONT)));
+    term.set_font(Some(&pango::FontDescription::from_string(&crate::settings::get().terminal_font)));
     term.set_scrollback_lines(10_000);
     term.set_cursor_blink_mode(vte::CursorBlinkMode::Off);
     term.set_enable_bidi(true);

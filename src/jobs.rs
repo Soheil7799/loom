@@ -21,7 +21,7 @@ pub struct Job {
     pub name: RefCell<String>,
     label: gtk::Label,
     title: gtk::Label,
-    command: Option<String>,
+    command: RefCell<Option<String>>,
     term: vte::Terminal,
     chip: gtk::Button,
     dot: gtk::Box,
@@ -96,6 +96,35 @@ impl Tray {
         self.peek(&job);
     }
 
+    /// The job named `name` that runs a command of its own (not an agent's).
+    pub fn named(&self, name: &str) -> Option<Rc<Job>> {
+        self.jobs.borrow().iter().rev().find(|j| j.command.borrow().is_some() && *j.name.borrow() == name).cloned()
+    }
+
+    /// Runs `command` as the job `name`: the same chip again if there is one (never two
+    /// jobs of one name, like herdr's named panes). Err if it is still running and
+    /// `restart` is false.
+    pub fn run_named(self: &Rc<Self>, name: &str, command: &str, restart: bool) -> Result<Rc<Job>, String> {
+        if let Some(job) = self.named(name) {
+            if job.is_running() && !restart {
+                return Err(format!("job {name} is still running (stop it, or pass restart)"));
+            }
+            job.stop();
+            *job.command.borrow_mut() = Some(command.to_owned());
+            job.chip.set_tooltip_text(Some(command));
+            job.restart_when_stopped();
+            return Ok(job);
+        }
+        let job = self.add(name, Some(command.to_owned()), command);
+        job.start();
+        Ok(job)
+    }
+
+    /// Every job: (name, running, exit code).
+    pub fn list(&self) -> Vec<(String, bool, Option<i64>)> {
+        self.jobs.borrow().iter().map(|j| (j.name.borrow().clone(), j.is_running(), j.outcome.get().flatten())).collect()
+    }
+
     fn add(self: &Rc<Self>, name: &str, command: Option<String>, tooltip: &str) -> Rc<Job> {
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.add_css_class("dot");
@@ -123,7 +152,7 @@ impl Tray {
             name: RefCell::new(name.to_owned()),
             label: label.clone(),
             title,
-            command,
+            command: RefCell::new(command),
             term,
             chip: chip.clone(),
             dot,
@@ -138,7 +167,7 @@ impl Tray {
         });
         popover.set_child(Some(&job.frame(false)));
         holder.append(&job.term);
-        if job.command.is_some() {
+        if job.command.borrow().is_some() {
             let weak = Rc::downgrade(&job);
             job.term.connect_child_exited(move |_, status| {
                 let Some(job) = weak.upgrade() else { return };
@@ -285,7 +314,7 @@ impl Job {
             });
             b
         };
-        if self.command.is_some() {
+        if self.command.borrow().is_some() {
             header.append(&button("Rerun", "Run the command again", |_, job| job.start()));
             header.append(&button("Stop", "Stop the command", |_, job| job.stop()));
         }
@@ -318,6 +347,36 @@ impl Job {
         self.term.feed(&term::crlf(data));
     }
 
+    /// The last `lines` lines it printed, as text.
+    pub fn output(&self, lines: usize) -> String {
+        let (_, row) = self.term.cursor_position();
+        let start = (row - lines as libc::c_long).max(0);
+        let (text, _) = self.term.text_range_format(vte::Format::Text, start, 0, row, self.term.column_count());
+        text.map(|t| t.trim_end().to_owned()).unwrap_or_default()
+    }
+
+    /// Exit code once done (None while running or when unknown).
+    pub fn exit_code(&self) -> Option<i64> {
+        self.outcome.get().flatten()
+    }
+
+    /// Starts again as soon as the current run has exited (at once if none runs).
+    fn restart_when_stopped(self: &Rc<Self>) {
+        if self.pid.get().is_none() && !self.spawning.get() {
+            self.start();
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            let Some(job) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if job.pid.get().is_some() || job.spawning.get() {
+                return glib::ControlFlow::Continue;
+            }
+            job.start();
+            glib::ControlFlow::Break
+        });
+    }
+
     pub fn is_running(&self) -> bool {
         self.outcome.get().is_none()
     }
@@ -338,7 +397,7 @@ impl Job {
 
     /// (Re)starts a command run from here.
     fn start(self: &Rc<Self>) {
-        let Some(command) = self.command.clone() else { return };
+        let Some(command) = self.command.borrow().clone() else { return };
         if self.spawning.get() || (self.outcome.get().is_none() && self.pid.get().is_some()) {
             return;
         }
@@ -375,7 +434,7 @@ impl Job {
         );
     }
 
-    fn stop(&self) {
+    pub fn stop(&self) {
         // The pid stays until the exit is seen: a process that ignores SIGTERM can be stopped
         // again, and is not run twice.
         if let Some(pid) = self.pid.get() {

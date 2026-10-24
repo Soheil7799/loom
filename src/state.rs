@@ -1,5 +1,6 @@
-//! What survives a restart: which agents were open, where, and their ACP session ids (the
-//! conversations themselves live in Claude Code's own session files).
+//! What survives a restart: the projects in the sidebar, which agents were open in them and
+//! their ACP session ids (the conversations themselves live in Claude Code's own session
+//! files), what was focused and pinned, and the agents closed lately (to reopen).
 
 use std::path::PathBuf;
 
@@ -11,15 +12,50 @@ pub struct Saved {
     pub cwd: PathBuf,
     pub session_id: Option<String>,
     pub title: String,
+    /// The title was given by hand: the agent's own titles don't replace it.
+    pub named: bool,
 }
 
-/// One file per app id, so a test instance doesn't touch the real list.
+impl Saved {
+    pub fn new(cwd: PathBuf) -> Saved {
+        Saved { cwd, session_id: None, title: String::new(), named: false }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Project {
+    pub path: PathBuf,
+    pub collapsed: bool,
+}
+
+/// The open agents, in order, and where to show them.
+#[derive(Debug, Default, PartialEq)]
+pub struct Layout {
+    pub projects: Vec<Project>,
+    pub agents: Vec<Saved>,
+    pub focused: usize,
+    /// The agent shown beside the focused one.
+    pub pinned: Option<usize>,
+    /// Closed lately, newest first.
+    pub closed: Vec<Saved>,
+}
+
+/// How many closed agents are remembered.
+pub const CLOSED_KEPT: usize = 12;
+
+/// The app id's suffix past "Loom" names a test instance, which keeps its own files.
+pub fn suffix(app_id: &str) -> Option<&str> {
+    match app_id.rsplit('.').next() {
+        Some("Loom") | None => None,
+        Some(suffix) => Some(suffix),
+    }
+}
+
 fn path(app_id: &str) -> PathBuf {
-    let name = match app_id.rsplit('.').next() {
-        Some("Loom") | None => "state.json".to_owned(),
+    dir().join(match suffix(app_id) {
+        None => "state.json".to_owned(),
         Some(suffix) => format!("state-{suffix}.json"),
-    };
-    dir().join(name)
+    })
 }
 
 /// $XDG_STATE_HOME/loom (~/.local/state/loom).
@@ -31,52 +67,55 @@ pub fn dir() -> PathBuf {
         .join("loom")
 }
 
-/// The open agents, in order, and where to show them.
-#[derive(Debug, Default, PartialEq)]
-pub struct Layout {
-    pub agents: Vec<Saved>,
-    pub focused: usize,
-    /// The agent shown beside the focused one.
-    pub pinned: Option<usize>,
-}
-
 pub fn load(app_id: &str) -> Layout {
     let Ok(text) = std::fs::read_to_string(path(app_id)) else { return Layout::default() };
     parse(&text)
 }
 
+fn saved(a: &Value) -> Option<Saved> {
+    Some(Saved {
+        cwd: PathBuf::from(a["cwd"].as_str()?),
+        session_id: a["sessionId"].as_str().map(str::to_owned),
+        title: a["title"].as_str().unwrap_or("").to_owned(),
+        named: a["named"].as_bool().unwrap_or(false),
+    })
+}
+
+fn saved_json(a: &Saved) -> Value {
+    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named })
+}
+
 fn parse(text: &str) -> Layout {
     let Ok(value) = serde_json::from_str::<Value>(text) else { return Layout::default() };
-    let agents = value["agents"]
+    let list = |key: &str| value[key].as_array().map(|all| all.iter().filter_map(saved).collect()).unwrap_or_default();
+    let projects = value["projects"]
         .as_array()
-        .map(|agents| {
-            agents
-                .iter()
-                .filter_map(|a| {
-                    Some(Saved {
-                        cwd: PathBuf::from(a["cwd"].as_str()?),
-                        session_id: a["sessionId"].as_str().map(str::to_owned),
-                        title: a["title"].as_str().unwrap_or("").to_owned(),
-                    })
-                })
+        .map(|all| {
+            all.iter()
+                .filter_map(|p| Some(Project { path: PathBuf::from(p["path"].as_str()?), collapsed: p["collapsed"].as_bool().unwrap_or(false) }))
                 .collect()
         })
         .unwrap_or_default();
     Layout {
-        agents,
+        projects,
+        agents: list("agents"),
         focused: value["focused"].as_u64().unwrap_or(0) as usize,
         pinned: value["pinned"].as_u64().map(|p| p as usize),
+        closed: list("closed"),
     }
 }
 
 fn render(layout: &Layout) -> String {
-    let agents: Vec<Value> = layout
-        .agents
-        .iter()
-        .map(|a| json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title }))
-        .collect();
-    serde_json::to_string_pretty(&json!({ "agents": agents, "focused": layout.focused, "pinned": layout.pinned }))
-        .unwrap_or_default()
+    let projects: Vec<Value> =
+        layout.projects.iter().map(|p| json!({ "path": p.path.to_string_lossy(), "collapsed": p.collapsed })).collect();
+    serde_json::to_string_pretty(&json!({
+        "projects": projects,
+        "agents": layout.agents.iter().map(saved_json).collect::<Vec<_>>(),
+        "focused": layout.focused,
+        "pinned": layout.pinned,
+        "closed": layout.closed.iter().take(CLOSED_KEPT).map(saved_json).collect::<Vec<_>>(),
+    }))
+    .unwrap_or_default()
 }
 
 pub fn save(app_id: &str, layout: &Layout) {
@@ -96,20 +135,27 @@ mod tests {
     use super::*;
 
     #[test]
-    fn saved_agents_read_back() {
+    fn saved_layouts_read_back() {
         let agents = vec![
-            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into() },
-            Saved { cwd: "/tmp".into(), session_id: None, title: String::new() },
+            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true },
+            Saved::new("/tmp".into()),
         ];
-        let layout = Layout { agents, focused: 1, pinned: Some(0) };
+        let layout = Layout {
+            projects: vec![Project { path: "/home/x/p".into(), collapsed: true }, Project { path: "/tmp".into(), collapsed: false }],
+            agents: agents.clone(),
+            focused: 1,
+            pinned: Some(0),
+            closed: vec![agents[0].clone()],
+        };
         assert_eq!(parse(&render(&layout)), layout);
     }
 
     #[test]
-    fn files_from_before_pinning_read_without_a_pin() {
-        let layout = parse(r#"{ "agents": [{ "cwd": "/tmp" }], "focused": 0 }"#);
+    fn older_files_read_with_defaults() {
+        let layout = parse(r#"{ "agents": [{ "cwd": "/tmp", "title": "t" }], "focused": 0 }"#);
         assert_eq!(layout.pinned, None);
-        assert_eq!(layout.agents.len(), 1);
+        assert!(layout.projects.is_empty() && layout.closed.is_empty());
+        assert!(!layout.agents[0].named);
     }
 
     #[test]

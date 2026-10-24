@@ -32,19 +32,32 @@ pub struct Conn {
     pending: RefCell<HashMap<u64, Reply>>,
 }
 
-/// The adapter command: `LOOM_AGENT` (split on spaces), else the copy loom installs, else PATH.
+/// The adapter command: `LOOM_AGENT`, else the settings' (both split on spaces), else the
+/// default.
 pub fn adapter_command() -> Vec<String> {
-    if let Ok(cmd) = std::env::var("LOOM_AGENT") {
-        let parts: Vec<String> = cmd.split_whitespace().map(str::to_owned).collect();
-        if !parts.is_empty() {
-            return parts;
-        }
-    }
-    let installed = glib::user_data_dir().join("loom/adapter/node_modules/.bin/claude-agent-acp");
+    let chosen = std::env::var("LOOM_AGENT").ok().filter(|c| !c.trim().is_empty()).unwrap_or_else(|| crate::settings::get().adapter);
+    let parts: Vec<String> = chosen.split_whitespace().map(str::to_owned).collect();
+    if parts.is_empty() { default_adapter() } else { parts }
+}
+
+/// The copy loom installs, else claude-agent-acp on PATH.
+pub fn default_adapter() -> Vec<String> {
+    let installed = installed_dir().join("node_modules/.bin/claude-agent-acp");
     if installed.exists() {
         return vec![installed.to_string_lossy().into_owned()];
     }
     vec!["claude-agent-acp".to_owned()]
+}
+
+fn installed_dir() -> PathBuf {
+    glib::user_data_dir().join("loom/adapter")
+}
+
+/// The installed adapter's version (from its package.json).
+pub fn adapter_version() -> Option<String> {
+    let manifest = installed_dir().join("node_modules/@agentclientprotocol/claude-agent-acp/package.json");
+    let text = std::fs::read_to_string(manifest).ok()?;
+    serde_json::from_str::<Value>(&text).ok()?["version"].as_str().map(str::to_owned)
 }
 
 /// Where the adapters' stderr goes.
@@ -60,7 +73,8 @@ impl Conn {
             let _ = std::fs::create_dir_all(dir);
         }
         let stderr = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
-        let mut child = Command::new(&program[0])
+        let mut command = Command::new(&program[0]);
+        command
             .args(&program[1..])
             .current_dir(cwd)
             // Started from inside a Claude Code session (tests), the SDK would refuse to nest.
@@ -68,8 +82,15 @@ impl Conn {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
-            .process_group(0)
-            .spawn()?;
+            .process_group(0);
+        // SAFETY: prctl only, between fork and exec.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+                Ok(())
+            });
+        }
+        let mut child = command.spawn()?;
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, rx) = async_channel::unbounded::<Option<Value>>();
         std::thread::spawn(move || {

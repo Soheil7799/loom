@@ -1,6 +1,6 @@
-//! The window: agents down the left (grouped by project), the focused agent's chat in the
-//! middle, its files on the right, the project's job tray along the bottom, and the
-//! scratchpad and the pickers floating over it all.
+//! The window: projects and their agents down the left, the focused agent's chat in the
+//! middle (a second one beside it on demand), its files on the right, the project's job
+//! tray along the bottom, and the scratchpad and pickers floating over it all.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -9,30 +9,41 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::{gdk, gio, glib, pango, prelude::*};
+use serde_json::{Value, json};
 
 use crate::agent::{Agent, Event, Status};
 use crate::files::Files;
 use crate::jobs::Tray;
-use crate::quickopen::QuickOpen;
+use crate::picker::{Choice, Picker};
 use crate::scratch::Scratch;
-use crate::state::{self, Saved};
+use crate::settings;
+use crate::state::{self, Project, Saved};
 
-/// Idle agents that nobody looks at stop after this long (LOOM_IDLE_MINUTES overrides).
-const IDLE_MINUTES: u64 = 15;
+/// What a sidebar row stands for.
+enum Row {
+    Project(PathBuf),
+    Agent(Rc<Agent>),
+    /// "No agents" under an empty project.
+    Empty(PathBuf),
+}
 
 pub struct App {
     app: gtk::Application,
     app_id: String,
     pub window: gtk::ApplicationWindow,
+    projects: RefCell<Vec<Project>>,
     agents: RefCell<Vec<Rc<Agent>>>,
+    closed: RefCell<Vec<Saved>>,
     focused: RefCell<Option<Rc<Agent>>>,
     next_id: Cell<u32>,
     sidebar: gtk::Box,
     list: gtk::ListBox,
-    rows: RefCell<Vec<Option<Rc<Agent>>>>,
+    rows: RefCell<Vec<Row>>,
+    menu: gtk::Popover,
     inbox: gtk::MenuButton,
     inbox_list: gtk::Box,
     chat_stack: gtk::Stack,
+    welcome: gtk::Box,
     /// The second agent shown beside the focused one (Ctrl+\), and where it sits.
     pinned: RefCell<Option<Rc<Agent>>>,
     pinned_box: gtk::Box,
@@ -42,35 +53,37 @@ pub struct App {
     trays: RefCell<HashMap<PathBuf, Rc<Tray>>>,
     scratch: Rc<Scratch>,
     files: Rc<Files>,
-    switcher: gtk::Popover,
-    switcher_entry: gtk::SearchEntry,
-    switcher_list: gtk::ListBox,
+    picker: Rc<Picker>,
     run: gtk::Popover,
     run_entry: gtk::Entry,
+    rename: gtk::Popover,
+    rename_entry: gtk::Entry,
     help: gtk::Popover,
-    quick_open: Rc<QuickOpen>,
     quitting: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
     prefix: Cell<bool>,
     prefix_hint: gtk::Label,
     prefix_timeout: RefCell<Option<glib::SourceId>>,
     files_were_open: Cell<bool>,
+    /// The chat text size (from the settings).
+    scale_css: gtk::CssProvider,
 }
 
 impl App {
     pub fn new(app: &gtk::Application) -> Rc<App> {
         let app_id = app.application_id().map(|id| id.to_string()).unwrap_or_default();
-        let window = gtk::ApplicationWindow::builder().application(app).title("loom").default_width(1320).default_height(840).build();
+        let window = gtk::ApplicationWindow::builder().application(app).title("loom").default_width(1360).default_height(860).build();
         window.add_css_class("loom");
 
-        // Left: the agents.
+        // Left: projects and their agents.
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.add_css_class("sidebar");
-        sidebar.set_size_request(250, -1);
+        sidebar.set_size_request(264, -1);
         // Children that expand must not widen it.
         sidebar.set_hexpand(false);
-        let top = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         top.add_css_class("sidebar-top");
+        let mark = crate::logo::mark(20);
         let name = gtk::Label::builder().label("loom").xalign(0.0).hexpand(true).build();
         name.add_css_class("brand");
         let inbox_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -83,30 +96,40 @@ impl App {
             .build();
         inbox.add_css_class("inbox-button");
         inbox.add_css_class("flat");
+        top.append(&mark);
         top.append(&name);
         top.append(&inbox);
         sidebar.append(&top);
         let list = gtk::ListBox::new();
         list.add_css_class("agents");
+        let menu = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).build();
+        menu.add_css_class("menu");
+        menu.set_parent(&list);
         let list_scroller = gtk::ScrolledWindow::builder().child(&list).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         sidebar.append(&list_scroller);
-        let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         bottom.add_css_class("sidebar-bottom");
-        let new_button = gtk::Button::with_label("+  New agent");
+        let new_button = gtk::Button::with_label("+  New project");
         new_button.add_css_class("flat");
         new_button.set_hexpand(true);
-        new_button.set_tooltip_text(Some("Ctrl+N here · Ctrl+Shift+N in another folder"));
+        new_button.set_tooltip_text(Some("Start an agent in another folder (Ctrl+Shift+N)"));
+        let settings_button = gtk::Button::with_label("⚙");
+        settings_button.add_css_class("flat");
+        settings_button.set_tooltip_text(Some("Settings (Ctrl+,)"));
         let help_button = gtk::MenuButton::builder().label("?").tooltip_text("Keys (Ctrl+/)").build();
         help_button.add_css_class("flat");
         bottom.append(&new_button);
+        bottom.append(&settings_button);
         bottom.append(&help_button);
         sidebar.append(&bottom);
 
-        // Middle: chat over the dock, the tray at the bottom.
+        // Middle: chat (and the pinned one) over the dock, the tray at the bottom.
         // No transition: switching agents is instant (and a crossfade breaks when the outgoing
         // chat is moved to the split mid-fade).
         let chat_stack = gtk::Stack::builder().vexpand(true).build();
-        chat_stack.add_named(&empty_page(), Some("empty"));
+        let welcome = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        welcome.add_css_class("chat");
+        chat_stack.add_named(&welcome, Some("empty"));
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
@@ -134,7 +157,7 @@ impl App {
 
         // Right: files.
         let files = Files::new();
-        files.root.set_size_request(380, -1);
+        files.root.set_size_request(400, -1);
         files.root.set_visible(false);
         let split = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -155,7 +178,7 @@ impl App {
             .label("Ctrl+B …   v split · h/l swap · j/k agents · c new · x close · z zoom · b sidebar · ? all")
             .halign(gtk::Align::Center)
             .valign(gtk::Align::End)
-            .margin_bottom(40)
+            .margin_bottom(44)
             .visible(false)
             .can_target(false)
             .build();
@@ -163,38 +186,40 @@ impl App {
         overlay.add_overlay(&prefix_hint);
         window.set_child(Some(&overlay));
 
-        // Pickers.
-        let switcher_entry = gtk::SearchEntry::builder().placeholder_text("Go to agent or project…").build();
-        let switcher_list = gtk::ListBox::new();
-        switcher_list.add_css_class("switcher-list");
-        let switcher_box = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        switcher_box.set_size_request(460, -1);
-        switcher_box.append(&switcher_entry);
-        switcher_box.append(&switcher_list);
-        let switcher = gtk::Popover::builder().child(&switcher_box).has_arrow(false).position(gtk::PositionType::Bottom).build();
-        switcher.set_parent(&chat_stack);
-        switcher.set_pointing_to(Some(&gdk::Rectangle::new(0, 0, 1, 1)));
+        // Floating bits.
+        let picker = Picker::new(&chat_stack);
         let run_entry = gtk::Entry::builder().placeholder_text("Command to run here (name: command names the chip)").width_chars(56).build();
         run_entry.add_css_class("mono");
         let run = gtk::Popover::builder().child(&run_entry).position(gtk::PositionType::Top).build();
         run.set_parent(&bar_stack);
+        let rename_entry = gtk::Entry::builder().width_chars(36).placeholder_text("Agent name").build();
+        let rename = gtk::Popover::builder().child(&rename_entry).has_arrow(false).position(gtk::PositionType::Bottom).build();
+        rename.set_parent(&chat_stack);
         let help = gtk::Popover::builder().child(&help_text()).build();
         help_button.set_popover(Some(&help));
 
-        let chat_stack_for_quick = chat_stack.clone();
+        let scale_css = gtk::CssProvider::new();
+        if let Some(display) = gdk::Display::default() {
+            gtk::style_context_add_provider_for_display(&display, &scale_css, gtk::STYLE_PROVIDER_PRIORITY_USER + 3);
+        }
+
         let this = Rc::new(App {
             app: app.clone(),
             app_id,
             window,
+            projects: RefCell::default(),
             agents: RefCell::default(),
+            closed: RefCell::default(),
             focused: RefCell::default(),
             next_id: Cell::new(1),
             sidebar,
             list,
             rows: RefCell::default(),
+            menu,
             inbox,
             inbox_list,
             chat_stack,
+            welcome,
             pinned: RefCell::default(),
             pinned_box,
             previous: RefCell::default(),
@@ -203,37 +228,42 @@ impl App {
             trays: RefCell::default(),
             scratch,
             files,
-            switcher,
-            switcher_entry,
-            switcher_list,
+            picker,
             run,
             run_entry,
+            rename,
+            rename_entry,
             help,
-            quick_open: QuickOpen::new(&chat_stack_for_quick),
             quitting: Cell::new(false),
             prefix: Cell::new(false),
             prefix_hint,
             prefix_timeout: RefCell::default(),
             files_were_open: Cell::new(false),
+            scale_css,
         });
-        this.wire(&new_button);
+        this.wire(&new_button, &settings_button);
+        this.apply_settings(&settings::get());
         this.restore();
+        this.listen();
         this
     }
 
-    fn wire(self: &Rc<Self>, new_button: &gtk::Button) {
+    fn wire(self: &Rc<Self>, new_button: &gtk::Button, settings_button: &gtk::Button) {
         let weak = Rc::downgrade(self);
         self.list.connect_row_activated(move |_, row| {
             let Some(app) = weak.upgrade() else { return };
-            let agent = app.rows.borrow().get(row.index() as usize).cloned().flatten();
-            if let Some(agent) = agent {
-                app.focus(&agent);
-            }
+            app.activate_row(row.index() as usize);
         });
         let weak = Rc::downgrade(self);
         new_button.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
-                app.new_agent(false);
+                app.new_agent(true);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        settings_button.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                crate::prefs::open(&app.window);
             }
         });
         let weak = Rc::downgrade(self);
@@ -242,37 +272,16 @@ impl App {
                 app.refresh_inbox();
             }
         });
-
+        // Right-click on a project or agent: its menu.
+        let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
         let weak = Rc::downgrade(self);
-        self.switcher_entry.connect_search_changed(move |_| {
-            if let Some(app) = weak.upgrade() {
-                app.fill_switcher();
+        click.connect_pressed(move |_, _, x, y| {
+            let Some(app) = weak.upgrade() else { return };
+            if let Some(row) = app.list.row_at_y(y as i32) {
+                app.row_menu(row.index() as usize, x, y);
             }
         });
-        let weak = Rc::downgrade(self);
-        self.switcher_entry.connect_activate(move |_| {
-            if let Some(app) = weak.upgrade() {
-                let row = app.switcher_list.selected_row().or_else(|| app.switcher_list.row_at_index(0));
-                if let Some(row) = row {
-                    row.activate();
-                }
-            }
-        });
-        let keys = gtk::EventControllerKey::new();
-        let list = self.switcher_list.clone();
-        keys.connect_key_pressed(move |_, key, _, _| {
-            let index = list.selected_row().map_or(-1, |r| r.index());
-            let next = match key {
-                gdk::Key::Down => index + 1,
-                gdk::Key::Up => (index - 1).max(0),
-                _ => return glib::Propagation::Proceed,
-            };
-            if let Some(row) = list.row_at_index(next) {
-                list.select_row(Some(&row));
-            }
-            glib::Propagation::Stop
-        });
-        self.switcher_entry.add_controller(keys);
+        self.list.add_controller(click);
 
         let weak = Rc::downgrade(self);
         self.run_entry.connect_activate(move |entry| {
@@ -282,6 +291,17 @@ impl App {
             entry.set_text("");
             if !line.is_empty() {
                 app.current_tray().run(&line);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.rename_entry.connect_activate(move |entry| {
+            let Some(app) = weak.upgrade() else { return };
+            app.rename.popdown();
+            let name = entry.text().trim().to_owned();
+            if let Some(agent) = app.focused_agent() {
+                agent.rename(&name);
+                app.refresh_sidebar();
+                app.save();
             }
         });
 
@@ -298,8 +318,7 @@ impl App {
         focus_action.connect_activate(move |_, target| {
             let Some(app) = weak.upgrade() else { return };
             let Some(id) = target.and_then(|t| t.get::<u32>()) else { return };
-            let agent = app.agents.borrow().iter().find(|a| a.id == id).cloned();
-            if let Some(agent) = agent {
+            if let Some(agent) = app.agent_by_id(id) {
                 app.window.present();
                 app.focus(&agent);
             }
@@ -318,6 +337,33 @@ impl App {
             app.suspend_idle();
             glib::ControlFlow::Continue
         });
+
+        let weak = Rc::downgrade(self);
+        settings::on_change(move |s| {
+            if let Some(app) = weak.upgrade() {
+                app.apply_settings(s);
+            }
+        });
+    }
+
+    /// Opens the control socket the agents' MCP servers talk to.
+    fn listen(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        crate::control::serve(crate::control::socket_path(&self.app_id), move |agent, method, params| {
+            let app = weak.upgrade().ok_or("loom is closing")?;
+            app.control(agent, method, params)
+        });
+    }
+
+    fn apply_settings(&self, s: &settings::Settings) {
+        self.scale_css.load_from_string(&format!(
+            ".messages, .plan, textview.input {{ font-size: {}em; }}",
+            (s.text_scale * 100.0).round() / 100.0
+        ));
+        for agent in self.agents.borrow().iter() {
+            agent.chat.set_show_thinking(s.show_thinking);
+        }
+        crate::theme::refont(&s.terminal_font);
     }
 
     // ---- keys -----------------------------------------------------------------------------
@@ -344,6 +390,10 @@ impl App {
             self.start_prefix();
             return glib::Propagation::Stop;
         }
+        if key == gdk::Key::F2 && !ctrl && !alt {
+            self.begin_rename();
+            return glib::Propagation::Stop;
+        }
         if !ctrl && !alt {
             return glib::Propagation::Proceed;
         }
@@ -356,21 +406,16 @@ impl App {
             (false, false, true, gdk::Key::Left | gdk::Key::Right) => self.swap(),
             (true, false, false, gdk::Key::Tab) => self.step(1),
             (true, true, false, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) => self.step(-1),
+            (true, true, false, gdk::Key::p) => self.palette(),
             // Everything else belongs to a focused terminal (Ctrl+W, Ctrl+K… mean something there).
             _ if in_terminal => return glib::Propagation::Proceed,
             (true, false, false, gdk::Key::n) => self.new_agent(false),
             (true, true, false, gdk::Key::n) => self.new_agent(true),
+            (true, true, false, gdk::Key::t) => self.reopen_closed(),
             (true, false, false, gdk::Key::w) => self.close_focused(),
             (true, false, false, gdk::Key::k) => self.open_switcher(),
-            (true, false, false, gdk::Key::i) => {
-                if self.inbox.is_visible() {
-                    self.inbox.popup();
-                }
-            }
-            (true, false, false, gdk::Key::j) => {
-                self.run.popup();
-                self.run_entry.grab_focus();
-            }
+            (true, false, false, gdk::Key::i) => self.open_inbox(),
+            (true, false, false, gdk::Key::j) => self.ask_command(),
             (true, true, false, gdk::Key::j) => self.current_tray().peek_latest(),
             (true, true, false, gdk::Key::x) => self.current_tray().clear_finished(),
             (true, false, false, gdk::Key::e) => self.files.root.set_visible(!self.files.root.is_visible()),
@@ -383,68 +428,13 @@ impl App {
             (true, false, false, gdk::Key::p) => self.find_file(),
             (true, false, false, gdk::Key::backslash) => self.toggle_split(),
             (true, false, false, gdk::Key::slash) => self.help.popup(),
+            (true, false, false, gdk::Key::comma) => crate::prefs::open(&self.window),
             (true, false, false, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
-                let index = k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1;
-                let agent = self.agents_in_order().get(index).cloned();
-                if let Some(agent) = agent {
-                    self.focus(&agent);
-                }
+                self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
             }
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
-    }
-
-    // ---- for devhooks ----------------------------------------------------------------------
-
-    pub fn prefix_key(self: &Rc<Self>, name: &str) {
-        let shift = name.chars().next().is_some_and(char::is_uppercase);
-        if let Some(key) = gdk::Key::from_name(name.to_lowercase()) {
-            self.prefixed(key, shift);
-        }
-    }
-
-    pub fn focused_agent(&self) -> Option<Rc<Agent>> {
-        self.focused.borrow().clone()
-    }
-
-    pub fn focus_nth(self: &Rc<Self>, index: usize) {
-        let agent = self.agents_in_order().get(index).cloned();
-        if let Some(agent) = agent {
-            self.focus(&agent);
-        }
-    }
-
-    pub fn start_in(self: &Rc<Self>, cwd: PathBuf) {
-        self.start_agent_in(cwd);
-    }
-
-    /// What a key does, by name.
-    pub fn act(self: &Rc<Self>, name: &str, argument: &str) {
-        match name {
-            "scratch" => self.toggle_scratch(),
-            "files" => self.files.root.set_visible(!self.files.root.is_visible()),
-            "switcher" => self.open_switcher(),
-            "inbox" => self.inbox.popup(),
-            "help" => self.help.popup(),
-            "peek" => self.current_tray().peek_latest(),
-            "split" => self.toggle_split(),
-            "find" => self.find_file(),
-            "nevis" => self.files.open_in_nevis(),
-            "tree" => self.files.show_project(),
-            "close" => self.close_focused(),
-            "open" => {
-                self.files.root.set_visible(true);
-                self.files.open_file(Path::new(argument));
-            }
-            "mode" => {
-                if let Some(agent) = self.focused_agent() {
-                    agent.cycle_mode();
-                }
-            }
-            "run" => self.current_tray().run(argument),
-            other => eprintln!("loom control: unknown command {other}"),
-        }
     }
 
     fn start_prefix(self: &Rc<Self>) {
@@ -488,17 +478,12 @@ impl App {
                 self.files.choose();
             }
             (_, gdk::Key::t | gdk::Key::grave) => self.toggle_scratch(),
-            (_, gdk::Key::r) => {
-                self.run.popup();
-                self.run_entry.grab_focus();
-            }
+            (_, gdk::Key::r) => self.ask_command(),
             (_, gdk::Key::s) => self.open_switcher(),
             (_, gdk::Key::g) => self.find_file(),
-            (_, gdk::Key::i) => {
-                if self.inbox.is_visible() {
-                    self.inbox.popup();
-                }
-            }
+            (_, gdk::Key::i) => self.open_inbox(),
+            (_, gdk::Key::colon | gdk::Key::semicolon) => self.palette(),
+            (_, gdk::Key::comma) => crate::prefs::open(&self.window),
             (_, gdk::Key::question | gdk::Key::slash) => self.help.popup(),
             (_, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
@@ -507,19 +492,115 @@ impl App {
         }
     }
 
+    /// Quits without asking: agents stopped, state saved (signals, session end).
+    pub fn quit_now(&self) {
+        self.quitting.set(true);
+        self.window.close();
+    }
+
+    // ---- for devhooks ----------------------------------------------------------------------
+
+    pub fn prefix_key(self: &Rc<Self>, name: &str) {
+        let shift = name.chars().next().is_some_and(char::is_uppercase);
+        if let Some(key) = gdk::Key::from_name(name.to_lowercase()) {
+            self.prefixed(key, shift);
+        }
+    }
+
+    pub fn focused_agent(&self) -> Option<Rc<Agent>> {
+        self.focused.borrow().clone()
+    }
+
+    pub fn focus_nth(self: &Rc<Self>, index: usize) {
+        let agent = self.agents_in_order().get(index).cloned();
+        if let Some(agent) = agent {
+            self.focus(&agent);
+        }
+    }
+
+    pub fn start_in(self: &Rc<Self>, cwd: PathBuf) {
+        self.start_agent_in(cwd);
+    }
+
+    /// What a key does, by name.
+    pub fn act(self: &Rc<Self>, name: &str, argument: &str) {
+        match name {
+            "scratch" => self.toggle_scratch(),
+            "files" => self.files.root.set_visible(!self.files.root.is_visible()),
+            "switcher" => self.open_switcher(),
+            "palette" => self.palette(),
+            "inbox" => self.open_inbox(),
+            "help" => self.help.popup(),
+            "settings" => crate::prefs::open(&self.window),
+            "peek" => self.current_tray().peek_latest(),
+            "split" => self.toggle_split(),
+            "find" => self.find_file(),
+            "nevis" => self.files.open_in_nevis(),
+            "tree" => self.files.show_project(),
+            "close" => self.close_focused(),
+            "reopen" => self.reopen_closed(),
+            "rename" => {
+                if let Some(agent) = self.focused_agent() {
+                    agent.rename(argument);
+                    self.refresh_sidebar();
+                    self.save();
+                }
+            }
+            "collapse" => self.toggle_collapsed(Path::new(argument)),
+            "open" => {
+                self.files.root.set_visible(true);
+                self.files.open_file(Path::new(argument));
+            }
+            "mode" => {
+                if let Some(agent) = self.focused_agent() {
+                    agent.cycle_mode();
+                }
+            }
+            "run" => self.current_tray().run(argument),
+            other => eprintln!("loom control: unknown command {other}"),
+        }
+    }
+
+    // ---- small actions --------------------------------------------------------------------
+
+    fn current_project(&self) -> PathBuf {
+        self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir)
+    }
+
+    fn ask_command(&self) {
+        self.run.popup();
+        self.run_entry.grab_focus();
+    }
+
+    fn open_inbox(&self) {
+        if self.inbox.is_visible() {
+            self.inbox.popup();
+        }
+    }
+
     /// Ctrl+P: pick a file of the project in view and open it in the editor.
     fn find_file(self: &Rc<Self>) {
-        let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
-        let files = self.files.clone();
-        self.quick_open.open(&project, move |path| {
-            files.root.set_visible(true);
-            files.open_file(&path);
-        });
+        let project = self.current_project();
+        let choices = crate::quickopen::list_files(&project)
+            .into_iter()
+            .map(|file| {
+                let (dir, name) = match file.rsplit_once('/') {
+                    Some((dir, name)) => (dir.to_owned(), name.to_owned()),
+                    None => (String::new(), file.clone()),
+                };
+                let files = self.files.clone();
+                let path = project.join(&file);
+                Choice::new(name, dir, move || {
+                    files.root.set_visible(true);
+                    files.open_file(&path);
+                })
+            })
+            .collect();
+        self.picker.open("Open a file in this project…", choices);
     }
 
     fn toggle_scratch(self: &Rc<Self>) {
-        let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
-        if !self.scratch.toggle(&project) {
+        if !self.scratch.toggle(&self.current_project()) {
             self.focus_input();
         }
     }
@@ -530,14 +611,130 @@ impl App {
         }
     }
 
-    // ---- agents ---------------------------------------------------------------------------
+    fn begin_rename(&self) {
+        let Some(agent) = self.focused_agent() else { return };
+        self.rename_entry.set_text(&agent.title());
+        self.rename.set_pointing_to(Some(&gdk::Rectangle::new(24, 30, 1, 1)));
+        self.rename.popup();
+        self.rename_entry.grab_focus();
+        self.rename_entry.select_region(0, -1);
+    }
+
+    // ---- palette and switcher -------------------------------------------------------------
+
+    /// Ctrl+Shift+P: every action by name, and every agent and project to go to.
+    fn palette(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        let act = |title: &str, keys: &str, f: fn(&Rc<App>)| {
+            let weak = weak.clone();
+            Choice::new(title, keys, move || {
+                if let Some(app) = weak.upgrade() {
+                    f(&app);
+                }
+            })
+        };
+        let mut choices = vec![
+            act("New agent here", "Ctrl+N", |a| a.new_agent(false)),
+            act("New agent in a folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
+            act("Reopen the last closed agent", "Ctrl+Shift+T", |a| a.reopen_closed()),
+            act("Rename this agent", "F2", |a| a.begin_rename()),
+            act("Restart this agent", "", |a| {
+                if let Some(agent) = a.focused_agent() {
+                    agent.restart();
+                }
+            }),
+            act("Stop the turn", "Esc", |a| {
+                if let Some(agent) = a.focused_agent() {
+                    agent.cancel();
+                }
+            }),
+            act("Next permission mode", "Shift+Tab", |a| {
+                if let Some(agent) = a.focused_agent() {
+                    agent.cycle_mode();
+                }
+            }),
+            act("Close this agent", "Ctrl+W", |a| a.close_focused()),
+            act("Show the previous agent beside", "Ctrl+\\", |a| a.toggle_split()),
+            act("Swap the two agents", "Alt+←", |a| a.swap()),
+            act("Zoom (hide the side panels)", "Ctrl+B z", |a| a.zoom()),
+            act("Toggle the sidebar", "Ctrl+B b", |a| a.sidebar.set_visible(!a.sidebar.is_visible())),
+            act("Toggle the files panel", "Ctrl+E", |a| a.files.root.set_visible(!a.files.root.is_visible())),
+            act("Find a file in the project", "Ctrl+P", |a| a.find_file()),
+            act("Open a file…", "Ctrl+O", |a| {
+                a.files.root.set_visible(true);
+                a.files.choose();
+            }),
+            act("Project files (tree)", "", |a| a.files.show_project()),
+            act("Open the file in nevis", "Ctrl+Shift+O", |a| a.files.open_in_nevis()),
+            act("Scratch terminal", "Ctrl+`", |a| a.toggle_scratch()),
+            act("Run a command in the tray…", "Ctrl+J", |a| a.ask_command()),
+            act("Peek the newest job", "Ctrl+Shift+J", |a| a.current_tray().peek_latest()),
+            act("Clear finished jobs", "Ctrl+Shift+X", |a| a.current_tray().clear_finished()),
+            act("Questions waiting", "Ctrl+I", |a| a.open_inbox()),
+            act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
+            act("Keyboard shortcuts", "Ctrl+/", |a| a.help.popup()),
+        ];
+        for agent in self.agents_in_order() {
+            let weak = weak.clone();
+            let target = agent.clone();
+            let mut choice = Choice::new(format!("Go to {}", agent.title()), project_name(&agent.project), move || {
+                if let Some(app) = weak.upgrade() {
+                    app.focus(&target);
+                }
+            });
+            choice.dot = Some(agent.status().css());
+            choices.push(choice);
+        }
+        for saved in self.closed.borrow().iter() {
+            let weak = weak.clone();
+            let saved = saved.clone();
+            let title = if saved.title.is_empty() { "an agent".to_owned() } else { saved.title.clone() };
+            choices.push(Choice::new(format!("Reopen {title}"), project_name(&state_project(&saved.cwd)), move || {
+                if let Some(app) = weak.upgrade() {
+                    app.reopen(saved.clone());
+                }
+            }));
+        }
+        self.picker.open("Run a command, or go to an agent…", choices);
+    }
+
+    /// Ctrl+K: agents and projects.
+    fn open_switcher(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        let mut choices = Vec::new();
+        for agent in self.agents_in_order() {
+            let weak = weak.clone();
+            let target = agent.clone();
+            let mut choice = Choice::new(agent.title(), project_name(&agent.project), move || {
+                if let Some(app) = weak.upgrade() {
+                    app.focus(&target);
+                }
+            });
+            choice.dot = Some(agent.status().css());
+            choices.push(choice);
+        }
+        for project in self.projects.borrow().iter() {
+            let weak = weak.clone();
+            let path = project.path.clone();
+            choices.push(Choice::new(project_name(&project.path), "project · new agent", move || {
+                if let Some(app) = weak.upgrade() {
+                    app.start_agent_in(path.clone());
+                }
+            }));
+        }
+        self.picker.open("Go to an agent or project…", choices);
+    }
+
+    // ---- projects and agents --------------------------------------------------------------
 
     fn restore(self: &Rc<Self>) {
         let layout = state::load(&self.app_id);
+        *self.projects.borrow_mut() = layout.projects;
+        *self.closed.borrow_mut() = layout.closed;
         for saved in layout.agents {
             self.add_agent(saved);
         }
-        let agents = self.agents.borrow().clone();
+        let agents = self.agents_in_order();
         if let Some(agent) = agents.get(layout.focused).or(agents.first()) {
             self.focus(agent);
             if let Some(pinned) = layout.pinned.and_then(|p| agents.get(p)).filter(|p| !Rc::ptr_eq(p, agent)) {
@@ -547,11 +744,21 @@ impl App {
         self.refresh_sidebar();
     }
 
+    fn ensure_project(&self, path: &Path) {
+        let mut projects = self.projects.borrow_mut();
+        if !projects.iter().any(|p| p.path == path) {
+            projects.push(Project { path: path.to_owned(), collapsed: false });
+        }
+    }
+
     fn add_agent(self: &Rc<Self>, saved: Saved) -> Rc<Agent> {
         let id = self.next_id.get();
         self.next_id.set(id + 1);
-        let tray = self.tray_for(&project_of(&saved.cwd));
+        let project = project_of(&saved.cwd);
+        self.ensure_project(&project);
+        let tray = self.tray_for(&project);
         let agent = Agent::new(id, saved, tray);
+        agent.chat.set_show_thinking(settings::get().show_thinking);
         self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{id}")));
         let weak = Rc::downgrade(self);
         agent.on_event(move |agent, event| {
@@ -561,6 +768,10 @@ impl App {
         });
         self.agents.borrow_mut().push(agent.clone());
         agent
+    }
+
+    fn agent_by_id(&self, id: u32) -> Option<Rc<Agent>> {
+        self.agents.borrow().iter().find(|a| a.id == id).cloned()
     }
 
     fn tray_for(&self, project: &Path) -> Rc<Tray> {
@@ -584,7 +795,7 @@ impl App {
 
     /// The tray of the project in view (home's when no agent is open).
     fn current_tray(&self) -> Rc<Tray> {
-        let project = self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir);
+        let project = self.current_project();
         let tray = self.tray_for(&project);
         self.show_tray(&project, &tray);
         tray
@@ -610,8 +821,11 @@ impl App {
         if !self.is_pinned(agent) {
             self.chat_stack.set_visible_child(&agent.chat.root);
         }
-        let project = agent.project.clone();
-        self.show_tray(&project, &agent.tray);
+        // A collapsed project opens to show what was picked.
+        if let Some(project) = self.projects.borrow_mut().iter_mut().find(|p| p.path == agent.project) {
+            project.collapsed = false;
+        }
+        self.show_tray(&agent.project, &agent.tray);
         self.files.show(&agent.cwd, &agent.project, &agent.files());
         if matches!(agent.status(), Status::Suspended | Status::Failed) {
             agent.start();
@@ -707,17 +921,15 @@ impl App {
         self.focus(&agents[next]);
     }
 
-    /// Agents in sidebar order: grouped by project, in order of first appearance.
+    /// Agents in sidebar order: by project (in the sidebar's order), then as opened.
     fn agents_in_order(&self) -> Vec<Rc<Agent>> {
         let agents = self.agents.borrow();
-        let mut projects: Vec<PathBuf> = Vec::new();
-        for agent in agents.iter() {
-            let project = agent.project.clone();
-            if !projects.contains(&project) {
-                projects.push(project);
-            }
-        }
-        projects.iter().flat_map(|p| agents.iter().filter(move |a| a.project == *p).cloned()).collect()
+        let projects = self.projects.borrow();
+        let mut ordered: Vec<Rc<Agent>> =
+            projects.iter().flat_map(|p| agents.iter().filter(move |a| a.project == p.path).cloned()).collect();
+        // Any agent whose project is missing from the list still counts.
+        ordered.extend(agents.iter().filter(|a| !projects.iter().any(|p| p.path == a.project)).cloned());
+        ordered
     }
 
     fn new_agent(self: &Rc<Self>, choose: bool) {
@@ -742,24 +954,43 @@ impl App {
     }
 
     fn start_agent_in(self: &Rc<Self>, cwd: PathBuf) {
-        let agent = self.add_agent(Saved { cwd, session_id: None, title: String::new() });
+        let agent = self.add_agent(Saved::new(cwd));
         self.focus(&agent);
     }
 
+    fn reopen(self: &Rc<Self>, saved: Saved) {
+        self.closed.borrow_mut().retain(|c| *c != saved);
+        let agent = self.add_agent(saved);
+        self.focus(&agent);
+    }
+
+    fn reopen_closed(self: &Rc<Self>) {
+        let last = self.closed.borrow().first().cloned();
+        if let Some(saved) = last {
+            self.reopen(saved);
+        }
+    }
+
     fn close_focused(self: &Rc<Self>) {
-        let Some(agent) = self.focused.borrow().clone() else { return };
+        if let Some(agent) = self.focused_agent() {
+            self.close_agent(&agent);
+        }
+    }
+
+    fn close_agent(self: &Rc<Self>, agent: &Rc<Agent>) {
         if !agent.is_busy() {
-            self.remove_agent(&agent);
+            self.remove_agent(agent);
             return;
         }
         let dialog = gtk::AlertDialog::builder()
             .message(format!("“{}” is working", agent.title()))
-            .detail("Closing stops what it is doing. The conversation itself is kept by Claude Code.")
+            .detail("Closing stops what it is doing. The conversation itself is kept: Ctrl+Shift+T reopens it.")
             .buttons(["Keep it", "Close"])
             .cancel_button(0)
             .default_button(0)
             .build();
         let weak = Rc::downgrade(self);
+        let agent = agent.clone();
         dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |choice| {
             if let (Some(app), Ok(1)) = (weak.upgrade(), choice) {
                 app.remove_agent(&agent);
@@ -778,22 +1009,76 @@ impl App {
             *self.previous.borrow_mut() = None;
         }
         agent.stop();
+        // Remembered to reopen (a conversation that never started has nothing to reopen).
+        let saved = agent.saved();
+        if saved.session_id.is_some() {
+            let mut closed = self.closed.borrow_mut();
+            closed.retain(|c| c.session_id != saved.session_id);
+            closed.insert(0, saved);
+            closed.truncate(state::CLOSED_KEPT);
+        }
         self.chat_stack.remove(&agent.chat.root);
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
-        let was_focused = self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent));
-        if was_focused {
+        if focused_left {
             *self.focused.borrow_mut() = None;
             let order = self.agents_in_order();
             match order.get(position.min(order.len().saturating_sub(1))) {
                 Some(next) => self.focus(next),
-                None => {
-                    self.chat_stack.set_visible_child_name("empty");
-                    self.files.show(&glib::home_dir(), &glib::home_dir(), &[]);
-                }
+                None => self.show_welcome(),
             }
         }
         self.refresh_sidebar();
         self.save();
+    }
+
+    fn show_welcome(self: &Rc<Self>) {
+        self.fill_welcome();
+        self.chat_stack.set_visible_child_name("empty");
+        self.files.show(&glib::home_dir(), &glib::home_dir(), &[]);
+    }
+
+    fn toggle_collapsed(self: &Rc<Self>, path: &Path) {
+        if let Some(project) = self.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
+            project.collapsed = !project.collapsed;
+        }
+        self.refresh_sidebar();
+        self.save();
+    }
+
+    /// Takes a project out of the sidebar, closing its agents (asks first if any is busy).
+    fn remove_project(self: &Rc<Self>, path: &Path) {
+        let agents: Vec<Rc<Agent>> = self.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
+        let busy = agents.iter().filter(|a| a.is_busy()).count();
+        let path = path.to_owned();
+        let weak = Rc::downgrade(self);
+        let go = move || {
+            let Some(app) = weak.upgrade() else { return };
+            for agent in &agents {
+                app.remove_agent(agent);
+            }
+            app.projects.borrow_mut().retain(|p| p.path != path);
+            app.refresh_sidebar();
+            app.save();
+            if app.agents.borrow().is_empty() {
+                app.show_welcome();
+            }
+        };
+        if busy == 0 {
+            go();
+            return;
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message("Remove this project?")
+            .detail(format!("{busy} of its agents {} working; removing stops them. Conversations are kept.", if busy == 1 { "is" } else { "are" }))
+            .buttons(["Keep it", "Remove"])
+            .cancel_button(0)
+            .default_button(0)
+            .build();
+        dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |choice| {
+            if let Ok(1) = choice {
+                go();
+            }
+        });
     }
 
     fn agent_event(self: &Rc<Self>, agent: &Rc<Agent>, event: Event) {
@@ -814,12 +1099,12 @@ impl App {
             }
             Event::Asked(title) => {
                 self.refresh_inbox();
-                if !looking {
+                if !looking && settings::get().notify_questions {
                     self.notify(agent, &format!("Wants to: {title}"));
                 }
             }
             Event::Done => {
-                if !looking {
+                if !looking && settings::get().notify_done {
                     self.notify(agent, "Finished");
                 }
                 self.refresh_sidebar();
@@ -835,7 +1120,10 @@ impl App {
     }
 
     fn suspend_idle(&self) {
-        let minutes = std::env::var("LOOM_IDLE_MINUTES").ok().and_then(|m| m.parse().ok()).unwrap_or(IDLE_MINUTES);
+        let minutes = std::env::var("LOOM_IDLE_MINUTES").ok().and_then(|m| m.parse().ok()).unwrap_or(settings::get().idle_minutes);
+        if minutes == 0 {
+            return;
+        }
         let limit = Duration::from_secs(minutes * 60);
         let agents = self.agents.borrow().clone();
         for agent in agents {
@@ -850,13 +1138,24 @@ impl App {
         let order = self.agents_in_order();
         let focused = self.focused.borrow().as_ref().and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, f))).unwrap_or(0);
         let pinned = self.pinned.borrow().as_ref().and_then(|p| order.iter().position(|a| Rc::ptr_eq(a, p)));
-        let agents: Vec<Saved> = order.iter().map(|a| a.saved()).collect();
-        state::save(&self.app_id, &state::Layout { agents, focused, pinned });
+        state::save(
+            &self.app_id,
+            &state::Layout {
+                projects: self.projects.borrow().clone(),
+                agents: order.iter().map(|a| a.saved()).collect(),
+                focused,
+                pinned,
+                closed: self.closed.borrow().clone(),
+            },
+        );
     }
 
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
-        let busy: Vec<String> = self.agents.borrow().iter().filter(|a| a.is_busy()).map(|a| a.title()).collect();
-        if !self.quitting.get() && (!busy.is_empty() || self.files.has_unsaved()) {
+        // Only a turn in flight is lost by quitting (an agent still starting just restarts).
+        let busy: Vec<String> =
+            self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked)).map(|a| a.title()).collect();
+        let ask = (!busy.is_empty() && settings::get().confirm_quit) || self.files.has_unsaved();
+        if !self.quitting.get() && ask {
             let what = if busy.is_empty() {
                 "A file has unsaved changes".to_owned()
             } else {
@@ -885,60 +1184,229 @@ impl App {
         for tray in self.trays.borrow().values() {
             tray.stop_all();
         }
+        if let Some(socket) = crate::control::current() {
+            let _ = std::fs::remove_file(socket);
+        }
         glib::Propagation::Proceed
     }
 
-    // ---- sidebar, inbox, switcher ---------------------------------------------------------
+    // ---- what agents ask of loom (its MCP tools) ------------------------------------------
 
-    fn refresh_sidebar(&self) {
+    fn control(self: &Rc<Self>, id: u32, method: &str, params: &Value) -> Result<Value, String> {
+        let agent = self.agent_by_id(id);
+        let tray = || agent.as_ref().map(|a| a.tray.clone()).ok_or_else(|| "this agent is no longer open in loom".to_owned());
+        let name = || params["name"].as_str().filter(|n| !n.is_empty()).map(str::to_owned).ok_or("a job name is needed");
+        let job = |name: &str| tray().and_then(|t| t.named(name).ok_or_else(|| format!("no job named {name}")));
+        match method {
+            "run_job" => {
+                let name = name()?;
+                let command = params["command"].as_str().filter(|c| !c.trim().is_empty()).ok_or("a command is needed")?;
+                tray()?.run_named(&name, command, params["restart"].as_bool().unwrap_or(false))?;
+                Ok(json!({ "name": name }))
+            }
+            "job_output" => {
+                let name = name()?;
+                let job = job(&name)?;
+                let lines = params["lines"].as_u64().unwrap_or(60).clamp(1, 2000) as usize;
+                Ok(json!({ "name": name, "running": job.is_running(), "exit_code": job.exit_code(), "output": job.output(lines) }))
+            }
+            "stop_job" => {
+                job(&name()?)?.stop();
+                Ok(json!({}))
+            }
+            "list_jobs" => Ok(json!(
+                tray()?.list().into_iter().map(|(n, r, c)| json!({ "name": n, "running": r, "exit_code": c })).collect::<Vec<_>>()
+            )),
+            "open_file" => {
+                let agent = agent.ok_or("this agent is no longer open in loom")?;
+                let path = Path::new(params["path"].as_str().ok_or("a path is needed")?);
+                let path = if path.is_absolute() { path.to_owned() } else { agent.cwd.join(path) };
+                if !path.is_file() {
+                    return Err(format!("{} is not a file", path.display()));
+                }
+                // Shown without taking the keyboard from what the user is doing.
+                let focus = GtkWindowExt::focus(&self.window);
+                self.files.root.set_visible(true);
+                self.files.open_file(&path);
+                if let Some(widget) = focus {
+                    widget.grab_focus();
+                }
+                Ok(json!({}))
+            }
+            "notify" => {
+                let agent = agent.ok_or("this agent is no longer open in loom")?;
+                self.notify(&agent, params["message"].as_str().unwrap_or("Needs you"));
+                Ok(json!({}))
+            }
+            "list_agents" => Ok(json!(
+                self.agents_in_order()
+                    .iter()
+                    .map(|a| json!({ "title": a.title(), "project": a.project.to_string_lossy(), "status": a.status().css(), "you": a.id == id }))
+                    .collect::<Vec<_>>()
+            )),
+            other => Err(format!("unknown request {other}")),
+        }
+    }
+
+    // ---- sidebar, menus, inbox, welcome ---------------------------------------------------
+
+    fn activate_row(self: &Rc<Self>, index: usize) {
+        enum Do {
+            Toggle(PathBuf),
+            Focus(Rc<Agent>),
+            Start(PathBuf),
+        }
+        let what = match self.rows.borrow().get(index) {
+            Some(Row::Project(path)) => Do::Toggle(path.clone()),
+            Some(Row::Agent(agent)) => Do::Focus(agent.clone()),
+            Some(Row::Empty(path)) => Do::Start(path.clone()),
+            None => return,
+        };
+        match what {
+            Do::Toggle(path) => self.toggle_collapsed(&path),
+            Do::Focus(agent) => self.focus(&agent),
+            Do::Start(path) => self.start_agent_in(path),
+        }
+    }
+
+    /// The right-click menu of row `index`, at (x, y) in the list.
+    fn row_menu(self: &Rc<Self>, index: usize, x: f64, y: f64) {
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let weak = Rc::downgrade(self);
+        let item = |label: &str, f: Box<dyn Fn(&Rc<App>)>| {
+            let button = gtk::Button::with_label(label);
+            button.add_css_class("flat");
+            button.add_css_class("menu-item");
+            if let Some(child) = button.child().and_downcast::<gtk::Label>() {
+                child.set_xalign(0.0);
+            }
+            let weak = weak.clone();
+            button.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.menu.popdown();
+                    f(&app);
+                }
+            });
+            content.append(&button);
+        };
+        match self.rows.borrow().get(index) {
+            Some(Row::Project(path)) | Some(Row::Empty(path)) => {
+                let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
+                item("New agent here", Box::new(move |app| app.start_agent_in(p1.clone())));
+                item("Scratch terminal here", Box::new(move |app| {
+                    app.scratch.hide();
+                    app.scratch.toggle(&p2);
+                }));
+                item("Collapse / expand", Box::new(move |app| app.toggle_collapsed(&p3)));
+                item("Remove from the sidebar", Box::new(move |app| app.remove_project(&p4)));
+            }
+            Some(Row::Agent(agent)) => {
+                let (a1, a2, a3, a4, a5) = (agent.clone(), agent.clone(), agent.clone(), agent.clone(), agent.clone());
+                item("Rename…", Box::new(move |app| {
+                    app.focus(&a1);
+                    app.begin_rename();
+                }));
+                item("Show beside the focused one", Box::new(move |app| {
+                    app.pin(&a2);
+                    app.save();
+                }));
+                item("Restart", Box::new(move |_| a3.restart()));
+                item("Suspend (free its memory)", Box::new(move |_| {
+                    a4.suspend();
+                }));
+                item("Close", Box::new(move |app| app.close_agent(&a5)));
+            }
+            None => return,
+        }
+        self.menu.set_child(Some(&content));
+        self.menu.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        self.menu.popup();
+    }
+
+    fn refresh_sidebar(self: &Rc<Self>) {
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
         let mut rows = Vec::new();
-        let mut last_project: Option<PathBuf> = None;
         let focused = self.focused.borrow().clone();
-        for agent in self.agents_in_order() {
-            let project = agent.project.clone();
-            if last_project.as_ref() != Some(&project) {
-                let header = gtk::Label::builder().label(project_name(&project)).xalign(0.0).build();
-                header.add_css_class("project-header");
-                let row = gtk::ListBoxRow::builder().child(&header).activatable(false).selectable(false).build();
+        let projects = self.projects.borrow().clone();
+        let agents = self.agents_in_order();
+        for project in &projects {
+            let mine: Vec<&Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).collect();
+            self.list.append(&self.project_row(project, &mine));
+            rows.push(Row::Project(project.path.clone()));
+            if project.collapsed {
+                continue;
+            }
+            if mine.is_empty() {
+                let empty = gtk::Label::builder().label("No agents · Enter starts one").xalign(0.0).build();
+                empty.add_css_class("dim");
+                empty.add_css_class("small");
+                let row = gtk::ListBoxRow::builder().child(&empty).selectable(false).build();
+                row.add_css_class("empty-row");
                 self.list.append(&row);
-                rows.push(None);
-                last_project = Some(project);
+                rows.push(Row::Empty(project.path.clone()));
             }
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            dot.add_css_class("dot");
-            let status = agent.status();
-            dot.add_css_class(if status == Status::Idle && agent.unseen.get() { "done" } else { status.css() });
-            dot.set_valign(gtk::Align::Center);
-            let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let title = gtk::Label::builder().label(agent.title()).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
-            title.add_css_class("agent-title");
-            names.append(&title);
-            let sub = match status {
-                Status::Idle if agent.unseen.get() => "done",
-                Status::Blocked => "needs you",
-                other => other.describe(),
-            };
-            if !sub.is_empty() {
-                let sub = gtk::Label::builder().label(sub).xalign(0.0).build();
-                sub.add_css_class("dim");
-                sub.add_css_class("small");
-                names.append(&sub);
+            for agent in mine {
+                let row = agent_row(agent);
+                self.list.append(&row);
+                if focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
+                    self.list.select_row(Some(&row));
+                }
+                rows.push(Row::Agent(agent.clone()));
             }
-            line.append(&dot);
-            line.append(&names);
-            let row = gtk::ListBoxRow::builder().child(&line).build();
-            row.add_css_class("agent-row");
-            self.list.append(&row);
-            if focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, &agent)) {
-                self.list.select_row(Some(&row));
-            }
-            rows.push(Some(agent));
         }
         *self.rows.borrow_mut() = rows;
+        if agents.is_empty() {
+            self.fill_welcome();
+        }
+    }
+
+    /// A project's header: open/closed arrow, name, what its agents are up to, and +.
+    fn project_row(self: &Rc<Self>, project: &Project, agents: &[&Rc<Agent>]) -> gtk::ListBoxRow {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let arrow = gtk::Label::new(Some(if project.collapsed { "▸" } else { "▾" }));
+        arrow.add_css_class("arrow");
+        let name = gtk::Label::builder().label(project_name(&project.path)).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        name.add_css_class("project-name");
+        line.append(&arrow);
+        line.append(&name);
+        let waiting = agents.iter().filter(|a| a.status() == Status::Blocked).count();
+        let working = agents.iter().filter(|a| matches!(a.status(), Status::Working | Status::Starting)).count();
+        if waiting > 0 {
+            let badge = gtk::Label::new(Some(&format!("⚑ {waiting}")));
+            badge.add_css_class("badge-warn");
+            badge.set_tooltip_text(Some("waiting for you"));
+            line.append(&badge);
+        }
+        if working > 0 {
+            let badge = gtk::Label::new(Some(&format!("● {working}")));
+            badge.add_css_class("badge-busy");
+            badge.set_tooltip_text(Some("working"));
+            line.append(&badge);
+        }
+        if waiting == 0 && working == 0 && !agents.is_empty() {
+            let count = gtk::Label::new(Some(&agents.len().to_string()));
+            count.add_css_class("dim");
+            count.add_css_class("small");
+            line.append(&count);
+        }
+        let add = gtk::Button::with_label("+");
+        add.add_css_class("flat");
+        add.add_css_class("add");
+        add.set_tooltip_text(Some(&format!("New agent in {}", project_name(&project.path))));
+        let weak = Rc::downgrade(self);
+        let path = project.path.clone();
+        add.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.start_agent_in(path.clone());
+            }
+        });
+        line.append(&add);
+        let row = gtk::ListBoxRow::builder().child(&line).selectable(false).build();
+        row.add_css_class("project-row");
+        row.set_tooltip_text(Some(&project.path.to_string_lossy()));
+        row
     }
 
     fn refresh_inbox(self: &Rc<Self>) {
@@ -992,51 +1460,124 @@ impl App {
         }
     }
 
-    fn open_switcher(self: &Rc<Self>) {
-        self.switcher_entry.set_text("");
-        self.fill_switcher();
-        let width = self.chat_stack.width();
-        self.switcher.set_pointing_to(Some(&gdk::Rectangle::new(width / 2, 12, 1, 1)));
-        self.switcher.popup();
-        self.switcher_entry.grab_focus();
-    }
-
-    fn fill_switcher(self: &Rc<Self>) {
-        while let Some(row) = self.switcher_list.row_at_index(0) {
-            self.switcher_list.remove(&row);
+    /// The page shown with no agent open: the mark, the main actions, recent projects.
+    fn fill_welcome(self: &Rc<Self>) {
+        while let Some(child) = self.welcome.first_child() {
+            self.welcome.remove(&child);
         }
-        let query = self.switcher_entry.text().to_lowercase();
-        for agent in self.agents_in_order() {
-            let project = project_name(&agent.project.clone());
-            let haystack = format!("{} {}", agent.title(), project).to_lowercase();
-            if !query.split_whitespace().all(|word| haystack.contains(word)) {
-                continue;
-            }
-            let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-            let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-            dot.add_css_class("dot");
-            dot.add_css_class(agent.status().css());
-            dot.set_valign(gtk::Align::Center);
-            let title = gtk::Label::builder().label(agent.title()).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
-            let project = gtk::Label::new(Some(&project));
-            project.add_css_class("dim");
-            line.append(&dot);
-            line.append(&title);
-            line.append(&project);
-            let row = gtk::ListBoxRow::builder().child(&line).build();
-            let weak = Rc::downgrade(self);
-            row.connect_activate(move |_| {
+        let middle = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        middle.set_valign(gtk::Align::Center);
+        middle.set_halign(gtk::Align::Center);
+        middle.set_vexpand(true);
+        middle.add_css_class("welcome");
+        let mark = crate::logo::mark(84);
+        mark.set_halign(gtk::Align::Center);
+        middle.append(&mark);
+        let title = gtk::Label::new(Some("loom"));
+        title.add_css_class("welcome-title");
+        middle.append(&title);
+        let tagline = gtk::Label::new(Some("Your Claude Code agents, side by side."));
+        tagline.add_css_class("dim");
+        middle.append(&tagline);
+
+        let actions = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        actions.add_css_class("welcome-actions");
+        let weak = Rc::downgrade(self);
+        let action = |label: &str, keys: &str, f: Box<dyn Fn(&Rc<App>)>| {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+            let text = gtk::Label::builder().label(label).xalign(0.0).hexpand(true).build();
+            let keys = gtk::Label::new(Some(keys));
+            keys.add_css_class("keycap");
+            line.append(&text);
+            line.append(&keys);
+            let button = gtk::Button::builder().child(&line).build();
+            button.add_css_class("welcome-action");
+            let weak = weak.clone();
+            button.connect_clicked(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    app.switcher.popdown();
-                    app.focus(&agent);
+                    f(&app);
                 }
             });
-            self.switcher_list.append(&row);
+            actions.append(&button);
+        };
+        action("Start an agent in a folder…", "Ctrl+Shift+N", Box::new(|a| a.new_agent(true)));
+        if !self.closed.borrow().is_empty() {
+            action("Reopen the last closed agent", "Ctrl+Shift+T", Box::new(|a| a.reopen_closed()));
         }
-        if let Some(first) = self.switcher_list.row_at_index(0) {
-            self.switcher_list.select_row(Some(&first));
+        action("Command palette", "Ctrl+Shift+P", Box::new(|a| a.palette()));
+        action("Settings", "Ctrl+,", Box::new(|a| crate::prefs::open(&a.window)));
+        middle.append(&actions);
+
+        let projects = self.projects.borrow().clone();
+        if !projects.is_empty() {
+            let heading = gtk::Label::builder().label("Projects").xalign(0.0).build();
+            heading.add_css_class("welcome-heading");
+            middle.append(&heading);
+            for project in projects.iter().take(6) {
+                let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+                let name = gtk::Label::builder().label(project_name(&project.path)).xalign(0.0).build();
+                let place = gtk::Label::builder()
+                    .label(project.path.to_string_lossy().replace(&*glib::home_dir().to_string_lossy(), "~"))
+                    .xalign(1.0)
+                    .hexpand(true)
+                    .ellipsize(pango::EllipsizeMode::Start)
+                    .build();
+                place.add_css_class("dim");
+                place.add_css_class("small");
+                line.append(&name);
+                line.append(&place);
+                let button = gtk::Button::builder().child(&line).build();
+                button.add_css_class("welcome-project");
+                let weak = Rc::downgrade(self);
+                let path = project.path.clone();
+                button.connect_clicked(move |_| {
+                    if let Some(app) = weak.upgrade() {
+                        app.start_agent_in(path.clone());
+                    }
+                });
+                middle.append(&button);
+            }
         }
+        self.welcome.append(&middle);
     }
+}
+
+fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    dot.add_css_class("dot");
+    let status = agent.status();
+    dot.add_css_class(if status == Status::Idle && agent.unseen.get() { "done" } else { status.css() });
+    dot.set_valign(gtk::Align::Center);
+    let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    names.set_hexpand(true);
+    let title = gtk::Label::builder().label(agent.title()).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+    title.add_css_class("agent-title");
+    names.append(&title);
+    let sub = match status {
+        Status::Idle if agent.unseen.get() => "done".to_owned(),
+        Status::Blocked => "needs you".to_owned(),
+        Status::Idle => String::new(),
+        other => other.describe().to_owned(),
+    };
+    // Where it works, when that is a subfolder of the project.
+    let place = agent.cwd.strip_prefix(&agent.project).ok().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_string_lossy().into_owned());
+    let sub = match (sub.is_empty(), place) {
+        (true, Some(place)) => place,
+        (false, Some(place)) => format!("{sub} · {place}"),
+        (_, None) => sub,
+    };
+    if !sub.is_empty() {
+        let sub = gtk::Label::builder().label(sub).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        sub.add_css_class("dim");
+        sub.add_css_class("small");
+        names.append(&sub);
+    }
+    line.append(&dot);
+    line.append(&names);
+    let row = gtk::ListBoxRow::builder().child(&line).build();
+    row.add_css_class("agent-row");
+    row
 }
 
 fn is_modifier(key: gdk::Key) -> bool {
@@ -1059,62 +1600,26 @@ pub fn project_of(cwd: &Path) -> PathBuf {
     cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd).to_owned()
 }
 
+fn state_project(cwd: &Path) -> PathBuf {
+    project_of(cwd)
+}
+
 fn project_name(project: &Path) -> String {
     project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| project.to_string_lossy().into_owned())
 }
 
-fn empty_page() -> gtk::Box {
-    // The page fills the pane (in the chat's colour); its text sits in the middle.
-    let page = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    page.add_css_class("chat");
-    let middle = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    middle.set_valign(gtk::Align::Center);
-    middle.set_halign(gtk::Align::Center);
-    middle.set_vexpand(true);
-    let title = gtk::Label::new(Some("No agents yet"));
-    title.add_css_class("title");
-    let hint = gtk::Label::new(Some("Ctrl+Shift+N starts one in a folder"));
-    hint.add_css_class("dim");
-    middle.append(&title);
-    middle.append(&hint);
-    page.append(&middle);
-    page
-}
-
-fn help_text() -> gtk::Label {
-    let keys = [
-        ("Ctrl+N", "new agent here"),
-        ("Ctrl+Shift+N", "new agent in a folder"),
-        ("Ctrl+K", "go to agent"),
-        ("Alt+↑ / Alt+↓", "previous / next agent"),
-        ("Ctrl+Tab", "next agent (Shift: previous)"),
-        ("Alt+← / Alt+→", "swap with the agent beside"),
-        ("Ctrl+1…9", "agent by position"),
-        ("Ctrl+W", "close agent (conversation kept)"),
-        ("Ctrl+\\", "previous agent beside this one"),
-        ("Enter / Shift+Enter", "send / new line"),
-        ("Esc", "stop the turn"),
-        ("Shift+Tab", "next permission mode"),
-        ("1…9 (empty input)", "answer the question"),
-        ("Ctrl+I", "questions from all agents"),
-        ("Ctrl+`", "scratch terminal"),
-        ("Ctrl+J", "run a command in the tray"),
-        ("Ctrl+Shift+J", "peek the newest job"),
-        ("Ctrl+Shift+X", "clear finished jobs"),
-        ("Ctrl+P", "find a file in the project"),
-        ("Ctrl+E / Ctrl+O", "files panel / open a file"),
-        ("Ctrl+S", "save (in the editor)"),
-        ("Ctrl+Shift+O", "open the file in nevis"),
-        ("Ctrl+B then…", "herdr's prefix: v split, h/l swap,"),
-        ("", "j/k agents, c new, x close, z zoom,"),
-        ("", "b sidebar, f files, t scratch, r run"),
-        ("Ctrl+L", "back to the input"),
-    ];
-    let markup: Vec<String> = keys
-        .iter()
-        .map(|(key, what)| format!("<tt>{:<20}</tt> {}", glib::markup_escape_text(key), glib::markup_escape_text(what)))
-        .collect();
-    let label = gtk::Label::builder().use_markup(true).label(markup.join("\n")).xalign(0.0).build();
-    label.add_css_class("help");
-    label
+fn help_text() -> gtk::Box {
+    let grid = gtk::Grid::builder().column_spacing(18).row_spacing(4).build();
+    grid.add_css_class("help");
+    for (i, (key, what)) in crate::prefs::KEYS.iter().enumerate() {
+        let key = gtk::Label::builder().label(*key).xalign(1.0).build();
+        key.add_css_class("keycap");
+        let what = gtk::Label::builder().label(*what).xalign(0.0).wrap(true).max_width_chars(48).build();
+        grid.attach(&key, 0, i as i32, 1, 1);
+        grid.attach(&what, 1, i as i32, 1, 1);
+    }
+    let scroller = gtk::ScrolledWindow::builder().child(&grid).propagate_natural_height(true).max_content_height(560).hscrollbar_policy(gtk::PolicyType::Never).build();
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    content.append(&scroller);
+    content
 }

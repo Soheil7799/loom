@@ -70,6 +70,21 @@ fn reload() {
     });
 }
 
+/// Every terminal takes `font` (from the settings).
+pub fn refont(font: &str) {
+    let desc = gtk::pango::FontDescription::from_string(font);
+    TERMINALS.with(|terms| {
+        terms.borrow_mut().retain(|weak| match weak.upgrade() {
+            Some(term) => {
+                use vte::prelude::*;
+                term.set_font(Some(&desc));
+                true
+            }
+            None => false,
+        })
+    });
+}
+
 /// Keeps `term` in the theme's colours from now on.
 pub fn follow(term: &vte::Terminal) {
     TERMINALS.with(|terms| terms.borrow_mut().push(term.downgrade()));

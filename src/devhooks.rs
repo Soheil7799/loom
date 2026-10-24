@@ -5,6 +5,8 @@
 //!
 //! - `prompt:<text>`: send text from the focused agent's input
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
+//! - `snappop:<prefix>`: pictures of the open popovers
+//! - `snapall:<prefix>`: pictures of the other windows (settings…), <prefix>-1.png…
 //! - `scratch`, `files`, `switcher`, `inbox`, `help`, `peek`: what their keys do
 //! - `run:<command>`: run a command in the tray
 //! - `open:<file>`: open a file in the editor (relative to the focused agent's folder)
@@ -47,7 +49,37 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
         "prompt" => app.focused_agent().ok_or("no agent")?.submit(argument.to_owned()),
-        "snap" => snapshot(&app.window, argument)?,
+        "snap" => snapshot(app.window.upcast_ref(), argument)?,
+        // Open popovers (palette, menus, pickers): <prefix>-1.png, -2…
+        "snappop" => {
+            let mut found = Vec::new();
+            popovers(app.window.upcast_ref(), &mut found);
+            for (i, popover) in found.iter().enumerate() {
+                let child = popover.child().ok_or("empty popover")?;
+                let (_, width, _, _) = child.measure(gtk::Orientation::Horizontal, -1);
+                let (_, height, _, _) = child.measure(gtk::Orientation::Vertical, width);
+                child.allocate(width.max(1), height.max(1), -1, None);
+                let snap = gtk::Snapshot::new();
+                popover.snapshot_child(&child, &snap);
+                let node = snap.to_node().ok_or("nothing drawn")?;
+                let renderer = popover.renderer().ok_or("no renderer")?;
+                renderer.render_texture(&node, None).save_to_png(format!("{argument}-{}.png", i + 1)).map_err(|e| e.to_string())?;
+            }
+            if found.is_empty() {
+                return Err("no popover open".into());
+            }
+        }
+        // Every other window too (settings…): <prefix>-1.png, -2…
+        "snapall" => {
+            let windows: Vec<gtk::Window> = gtk::Window::list_toplevels()
+                .into_iter()
+                .filter_map(|w| w.downcast::<gtk::Window>().ok())
+                .filter(|w| w.is_visible() && w != app.window.upcast_ref::<gtk::Window>())
+                .collect();
+            for (i, window) in windows.iter().enumerate() {
+                snapshot(window, &format!("{argument}-{}.png", i + 1))?;
+            }
+        }
         "answer" => {
             let n: usize = argument.parse().map_err(|_| "answer:<n>")?;
             if !app.focused_agent().ok_or("no agent")?.answer(0, n.saturating_sub(1)) {
@@ -63,7 +95,20 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     Ok(())
 }
 
-fn snapshot(window: &gtk::ApplicationWindow, path: &str) -> Result<(), String> {
+fn popovers(widget: &gtk::Widget, found: &mut Vec<gtk::Popover>) {
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        if let Some(p) = w.downcast_ref::<gtk::Popover>()
+            && p.is_visible()
+        {
+            found.push(p.clone());
+        }
+        popovers(&w, found);
+        child = w.next_sibling();
+    }
+}
+
+fn snapshot(window: &gtk::Window, path: &str) -> Result<(), String> {
     let content = window.child().ok_or("window has no content")?;
     // A window the compositor isn't drawing (another workspace) has its layout pending
     // forever: lay it out here, at its last size or else the size it opened at.

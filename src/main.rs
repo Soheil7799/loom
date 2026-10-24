@@ -6,12 +6,18 @@ mod acp;
 mod agent;
 mod app;
 mod chat;
+mod control;
 mod devhooks;
 mod files;
 mod jobs;
+mod logo;
 mod markdown;
+mod mcp;
+mod picker;
+mod prefs;
 mod quickopen;
 mod scratch;
+mod settings;
 mod state;
 mod term;
 mod theme;
@@ -83,7 +89,22 @@ button.suggested { background: alpha(@accent_color, 0.85); color: @accent_fg_col
 .plan .done { opacity: 0.45; }
 .plan .current { font-weight: 700; }
 .input-box { padding: 10px 18px 14px 18px; }
-textview.input { border-radius: 10px; background: alpha(@window_fg_color, 0.05); font-size: 1.02em; }
+.composer { border-radius: 16px; background: alpha(@window_fg_color, 0.045); border: 1px solid alpha(@window_fg_color, 0.09); }
+.composer:focus-within { border-color: alpha(@accent_color, 0.55); background: alpha(@window_fg_color, 0.06); }
+textview.input { background: transparent; font-size: 1.02em; }
+.placeholder { opacity: 0.42; }
+.composer-bar { padding: 2px 8px 8px 8px; }
+.composer-bar menubutton.chip-picker > button { min-height: 24px; padding: 0 10px; border-radius: 99px; font-size: 0.82em; background: alpha(@window_fg_color, 0.06); }
+.composer-bar menubutton.chip-picker > button:hover { background: alpha(@window_fg_color, 0.12); }
+button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
+button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
+button.send.stop { background: @loom_err; color: @window_bg_color; }
+.working { font-size: 0.85em; opacity: 0.7; margin-left: 6px; }
+.turn-footer { font-size: 0.78em; opacity: 0.42; margin: -4px 0 4px 2px; }
+button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+.msg-wrap button.copy { margin: 0 0 0 6px; padding: 0 8px; min-height: 20px; font-size: 0.75em; opacity: 0; border-radius: 6px; }
+.msg-wrap:hover button.copy { opacity: 0.75; }
+window.prefs scrolledwindow, window.prefs viewport, window.prefs stack { background: @window_bg_color; }
 textview.input text { background: transparent; }
 .completion row { padding: 3px 8px; }
 
@@ -112,13 +133,91 @@ window.loom paned > separator { background: none; background-color: shade(@windo
 .tree row { padding: 1px 6px; }
 .tree .folder { font-weight: 600; }
 .editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.88em; }
-.switcher-list row { padding: 6px 10px; border-radius: 6px; }
+.switcher-list row, .picker-list row { padding: 7px 10px; border-radius: 7px; }
+.picker { padding: 4px; }
+.picker-list { background: transparent; }
+
+/* sidebar: projects and agents */
+.sidebar-top { padding: 14px 12px 8px 16px; }
+.brand { font-weight: 800; letter-spacing: 0.06em; font-size: 1.05em; }
+.agents row.project-row { margin: 10px 6px 2px 6px; padding: 3px 6px 3px 8px; border-radius: 8px; }
+.agents row.project-row:hover { background: alpha(@window_fg_color, 0.04); }
+.project-row .arrow { opacity: 0.5; font-size: 0.8em; min-width: 12px; }
+.project-name { font-weight: 700; font-size: 0.92em; letter-spacing: 0.02em; }
+.project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
+.project-row:hover button.add { opacity: 0.8; }
+.badge-warn { color: @loom_warn; font-size: 0.8em; font-weight: 700; }
+.badge-busy { color: @accent_color; font-size: 0.8em; font-weight: 700; }
+.agents row.agent-row { margin: 1px 6px 1px 14px; padding: 6px 10px; }
+.agents row.empty-row { margin: 0 6px 0 22px; padding: 4px 8px; }
+.agent-title { font-weight: 500; }
+.menu { padding: 4px; }
+button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
+
+/* header pickers */
+.option-list { padding: 4px; min-width: 240px; }
+.option-heading { font-size: 0.75em; font-weight: 700; opacity: 0.55; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
+
+/* code blocks */
+.code-wrap button.copy { margin: 4px; padding: 0 8px; min-height: 20px; font-size: 0.75em; opacity: 0.0; border-radius: 6px; background: alpha(@window_bg_color, 0.8); }
+.code-wrap:hover button.copy { opacity: 0.9; }
+
+/* welcome */
+.welcome { padding: 32px; }
+.welcome-title { font-size: 2.2em; font-weight: 800; letter-spacing: 0.04em; }
+.welcome-actions { margin-top: 22px; min-width: 420px; }
+button.welcome-action, button.welcome-project { padding: 10px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
+button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
+.welcome-heading { margin-top: 22px; font-size: 0.75em; font-weight: 700; opacity: 0.55; letter-spacing: 0.08em; text-transform: uppercase; }
+.keycap { font-family: "JetBrains Mono", monospace; font-size: 0.78em; padding: 1px 7px; border-radius: 5px; background: alpha(@window_fg_color, 0.08); }
+
+/* settings */
+.prefs-sidebar { background: @sidebar_bg_color; padding: 8px 0; }
+.prefs-page { padding: 24px 30px; }
+.prefs-section { font-size: 0.75em; font-weight: 700; opacity: 0.55; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px 4px; }
+.prefs-group { background: alpha(@window_fg_color, 0.035); border-radius: 12px; }
+.prefs-row { padding: 12px 16px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
+.prefs-row:last-child { border-bottom: none; }
+.prefs-title { font-weight: 500; }
+.about-name { font-size: 1.8em; font-weight: 800; letter-spacing: 0.04em; }
+.about-blurb { margin: 6px 0; }
 .help { padding: 6px; font-size: 0.9em; }
 "#;
 
+thread_local! {
+    static RUNNING: std::cell::RefCell<std::rc::Weak<app::App>> = std::cell::RefCell::new(std::rc::Weak::new());
+}
+
+// GLib's own Unix signal source (not wrapped by these bindings): its handler runs on the
+// main loop, so it may touch the window.
+unsafe extern "C" {
+    fn g_unix_signal_add(signum: i32, handler: extern "C" fn(*mut std::ffi::c_void) -> i32, data: *mut std::ffi::c_void) -> u32;
+}
+
+extern "C" fn on_signal(_: *mut std::ffi::c_void) -> i32 {
+    if let Some(loom) = RUNNING.with(|r| r.borrow().upgrade()) {
+        loom.quit_now();
+    }
+    0 // G_SOURCE_REMOVE
+}
+
+/// kill, Ctrl+C in a terminal, the session ending: quit properly, stopping the agents.
+fn quit_on_signals(loom: &std::rc::Rc<app::App>) {
+    RUNNING.with(|r| *r.borrow_mut() = std::rc::Rc::downgrade(loom));
+    for signal in [libc::SIGTERM, libc::SIGINT, libc::SIGHUP] {
+        // SAFETY: a plain C callback with no data, on the default main context.
+        unsafe { g_unix_signal_add(signal, on_signal, std::ptr::null_mut()) };
+    }
+}
+
 fn main() -> glib::ExitCode {
-    // LOOM_APP_ID: a separate instance (tests), with its own saved agents.
+    // `loom mcp`: the MCP server an agent runs to reach loom (no window).
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        return glib::ExitCode::from(mcp::run() as u8);
+    }
+    // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
+    settings::init(&app_id);
     let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::empty()).build();
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
@@ -138,6 +237,7 @@ fn main() -> glib::ExitCode {
         let loom = app::App::new(app);
         loom.window.present();
         devhooks::watch(&loom);
+        quit_on_signals(&loom);
         // The window owns everything through its widgets; keep the app state alive with it.
         // SAFETY: the key stores the App and is read by nothing; it drops with the window.
         unsafe { loom.window.set_data("loom", loom.clone()) };
