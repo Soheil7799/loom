@@ -9,6 +9,7 @@
 //! - `run:<command>`: run a command in the tray
 //! - `open:<file>`: open a file in the editor (relative to the focused agent's folder)
 //! - `mode`: next permission mode
+//! - `split`: what Ctrl+\ does
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
 //! - `agent:<n>`: focus the n-th agent (from 1)
 //! - `new:<folder>`: start an agent in a folder

@@ -32,6 +32,10 @@ pub struct App {
     inbox: gtk::MenuButton,
     inbox_list: gtk::Box,
     chat_stack: gtk::Stack,
+    /// The second agent shown beside the focused one (Ctrl+\), and where it sits.
+    pinned: RefCell<Option<Rc<Agent>>>,
+    pinned_box: gtk::Box,
+    previous: RefCell<Option<Rc<Agent>>>,
     dock_stack: gtk::Stack,
     bar_stack: gtk::Stack,
     trays: RefCell<HashMap<PathBuf, Rc<Tray>>>,
@@ -97,9 +101,19 @@ impl App {
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
+        let pinned_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        pinned_box.add_css_class("pinned");
+        pinned_box.set_visible(false);
+        let chats = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .start_child(&chat_stack)
+            .end_child(&pinned_box)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .build();
         let work = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
-            .start_child(&chat_stack)
+            .start_child(&chats)
             .end_child(&dock_stack)
             .resize_end_child(false)
             .shrink_end_child(false)
@@ -161,6 +175,9 @@ impl App {
             inbox,
             inbox_list,
             chat_stack,
+            pinned: RefCell::default(),
+            pinned_box,
+            previous: RefCell::default(),
             dock_stack,
             bar_stack,
             trays: RefCell::default(),
@@ -322,6 +339,7 @@ impl App {
                 self.files.choose();
             }
             (true, false, false, gdk::Key::l) => self.focus_input(),
+            (true, false, false, gdk::Key::backslash) => self.toggle_split(),
             (true, false, false, gdk::Key::slash) => self.help.popup(),
             (true, false, false, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 let index = k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1;
@@ -361,6 +379,7 @@ impl App {
             "inbox" => self.inbox.popup(),
             "help" => self.help.popup(),
             "peek" => self.current_tray().peek_latest(),
+            "split" => self.toggle_split(),
             "open" => {
                 self.files.root.set_visible(true);
                 self.files.open_file(Path::new(argument));
@@ -453,14 +472,18 @@ impl App {
     }
 
     pub fn focus(self: &Rc<Self>, agent: &Rc<Agent>) {
-        if let Some(old) = self.focused.borrow().as_ref() {
+        let old = self.focused.borrow().clone();
+        if let Some(old) = old.filter(|old| !Rc::ptr_eq(old, agent)) {
             old.focused.set(false);
+            *self.previous.borrow_mut() = Some(old);
         }
         agent.focused.set(true);
         agent.unseen.set(false);
         agent.last_active.set(std::time::Instant::now());
         *self.focused.borrow_mut() = Some(agent.clone());
-        self.chat_stack.set_visible_child(&agent.chat.root);
+        if !self.is_pinned(agent) {
+            self.chat_stack.set_visible_child(&agent.chat.root);
+        }
         let project = project_of(&agent.cwd);
         self.show_tray(&project, &agent.tray);
         self.files.show(&agent.cwd, &agent.files());
@@ -470,6 +493,41 @@ impl App {
         agent.chat.input.grab_focus();
         self.refresh_sidebar();
         self.save();
+    }
+
+    fn is_pinned(&self, agent: &Rc<Agent>) -> bool {
+        self.pinned.borrow().as_ref().is_some_and(|p| Rc::ptr_eq(p, agent))
+    }
+
+    /// Shows the previous agent beside the focused one, or puts it back.
+    fn toggle_split(self: &Rc<Self>) {
+        let pinned = self.pinned.borrow_mut().take();
+        if let Some(agent) = pinned {
+            self.pinned_box.remove(&agent.chat.root);
+            self.pinned_box.set_visible(false);
+            self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{}", agent.id)));
+            if agent.focused.get() {
+                self.chat_stack.set_visible_child(&agent.chat.root);
+            }
+            return;
+        }
+        let focused = self.focused.borrow().clone();
+        let candidate = self.previous.borrow().clone().filter(|p| !focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, p)));
+        let candidate = candidate.or_else(|| {
+            // No previous one: the next agent in the sidebar.
+            let order = self.agents_in_order();
+            let at = focused.as_ref().and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, f)))?;
+            let focused = focused.as_ref()?;
+            order.get((at + 1) % order.len()).cloned().filter(|a| !Rc::ptr_eq(a, focused))
+        });
+        let Some(agent) = candidate else { return };
+        self.chat_stack.remove(&agent.chat.root);
+        self.pinned_box.append(&agent.chat.root);
+        self.pinned_box.set_visible(true);
+        if agent.status() == Status::Suspended {
+            agent.start();
+        }
+        *self.pinned.borrow_mut() = Some(agent);
     }
 
     fn step(self: &Rc<Self>, by: i32) {
@@ -545,6 +603,12 @@ impl App {
     fn remove_agent(self: &Rc<Self>, agent: &Rc<Agent>) {
         let order = self.agents_in_order();
         let position = order.iter().position(|a| Rc::ptr_eq(a, agent)).unwrap_or(0);
+        if self.is_pinned(agent) {
+            self.toggle_split();
+        }
+        if self.previous.borrow().as_ref().is_some_and(|p| Rc::ptr_eq(p, agent)) {
+            *self.previous.borrow_mut() = None;
+        }
         agent.stop();
         self.chat_stack.remove(&agent.chat.root);
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
@@ -835,6 +899,7 @@ fn help_text() -> gtk::Label {
         ("Alt+↑ / Alt+↓", "previous / next agent"),
         ("Ctrl+1…9", "agent by position"),
         ("Ctrl+W", "close agent (conversation kept)"),
+        ("Ctrl+\\", "previous agent beside this one"),
         ("Enter / Shift+Enter", "send / new line"),
         ("Esc", "stop the turn"),
         ("Shift+Tab", "next permission mode"),

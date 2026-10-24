@@ -102,6 +102,7 @@ button.small { padding: 0 8px; min-height: 22px; font-size: 0.85em; }
 .editor { font-family: "JetBrains Mono", Vazirmatn, monospace; font-size: 0.95em; }
 
 .scratch { background: @window_bg_color; border-radius: 12px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+.pinned { border-left: 1px solid alpha(@window_fg_color, 0.1); }
 .switcher-list row { padding: 6px 10px; border-radius: 6px; }
 .help { padding: 6px; font-size: 0.9em; }
 "#;
