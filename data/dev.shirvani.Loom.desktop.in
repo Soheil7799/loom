@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Loom
+GenericName=Agent Workspace
+Comment=Keyboard-first home for coding agents
+Exec=@BINDIR@/loom
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;GTK;
+Keywords=claude;agent;ai;terminal;acp;
+StartupNotify=true
