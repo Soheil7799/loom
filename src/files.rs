@@ -102,8 +102,13 @@ impl Files {
         save.add_css_class("flat");
         let close = gtk::Button::with_label("Close");
         close.add_css_class("flat");
+        let in_nevis = gtk::Button::with_label("nevis");
+        in_nevis.add_css_class("flat");
+        in_nevis.set_tooltip_text(Some("Open in nevis, with Live Preview (Ctrl+Shift+O)"));
+        in_nevis.set_visible(glib::find_program_in_path("nevis").is_some());
         editor_header.append(&name);
         editor_header.append(&dirty);
+        editor_header.append(&in_nevis);
         editor_header.append(&save);
         editor_header.append(&close);
         let buffer = sourceview::Buffer::new(None);
@@ -200,6 +205,12 @@ impl Files {
         save.connect_clicked(move |_| {
             if let Some(files) = weak.upgrade() {
                 files.save();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        in_nevis.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.open_in_nevis();
             }
         });
         let weak = Rc::downgrade(&files);
@@ -433,6 +444,18 @@ impl Files {
     pub fn show_project(&self) {
         self.root.set_visible(true);
         self.project_tab.set_active(true);
+    }
+
+    /// Hands the open file to nevis (saved first, so nevis shows what was typed here).
+    /// nevis opens it in a window of its own; it stays open here too.
+    pub fn open_in_nevis(&self) {
+        let Some(path) = self.open.borrow().clone() else { return };
+        if self.buffer.is_modified() && !self.save() {
+            return;
+        }
+        if let Err(err) = std::process::Command::new("nevis").arg(&path).spawn() {
+            self.notice(&format!("Could not start nevis: {err}"));
+        }
     }
 
     pub fn has_unsaved(&self) -> bool {

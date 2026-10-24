@@ -378,6 +378,7 @@ impl App {
                 self.files.root.set_visible(true);
                 self.files.choose();
             }
+            (true, true, false, gdk::Key::o) => self.files.open_in_nevis(),
             (true, false, false, gdk::Key::l) => self.focus_input(),
             (true, false, false, gdk::Key::p) => self.find_file(),
             (true, false, false, gdk::Key::backslash) => self.toggle_split(),
@@ -429,6 +430,7 @@ impl App {
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
             "find" => self.find_file(),
+            "nevis" => self.files.open_in_nevis(),
             "tree" => self.files.show_project(),
             "close" => self.close_focused(),
             "open" => {
@@ -1102,6 +1104,7 @@ fn help_text() -> gtk::Label {
         ("Ctrl+P", "find a file in the project"),
         ("Ctrl+E / Ctrl+O", "files panel / open a file"),
         ("Ctrl+S", "save (in the editor)"),
+        ("Ctrl+Shift+O", "open the file in nevis"),
         ("Ctrl+B then…", "herdr's prefix: v split, h/l swap,"),
         ("", "j/k agents, c new, x close, z zoom,"),
         ("", "b sidebar, f files, t scratch, r run"),
