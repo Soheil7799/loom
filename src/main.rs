@@ -14,6 +14,7 @@ mod quickopen;
 mod scratch;
 mod state;
 mod term;
+mod theme;
 
 use gtk::{gdk, gio, glib, prelude::*};
 
@@ -122,6 +123,7 @@ fn main() -> glib::ExitCode {
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);
+        theme::watch();
         if let Some(display) = gdk::Display::default() {
             // Above the user's GTK stylesheet (which it reads colours from), like nevis's chrome.
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_USER + 2);

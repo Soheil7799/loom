@@ -17,7 +17,14 @@ pub fn new(widget_for_colors: &impl IsA<gtk::Widget>) -> vte::Terminal {
     term.set_vexpand(true);
     let (fg, bg) = colors(widget_for_colors.as_ref());
     term.set_colors(Some(&fg), Some(&bg), &[]);
+    crate::theme::follow(&term);
     term
+}
+
+/// The theme changed: the terminal takes its new colours.
+pub fn recolor(term: &vte::Terminal) {
+    let (fg, bg) = colors(term.upcast_ref());
+    term.set_colors(Some(&fg), Some(&bg), &[]);
 }
 
 /// Foreground and background of the GTK theme in use.
