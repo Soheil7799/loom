@@ -11,7 +11,7 @@
 window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
 .mono, .tool-title, .chip, .code-block, .diff label, .table-cell.mono { font-family: "JetBrains Mono", Vazirmatn, monospace; }
 .dim { color: alpha(@window_fg_color, 0.68); }
-.small { font-size: 0.88em; }
+.small { font-size: 0.9em; }
 .title { font-weight: 700; }
 window.loom scrolledwindow undershoot, window.loom scrolledwindow overshoot { background: none; }
 
@@ -24,7 +24,7 @@ button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible
 /* ---- sidebar ---------------------------------------------------------------------------- */
 .sidebar { background: @sidebar_bg_color; border-right: 1px solid @loom_line; }
 .sidebar-top { padding: 14px 12px 8px 16px; }
-.brand { font-weight: 800; letter-spacing: 0.06em; font-size: 1.05em; }
+.brand { font-weight: 800; letter-spacing: 0.06em; font-size: 1em; }
 .sidebar-bottom { padding: 6px; border-top: 1px solid @loom_line; }
 .sidebar-bottom button:not(:hover):not(:checked) { background: none; box-shadow: none; }
 .sidebar-bottom button { border-radius: 8px; }
@@ -37,13 +37,13 @@ button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible
 .agents row:selected .agent-title { font-weight: 600; }
 .agents row.project-row { margin: 14px 6px 2px 6px; padding: 2px 6px 2px 8px; }
 .agents row.project-row:hover { background: alpha(@window_fg_color, 0.04); }
-.project-row button.arrow { opacity: 0.6; font-size: 0.78em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 4px; }
+.project-row button.arrow { opacity: 0.6; font-size: 0.8em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 6px; }
 .project-row button.arrow:hover { opacity: 1; }
-.project-name { font-size: 0.78em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.68; }
+.project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.68; }
 .project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
 .project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
-.badge-wait { color: @loom_wait; font-size: 0.78em; font-weight: 700; }
-.badge-busy { color: @accent_color; font-size: 0.78em; font-weight: 700; }
+.badge-wait { color: @loom_wait; font-size: 0.8em; font-weight: 700; }
+.badge-busy { color: @accent_color; font-size: 0.8em; font-weight: 700; }
 .agents row.empty-row { margin: 0 6px 0 22px; padding: 4px 8px; }
 .sidebar-empty { padding: 18px 18px; }
 .agent-title { font-weight: 500; }
@@ -68,14 +68,14 @@ button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
 .header { padding: 10px 18px; border-bottom: 1px solid @loom_line; }
 .chat.active .header { border-bottom-color: alpha(@accent_color, 0.5); }
 .chat.inactive .header .title { opacity: 0.6; }
-.header .title { font-size: 1.05em; }
-.header .place { font-size: 0.88em; opacity: 0.68; }
+.header .title { font-size: 1.25em; }
+.header .place { font-size: 0.9em; opacity: 0.68; }
 .context-bar { min-width: 40px; }
 .context-bar trough { min-height: 4px; border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
 .context-bar block.filled { border-radius: 99px; background: alpha(@window_fg_color, 0.45); }
 .context-bar.full block.filled { background: @loom_warn; }
 .messages { padding: 18px 28px 24px 28px; }
-.msg-user { background: alpha(@window_fg_color, 0.055); border: 1px solid alpha(@window_fg_color, 0.07); border-radius: 12px; padding: 10px 14px; }
+.msg-user { background: alpha(@window_fg_color, 0.055); border: 1px solid alpha(@window_fg_color, 0.07); border-radius: 10px; padding: 10px 14px; }
 .msg-agent { padding: 0 2px; }
 .thought { opacity: 0.68; }
 .notice { font-style: italic; opacity: 0.75; }
@@ -83,35 +83,35 @@ button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
 box.notice.error { padding: 10px 14px; border-radius: 10px; border: 1px solid alpha(@loom_err, 0.45); background: alpha(@loom_err, 0.07); }
 box.notice.error label { font-style: normal; color: @window_fg_color; }
 .starting-note { padding: 40px 0; opacity: 0.68; }
-.code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 10px; font-size: 0.88em; }
+.code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 10px; font-size: 0.9em; }
 .md-table { border-radius: 8px; border: 1px solid @loom_line; }
-.md-table .table-head { font-size: 0.78em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.68; padding: 6px 12px; border-bottom: 1px solid @loom_line; }
+.md-table .table-head { font-size: 0.8em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.68; padding: 6px 12px; border-bottom: 1px solid @loom_line; }
 .md-table .table-cell { padding: 5px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.04); }
 
 /* Tool calls: quiet rows; only what changed (a diff) or failed draws the eye. */
 .tool-card { border-radius: 8px; background: transparent; }
 .tool-card:hover { background: alpha(@window_fg_color, 0.035); }
 .tool-toggle { padding: 2px 8px; border-radius: 8px; }
-.tool-title { font-size: 0.88em; opacity: 0.85; }
-.tool-card .chevron { opacity: 0.45; font-size: 0.88em; }
-.kind { font-size: 0.78em; font-weight: 700; opacity: 0.55; text-transform: uppercase; }
+.tool-title { font-size: 0.9em; opacity: 0.85; }
+.tool-card .chevron { opacity: 0.45; font-size: 0.9em; }
+.kind { font-size: 0.8em; font-weight: 700; opacity: 0.55; text-transform: uppercase; }
 .glyph { opacity: 0.85; }
 .glyph.done { color: @loom_ok; }
 .glyph.failed { color: @loom_err; }
 .tool-detail { padding: 4px 12px 10px 28px; }
-.tool-summary { font-size: 0.88em; opacity: 0.75; }
+.tool-summary { font-size: 0.9em; opacity: 0.75; }
 .tool-summary:hover { opacity: 1; }
 .diff { background: alpha(@window_fg_color, 0.035); border-radius: 8px; padding: 6px 10px; }
 .diff-add { color: @loom_ok; }
 .diff-del { color: @loom_err; }
 .permission-card { border: 1px solid alpha(@loom_wait, 0.6); background: alpha(@loom_wait, 0.07); border-radius: 10px; padding: 12px; }
 button.suggested { background: alpha(@accent_color, 0.85); color: @accent_fg_color; }
-.plan { padding: 8px 28px; border-top: 1px solid @loom_line; font-size: 0.88em; }
+.plan { padding: 8px 28px; border-top: 1px solid @loom_line; font-size: 0.9em; }
 .plan .done { opacity: 0.5; }
 .plan .current { font-weight: 700; }
-.turn-footer { font-size: 0.78em; opacity: 0.6; margin: -4px 0 4px 2px; }
+.turn-footer { font-size: 0.8em; opacity: 0.6; margin: -4px 0 4px 2px; }
 button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
-.msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.78em; opacity: 0; border-radius: 6px; }
+.msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.8em; opacity: 0; border-radius: 6px; }
 .code-wrap button.copy { margin: 4px; background: alpha(@window_bg_color, 0.8); }
 .msg-wrap:hover button.copy, .code-wrap:hover button.copy { opacity: 0.8; }
 
@@ -122,7 +122,7 @@ button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_c
 textview.input, textview.input text { background: transparent; }
 .placeholder { opacity: 0.55; }
 .composer-bar { padding: 2px 8px 8px 8px; }
-.composer-bar menubutton.chip-picker > button, .composer-bar button.mode { min-height: 24px; padding: 0 10px; border-radius: 99px; font-size: 0.88em; background: alpha(@window_fg_color, 0.06); }
+.composer-bar menubutton.chip-picker > button, .composer-bar button.mode { min-height: 24px; padding: 0 10px; border-radius: 99px; font-size: 0.9em; background: alpha(@window_fg_color, 0.06); }
 .composer-bar menubutton.chip-picker > button:hover, .composer-bar button.mode:hover { background: alpha(@window_fg_color, 0.12); }
 .composer-bar button.mode.plan-mode { color: @accent_color; }
 .composer-bar button.mode.accept-mode { color: @loom_warn; }
@@ -130,27 +130,27 @@ textview.input, textview.input text { background: transparent; }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
 button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
 button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
-.working { font-size: 0.88em; opacity: 0.75; margin-left: 6px; }
+.working { font-size: 0.9em; opacity: 0.75; margin-left: 6px; }
 .completion row { padding: 3px 8px; }
 .option-list { padding: 4px; min-width: 240px; }
-.option-heading { font-size: 0.78em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
+.option-heading { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
 
 /* ---- tray, files, scratch --------------------------------------------------------------- */
 .tray { padding: 4px 8px; min-height: 26px; border-top: 1px solid @loom_line; background: @sidebar_bg_color; }
-.tray .hint { font-size: 0.78em; opacity: 0.6; margin-right: 6px; }
-.chip { padding: 2px 10px; min-height: 0; border-radius: 99px; font-size: 0.88em; }
+.tray .hint { font-size: 0.8em; opacity: 0.6; margin-right: 6px; }
+.chip { padding: 2px 10px; min-height: 0; border-radius: 99px; font-size: 0.9em; }
 .dock { padding: 6px; background: @sidebar_bg_color; }
 .docked, .peek-frame { padding: 4px; }
-button.small { padding: 0 8px; min-height: 22px; font-size: 0.88em; }
+button.small { padding: 0 8px; min-height: 22px; font-size: 0.9em; }
 .files { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
 .panel-header { padding: 10px 12px 6px 12px; }
 /* Tabs as one segmented control: a soft track, the chosen one raised. */
-.segmented { background: alpha(@window_fg_color, 0.06); border-radius: 9px; padding: 2px; }
-.segmented .tab { padding: 3px 12px; min-height: 0; border-radius: 7px; font-weight: 500; font-size: 0.88em; opacity: 0.7; }
+.segmented { background: alpha(@window_fg_color, 0.06); border-radius: 10px; padding: 2px; }
+.segmented .tab { padding: 3px 12px; min-height: 0; border-radius: 6px; font-weight: 500; font-size: 0.9em; opacity: 0.7; }
 .segmented .tab:hover { opacity: 0.9; }
 .segmented .tab:checked { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; opacity: 1; font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
 .segmented .tab:checked label { color: @window_fg_color; }
-.panel-caption { font-size: 0.78em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.62; padding: 10px 18px 4px 18px; }
+.panel-caption { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.62; padding: 10px 18px 4px 18px; }
 .files-empty { padding: 28px 18px; }
 .file-list { background: transparent; }
 .file-list row { border-radius: 8px; margin: 1px 8px; padding: 0; }
@@ -158,53 +158,53 @@ button.small { padding: 0 8px; min-height: 22px; font-size: 0.88em; }
 .file-list row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .file-row { padding: 6px 10px; }
 .file-icon { opacity: 0.7; -gtk-icon-size: 16px; }
-.badge { font-size: 0.72em; font-weight: 700; padding: 1px 7px; min-height: 0; border-radius: 99px; letter-spacing: 0.02em; }
+.badge { font-size: 0.8em; font-weight: 700; padding: 1px 7px; min-height: 0; border-radius: 99px; letter-spacing: 0.02em; }
 .badge.new { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
 .badge.edited { color: @accent_color; background: alpha(@accent_color, 0.14); }
 .dirty { color: @loom_warn; }
 .editor { font-family: "JetBrains Mono", Vazirmatn, monospace; }
-.editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.88em; }
+.editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.9em; }
 listview.tree { background: transparent; padding: 4px 0; }
-.tree row { padding: 4px 8px; margin: 0 8px; border-radius: 7px; }
+.tree row { padding: 4px 8px; margin: 0 8px; border-radius: 6px; }
 .tree row:hover { background: alpha(@window_fg_color, 0.05); }
 .tree row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .tree .folder { font-weight: 500; }
 .changes-view { padding: 6px 4px; }
 .changes-view > box, .changes-view > .repo-line { margin: 0 8px; }
-.repo-line { font-family: "JetBrains Mono", monospace; font-size: 0.88em; opacity: 0.8; padding: 2px 2px; }
-.git-code { font-family: "JetBrains Mono", monospace; font-size: 0.78em; font-weight: 700; min-width: 22px; padding: 0 4px; border-radius: 4px; }
+.repo-line { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.8; padding: 2px 2px; }
+.git-code { font-family: "JetBrains Mono", monospace; font-size: 0.8em; font-weight: 700; min-width: 22px; padding: 0 4px; border-radius: 6px; }
 .git-code.modified { color: @accent_color; background: alpha(@accent_color, 0.12); }
 .git-code.added { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
 .git-code.deleted { color: @loom_err; background: alpha(@loom_err, 0.12); }
-.scratch { background: @window_bg_color; border-radius: 12px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+.scratch { background: @window_bg_color; border-radius: 10px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
 window.loom paned > separator { background: none; background-color: @loom_line; color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
-.toast { background: alpha(@window_bg_color, 0.97); border: 1px solid alpha(@loom_wait, 0.7); border-radius: 12px; padding: 6px 6px 6px 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.toast { background: alpha(@window_bg_color, 0.97); border: 1px solid alpha(@loom_wait, 0.7); border-radius: 10px; padding: 6px 6px 6px 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 .toast button { min-height: 26px; padding: 0 10px; }
 .toast .toast-go { font-weight: 600; color: @loom_wait; }
-.prefix-hint { background: alpha(@window_bg_color, 0.95); border: 1px solid alpha(@accent_color, 0.6); border-radius: 99px; padding: 6px 16px; font-size: 0.88em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.prefix-hint { background: alpha(@window_bg_color, 0.95); border: 1px solid alpha(@accent_color, 0.6); border-radius: 99px; padding: 6px 16px; font-size: 0.9em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 
 /* ---- pickers, help, welcome, settings --------------------------------------------------- */
 .picker { padding: 4px; }
 .picker-list { background: transparent; }
-.switcher-list row, .picker-list row { padding: 7px 10px; border-radius: 7px; }
+.switcher-list row, .picker-list row { padding: 7px 10px; border-radius: 6px; }
 .help { padding: 6px; }
-.keycap { font-family: "JetBrains Mono", monospace; font-size: 0.78em; padding: 1px 7px; border-radius: 5px; background: alpha(@window_fg_color, 0.08); }
+.keycap { font-family: "JetBrains Mono", monospace; font-size: 0.8em; padding: 1px 7px; border-radius: 6px; background: alpha(@window_fg_color, 0.08); }
 .welcome { padding: 32px; }
 .welcome-title { font-size: 2.2em; font-weight: 800; letter-spacing: 0.04em; }
 .welcome-actions { margin-top: 22px; min-width: 420px; }
 button.welcome-action, button.welcome-project { padding: 10px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
 button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
-.welcome-heading { margin-top: 22px; font-size: 0.78em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; }
+.welcome-heading { margin-top: 22px; font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; }
 window.prefs scrolledwindow, window.prefs viewport, window.prefs stack { background: @window_bg_color; }
 .prefs-sidebar { background: @sidebar_bg_color; padding: 8px 0; }
 .prefs-page { padding: 28px 36px; }
-.prefs-heading { font-size: 1.2em; font-weight: 700; margin-bottom: 4px; }
-.prefs-section { font-size: 0.78em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px 4px; }
-.prefs-group { background: alpha(@window_fg_color, 0.035); border-radius: 12px; }
+.prefs-heading { font-size: 1.25em; font-weight: 700; margin-bottom: 4px; }
+.prefs-section { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px 4px; }
+.prefs-group { background: alpha(@window_fg_color, 0.035); border-radius: 10px; }
 .prefs-row { padding: 12px 16px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
 .prefs-row:last-child { border-bottom: none; }
 .prefs-title { font-weight: 500; }
-.about-name { font-size: 1.8em; font-weight: 800; letter-spacing: 0.04em; }
+.about-name { font-size: 1.6em; font-weight: 800; letter-spacing: 0.04em; }
 .about-blurb { margin: 6px 0; }
 
 /* A project's page: new conversation, or a past one. */
@@ -217,7 +217,7 @@ list.history row:selected { background: alpha(@accent_color, 0.12); color: @wind
 list.history row.history-new { margin-bottom: 10px; background: alpha(@window_fg_color, 0.04); }
 list.history row.history-new:selected { background: alpha(@accent_color, 0.16); }
 .history-plus { font-weight: 700; color: @accent_color; min-width: 14px; }
-.history-open { font-size: 0.78em; padding: 1px 7px; border-radius: 99px; color: @accent_color; background: alpha(@accent_color, 0.12); }
+.history-open { font-size: 0.8em; padding: 1px 7px; border-radius: 99px; color: @accent_color; background: alpha(@accent_color, 0.12); }
 .history-note { padding: 4px 14px; }
 
 /* The keyboard cheatsheet (Ctrl+/). */
@@ -225,35 +225,35 @@ window.cheatsheet { background: @window_bg_color; }
 .cheat-content { padding: 28px 32px 36px 32px; }
 .cheat-title { font-size: 1.6em; font-weight: 700; }
 .cheat-content > flowbox { margin-top: 18px; }
-.cheat-card { background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.06); border-radius: 12px; padding: 14px 16px 12px 16px; min-width: 300px; }
-.cheat-heading { font-size: 0.78em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: @accent_color; margin-bottom: 6px; }
+.cheat-card { background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.06); border-radius: 10px; padding: 14px 16px 12px 16px; min-width: 300px; }
+.cheat-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: @accent_color; margin-bottom: 6px; }
 .cheat-row { padding: 5px 0; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
 .cheat-card > .cheat-row:last-child { border-bottom: none; }
 .keycap { min-width: 14px; border-bottom: 1px solid alpha(@window_fg_color, 0.14); }
-.key-plus, .key-or { opacity: 0.45; font-size: 0.78em; }
-.key-note { opacity: 0.6; font-size: 0.78em; margin-left: 4px; }
+.key-plus, .key-or { opacity: 0.45; font-size: 0.8em; }
+.key-note { opacity: 0.6; font-size: 0.8em; margin-left: 4px; }
 
 /* Images: attached under the input, and sent with a message. */
 .attachments { padding: 10px 12px 0 12px; }
 .attachment { border-radius: 8px; border: 1px solid alpha(@window_fg_color, 0.12); }
-button.attachment-remove { min-height: 18px; min-width: 18px; padding: 0; margin: 3px; border-radius: 99px; font-size: 0.78em; background: alpha(@window_bg_color, 0.85); }
+button.attachment-remove { min-height: 18px; min-width: 18px; padding: 0; margin: 3px; border-radius: 99px; font-size: 0.8em; background: alpha(@window_bg_color, 0.85); }
 .msg-images { margin: 2px 0 6px 0; }
 .msg-image { border-radius: 10px; border: 1px solid alpha(@window_fg_color, 0.1); }
-.shell-line { font-family: "JetBrains Mono", monospace; font-size: 0.88em; opacity: 0.75; }
+.shell-line { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.75; }
 .plan-detail { padding: 10px 14px; border-radius: 8px; background: alpha(@window_fg_color, 0.04); }
 .msg-wrap-user .copy { opacity: 0; }
 .msg-wrap-user:hover .copy { opacity: 0.8; }
 .find-bar { background: alpha(@window_bg_color, 0.97); border: 1px solid alpha(@window_fg_color, 0.12); border-radius: 10px; padding: 6px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
 .history-filter { margin: 0 0 4px 0; }
 .editor-tabs { padding: 2px 10px 4px 10px; }
-.editor-tab { border-radius: 7px; background: alpha(@window_fg_color, 0.04); }
+.editor-tab { border-radius: 6px; background: alpha(@window_fg_color, 0.04); }
 .editor-tab.current { background: alpha(@window_fg_color, 0.12); }
-.editor-tab button { padding: 1px 8px; min-height: 0; font-size: 0.88em; }
+.editor-tab button { padding: 1px 8px; min-height: 0; font-size: 0.9em; }
 .commit-line { margin: 6px 8px 8px 8px; }
 .change-row .change-actions { opacity: 0; }
 .change-row:hover .change-actions { opacity: 1; }
 .git-code.staged { box-shadow: inset 0 -2px 0 alpha(@loom_ok, 0.8); }
-.option-preview { font-size: 0.85em; margin-top: 4px; }
+.option-preview { font-size: 0.9em; margin-top: 4px; }
 .tool-children { margin: 2px 0 4px 22px; padding-left: 8px; border-left: 2px solid alpha(@window_fg_color, 0.08); }
 .history-delete { opacity: 0; }
 list.history row:hover .history-delete { opacity: 0.7; }
@@ -264,9 +264,9 @@ list.graph row { padding: 0 10px; min-height: 0; }
 list.graph row:hover { background: alpha(@window_fg_color, 0.04); }
 list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .graph-row { min-height: 22px; }
-.graph-lanes { font-family: "JetBrains Mono", monospace; font-size: 0.95em; }
-.graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.85em; opacity: 0.55; }
-.ref { font-size: 0.72em; font-weight: 700; padding: 0 6px; border-radius: 99px; }
+.graph-lanes { font-family: "JetBrains Mono", monospace; font-size: 0.9em; }
+.graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.55; }
+.ref { font-size: 0.8em; font-weight: 700; padding: 0 6px; border-radius: 99px; }
 .ref.head { color: @accent_fg_color; background: @accent_color; }
 .ref.branch { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
 .ref.remote { color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); }
@@ -276,19 +276,19 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 /* The open file, beside the chat. */
 .editor-pane { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
 .reader { padding: 24px 28px 40px 28px; }
-.reader label { font-size: 1.02em; }
+.reader label { font-size: 1em; }
 .editor-title { padding: 12px 14px 0 14px; font-weight: 600; }
 .editor-title label { font-family: inherit; }
 .usage-button { padding: 2px 8px; min-height: 0; border-radius: 8px; }
 .usage-pop { padding: 10px 12px; min-width: 340px; }
-.usage-heading { font-size: 0.72em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 6px; }
+.usage-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 6px; }
 .crew { background: none; padding: 4px 6px 6px 6px; font-size: 0.9em; }
 .crew row { padding: 3px 6px; border-radius: 6px; }
 .crew .crew-name { font-weight: 600; }
 .crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
 .overview { padding: 28px 28px 40px 28px; }
 .overview-title { font-size: 1.6em; font-weight: 700; }
-.overview-heading { font-size: 0.72em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 18px; }
+.overview-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 18px; }
 .overview-cards flowboxchild { padding: 0; border-radius: 10px; }
 .overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
 .overview-card { padding: 14px 16px 10px 16px; min-height: 150px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.08); }
@@ -310,8 +310,8 @@ label.error { color: @loom_err; }
 /* Each kind of block its own look, so one ends visibly where the next begins:
    Claude's words on a rail, edits green-edged, commands on a darker card, reads quiet. */
 .msg-agent { padding: 2px 0 2px 14px; border-left: 2px solid alpha(@accent_color, 0.45); color: alpha(@window_fg_color, 0.94); }
-.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.05); border-left: 2px solid alpha(@loom_ok, 0.6); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
-.tool-card.kind-execute { background: alpha(@window_fg_color, 0.05); border-left: 2px solid alpha(@loom_run, 0.6); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
+.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.05); border-left: 2px solid alpha(@loom_ok, 0.6); border-radius: 6px 8px 8px 4px; margin: 2px 0; }
+.tool-card.kind-execute { background: alpha(@window_fg_color, 0.05); border-left: 2px solid alpha(@loom_run, 0.6); border-radius: 6px 8px 8px 4px; margin: 2px 0; }
 .tool-card.kind-edit:hover, .tool-card.kind-delete:hover, .tool-card.kind-move:hover { background: alpha(@loom_ok, 0.08); }
 .tool-card.kind-execute:hover { background: alpha(@window_fg_color, 0.08); }
 .tool-card.kind-edit .kind, .tool-card.kind-delete .kind, .tool-card.kind-move .kind { color: @loom_ok; opacity: 0.9; }
