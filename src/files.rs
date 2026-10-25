@@ -543,7 +543,6 @@ impl Files {
         let current = self.open.borrow().clone();
         if current.as_deref() == Some(path) {
             self.reload_if_changed();
-            self.root.set_visible(true);
             self.editor_box.set_visible(true);
             return Ok(());
         }
@@ -588,15 +587,17 @@ impl Files {
         self.name.set_tooltip_text(Some(&path.to_string_lossy()));
         self.notice("");
         self.warned.set(None);
+        let same_file = self.open.borrow().as_deref() == Some(path);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
         self.remember(path);
         let markdown = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
         self.read_toggle.set_visible(markdown);
-        if self.read_toggle.is_active() != markdown {
-            self.read_toggle.set_active(markdown);
+        let read = if same_file { markdown && self.read_toggle.is_active() } else { markdown };
+        if self.read_toggle.is_active() != read {
+            self.read_toggle.set_active(read);
         } else {
-            self.set_reading(markdown);
+            self.set_reading(read);
         }
         self.editor_box.set_visible(true);
         self.view.grab_focus();
@@ -1179,6 +1180,15 @@ impl Files {
         let callback = self.on_ask.borrow().clone();
         let Some(callback) = callback else { return };
         let shown = path.strip_prefix(self.base.borrow().as_path()).map(Path::to_path_buf).unwrap_or(path.clone());
+        if self.read_toggle.is_active() {
+            let selected = selected_text(self.reader.upcast_ref());
+            let text = match selected {
+                Some(quote) => format!("@{}\n> {}\n", shown.display(), quote.trim().replace('\n', "\n> ")),
+                None => format!("@{} ", shown.display()),
+            };
+            callback(text);
+            return;
+        }
         let text = match self.buffer.selection_bounds() {
             Some((start, end)) => {
                 let (from, to) = (start.line() + 1, end.line() + 1);
@@ -1218,6 +1228,11 @@ impl Files {
         }
     }
 
+    /// The open file (links in its Read view resolve from its folder).
+    pub fn open_path(&self) -> Option<PathBuf> {
+        self.open.borrow().clone()
+    }
+
     /// Switches to the Changes view.
     pub fn show_changes(&self) {
         self.root.set_visible(true);
@@ -1253,6 +1268,9 @@ impl Files {
         if !self.editor_box.is_visible() {
             return false;
         }
+        if self.read_toggle.is_active() {
+            self.read_toggle.set_active(false);
+        }
         let Some(entry) = self.find_entry() else { return false };
         entry.set_visible(true);
         entry.grab_focus();
@@ -1277,6 +1295,9 @@ impl Files {
 
     /// The cursor on line `line` (from 1) of the open file, in view.
     pub fn go_to_line(&self, line: u32) {
+        if self.read_toggle.is_active() {
+            self.read_toggle.set_active(false);
+        }
         let Some(mut iter) = self.buffer.iter_at_line(line.saturating_sub(1) as i32) else { return };
         self.buffer.place_cursor(&iter);
         self.view.scroll_to_iter(&mut iter, 0.2, true, 0.0, 0.3);
@@ -1387,6 +1408,25 @@ fn ref_badges(refs: &str, remotes: &[String]) -> Vec<(String, &'static str)> {
         }
     }
     badges
+}
+
+/// The text selected in a label under `widget` (the Read view), if any.
+fn selected_text(widget: &gtk::Widget) -> Option<String> {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>()
+        && let Some((a, b)) = label.selection_bounds()
+        && a != b
+    {
+        let (a, b) = (a.min(b) as usize, a.max(b) as usize);
+        return Some(label.text().chars().skip(a).take(b - a).collect());
+    }
+    let mut child = widget.first_child();
+    while let Some(next) = child {
+        if let Some(text) = selected_text(&next) {
+            return Some(text);
+        }
+        child = next.next_sibling();
+    }
+    None
 }
 
 /// The theme's symbolic icon for a file's kind (from its name), or a folder's.

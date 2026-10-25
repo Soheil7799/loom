@@ -68,6 +68,7 @@ pub struct App {
     prefix_hint: gtk::Label,
     prefix_timeout: RefCell<Option<glib::SourceId>>,
     files_were_open: Cell<bool>,
+    editor_was_open: Cell<bool>,
     /// The chat text size (from the settings).
     scale_css: gtk::CssProvider,
     /// "<agent> needs you", over the window while that agent is out of view.
@@ -170,12 +171,13 @@ impl App {
             .shrink_end_child(false)
             .build();
         // Opened: about 45% of the width for the file (kept as dragged after that).
-        let pane = reading.clone();
+        let (pane, placed) = (reading.clone(), Cell::new(false));
         files.editor_box.connect_visible_notify(move |editor| {
-            if editor.is_visible() {
+            if editor.is_visible() && !placed.get() {
                 let width = pane.width();
                 if width > 0 {
                     pane.set_position(width * 55 / 100);
+                    placed.set(true);
                 }
             }
         });
@@ -297,6 +299,7 @@ impl App {
             prefix_hint,
             prefix_timeout: RefCell::default(),
             files_were_open: Cell::new(false),
+            editor_was_open: Cell::new(false),
             scale_css,
             toast,
             toast_label,
@@ -1153,10 +1156,13 @@ impl App {
         if zoomed {
             self.sidebar.set_visible(true);
             self.files.root.set_visible(self.files_were_open.get());
+            self.files.editor_box.set_visible(self.editor_was_open.get() && self.files.open_path().is_some());
         } else {
             self.files_were_open.set(self.files.root.is_visible());
+            self.editor_was_open.set(self.files.editor_box.is_visible());
             self.sidebar.set_visible(false);
             self.files.root.set_visible(false);
+            self.files.editor_box.set_visible(false);
         }
     }
 
@@ -1235,7 +1241,9 @@ impl App {
             *h.borrow_mut() = Some(Rc::new(move |uri: &str, widget: &gtk::Widget| {
                 let Some(app) = weak.upgrade() else { return false };
                 let agent = app.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat.root)).cloned().or_else(|| app.focused_agent());
-                let base = agent.as_ref().map_or_else(glib::home_dir, |a| a.cwd.clone());
+                let in_file = widget.is_ancestor(&app.files.editor_box);
+                let file_dir = app.files.open_path().and_then(|p| p.parent().map(Path::to_path_buf)).filter(|_| in_file);
+                let base = file_dir.unwrap_or_else(|| agent.as_ref().map_or_else(glib::home_dir, |a| a.cwd.clone()));
                 let (path, line) = if let Some(rest) = uri.strip_prefix("file://") {
                     // A file URI: the line split off the path, then percent-escapes decoded
                     // (spaces, Persian names).
@@ -1256,7 +1264,6 @@ impl App {
                     }
                     return true;
                 }
-                app.files.root.set_visible(true);
                 app.files.open_file(&path);
                 if let Some(line) = line {
                     app.files.go_to_line(line);

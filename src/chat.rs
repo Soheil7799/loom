@@ -581,7 +581,6 @@ impl Chat {
         }
     }
 
-    /// To the bottom, and following it again.
     /// The scroll state, for tests: value, page, upper, following, the list's height and
     /// the height its column measures for its width.
     pub fn scroll_info(&self) -> String {
@@ -622,6 +621,7 @@ impl Chat {
         });
     }
 
+    /// To the bottom, and following it again.
     pub fn scroll_to_latest(&self) {
         self.stick.set(true);
         let adj = self.scroller.vadjustment();
@@ -630,42 +630,27 @@ impl Chat {
     }
 
     fn wire(self: &Rc<Self>) {
-        // Follow the bottom unless the reader moved away from it themselves (wheel, scrollbar,
-        // keys). Anything loom does — a run of tool calls folding, a chat hidden and shown
-        // again, the input growing — never lets go of it, and is followed once laid out.
+        // Follow the bottom unless the reader moved away from it. Who moved it: the reader
+        // (wheel, touchpad, scrollbar, keys, touch) moves it up with the content's size
+        // unchanged; loom (a run of tool calls folding, a chat hidden and shown again, the
+        // input growing) changes the size, which drags the position along. So only an upward
+        // move at an unchanged size lets go, and reaching the end catches it again.
         let adjustment = self.scroller.vadjustment();
         let stick = self.stick.clone();
         let latest = self.latest.clone();
-        let dragging = Rc::new(Cell::new(false));
-        let drag = dragging.clone();
+        let seen = Rc::new(Cell::new((0.0f64, 0.0f64, 0.0f64)));
         adjustment.connect_value_changed(move |adj| {
-            let at_bottom = adj.value() >= adj.upper() - adj.page_size() - 40.0;
+            let (value, upper, page) = (adj.value(), adj.upper(), adj.page_size());
+            let (was, was_upper, was_page) = seen.replace((value, upper, page));
+            let at_bottom = value >= upper - page - 40.0;
+            let same_size = (upper - was_upper).abs() < 0.5 && (page - was_page).abs() < 0.5;
             if at_bottom {
                 stick.set(true);
-            } else if drag.get() {
-                // The scrollbar dragged up by hand.
+            } else if same_size && value < was - 0.5 {
                 stick.set(false);
             }
-            latest.set_visible(!stick.get() && !at_bottom && adj.upper() > adj.page_size() * 1.2);
+            latest.set_visible(!stick.get() && !at_bottom && upper > page * 1.2);
         });
-        // The wheel or touchpad up lets go; down to the end catches it again (above).
-        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let stick = self.stick.clone();
-        wheel.connect_scroll(move |_, _, dy| {
-            if dy < 0.0 {
-                stick.set(false);
-            }
-            glib::Propagation::Proceed
-        });
-        self.scroller.add_controller(wheel);
-        let grab = gtk::GestureDrag::new();
-        grab.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let drag = dragging.clone();
-        grab.connect_drag_begin(move |_, _, _| drag.set(true));
-        let drag = dragging;
-        grab.connect_drag_end(move |_, _, _| drag.set(false));
-        self.scroller.vscrollbar().add_controller(grab);
         // Following: now, and once more after the layout settles (a size can change twice in
         // one frame, the second time after this ran).
         let weak = Rc::downgrade(self);

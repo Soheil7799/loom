@@ -208,7 +208,9 @@ pub fn looks_like_path(text: &str) -> bool {
     // A slash alone is not enough ("origin/main"): a folder says so with its last "/", a
     // path from somewhere with "./", "../", "~/" or "/", and some files have no extension.
     let anchored = ["./", "../", "~/", "/"].iter().any(|p| path.starts_with(p)) && name.chars().any(char::is_alphabetic);
-    let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || "._-".contains(c)) && n.chars().any(char::is_alphabetic);
+    let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || "._-@+".contains(c)) && n.chars().any(char::is_alphabetic)
+        // A key, not a folder ("Ctrl+/").
+        && !["ctrl+", "alt+", "shift+", "super+", "cmd+", "meta+"].contains(&n.to_lowercase().as_str());
     let folder = path.contains('/') && path.ends_with('/') && inner.trim_end_matches('/').split('/').all(plain);
     known || anchored || folder || BARE.contains(&name)
 }
@@ -222,7 +224,7 @@ mod tests {
         for path in ["src/app.rs", "Cargo.toml", "Cargo.toml:12", "~/notes/todo.md", "web/README.md:3"] {
             assert!(looks_like_path(path), "{path}");
         }
-        for path in ["src/ui/", "docker/Makefile", "src/app.rs:12:5", "../README.md", "../shared/config.toml", "./build", "/etc/hosts"] {
+        for path in ["src/ui/", "node_modules/@types/", "include/c++/", "docker/Makefile", "src/app.rs:12:5", "../README.md", "../shared/config.toml", "./build", "/etc/hosts"] {
             assert!(looks_like_path(path), "{path}");
         }
         for code in [
