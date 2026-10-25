@@ -67,6 +67,13 @@ pub struct App {
     files_were_open: Cell<bool>,
     /// The chat text size (from the settings).
     scale_css: gtk::CssProvider,
+    /// "<agent> needs you", over the window while that agent is out of view.
+    toast: gtk::Revealer,
+    toast_label: gtk::Label,
+    toast_agent: RefCell<std::rc::Weak<Agent>>,
+    /// The toast is a question (it goes once answered).
+    toast_question: Cell<bool>,
+    toast_timeout: RefCell<Option<glib::SourceId>>,
 }
 
 impl App {
@@ -186,6 +193,30 @@ impl App {
             .build();
         prefix_hint.add_css_class("prefix-hint");
         overlay.add_overlay(&prefix_hint);
+        let toast_label = gtk::Label::builder().ellipsize(pango::EllipsizeMode::End).max_width_chars(60).build();
+        let toast_dot = gtk::Box::builder().valign(gtk::Align::Center).build();
+        toast_dot.add_css_class("dot");
+        toast_dot.add_css_class("blocked");
+        let toast_go = gtk::Button::with_label("Show");
+        toast_go.add_css_class("flat");
+        toast_go.add_css_class("toast-go");
+        let toast_close = gtk::Button::from_icon_name("window-close-symbolic");
+        toast_close.add_css_class("flat");
+        toast_close.set_tooltip_text(Some("Dismiss"));
+        let toast_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        toast_box.add_css_class("toast");
+        toast_box.append(&toast_dot);
+        toast_box.append(&toast_label);
+        toast_box.append(&toast_go);
+        toast_box.append(&toast_close);
+        let toast = gtk::Revealer::builder()
+            .child(&toast_box)
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .halign(gtk::Align::Center)
+            .valign(gtk::Align::Start)
+            .margin_top(10)
+            .build();
+        overlay.add_overlay(&toast);
         window.set_child(Some(&overlay));
 
         // Floating bits.
@@ -242,7 +273,13 @@ impl App {
             prefix_timeout: RefCell::default(),
             files_were_open: Cell::new(false),
             scale_css,
+            toast,
+            toast_label,
+            toast_agent: RefCell::default(),
+            toast_question: Cell::new(false),
+            toast_timeout: RefCell::default(),
         });
+        this.wire_toast(&toast_go, &toast_close);
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
         this.apply_settings(&settings::get());
@@ -826,6 +863,7 @@ impl App {
         agent.unseen.set(false);
         agent.last_active.set(std::time::Instant::now());
         *self.focused.borrow_mut() = Some(agent.clone());
+        self.toast_settled(agent);
         if !self.is_pinned(agent) {
             self.chat_stack.set_visible_child(&agent.chat.root);
         }
@@ -887,6 +925,7 @@ impl App {
             agent.start();
         }
         *self.pinned.borrow_mut() = Some(agent.clone());
+        self.toast_settled(agent);
         self.mark_active();
     }
 
@@ -1029,6 +1068,9 @@ impl App {
         if self.previous.borrow().as_ref().is_some_and(|p| Rc::ptr_eq(p, agent)) {
             *self.previous.borrow_mut() = None;
         }
+        if self.toast_agent.borrow().upgrade().is_some_and(|a| Rc::ptr_eq(&a, agent)) {
+            self.hide_toast();
+        }
         agent.stop();
         // Remembered to reopen (a conversation that never started has nothing to reopen).
         let saved = agent.saved();
@@ -1112,6 +1154,7 @@ impl App {
         let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(agent));
         match event {
             Event::Changed => {
+                self.toast_settled(agent);
                 self.refresh_sidebar();
                 self.refresh_inbox();
                 if agent.focused.get() {
@@ -1130,7 +1173,11 @@ impl App {
             Event::Asked(title) => {
                 self.refresh_inbox();
                 if !looking && settings::get().notify_questions {
-                    self.notify(agent, &format!("Wants to: {title}"));
+                    if self.window.is_active() {
+                        self.show_toast(agent, &format!("{} wants to: {title}", agent.title()), true);
+                    } else {
+                        self.notify(agent, &format!("Wants to: {title}"));
+                    }
                 }
             }
             Event::Done => {
@@ -1139,6 +1186,66 @@ impl App {
                 }
                 self.refresh_sidebar();
             }
+        }
+    }
+
+    fn wire_toast(self: &Rc<Self>, go: &gtk::Button, close: &gtk::Button) {
+        let weak = Rc::downgrade(self);
+        go.connect_clicked(move |_| {
+            let Some(app) = weak.upgrade() else { return };
+            let agent = app.toast_agent.borrow().upgrade();
+            app.hide_toast();
+            if let Some(agent) = agent {
+                app.focus(&agent);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        close.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.hide_toast();
+            }
+        });
+    }
+
+    /// The window is in use but `agent` is out of view: say it is waiting, here.
+    pub fn show_toast(self: &Rc<Self>, agent: &Rc<Agent>, text: &str, question: bool) {
+        let waiting = self.toast_question.get()
+            && self.toast.reveals_child()
+            && self.toast_agent.borrow().upgrade().is_some_and(|a| a.status() == Status::Blocked);
+        if waiting && !question {
+            return;
+        }
+        self.toast_label.set_label(text);
+        self.toast_question.set(question);
+        *self.toast_agent.borrow_mut() = Rc::downgrade(agent);
+        self.toast.set_reveal_child(true);
+        if let Some(old) = self.toast_timeout.take() {
+            old.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let source = glib::timeout_add_seconds_local_once(12, move || {
+            if let Some(app) = weak.upgrade() {
+                app.toast_timeout.take();
+                app.hide_toast();
+            }
+        });
+        *self.toast_timeout.borrow_mut() = Some(source);
+    }
+
+    fn hide_toast(&self) {
+        self.toast.set_reveal_child(false);
+        *self.toast_agent.borrow_mut() = std::rc::Weak::new();
+        if let Some(source) = self.toast_timeout.take() {
+            source.remove();
+        }
+    }
+
+    /// The toast is about `agent` and no longer true (answered, or now in view).
+    fn toast_settled(&self, agent: &Rc<Agent>) {
+        let about = self.toast_agent.borrow().upgrade().is_some_and(|a| Rc::ptr_eq(&a, agent));
+        let answered = self.toast_question.get() && agent.status() != Status::Blocked;
+        if about && (answered || agent.focused.get() || self.is_pinned(agent)) {
+            self.hide_toast();
         }
     }
 
@@ -1277,7 +1384,13 @@ impl App {
             }
             "notify" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;
-                self.notify(&agent, params["message"].as_str().unwrap_or("Needs you"));
+                let message = params["message"].as_str().unwrap_or("Needs you");
+                let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(&agent));
+                if !self.window.is_active() {
+                    self.notify(&agent, message);
+                } else if !looking {
+                    self.show_toast(&agent, &format!("{}: {message}", agent.title()), false);
+                }
                 Ok(json!({}))
             }
             "list_agents" => Ok(json!(

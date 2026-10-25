@@ -624,15 +624,15 @@ impl Files {
             self.shown_changes.borrow_mut().clear();
             return;
         };
-        let mut line = format!("⎇ {}", status.branch);
+        let mut parts = vec![format!("⎇ {}", status.branch)];
         if status.ahead > 0 {
-            line.push_str(&format!("   ↑{} to push", status.ahead));
+            parts.push(format!("↑{} to push", status.ahead));
         }
         if status.behind > 0 {
-            line.push_str(&format!("   ↓{} to pull", status.behind));
+            parts.push(format!("↓{} to pull", status.behind));
         }
-        line.push_str(&if status.changes.is_empty() { "   · clean".to_owned() } else { format!("   · {} changed", status.changes.len()) });
-        self.repo_line.set_label(&line);
+        parts.push(if status.changes.is_empty() { "clean".to_owned() } else { format!("{} changed", status.changes.len()) });
+        self.repo_line.set_label(&parts.join("  ·  "));
         let mut paths = Vec::new();
         for (code, file) in &status.changes {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);

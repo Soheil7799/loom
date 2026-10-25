@@ -4,6 +4,7 @@
 //! and the file is deleted. Lines:
 //!
 //! - `prompt:<text>`: send text from the focused agent's input
+//! - `toast:<text>`: the in-window notice, about the focused agent
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
 //! - `snappop:<prefix>`: pictures of the open popovers
 //! - `snapall:<prefix>`: pictures of the other windows (settings…), <prefix>-1.png…
@@ -30,6 +31,10 @@ use crate::app::App;
 
 pub fn watch(app: &Rc<App>) {
     let Some(path) = std::env::var_os("LOOM_CONTROL").map(PathBuf::from) else { return };
+    // An unseen window gets no frames, so animations (revealers) would never finish.
+    if let Some(settings) = gtk::Settings::default() {
+        settings.set_gtk_enable_animations(false);
+    }
     let weak = Rc::downgrade(app);
     glib::timeout_add_local(Duration::from_millis(300), move || {
         let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
@@ -49,6 +54,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
         "prompt" => app.focused_agent().ok_or("no agent")?.submit(argument.to_owned()),
+        "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
         // Open popovers (palette, menus, pickers): <prefix>-1.png, -2…
         "snappop" => {

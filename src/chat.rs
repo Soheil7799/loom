@@ -46,6 +46,8 @@ pub struct Chat {
     pub input: gtk::TextView,
     last: RefCell<Last>,
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
+    /// Where the next tool call goes, until something else is said.
+    group: RefCell<Option<Rc<ToolGroup>>>,
     stick: Rc<Cell<bool>>,
     commands: RefCell<Vec<(String, String)>>,
     completion: gtk::Popover,
@@ -65,6 +67,21 @@ enum Last {
     Agent(Rc<Message>),
     Thought(Rc<Message>),
     User(Rc<Message>),
+}
+
+/// Tool calls in a row, between two messages. Once three or more have all finished well (and
+/// none is an edit worth seeing), they fold into one "✓ 5 tool calls" line, and stay folded:
+/// later calls join it (an edit opens it again). One the user has opened a card of never folds.
+struct ToolGroup {
+    root: gtk::Box,
+    summary: gtk::Button,
+    cards_box: gtk::Box,
+    cards: RefCell<Vec<Rc<ToolCard>>>,
+    folded: Cell<bool>,
+    /// The fold opened by a click.
+    open: Cell<bool>,
+    /// A card in it was opened by hand: it stays as it is.
+    touched: Cell<bool>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -94,6 +111,9 @@ struct ToolCard {
     has_terminal_button: Cell<bool>,
     /// Opened by itself once (a small diff shows without a click).
     auto_opened: Cell<bool>,
+    status: RefCell<String>,
+    has_diff: Cell<bool>,
+    group: RefCell<std::rc::Weak<ToolGroup>>,
 }
 
 pub struct PermissionCard {
@@ -285,6 +305,7 @@ impl Chat {
             plan_revealer,
             input,
             last: RefCell::new(Last::None),
+            group: RefCell::default(),
             tools: RefCell::default(),
             stick: Rc::new(Cell::new(true)),
             commands: RefCell::default(),
@@ -591,60 +612,92 @@ impl Chat {
     }
 
     /// Session settings as pickers: each `{id, name, currentValue, options}` (options flat or
-    /// in groups). The mode has its own pill, so it is left out here.
+    /// in groups). The mode has its own pill, so it is left out here. Model and effort get a
+    /// chip each; the rest (fast mode, agent…) share one, which names them only when changed.
     pub fn set_options(&self, options: &Value) {
         while let Some(child) = self.options.first_child() {
             self.options.remove(&child);
         }
-        for option in options.as_array().into_iter().flatten() {
-            let Some(id) = option["id"].as_str().filter(|id| *id != "mode") else { continue };
+        let options: Vec<&Value> = options
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter(|o| o["id"].as_str().is_some_and(|id| id != "mode") && !flat_values(&o["options"]).is_empty())
+            .collect();
+        let main = |o: &Value| {
+            let key = format!("{} {}", o["id"].as_str().unwrap_or(""), o["name"].as_str().unwrap_or("")).to_lowercase();
+            key.contains("model") || key.contains("effort")
+        };
+        let more_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        more_list.add_css_class("option-list");
+        let more_popover = gtk::Popover::builder().child(&more_list).build();
+        let mut changed = Vec::new();
+        for option in &options {
+            let id = option["id"].as_str().unwrap_or("");
+            let name = option["name"].as_str().unwrap_or(id);
             let values = flat_values(&option["options"]);
-            if values.is_empty() {
-                continue;
-            }
             let current = option["currentValue"].as_str().unwrap_or("");
             let current_name = values.iter().find(|(v, _, _)| v == current).map_or(current.to_owned(), |(_, n, _)| n.clone());
-            let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            list.add_css_class("option-list");
-            let heading = gtk::Label::builder().label(option["name"].as_str().unwrap_or(id)).xalign(0.0).build();
-            heading.add_css_class("option-heading");
-            list.append(&heading);
             // "Model · Opus", "Effort · High": short, and saying what it is.
             let short = current_name.split(" (").next().unwrap_or(&current_name).to_owned();
-            let name = option["name"].as_str().unwrap_or(id);
             let is_default = short.eq_ignore_ascii_case("default") || short.eq_ignore_ascii_case("off");
-            let label = if is_default { name.to_owned() } else { format!("{name} · {short}") };
-            let button = gtk::MenuButton::builder().label(&label).build();
+            if main(option) {
+                let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                list.add_css_class("option-list");
+                let popover = gtk::Popover::builder().child(&list).build();
+                self.option_items(&list, &popover, id, name, &values, current);
+                let label = if is_default { name.to_owned() } else { format!("{name} · {short}") };
+                let button = gtk::MenuButton::builder().label(&label).popover(&popover).build();
+                button.add_css_class("chip-picker");
+                button.add_css_class("flat");
+                button.set_tooltip_text(option["description"].as_str().or(Some(name)));
+                self.options.append(&button);
+            } else {
+                self.option_items(&more_list, &more_popover, id, name, &values, current);
+                if !is_default {
+                    // "Fast mode · On" reads as "Fast mode"; others keep their value.
+                    changed.push(if short.eq_ignore_ascii_case("on") { name.to_owned() } else { format!("{name} · {short}") });
+                }
+            }
+        }
+        if more_list.first_child().is_some() {
+            let label = if changed.is_empty() { "More".to_owned() } else { changed.join(" · ") };
+            let button = gtk::MenuButton::builder().label(&label).popover(&more_popover).build();
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
-            button.set_tooltip_text(option["description"].as_str().or(option["name"].as_str()));
-            let popover = gtk::Popover::builder().child(&list).build();
-            for (value, name, description) in values {
-                let line = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                let title = gtk::Label::builder().label(if value == current { format!("✓  {name}") } else { format!("    {name}") }).xalign(0.0).build();
-                line.append(&title);
-                if !description.is_empty() {
-                    let detail = gtk::Label::builder().label(&description).xalign(0.0).wrap(true).max_width_chars(44).build();
-                    detail.add_css_class("dim");
-                    detail.add_css_class("small");
-                    detail.set_margin_start(22);
-                    line.append(&detail);
-                }
-                let item = gtk::Button::builder().child(&line).build();
-                item.add_css_class("flat");
-                item.add_css_class("menu-item");
-                let callback = self.on_option.borrow().clone();
-                let (id, popover_ref) = (id.to_owned(), popover.clone());
-                item.connect_clicked(move |_| {
-                    popover_ref.popdown();
-                    if let Some(callback) = &callback {
-                        callback((id.clone(), value.clone()));
-                    }
-                });
-                list.append(&item);
-            }
-            button.set_popover(Some(&popover));
+            button.set_tooltip_text(Some("More session settings"));
             self.options.append(&button);
+        }
+    }
+
+    /// One setting's choices under its heading, in `list` (inside `popover`).
+    fn option_items(&self, list: &gtk::Box, popover: &gtk::Popover, id: &str, name: &str, values: &[(String, String, String)], current: &str) {
+        let heading = gtk::Label::builder().label(name).xalign(0.0).build();
+        heading.add_css_class("option-heading");
+        list.append(&heading);
+        for (value, name, description) in values {
+            let line = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            let title = gtk::Label::builder().label(if value == current { format!("✓  {name}") } else { format!("    {name}") }).xalign(0.0).build();
+            line.append(&title);
+            if !description.is_empty() {
+                let detail = gtk::Label::builder().label(description).xalign(0.0).wrap(true).max_width_chars(44).build();
+                detail.add_css_class("dim");
+                detail.add_css_class("small");
+                detail.set_margin_start(22);
+                line.append(&detail);
+            }
+            let item = gtk::Button::builder().child(&line).build();
+            item.add_css_class("flat");
+            item.add_css_class("menu-item");
+            let callback = self.on_option.borrow().clone();
+            let (id, value, popover) = (id.to_owned(), value.clone(), popover.clone());
+            item.connect_clicked(move |_| {
+                popover.popdown();
+                if let Some(callback) = &callback {
+                    callback((id.clone(), value.clone()));
+                }
+            });
+            list.append(&item);
         }
     }
 
@@ -681,6 +734,8 @@ impl Chat {
 
     /// A quiet line under a finished turn: how long it took.
     pub fn turn_done(&self, seconds: u64) {
+        self.group.take();
+        *self.last.borrow_mut() = Last::None;
         if seconds < 3 {
             return;
         }
@@ -728,6 +783,7 @@ impl Chat {
             self.list.remove(&child);
         }
         *self.last.borrow_mut() = Last::None;
+        self.group.take();
         self.tools.borrow_mut().clear();
         self.set_plan(&Value::Null);
     }
@@ -773,6 +829,10 @@ impl Chat {
     }
 
     fn message(&self, kind: Kind) -> Rc<Message> {
+        // Hidden thinking between tool calls doesn't part them.
+        if kind != Kind::Thought || self.show_thinking.get() {
+            self.group.take();
+        }
         let body = gtk::Box::new(gtk::Orientation::Vertical, 6);
         match kind {
             Kind::Agent => {
@@ -819,6 +879,7 @@ impl Chat {
         let label = text_label(&glib::markup_escape_text(text));
         label.add_css_class("notice");
         label.add_css_class(class);
+        self.group.take();
         self.list.append(&label);
         *self.last.borrow_mut() = Last::None;
     }
@@ -831,12 +892,25 @@ impl Chat {
         let existing = self.tools.borrow().get(id).cloned();
         let card = existing.unwrap_or_else(|| {
             let card = ToolCard::new();
-            self.list.append(&card.root);
-            self.tools.borrow_mut().insert(id.to_owned(), card.clone());
             *self.last.borrow_mut() = Last::None;
+            let group = self.group.borrow().clone();
+            let group = group.unwrap_or_else(|| {
+                let group = ToolGroup::new();
+                self.list.append(&group.root);
+                *self.group.borrow_mut() = Some(group.clone());
+                group
+            });
+            group.cards_box.append(&card.root);
+            group.cards.borrow_mut().push(card.clone());
+            *card.group.borrow_mut() = Rc::downgrade(&group);
+            self.tools.borrow_mut().insert(id.to_owned(), card.clone());
             card
         });
         card.update(update);
+        let group = card.group.borrow().upgrade();
+        if let Some(group) = group {
+            group.refresh();
+        }
     }
 
     /// Adds a button to a tool card that opens its terminal.
@@ -961,6 +1035,56 @@ impl Message {
     }
 }
 
+impl ToolGroup {
+    fn new() -> Rc<ToolGroup> {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.add_css_class("tool-group");
+        let summary = gtk::Button::builder().visible(false).halign(gtk::Align::Start).build();
+        summary.add_css_class("flat");
+        summary.add_css_class("tool-toggle");
+        summary.add_css_class("tool-summary");
+        let cards_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        root.append(&summary);
+        root.append(&cards_box);
+        let group = Rc::new(ToolGroup {
+            root,
+            summary,
+            cards_box,
+            cards: RefCell::default(),
+            folded: Cell::new(false),
+            open: Cell::new(false),
+            touched: Cell::new(false),
+        });
+        let weak = Rc::downgrade(&group);
+        group.summary.connect_clicked(move |_| {
+            if let Some(group) = weak.upgrade() {
+                group.open.set(!group.open.get());
+                group.refresh();
+            }
+        });
+        group
+    }
+
+    fn refresh(&self) {
+        let cards = self.cards.borrow();
+        // Its own flag: is_visible() would also count the folded box around it.
+        let shown: Vec<&Rc<ToolCard>> = cards.iter().filter(|c| c.root.get_visible()).collect();
+        let edits = shown.iter().any(|c| c.has_diff.get());
+        if edits || self.touched.get() {
+            self.folded.set(false);
+        } else if !self.folded.get() {
+            self.folded.set(shown.len() >= 3 && shown.iter().all(|c| c.status.borrow().as_str() == "completed"));
+        }
+        let folded = self.folded.get();
+        self.summary.set_visible(folded);
+        self.cards_box.set_visible(!folded || self.open.get());
+        let running = shown.iter().any(|c| c.status.borrow().as_str() != "completed");
+        let arrow = if self.open.get() { "⌄" } else { "›" };
+        let glyph = if running { "○" } else { "✓" };
+        self.summary.set_label(&format!("{glyph}  {} tool calls  {arrow}", shown.len()));
+    }
+}
+
 impl ToolCard {
     fn new() -> Rc<ToolCard> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -1006,10 +1130,18 @@ impl ToolCard {
             content: RefCell::default(),
             has_terminal_button: Cell::new(false),
             auto_opened: Cell::new(false),
+            status: RefCell::default(),
+            has_diff: Cell::new(false),
+            group: RefCell::default(),
         });
         let weak = Rc::downgrade(&card);
         toggle.connect_clicked(move |_| {
             if let Some(card) = weak.upgrade() {
+                if let Some(group) = card.group.borrow().upgrade()
+                    && !group.folded.get()
+                {
+                    group.touched.set(true);
+                }
                 let open = !card.revealer.reveals_child();
                 if open {
                     card.render_detail();
@@ -1043,6 +1175,7 @@ impl ToolCard {
             self.kind.set_visible(kind != "other");
         }
         if let Some(status) = update["status"].as_str() {
+            *self.status.borrow_mut() = status.to_owned();
             let running = status == "in_progress";
             self.spinner.set_visible(running);
             self.spinner.set_spinning(running);
@@ -1064,6 +1197,7 @@ impl ToolCard {
         }
         if let Some(content) = update["content"].as_array() {
             *self.content.borrow_mut() = content.clone();
+            self.has_diff.set(content.iter().any(|c| c["type"] == "diff"));
             let small_diff = content.iter().any(|c| c["type"] == "diff")
                 && content
                     .iter()
