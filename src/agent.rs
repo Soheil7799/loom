@@ -140,6 +140,8 @@ pub struct Agent {
     /// that ends it once quiet.
     autonomous: Cell<Option<Instant>>,
     quiet_timer: RefCell<Option<glib::SourceId>>,
+    /// Waiting for a login in the tray to end.
+    login_watch: RefCell<Option<glib::SourceId>>,
     /// The `!command` running, if one is (its process group).
     shell_pid: Cell<Option<i32>>,
     modes: RefCell<Vec<String>>,
@@ -190,6 +192,7 @@ impl Agent {
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
             quiet_timer: RefCell::default(),
+            login_watch: RefCell::default(),
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
             pending: RefCell::default(),
@@ -771,16 +774,25 @@ impl Agent {
         match self.tray.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
             Ok(job) => {
                 self.tray.peek(&job);
-                // Once the login is done, the agent starts again.
+                // Once the login has worked, the agent starts again (one watch at a time).
+                if let Some(old) = self.login_watch.take() {
+                    old.remove();
+                }
                 let weak = Rc::downgrade(self);
-                glib::timeout_add_seconds_local(1, move || {
+                let watch = glib::timeout_add_seconds_local(1, move || {
                     let Some(agent) = weak.upgrade() else { return glib::ControlFlow::Break };
                     if job.is_running() {
                         return glib::ControlFlow::Continue;
                     }
-                    agent.restart();
+                    agent.login_watch.take();
+                    if job.exit_code() == Some(0) {
+                        agent.restart();
+                    } else {
+                        agent.chat.notice("The login did not finish; Log in again when ready.", "dim");
+                    }
                     glib::ControlFlow::Break
                 });
+                *self.login_watch.borrow_mut() = Some(watch);
             }
             Err(err) => self.chat.notice(&err, "error"),
         }
@@ -908,13 +920,34 @@ impl Agent {
                             break;
                         }
                         carry.extend_from_slice(&buffer[..n]);
-                        let complete = match std::str::from_utf8(&carry) {
-                            Ok(_) => carry.len(),
-                            Err(e) if e.error_len().is_none() => e.valid_up_to(),
-                            Err(_) => carry.len(),
-                        };
-                        let text = String::from_utf8_lossy(&carry[..complete]).into_owned();
-                        carry.drain(..complete);
+                        // Through each stray byte (shown as �), keeping only an incomplete last
+                        // character for the next read.
+                        let mut text = String::new();
+                        let mut at = 0;
+                        loop {
+                            match std::str::from_utf8(&carry[at..]) {
+                                Ok(rest) => {
+                                    text.push_str(rest);
+                                    at = carry.len();
+                                    break;
+                                }
+                                Err(e) => {
+                                    let valid = at + e.valid_up_to();
+                                    text.push_str(std::str::from_utf8(&carry[at..valid]).unwrap_or_default());
+                                    match e.error_len() {
+                                        Some(bad) => {
+                                            text.push('\u{fffd}');
+                                            at = valid + bad;
+                                        }
+                                        None => {
+                                            at = valid;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        carry.drain(..at);
                         let _ = tx.send_blocking(if i == 0 { Out::Stdout(text) } else { Out::Stderr(text) });
                     }
                     if !carry.is_empty() {
@@ -974,14 +1007,21 @@ impl Agent {
     }
 
     /// Esc while a `!command` runs: it stops (its whole process group).
-    fn stop_shell(&self) -> bool {
+    fn stop_shell(self: &Rc<Self>) -> bool {
         let Some(pid) = self.shell_pid.get() else { return false };
         // SAFETY: plain kill(2) on the group the command leads.
         unsafe { libc::kill(-pid, libc::SIGTERM) };
-        // One that ignores SIGTERM gets SIGKILL after 3 s (its group: children too).
+        // One that ignores SIGTERM gets SIGKILL after 3 s (its group: children too), only if
+        // it is still the same command: a pid freed meanwhile may belong to something else.
+        let (weak, run) = (Rc::downgrade(self), self.shells.get());
         glib::timeout_add_local_once(Duration::from_secs(3), move || {
-            // SAFETY: as above; a group gone by then makes this a no-op.
-            unsafe { libc::kill(-pid, libc::SIGKILL) };
+            if let Some(agent) = weak.upgrade()
+                && agent.shell_pid.get() == Some(pid)
+                && agent.shells.get() == run
+            {
+                // SAFETY: as above, on the group still running.
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+            }
         });
         true
     }

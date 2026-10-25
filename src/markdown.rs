@@ -179,8 +179,6 @@ fn push_cell(rows: &mut [Vec<String>], markup: &str) {
     }
 }
 
-/// A file path, maybe with a line ("src/app.rs", "Cargo.toml:12", "~/notes/todo.md"), not
-/// code ("foo()", "a + b", "x.len()").
 /// Extensions that make a bare name ("Cargo.toml") a file rather than code ("agent.cwd").
 const KNOWN: &[&str] = &[
     "rs", "toml", "md", "json", "yaml", "yml", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "c", "h", "cpp", "hpp", "css", "scss",
@@ -188,16 +186,21 @@ const KNOWN: &[&str] = &[
     "log", "csv", "svg", "png", "jpg", "jpeg", "pdf", "typ", "tex", "nix", "lua", "zig", "dart", "proto", "graphql",
 ];
 
+/// A file or folder path, maybe with a line ("src/app.rs", "Cargo.toml:12", "src/ui/",
+/// "docker/Makefile", "~/notes/todo.md"), not code ("foo()", "a + b", "agent.cwd").
 pub fn looks_like_path(text: &str) -> bool {
     let path = text.split(':').next().unwrap_or(text);
-    let name = path.rsplit('/').next().unwrap_or(path);
-    let allowed = |c: char| c.is_alphanumeric() || "._-/~@+".contains(c);
-    !path.is_empty()
-        && path.len() < 200
-        && path.chars().all(allowed)
-        && name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (path.contains('/') || KNOWN.contains(&ext.to_ascii_lowercase().as_str())))
-        || path.contains('/') && !path.contains("..") && path.chars().all(allowed) && path.len() < 200 && !path.ends_with('/') && name.contains('.')
-        && text[path.len()..].chars().all(|c| c == ':' || c.is_ascii_digit())
+    // After the path only a line number may follow (":12").
+    let rest = &text[path.len()..];
+    let line_ok = rest.is_empty() || rest.len() > 1 && rest[1..].chars().all(|c| c.is_ascii_digit());
+    let allowed = path.chars().all(|c| c.is_alphanumeric() || "._-/~@+".contains(c));
+    if path.is_empty() || path.len() >= 200 || !allowed || path.contains("..") || !line_ok {
+        return false;
+    }
+    let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or(path);
+    let known = name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && KNOWN.contains(&ext.to_ascii_lowercase().as_str()));
+    // With a slash, any name (a folder, a Makefile); without, only a known file kind.
+    known || path.contains('/') && name.chars().any(char::is_alphabetic)
 }
 
 #[cfg(test)]
@@ -209,7 +212,10 @@ mod tests {
         for path in ["src/app.rs", "Cargo.toml", "Cargo.toml:12", "~/notes/todo.md", "web/README.md:3"] {
             assert!(looks_like_path(path), "{path}");
         }
-        for code in ["foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95", "agent.cwd", "self.chat"] {
+        for path in ["src/ui/", "docker/Makefile", "src/components"] {
+            assert!(looks_like_path(path), "{path}");
+        }
+        for code in ["foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95", "agent.cwd", "self.chat", "README.md:see below", "config.toml:foo", "../../x.rs"] {
             assert!(!looks_like_path(code), "{code}");
         }
     }

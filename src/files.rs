@@ -42,6 +42,9 @@ pub struct Files {
     graph: gtk::ListBox,
     graph_tab: gtk::ToggleButton,
     graph_commits: RefCell<Vec<Option<String>>>,
+    /// Bumped by each graph fill (an older answer is dropped), and the repo shown.
+    graph_round: Cell<u64>,
+    graph_repo: RefCell<Option<PathBuf>>,
     repo_bar: gtk::Box,
     repo_pick: gtk::DropDown,
     repo_line: gtk::Label,
@@ -261,6 +264,8 @@ impl Files {
             graph,
             graph_tab: graph_tab.clone(),
             graph_commits: RefCell::default(),
+            graph_round: Cell::new(0),
+            graph_repo: RefCell::default(),
             repo_bar: pick_line.clone(),
         });
         let views = files.views.clone();
@@ -736,11 +741,12 @@ impl Files {
     /// The repo's commits as a graph (all branches, newest first), with each branch's head.
     fn fill_graph(self: &Rc<Self>) {
         let repo = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned();
-        while let Some(row) = self.graph.row_at_index(0) {
-            self.graph.remove(&row);
-        }
-        self.graph_commits.borrow_mut().clear();
-        let Some(repo) = repo else { return };
+        let round = self.graph_round.get() + 1;
+        self.graph_round.set(round);
+        let Some(repo) = repo else {
+            self.clear_graph();
+            return;
+        };
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let reading = repo.clone();
@@ -755,6 +761,11 @@ impl Files {
             .await
             .unwrap_or_else(|_| Err("git did not finish".to_owned()));
             let Some(files) = weak.upgrade() else { return };
+            if files.graph_round.get() != round {
+                return;
+            }
+            files.clear_graph();
+            *files.graph_repo.borrow_mut() = Some(repo.clone());
             match found {
                 Ok((log, remotes)) => files.show_graph(&log, &remotes),
                 Err(err) => {
@@ -807,8 +818,16 @@ impl Files {
     }
 
     /// A commit in full (message, files, changes), in a window.
+    fn clear_graph(&self) {
+        while let Some(row) = self.graph.row_at_index(0) {
+            self.graph.remove(&row);
+        }
+        self.graph_commits.borrow_mut().clear();
+    }
+
     fn show_commit(&self, hash: &str) {
-        let Some(repo) = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned() else { return };
+        // The repo the graph shows (the picker may have moved on meanwhile).
+        let Some(repo) = self.graph_repo.borrow().clone() else { return };
         let (me, hash) = (self.me.borrow().clone(), hash.to_owned());
         glib::spawn_future_local(async move {
             let showing = hash.clone();
@@ -938,6 +957,11 @@ impl Files {
     /// Runs git in the background (a commit hook or a signing prompt may take a while), then
     /// shows the Changes again, or what went wrong.
     fn git_then_refresh(&self, repo: &Path, args: Vec<String>) {
+        self.git_then(repo, args, |_| {});
+    }
+
+    /// Runs git in the background, then `done` (if it worked) and the Changes again.
+    fn git_then(&self, repo: &Path, args: Vec<String>, done: impl FnOnce(&Files) + 'static) {
         let me = self.me.borrow().clone();
         let repo = repo.to_owned();
         self.repo_line.set_label("git…");
@@ -949,16 +973,12 @@ impl Files {
             .await
             .unwrap_or_else(|_| Err("git did not finish".to_owned()));
             let Some(files) = me.upgrade() else { return };
-            match result {
-                Ok(_) => {
-                    files.fill_changes();
-                    true
-                }
-                Err(err) => {
-                    files.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err)));
-                    false
-                }
-            };
+            if let Err(err) = result {
+                files.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err)));
+                return;
+            }
+            done(&files);
+            files.fill_changes();
         });
     }
 
@@ -1043,8 +1063,7 @@ impl Files {
             self.repo_line.set_label("Type a commit message first.");
             return;
         }
-        self.commit_entry.set_text("");
-        self.git_then_refresh(&repo, vec!["commit".into(), "-m".into(), message]);
+        self.git_then(&repo, vec!["commit".into(), "-m".into(), message], |files| files.commit_entry.set_text(""));
     }
 
     /// The file opened goes first in the tabs (eight at most).
