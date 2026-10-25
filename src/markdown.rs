@@ -181,6 +181,13 @@ fn push_cell(rows: &mut [Vec<String>], markup: &str) {
 
 /// A file path, maybe with a line ("src/app.rs", "Cargo.toml:12", "~/notes/todo.md"), not
 /// code ("foo()", "a + b", "x.len()").
+/// Extensions that make a bare name ("Cargo.toml") a file rather than code ("agent.cwd").
+const KNOWN: &[&str] = &[
+    "rs", "toml", "md", "json", "yaml", "yml", "ts", "tsx", "js", "jsx", "mjs", "py", "go", "c", "h", "cpp", "hpp", "css", "scss",
+    "html", "txt", "sh", "env", "lock", "sql", "vue", "svelte", "java", "kt", "swift", "rb", "php", "xml", "ini", "cfg", "conf",
+    "log", "csv", "svg", "png", "jpg", "jpeg", "pdf", "typ", "tex", "nix", "lua", "zig", "dart", "proto", "graphql",
+];
+
 pub fn looks_like_path(text: &str) -> bool {
     let path = text.split(':').next().unwrap_or(text);
     let name = path.rsplit('/').next().unwrap_or(path);
@@ -188,7 +195,8 @@ pub fn looks_like_path(text: &str) -> bool {
     !path.is_empty()
         && path.len() < 200
         && path.chars().all(allowed)
-        && (path.contains('/') || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (1..=8).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) && ext.chars().any(|c| c.is_ascii_alphabetic())))
+        && name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (path.contains('/') || KNOWN.contains(&ext.to_ascii_lowercase().as_str())))
+        || path.contains('/') && !path.contains("..") && path.chars().all(allowed) && path.len() < 200 && !path.ends_with('/') && name.contains('.')
         && text[path.len()..].chars().all(|c| c == ':' || c.is_ascii_digit())
 }
 
@@ -201,7 +209,7 @@ mod tests {
         for path in ["src/app.rs", "Cargo.toml", "Cargo.toml:12", "~/notes/todo.md", "web/README.md:3"] {
             assert!(looks_like_path(path), "{path}");
         }
-        for code in ["foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95"] {
+        for code in ["foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95", "agent.cwd", "self.chat"] {
             assert!(!looks_like_path(code), "{code}");
         }
     }

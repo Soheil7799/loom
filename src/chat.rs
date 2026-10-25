@@ -82,7 +82,7 @@ pub struct Chat {
     messages: Rc<RefCell<Vec<Rc<Message>>>>,
     /// "Rewind to here" on a message you sent: the id of the agent's message before it (None:
     /// from the start) and the text, to fork the conversation there.
-    pub on_rewind: Callback<(Option<String>, String)>,
+    pub on_rewind: Callback<(Option<String>, bool, String)>,
     /// What was typed, and the images attached (PNG).
     pub on_submit: Callback<(String, Vec<glib::Bytes>)>,
     /// Find in the conversation (Ctrl+F): the bar, what is typed, how many, which one.
@@ -1292,7 +1292,8 @@ impl Chat {
     pub fn agent_text_with(&self, text: &str, id: Option<&str>) {
         self.chunk(Kind::Agent, text);
         if let (Some(id), Last::Agent(message)) = (id, &*self.last.borrow()) {
-            message.id.borrow_mut().get_or_insert_with(|| id.to_owned());
+            // Messages run together in one bubble: the latest one's id (forking there keeps all).
+            *message.id.borrow_mut() = Some(id.to_owned());
         }
     }
 
@@ -1393,9 +1394,10 @@ impl Chat {
                     let (Some(message), Some(callback), Some(messages)) = (weak.upgrade(), callback.clone(), messages.upgrade()) else { return };
                     let messages = messages.borrow();
                     let position = messages.iter().position(|m| Rc::ptr_eq(m, &message)).unwrap_or(0);
-                    let before = messages[..position].iter().rev().find(|m| m.kind == Kind::Agent).and_then(|m| m.id.borrow().clone());
+                    let previous = messages[..position].iter().rev().find(|m| m.kind == Kind::Agent);
+                    let before = previous.and_then(|m| m.id.borrow().clone());
                     let (_, rest) = split_shell_runs(&message.text.borrow());
-                    callback((before, rest.trim().to_owned()));
+                    callback((before, previous.is_some(), rest.trim().to_owned()));
                 });
                 let (weak, input) = (Rc::downgrade(&message), self.input.clone());
                 edit.connect_clicked(move |_| {

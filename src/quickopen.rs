@@ -21,8 +21,8 @@ pub fn list_files(root: &Path) -> Vec<String> {
             }
         }
         let mut outside = Vec::new();
-        walk(root, root, 0, &mut outside);
-        files.extend(outside.into_iter().filter(|f| !repos.iter().any(|r| root.join(f).starts_with(r))));
+        walk_outside(root, root, 0, &mut outside, &repos);
+        files.extend(outside);
         files
     });
     files.truncate(MAX_FILES);
@@ -50,7 +50,8 @@ fn git_files(root: &Path) -> Option<Vec<String>> {
     Some(String::from_utf8_lossy(&output.stdout).lines().take(MAX_FILES).map(str::to_owned).collect())
 }
 
-fn walk(root: &Path, dir: &Path, depth: usize, files: &mut Vec<String>) {
+/// Files under `dir`, not going into `skip` (repos listed by git already) nor SKIP folders.
+fn walk_outside(root: &Path, dir: &Path, depth: usize, files: &mut Vec<String>, skip: &[std::path::PathBuf]) {
     if depth > 8 || files.len() >= MAX_FILES {
         return;
     }
@@ -60,8 +61,8 @@ fn walk(root: &Path, dir: &Path, depth: usize, files: &mut Vec<String>) {
         let path = entry.path();
         match entry.file_type() {
             Ok(kind) if kind.is_dir() => {
-                if !SKIP.contains(&name.as_str()) {
-                    walk(root, &path, depth + 1, files);
+                if !SKIP.contains(&name.as_str()) && !skip.contains(&path) {
+                    walk_outside(root, &path, depth + 1, files, skip);
                 }
             }
             Ok(_) => {

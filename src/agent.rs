@@ -211,10 +211,13 @@ impl Agent {
             }
         }));
         let weak = Rc::downgrade(&agent);
-        *agent.chat.on_rewind.borrow_mut() = Some(Rc::new(move |(at, text): (Option<String>, String)| {
+        *agent.chat.on_rewind.borrow_mut() = Some(Rc::new(move |(at, before, text): (Option<String>, bool, String)| {
             if let Some(agent) = weak.upgrade() {
                 match at {
                     Some(at) => agent.fork(Some(at), text),
+                    // Claude said something before, but it can't be pointed at: refuse rather
+                    // than drop what came before.
+                    None if before => agent.chat.notice("Can't rewind to here: the agent gave no id for its message before it. Fork the whole conversation instead (palette).", "dim"),
                     // Before Claude said anything: a fresh conversation with it.
                     None => {
                         let mut saved = Saved::new(agent.cwd.clone());
@@ -497,9 +500,7 @@ impl Agent {
 
     fn open_session(self: &Rc<Self>) {
         let Some(conn) = self.conn.borrow().clone() else { return };
-        let cwd = self.cwd.to_string_lossy().into_owned();
         let session = self.session_id.borrow().clone();
-        let servers = self.mcp_servers();
         let weak = Rc::downgrade(self);
         // Woken from an idle suspend, the view still holds the conversation: resume it as it
         // is (no replay, nothing cleared).
@@ -525,7 +526,6 @@ impl Agent {
             self.replaying.set(true);
             let mut params = self.session_params();
             params["sessionId"] = session.into();
-            let _ = (&cwd, &servers);
             conn.request("session/load", params, move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.replaying.set(false);
@@ -638,6 +638,7 @@ impl Agent {
     }
 
     fn fail(self: &Rc<Self>, text: &str) {
+        self.end_autonomous(false);
         self.chat.notice(text, "error");
         if let Some(conn) = self.conn.borrow_mut().take() {
             conn.stop();
@@ -651,7 +652,7 @@ impl Agent {
         self.set_status(Status::Failed);
         // Not logged in: a way to log in, in the tray (Claude Code's own login).
         let lower = text.to_lowercase();
-        if ["auth", "log in", "login", "logged", "401", "credential"].iter().any(|w| lower.contains(w)) {
+        if ["not logged in", "log in", "/login", "authenticat", "unauthorized", "401", "credential", "api key"].iter().any(|w| lower.contains(w)) {
             let weak = Rc::downgrade(self);
             self.chat.notice_action("Claude Code needs you to log in.", "Log in", Rc::new(move || {
                 if let Some(agent) = weak.upgrade() {
@@ -739,6 +740,11 @@ impl Agent {
     /// /clear: this agent starts a new conversation (the old one stays in the history).
     pub fn clear_conversation(self: &Rc<Self>) {
         self.stop();
+        self.stop_shell();
+        // Nothing of the old conversation goes into the new one.
+        self.context.borrow_mut().clear();
+        self.files.borrow_mut().clear();
+        self.emit(Event::Files);
         *self.session_id.borrow_mut() = None;
         if !self.named.get() {
             self.title.borrow_mut().clear();
@@ -763,7 +769,19 @@ impl Agent {
     /// Runs Claude Code's login in the tray, then starts the agent again once it is done.
     fn login(self: &Rc<Self>) {
         match self.tray.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
-            Ok(job) => self.tray.peek(&job),
+            Ok(job) => {
+                self.tray.peek(&job);
+                // Once the login is done, the agent starts again.
+                let weak = Rc::downgrade(self);
+                glib::timeout_add_seconds_local(1, move || {
+                    let Some(agent) = weak.upgrade() else { return glib::ControlFlow::Break };
+                    if job.is_running() {
+                        return glib::ControlFlow::Continue;
+                    }
+                    agent.restart();
+                    glib::ControlFlow::Break
+                });
+            }
             Err(err) => self.chat.notice(&err, "error"),
         }
     }
@@ -782,6 +800,7 @@ impl Agent {
         if let Some(conn) = self.conn.borrow_mut().take() {
             conn.stop();
         }
+        self.end_autonomous(false);
         self.ready.set(false);
         self.turn.set(false);
         let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
@@ -882,11 +901,24 @@ impl Agent {
                 let tx = tx.clone();
                 Some(std::thread::spawn(move || {
                     let mut buffer = [0u8; 8192];
+                    // A character cut by a read waits for the rest of it (Persian is 2 bytes).
+                    let mut carry: Vec<u8> = Vec::new();
                     while let Ok(n) = stream.read(&mut buffer) {
                         if n == 0 {
                             break;
                         }
-                        let text = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                        carry.extend_from_slice(&buffer[..n]);
+                        let complete = match std::str::from_utf8(&carry) {
+                            Ok(_) => carry.len(),
+                            Err(e) if e.error_len().is_none() => e.valid_up_to(),
+                            Err(_) => carry.len(),
+                        };
+                        let text = String::from_utf8_lossy(&carry[..complete]).into_owned();
+                        carry.drain(..complete);
+                        let _ = tx.send_blocking(if i == 0 { Out::Stdout(text) } else { Out::Stderr(text) });
+                    }
+                    if !carry.is_empty() {
+                        let text = String::from_utf8_lossy(&carry).into_owned();
                         let _ = tx.send_blocking(if i == 0 { Out::Stdout(text) } else { Out::Stderr(text) });
                     }
                 }))
@@ -946,6 +978,11 @@ impl Agent {
         let Some(pid) = self.shell_pid.get() else { return false };
         // SAFETY: plain kill(2) on the group the command leads.
         unsafe { libc::kill(-pid, libc::SIGTERM) };
+        // One that ignores SIGTERM gets SIGKILL after 3 s (its group: children too).
+        glib::timeout_add_local_once(Duration::from_secs(3), move || {
+            // SAFETY: as above; a group gone by then makes this a no-op.
+            unsafe { libc::kill(-pid, libc::SIGKILL) };
+        });
         true
     }
 

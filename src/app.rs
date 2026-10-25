@@ -1216,11 +1216,20 @@ impl App {
                 let Some(app) = weak.upgrade() else { return false };
                 let agent = app.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat.root)).cloned().or_else(|| app.focused_agent());
                 let base = agent.as_ref().map_or_else(glib::home_dir, |a| a.cwd.clone());
-                let target = uri.strip_prefix("loom-file:").or_else(|| uri.strip_prefix("file://")).unwrap_or(uri);
-                let (path, line) = split_line(target);
-                let path = state::expand(Path::new(path));
+                let (path, line) = if uri.starts_with("file://") {
+                    // A file URI: percent-escapes decoded (spaces, Persian names).
+                    let (bare, line) = split_line(uri);
+                    (gio::File::for_uri(bare).path().unwrap_or_default(), line)
+                } else {
+                    let (path, line) = split_line(uri.strip_prefix("loom-file:").unwrap_or(uri));
+                    (state::expand(Path::new(path)), line)
+                };
                 let path = if path.is_absolute() { path } else { base.join(path) };
-                if !path.exists() {
+                if path.is_dir() {
+                    app.show_project(&project_of(&path), &path);
+                    return true;
+                }
+                if !path.is_file() {
                     if let Some(agent) = agent {
                         agent.chat.notice(&format!("No such file here: {}", path.display()), "dim");
                     }

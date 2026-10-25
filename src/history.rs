@@ -448,6 +448,12 @@ impl Page {
     }
 
     fn ask_delete(&self, button: &gtk::Button, session: String, title: String) {
+        let open = self.is_open.borrow().clone();
+        if open.is_some_and(|open| open(&session)) {
+            self.note.set_label("That conversation is open in loom: close it first (Ctrl+W), then delete it.");
+            self.note.set_visible(true);
+            return;
+        }
         let dialog = gtk::AlertDialog::builder()
             .message(format!("Delete “{title}”?"))
             .detail("The conversation is removed from Claude Code for good; it can't be resumed afterwards.")

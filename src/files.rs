@@ -734,7 +734,9 @@ impl Files {
         *self.changes_repo.borrow_mut() = Some(repo.to_owned());
         for (raw, file) in &status.changes {
             let code = raw.trim();
+            // git's two columns: the index (staged) and the work tree (not yet).
             let staged = !raw.starts_with(' ') && !raw.starts_with('?');
+            let unstaged = raw.ends_with(|c: char| c != ' ');
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.add_css_class("file-row");
             row.add_css_class("change-row");
@@ -769,13 +771,17 @@ impl Files {
             };
             let (r, p) = (repo.to_owned(), file.clone());
             add("diff", "What changed in it", Box::new(move |files| files.show_diff(&r, &p)));
-            let (r, p) = (repo.to_owned(), file.clone());
-            if staged {
-                add("unstage", "Leave it out of the next commit", Box::new(move |files| files.git_then_refresh(&r, &["restore", "--staged", "--", &p])));
-            } else {
-                add("stage", "Put it in the next commit", Box::new(move |files| files.git_then_refresh(&r, &["add", "--", &p])));
+            if unstaged {
+                let (r, p) = (repo.to_owned(), file.clone());
+                add("stage", "Put its changes in the next commit", Box::new(move |files| files.git_then_refresh(&r, vec!["add".into(), "--".into(), p.clone()])));
             }
-            if raw != "??" {
+            if staged {
+                let (r, p) = (repo.to_owned(), file.clone());
+                add("unstage", "Leave it out of the next commit", Box::new(move |files| files.git_then_refresh(&r, vec!["restore".into(), "--staged".into(), "--".into(), p.clone()])));
+            }
+            // Not for new files (nothing to go back to) nor renames (the old name too would be
+            // involved): those are for git itself.
+            if raw != "??" && !raw.starts_with('R') && !raw.starts_with('C') {
                 let (r, p) = (repo.to_owned(), file.clone());
                 add("revert", "Throw its changes away (asks first)", Box::new(move |files| files.revert(&r, &p)));
             }
@@ -796,29 +802,60 @@ impl Files {
         }
     }
 
-    fn git_then_refresh(&self, repo: &Path, args: &[&str]) {
-        if let Err(err) = Files::git(repo, args) {
-            self.repo_line.set_label(&format!("git: {err}"));
-            return;
-        }
-        if let Some(files) = self.me.borrow().upgrade() {
-            files.fill_changes();
-        }
+    /// Runs git in the background (a commit hook or a signing prompt may take a while), then
+    /// shows the Changes again, or what went wrong.
+    fn git_then_refresh(&self, repo: &Path, args: Vec<String>) {
+        let me = self.me.borrow().clone();
+        let repo = repo.to_owned();
+        self.repo_line.set_label("git…");
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                Files::git(&repo, &args)
+            })
+            .await
+            .unwrap_or_else(|_| Err("git did not finish".to_owned()));
+            let Some(files) = me.upgrade() else { return };
+            match result {
+                Ok(_) => {
+                    files.fill_changes();
+                    true
+                }
+                Err(err) => {
+                    files.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err)));
+                    false
+                }
+            };
+        });
     }
 
     /// A file's changes against the last commit (a new file: all of it), in a window.
     fn show_diff(&self, repo: &Path, file: &str) {
-        let diff = Files::git(repo, &["-c", "core.quotePath=false", "diff", "HEAD", "--", file])
-            .ok()
-            .filter(|d| !d.trim().is_empty())
-            .or_else(|| {
-                // Untracked: the whole file is new.
-                std::fs::read_to_string(repo.join(file)).ok().map(|text| text.lines().map(|l| format!("+{l}\n")).collect())
+        let (me, repo, file) = (self.me.borrow().clone(), repo.to_owned(), file.to_owned());
+        glib::spawn_future_local(async move {
+            let (reading, name) = (repo.clone(), file.clone());
+            let diff = gio::spawn_blocking(move || {
+                Files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD", "--", &name])
+                    .ok()
+                    .filter(|d| !d.trim().is_empty())
+                    .or_else(|| {
+                        // Untracked: the whole file is new.
+                        std::fs::read_to_string(reading.join(&name)).ok().map(|text| text.lines().map(|l| format!("+{l}\n")).collect())
+                    })
+                    .unwrap_or_else(|| "No changes to show.".to_owned())
             })
-            .unwrap_or_else(|| "No changes to show.".to_owned());
+            .await
+            .unwrap_or_default();
+            if let Some(files) = me.upgrade() {
+                files.diff_window(&file, &diff);
+            }
+        });
+    }
+
+    fn diff_window(&self, file: &str, diff: &str) {
         let buffer = sourceview::Buffer::new(None);
         buffer.set_language(sourceview::LanguageManager::default().language("diff").as_ref());
-        buffer.set_text(&diff);
+        buffer.set_text(diff);
         if let Some(scheme) = self.buffer.style_scheme() {
             buffer.set_style_scheme(Some(&scheme));
         }
@@ -859,7 +896,7 @@ impl Files {
         let parent = self.root.root().and_downcast::<gtk::Window>();
         dialog.choose(parent.as_ref(), None::<&gio::Cancellable>, move |choice| {
             if let (Ok(1), Some(files)) = (choice, me.upgrade()) {
-                files.git_then_refresh(&repo, &["restore", "--staged", "--worktree", "--source=HEAD", "--", &file]);
+                files.git_then_refresh(&repo, vec!["restore".into(), "--staged".into(), "--worktree".into(), "--source=HEAD".into(), "--".into(), file.clone()]);
             }
         });
     }
@@ -873,15 +910,8 @@ impl Files {
             self.repo_line.set_label("Type a commit message first.");
             return;
         }
-        match Files::git(&repo, &["commit", "-m", &message]) {
-            Ok(_) => {
-                self.commit_entry.set_text("");
-                if let Some(files) = self.me.borrow().upgrade() {
-                    files.fill_changes();
-                }
-            }
-            Err(err) => self.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err))),
-        }
+        self.commit_entry.set_text("");
+        self.git_then_refresh(&repo, vec!["commit".into(), "-m".into(), message]);
     }
 
     /// The file opened goes first in the tabs (eight at most).

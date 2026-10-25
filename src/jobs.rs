@@ -114,12 +114,12 @@ impl Tray {
         Ok(job)
     }
 
-    /// Every job: (name, running, exit code).
     /// How many jobs are running.
     pub fn running(&self) -> usize {
         self.jobs.borrow().iter().filter(|j| j.is_running()).count()
     }
 
+    /// Every job: (name, running, exit code).
     pub fn list(&self) -> Vec<(String, bool, Option<i64>)> {
         self.jobs.borrow().iter().map(|j| (j.name.borrow().clone(), j.is_running(), j.outcome.get().flatten())).collect()
     }
