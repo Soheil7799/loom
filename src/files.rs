@@ -148,7 +148,9 @@ impl Files {
         in_nevis.add_css_class("flat");
         in_nevis.set_tooltip_text(Some("Open in nevis, with Live Preview (Ctrl+Shift+O)"));
         in_nevis.set_visible(glib::find_program_in_path("nevis").is_some());
+        let find = gtk::SearchEntry::builder().placeholder_text("Find").width_chars(14).visible(false).build();
         editor_header.append(&name);
+        editor_header.append(&find);
         editor_header.append(&dirty);
         editor_header.append(&in_nevis);
         editor_header.append(&save);
@@ -217,6 +219,34 @@ impl Files {
                 views.set_visible_child_name("agent");
             }
         });
+        // Find in the open file: every match marked, Enter goes to the next.
+        if let Some(entry) = files.find_entry() {
+            let settings = sourceview::SearchSettings::new();
+            settings.set_wrap_around(true);
+            let context = sourceview::SearchContext::new(&files.buffer, Some(&settings));
+            context.set_highlight(true);
+            entry.connect_search_changed(move |entry| settings.set_search_text(Some(entry.text().as_str()).filter(|t| !t.is_empty())));
+            let (weak, found) = (Rc::downgrade(&files), context.clone());
+            entry.connect_activate(move |_| {
+                let Some(files) = weak.upgrade() else { return };
+                let buffer = &files.buffer;
+                let from = buffer.selection_bounds().map_or_else(|| buffer.iter_at_mark(&buffer.get_insert()), |(_, end)| end);
+                if let Some((mut start, end, _)) = found.forward(&from) {
+                    buffer.select_range(&start, &end);
+                    files.view.scroll_to_iter(&mut start, 0.2, false, 0.0, 0.0);
+                }
+            });
+            let weak = Rc::downgrade(&files);
+            entry.connect_stop_search(move |entry| {
+                entry.set_text("");
+                entry.set_visible(false);
+                if let Some(files) = weak.upgrade() {
+                    files.view.grab_focus();
+                }
+            });
+            // Kept alive with the entry.
+            unsafe { entry.set_data("loom-search", context) };
+        }
         let weak = Rc::downgrade(&files);
         project_tab.connect_toggled(move |tab| {
             if let Some(files) = weak.upgrade()
@@ -689,6 +719,36 @@ impl Files {
         if let Err(err) = std::process::Command::new("nevis").arg(&path).spawn() {
             self.notice(&format!("Could not start nevis: {err}"));
         }
+    }
+
+    /// Ctrl+F in the editor: its find field, matches marked as typed, Enter for the next.
+    pub fn find(&self) -> bool {
+        if !self.editor_box.is_visible() {
+            return false;
+        }
+        let Some(entry) = self.find_entry() else { return false };
+        entry.set_visible(true);
+        entry.grab_focus();
+        true
+    }
+
+    fn find_entry(&self) -> Option<gtk::SearchEntry> {
+        let header = self.editor_box.first_child()?;
+        let mut child = header.first_child();
+        while let Some(widget) = child {
+            if let Ok(entry) = widget.clone().downcast::<gtk::SearchEntry>() {
+                return Some(entry);
+            }
+            child = widget.next_sibling();
+        }
+        None
+    }
+
+    /// The cursor on line `line` (from 1) of the open file, in view.
+    pub fn go_to_line(&self, line: u32) {
+        let Some(mut iter) = self.buffer.iter_at_line(line.saturating_sub(1) as i32) else { return };
+        self.buffer.place_cursor(&iter);
+        self.view.scroll_to_iter(&mut iter, 0.2, true, 0.0, 0.3);
     }
 
     pub fn has_unsaved(&self) -> bool {

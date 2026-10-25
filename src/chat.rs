@@ -15,6 +15,25 @@ use crate::markdown::{self, Segment};
 
 type Callback<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 
+thread_local! {
+    /// Opens a file link ("loom-file:src/app.rs:42", or a relative or file:// link) clicked
+    /// in a chat (the widget it was in, to know whose folder): true if it did.
+    pub static OPEN_LINK: RefCell<Option<Rc<dyn Fn(&str, &gtk::Widget) -> bool>>> = const { RefCell::new(None) };
+}
+
+/// A link clicked in chat text: files go to the app, the web to the browser (GTK's default).
+fn link_clicked(label: &gtk::Label, uri: &str) -> glib::Propagation {
+    let web = ["http://", "https://", "mailto:"].iter().any(|p| uri.starts_with(p));
+    if web {
+        return glib::Propagation::Proceed;
+    }
+    let handler = OPEN_LINK.with(|h| h.borrow().clone());
+    match handler {
+        Some(open) if open(uri, label.upcast_ref()) => glib::Propagation::Stop,
+        _ => glib::Propagation::Proceed,
+    }
+}
+
 pub struct Chat {
     pub root: gtk::Box,
     title: gtk::Label,
@@ -61,6 +80,11 @@ pub struct Chat {
     completion_list: gtk::ListBox,
     /// What was typed, and the images attached (PNG).
     pub on_submit: Callback<(String, Vec<glib::Bytes>)>,
+    /// Find in the conversation (Ctrl+F): the bar, what is typed, how many, which one.
+    find_bar: gtk::Revealer,
+    find_entry: gtk::SearchEntry,
+    find_count: gtk::Label,
+    find_at: Cell<Option<usize>>,
     /// Images pasted or dropped, waiting to go with the next message.
     attachments: RefCell<Vec<glib::Bytes>>,
     attach_box: gtk::Box,
@@ -124,6 +148,7 @@ struct ToolCard {
     exit: Cell<Option<Option<i64>>>,
     output_button: RefCell<Option<gtk::Button>>,
     rendering: Cell<bool>,
+    has_open: Cell<bool>,
     /// Opened by itself once (a small diff shows without a click).
     auto_opened: Cell<bool>,
     status: RefCell<String>,
@@ -222,6 +247,15 @@ impl Chat {
             .vexpand(true)
             .build();
         // "Jump to latest", while the reader is scrolled up.
+        let find_entry = gtk::SearchEntry::builder().placeholder_text("Find in the conversation").width_chars(28).build();
+        let find_count = gtk::Label::new(None);
+        find_count.add_css_class("dim");
+        find_count.add_css_class("small");
+        let find_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        find_line.add_css_class("find-bar");
+        find_line.append(&find_entry);
+        find_line.append(&find_count);
+        let find_bar = gtk::Revealer::builder().child(&find_line).halign(gtk::Align::End).valign(gtk::Align::Start).margin_top(8).margin_end(16).build();
         let latest = gtk::Button::with_label("↓  Latest");
         latest.add_css_class("latest");
         latest.set_halign(gtk::Align::Center);
@@ -229,6 +263,7 @@ impl Chat {
         latest.set_margin_bottom(14);
         latest.set_visible(false);
         let scroll_area = gtk::Overlay::builder().child(&scroller).vexpand(true).build();
+        scroll_area.add_overlay(&find_bar);
         scroll_area.add_overlay(&latest);
         root.append(&scroll_area);
 
@@ -363,6 +398,10 @@ impl Chat {
             completion_list,
             on_submit: RefCell::default(),
             attachments: RefCell::default(),
+            find_bar,
+            find_entry,
+            find_count,
+            find_at: Cell::new(None),
             attach_box,
             on_cancel: RefCell::default(),
             on_cycle_mode: RefCell::default(),
@@ -387,6 +426,39 @@ impl Chat {
                 chat.input.grab_focus();
             }
         });
+        let weak = Rc::downgrade(&chat);
+        chat.find_entry.connect_search_changed(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.find_at.set(None);
+                chat.find_next(false);
+            }
+        });
+        let weak = Rc::downgrade(&chat);
+        chat.find_entry.connect_activate(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.find_next(false);
+            }
+        });
+        let weak = Rc::downgrade(&chat);
+        chat.find_entry.connect_stop_search(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.close_find();
+            }
+        });
+        let find_keys = gtk::EventControllerKey::new();
+        let weak = Rc::downgrade(&chat);
+        find_keys.connect_key_pressed(move |_, key, _, modifiers| {
+            let Some(chat) = weak.upgrade() else { return glib::Propagation::Proceed };
+            let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+            match key {
+                gdk::Key::Return | gdk::Key::KP_Enter => chat.find_next(shift),
+                gdk::Key::Up => chat.find_next(true),
+                gdk::Key::Down => chat.find_next(false),
+                _ => return glib::Propagation::Proceed,
+            }
+            glib::Propagation::Stop
+        });
+        chat.find_entry.add_controller(find_keys);
         let weak = Rc::downgrade(&chat);
         latest.connect_clicked(move |_| {
             if let Some(chat) = weak.upgrade() {
@@ -426,6 +498,73 @@ impl Chat {
         let Some(text) = find(self.list.upcast_ref()) else { return false };
         self.list.clipboard().set_text(&text);
         true
+    }
+
+    /// Ctrl+F: the find bar over the conversation.
+    pub fn find(self: &Rc<Self>) {
+        self.find_bar.set_reveal_child(true);
+        self.find_entry.grab_focus();
+        self.find_entry.select_region(0, -1);
+    }
+
+    fn close_find(&self) {
+        self.find_bar.set_reveal_child(false);
+        self.find_at.set(None);
+        self.find_count.set_label("");
+        self.input.grab_focus();
+    }
+
+    /// The next (or previous) place the find text is in: selected, and scrolled to.
+    fn find_next(&self, back: bool) {
+        let needle = self.find_entry.text().to_lowercase();
+        if needle.is_empty() {
+            self.find_count.set_label("");
+            return;
+        }
+        // Every (label, char offset) the text is at, top to bottom.
+        let mut hits: Vec<(gtk::Label, usize)> = Vec::new();
+        fn walk(widget: &gtk::Widget, needle: &str, hits: &mut Vec<(gtk::Label, usize)>) {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>()
+                && label.is_selectable()
+                && label.is_drawable()
+            {
+                let text = label.text().to_lowercase();
+                let mut from = 0;
+                while let Some(at) = text[from..].find(needle) {
+                    let byte = from + at;
+                    hits.push((label.clone(), text[..byte].chars().count()));
+                    from = byte + needle.len().max(1);
+                }
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                walk(&widget, needle, hits);
+                child = widget.next_sibling();
+            }
+        }
+        walk(self.list.upcast_ref(), &needle, &mut hits);
+        if hits.is_empty() {
+            self.find_count.set_label("no match");
+            self.find_at.set(None);
+            return;
+        }
+        let at = match (self.find_at.get(), back) {
+            (None, false) => 0,
+            (None, true) => hits.len() - 1,
+            (Some(i), false) => (i + 1) % hits.len(),
+            (Some(i), true) => (i + hits.len() - 1) % hits.len(),
+        };
+        self.find_at.set(Some(at));
+        self.find_count.set_label(&format!("{} of {}", at + 1, hits.len()));
+        let (label, offset) = &hits[at];
+        let length = needle.chars().count();
+        label.select_region(*offset as i32, (*offset + length) as i32);
+        if let Some(point) = label.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0)) {
+            let adj = self.scroller.vadjustment();
+            self.stick.set(false);
+            let y = f64::from(point.y()) - adj.page_size() / 3.0;
+            adj.set_value(y.clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+        }
     }
 
     /// To the bottom, and following it again.
@@ -1941,6 +2080,7 @@ impl ToolCard {
             exit: Cell::new(None),
             output_button: RefCell::default(),
             rendering: Cell::new(false),
+            has_open: Cell::new(false),
             auto_opened: Cell::new(false),
             status: RefCell::default(),
             has_diff: Cell::new(false),
@@ -2006,6 +2146,26 @@ impl ToolCard {
                 }
                 _ => self.glyph.set_label("○"),
             }
+        }
+        if let Some(path) = update["locations"].as_array().and_then(|l| l.first()).and_then(|l| l["path"].as_str())
+            && !self.has_open.replace(true)
+        {
+            let line = update["locations"][0]["line"].as_u64();
+            let target = match line {
+                Some(line) => format!("loom-file:{path}:{line}"),
+                None => format!("loom-file:{path}"),
+            };
+            let open = gtk::Button::with_label("open");
+            open.add_css_class("flat");
+            open.add_css_class("small");
+            open.set_tooltip_text(Some(&format!("Open {path} in loom's editor")));
+            open.connect_clicked(move |button| {
+                let handler = OPEN_LINK.with(|h| h.borrow().clone());
+                if let Some(handler) = handler {
+                    handler(&target, button.upcast_ref());
+                }
+            });
+            self.actions.prepend(&open);
         }
         if let Some(content) = update["content"].as_array() {
             *self.content.borrow_mut() = content.clone();
@@ -2128,6 +2288,7 @@ fn text_label(markup: &str) -> gtk::Label {
     label.set_wrap_mode(pango::WrapMode::WordChar);
     label.set_markup(markup);
     label.set_focusable(false);
+    label.connect_activate_link(link_clicked);
     label
 }
 

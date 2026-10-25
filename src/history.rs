@@ -166,6 +166,7 @@ pub struct Page {
     rows: RefCell<Vec<Past>>,
     /// Answers for an earlier project are dropped (and its listing stopped).
     round: Cell<u64>,
+    filter: gtk::SearchEntry,
     listing: RefCell<Option<std::rc::Weak<Conn>>>,
     pub on_new: Callback<PathBuf>,
     pub on_resume: Callback<Past>,
@@ -191,11 +192,14 @@ impl Page {
         heading.append(&place);
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).build();
         list.add_css_class("history");
+        let filter = gtk::SearchEntry::builder().placeholder_text("Filter past conversations (type to filter)").build();
+        filter.add_css_class("history-filter");
         let note = gtk::Label::builder().xalign(0.0).wrap(true).build();
         note.add_css_class("dim");
         note.add_css_class("small");
         note.add_css_class("history-note");
         column.append(&heading);
+        column.append(&filter);
         column.append(&list);
         column.append(&note);
         let clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -213,10 +217,44 @@ impl Page {
             project: RefCell::default(),
             rows: RefCell::default(),
             round: Cell::new(0),
+            filter: filter.clone(),
             listing: RefCell::default(),
             on_new: RefCell::default(),
             on_resume: RefCell::default(),
             is_open: RefCell::default(),
+        });
+        // Rows whose title has every word typed (the "New conversation" row always stays).
+        let weak = Rc::downgrade(&page);
+        page.list.set_filter_func(move |row| {
+            let Some(page) = weak.upgrade() else { return true };
+            let words = page.filter.text().to_lowercase();
+            if row.index() == 0 || words.trim().is_empty() {
+                return true;
+            }
+            let rows = page.rows.borrow();
+            let Some(past) = rows.get(row.index() as usize - 1) else { return true };
+            let title = format!("{} {}", past.title.as_deref().unwrap_or(""), past.cwd.display()).to_lowercase();
+            words.split_whitespace().all(|w| title.contains(w))
+        });
+        let weak = Rc::downgrade(&page);
+        filter.connect_search_changed(move |_| {
+            if let Some(page) = weak.upgrade() {
+                page.list.invalidate_filter();
+            }
+        });
+        // Enter in the filter opens the first match; Down goes to the list.
+        let weak = Rc::downgrade(&page);
+        filter.connect_activate(move |_| {
+            let Some(page) = weak.upgrade() else { return };
+            let mut index = 1;
+            while let Some(row) = page.list.row_at_index(index) {
+                if row.is_child_visible() {
+                    page.activate(index);
+                    return;
+                }
+                index += 1;
+            }
+            page.activate(0);
         });
         let weak = Rc::downgrade(&page);
         page.list.connect_row_activated(move |_, row| {
@@ -235,6 +273,7 @@ impl Page {
         self.place.set_label(&project.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1));
         self.place.set_tooltip_text(Some(&project.to_string_lossy()));
         self.rows.borrow_mut().clear();
+        self.filter.set_text("");
         self.fill(&[]);
         self.note.set_label("Looking for past conversations…");
         let round = self.round.get() + 1;
@@ -350,6 +389,20 @@ impl Page {
 
     pub fn project(&self) -> PathBuf {
         self.project.borrow().clone()
+    }
+
+    /// Typing on the page filters it (the text goes into the filter).
+    pub fn type_filter(&self, c: char) {
+        self.filter.grab_focus();
+        let mut text = self.filter.text().to_string();
+        text.push(c);
+        self.filter.set_text(&text);
+        self.filter.set_position(-1);
+    }
+
+    /// Ctrl+F on the page.
+    pub fn focus_filter(&self) {
+        self.filter.grab_focus();
     }
 
     /// Keyboard focus on the list ("New conversation" selected: Enter starts one).

@@ -19,6 +19,7 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
     let mut out = Vec::new();
     let mut text = String::new();
     // Ordered lists hold the next number.
+    let mut in_link = false;
     let mut lists: Vec<Option<u64>> = Vec::new();
     let mut code: Option<(String, String)> = None;
     let mut table: Option<Vec<Vec<String>>> = None;
@@ -85,7 +86,10 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
                 Tag::Emphasis => text.push_str("<i>"),
                 Tag::Strong => text.push_str("<b>"),
                 Tag::Strikethrough => text.push_str("<s>"),
-                Tag::Link { dest_url, .. } => text.push_str(&format!("<a href=\"{}\">", escape(&dest_url))),
+                Tag::Link { dest_url, .. } => {
+                    in_link = true;
+                    text.push_str(&format!("<a href=\"{}\">", escape(&dest_url)));
+                }
                 Tag::BlockQuote(_) => text.push_str("▎ "),
                 Tag::List(start) => {
                     if lists.is_empty() && !text.is_empty() && !text.ends_with("\n\n") {
@@ -127,7 +131,10 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
                 TagEnd::BlockQuote(_) => text.push_str("\n\n"),
                 TagEnd::Strong => text.push_str("</b>"),
                 TagEnd::Strikethrough => text.push_str("</s>"),
-                TagEnd::Link => text.push_str("</a>"),
+                TagEnd::Link => {
+                    in_link = false;
+                    text.push_str("</a>");
+                }
                 TagEnd::Paragraph => text.push_str(if lists.is_empty() { "\n\n" } else { "\n" }),
                 TagEnd::List(_) => {
                     lists.pop();
@@ -138,10 +145,18 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
                 _ => {}
             },
             Event::Text(t) | Event::Html(t) | Event::InlineHtml(t) => text.push_str(&escape(&t)),
-            Event::Code(t) => text.push_str(&format!(
-                "<span font_family=\"JetBrains Mono, Vazirmatn, monospace\" bgcolor=\"#888888\" bgalpha=\"22%\">{}</span>",
-                escape(&t)
-            )),
+            Event::Code(t) => {
+                let span = format!(
+                    "<span font_family=\"JetBrains Mono, Vazirmatn, monospace\" bgcolor=\"#888888\" bgalpha=\"22%\">{}</span>",
+                    escape(&t)
+                );
+                // `src/app.rs:42` and the like open in loom's editor when clicked.
+                if !in_link && looks_like_path(&t) {
+                    text.push_str(&format!("<a href=\"loom-file:{}\">{span}</a>", escape(&t)));
+                } else {
+                    text.push_str(&span);
+                }
+            }
             Event::SoftBreak => text.push(' '),
             Event::HardBreak => text.push('\n'),
             Event::Rule => text.push_str("\n──────────\n\n"),
@@ -164,9 +179,32 @@ fn push_cell(rows: &mut [Vec<String>], markup: &str) {
     }
 }
 
+/// A file path, maybe with a line ("src/app.rs", "Cargo.toml:12", "~/notes/todo.md"), not
+/// code ("foo()", "a + b", "x.len()").
+pub fn looks_like_path(text: &str) -> bool {
+    let path = text.split(':').next().unwrap_or(text);
+    let name = path.rsplit('/').next().unwrap_or(path);
+    let allowed = |c: char| c.is_alphanumeric() || "._-/~@+".contains(c);
+    !path.is_empty()
+        && path.len() < 200
+        && path.chars().all(allowed)
+        && (path.contains('/') || name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && (1..=8).contains(&ext.len()) && ext.chars().all(|c| c.is_ascii_alphanumeric()) && ext.chars().any(|c| c.is_ascii_alphabetic())))
+        && text[path.len()..].chars().all(|c| c == ':' || c.is_ascii_digit())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paths_are_told_from_code() {
+        for path in ["src/app.rs", "Cargo.toml", "Cargo.toml:12", "~/notes/todo.md", "web/README.md:3"] {
+            assert!(looks_like_path(path), "{path}");
+        }
+        for code in ["foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95"] {
+            assert!(!looks_like_path(code), "{code}");
+        }
+    }
 
     #[test]
     fn paragraphs_and_inline_styles() {

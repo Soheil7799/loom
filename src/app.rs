@@ -287,6 +287,7 @@ impl App {
         });
         this.wire_toast(&toast_go, &toast_close);
         this.wire_history();
+        this.wire_links();
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
         let weak = Rc::downgrade(&this);
@@ -499,6 +500,17 @@ impl App {
                     return glib::Propagation::Proceed;
                 }
             }
+            (true, false, false, gdk::Key::f) => {
+                // The editor when it has the keyboard, the page of a project, else the chat.
+                let in_files = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is_ancestor(&self.files.root));
+                if !(in_files && self.files.find()) {
+                    if self.showing_project().is_some() {
+                        self.history.focus_filter();
+                    } else if let Some(agent) = self.focused_agent() {
+                        agent.chat.find();
+                    }
+                }
+            }
             (true, false, false, gdk::Key::w) => self.close_focused(),
             (true, false, false, gdk::Key::k) => self.open_switcher(),
             (true, false, false, gdk::Key::i) => self.open_inbox(),
@@ -532,7 +544,16 @@ impl App {
     /// still press what has focus.
     fn type_into_chat(&self, key: gdk::Key) -> glib::Propagation {
         let Some(c) = key.to_unicode().filter(|c| !c.is_control() && *c != ' ') else { return glib::Propagation::Proceed };
-        let Some(agent) = self.focused_agent() else { return glib::Propagation::Proceed };
+        let Some(agent) = self.focused_agent() else {
+            // On a project's page, typing filters its conversations.
+            let focus = GtkWindowExt::focus(&self.window);
+            let typing = focus.as_ref().is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::TextView>());
+            if !typing && self.showing_project().is_some() && !c.is_ascii_digit() {
+                self.history.type_filter(c);
+                return glib::Propagation::Stop;
+            }
+            return glib::Propagation::Proceed;
+        };
         // A digit with a question open and nothing typed yet answers it, wherever focus is.
         if let Some(n) = crate::chat::any_digit(c).filter(|n| *n >= 1)
             && agent.chat.input.buffer().char_count() == 0
@@ -1151,6 +1172,35 @@ impl App {
                 });
             }
         }
+    }
+
+    /// File links in chats ("loom-file:src/app.rs:42", relative links, file://) open in
+    /// loom's editor, from the folder of the agent whose chat it is.
+    fn wire_links(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        crate::chat::OPEN_LINK.with(|h| {
+            *h.borrow_mut() = Some(Rc::new(move |uri: &str, widget: &gtk::Widget| {
+                let Some(app) = weak.upgrade() else { return false };
+                let agent = app.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat.root)).cloned().or_else(|| app.focused_agent());
+                let base = agent.as_ref().map_or_else(glib::home_dir, |a| a.cwd.clone());
+                let target = uri.strip_prefix("loom-file:").or_else(|| uri.strip_prefix("file://")).unwrap_or(uri);
+                let (path, line) = split_line(target);
+                let path = state::expand(Path::new(path));
+                let path = if path.is_absolute() { path } else { base.join(path) };
+                if !path.exists() {
+                    if let Some(agent) = agent {
+                        agent.chat.notice(&format!("No such file here: {}", path.display()), "dim");
+                    }
+                    return true;
+                }
+                app.files.root.set_visible(true);
+                app.files.open_file(&path);
+                if let Some(line) = line {
+                    app.files.go_to_line(line);
+                }
+                true
+            }));
+        });
     }
 
     fn wire_history(self: &Rc<Self>) {
@@ -2111,6 +2161,18 @@ pub fn project_of(cwd: &Path) -> PathBuf {
 
 fn state_project(cwd: &Path) -> PathBuf {
     project_of(cwd)
+}
+
+/// "src/app.rs:42" → ("src/app.rs", Some(42)); also "#L42".
+fn split_line(target: &str) -> (&str, Option<u32>) {
+    if let Some((path, line)) = target.rsplit_once("#L")
+        && let Ok(line) = line.parse()
+    {
+        return (path, Some(line));
+    }
+    let mut parts = target.splitn(3, ':');
+    let path = parts.next().unwrap_or(target);
+    (path, parts.next().and_then(|l| l.parse().ok()))
 }
 
 /// Chat text a step bigger or smaller (Ctrl+= / Ctrl+-).

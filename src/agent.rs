@@ -7,6 +7,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
+use std::io::Read;
+use std::os::unix::process::CommandExt;
 use std::rc::Rc;
 use std::time::Instant;
 
@@ -126,6 +128,8 @@ pub struct Agent {
     /// own `!` does).
     context: RefCell<Vec<String>>,
     shells: Cell<u64>,
+    /// The `!command` running, if one is (its process group).
+    shell_pid: Cell<Option<i32>>,
     modes: RefCell<Vec<String>>,
     mode: RefCell<String>,
     pending: RefCell<Vec<Pending>>,
@@ -169,6 +173,7 @@ impl Agent {
             queue: RefCell::default(),
             context: RefCell::default(),
             shells: Cell::new(0),
+            shell_pid: Cell::new(None),
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
             pending: RefCell::default(),
@@ -638,10 +643,12 @@ impl Agent {
             self.chat.user(&text);
         }
         self.chat.user_images(&images);
-        if self.turn.get() || !self.ready.get() {
-            if self.turn.get() {
-                self.chat.notice("Queued: sent when this turn ends.", "dim");
-            }
+        // Claude is working: the message goes into the running turn, as in the terminal.
+        if self.turn.get() && self.ready.get() {
+            self.steer(text, images);
+            return;
+        }
+        if !self.ready.get() {
             self.queue.borrow_mut().push_back((text, images));
             self.start();
             return;
@@ -653,6 +660,10 @@ impl Agent {
     /// `!command`: runs it here, shows what it printed, and hands both to Claude with the
     /// next message.
     fn shell(self: &Rc<Self>, command: String) {
+        if self.shell_pid.get().is_some() {
+            self.chat.notice("A command is still running here (Esc stops it).", "dim");
+            return;
+        }
         let n = self.shells.get() + 1;
         self.shells.set(n);
         let id = format!("shell-{n}");
@@ -661,50 +672,150 @@ impl Agent {
             "status": "in_progress", "content": [{ "type": "terminal" }]
         }));
         self.chat.open_tool(&id);
-        let cwd = self.cwd.clone();
-        let socket = crate::control::current();
+        let mut shell = std::process::Command::new("bash");
+        shell
+            .arg("-c")
+            .arg(&command)
+            .current_dir(&self.cwd)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .process_group(0);
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("HERDR_") {
+                shell.env_remove(name);
+            }
+        }
+        if let Some(socket) = crate::control::current() {
+            shell.env("LOOM_SOCKET", socket);
+        }
+        let mut child = match shell.spawn() {
+            Ok(child) => child,
+            Err(err) => {
+                self.chat.tool_output(&id, &format!("could not run it: {err}"));
+                self.chat.tool(&json!({ "toolCallId": id, "status": "failed" }));
+                return;
+            }
+        };
+        self.shell_pid.set(Some(child.id() as i32));
+        enum Out {
+            Stdout(String),
+            Stderr(String),
+            Done(Option<i32>),
+        }
+        let (tx, rx) = async_channel::unbounded::<Out>();
+        let readers: Vec<_> = [child.stdout.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>), child.stderr.take().map(|s| Box::new(s) as Box<dyn std::io::Read + Send>)]
+            .into_iter()
+            .enumerate()
+            .filter_map(|(i, stream)| {
+                let mut stream = stream?;
+                let tx = tx.clone();
+                Some(std::thread::spawn(move || {
+                    let mut buffer = [0u8; 8192];
+                    while let Ok(n) = stream.read(&mut buffer) {
+                        if n == 0 {
+                            break;
+                        }
+                        let text = String::from_utf8_lossy(&buffer[..n]).into_owned();
+                        let _ = tx.send_blocking(if i == 0 { Out::Stdout(text) } else { Out::Stderr(text) });
+                    }
+                }))
+            })
+            .collect();
+        std::thread::spawn(move || {
+            for reader in readers {
+                let _ = reader.join();
+            }
+            let code = child.wait().ok().and_then(|s| s.code());
+            let _ = tx.send_blocking(Out::Done(code));
+        });
         let weak = Rc::downgrade(self);
-        let run = command.clone();
         glib::spawn_future_local(async move {
-            let result = gio::spawn_blocking(move || {
-                let mut shell = std::process::Command::new("bash");
-                shell.arg("-c").arg(&run).current_dir(&cwd).stdin(std::process::Stdio::null());
-                for (name, _) in std::env::vars_os() {
-                    if name.to_string_lossy().starts_with("HERDR_") {
-                        shell.env_remove(name);
+            let (mut stdout, mut stderr) = (String::new(), String::new());
+            while let Ok(out) = rx.recv().await {
+                let Some(agent) = weak.upgrade() else { return };
+                match out {
+                    Out::Stdout(text) | Out::Stderr(text) if text.is_empty() => {}
+                    Out::Stdout(text) => {
+                        agent.chat.tool_output(&id, &text.replace('\n', "\r\n"));
+                        stdout.push_str(&text);
+                    }
+                    Out::Stderr(text) => {
+                        agent.chat.tool_output(&id, &text.replace('\n', "\r\n"));
+                        stderr.push_str(&text);
+                    }
+                    Out::Done(code) => {
+                        agent.shell_pid.set(None);
+                        agent.chat.tool_exit(&id, code.map(i64::from));
+                        let status = if code == Some(0) { "completed" } else { "failed" };
+                        agent.chat.tool(&json!({ "toolCallId": id, "status": status }));
+                        agent.chat.open_tool(&id);
+                        let clip = |text: &str| -> String {
+                            if text.chars().count() > 30_000 {
+                                format!("{}\n[… cut, {} characters in all]", text.chars().take(30_000).collect::<String>(), text.chars().count())
+                            } else {
+                                text.trim_end().to_owned()
+                            }
+                        };
+                        let stopped = if code.is_none() { "\n[stopped by the user]" } else { "" };
+                        agent.context.borrow_mut().push(format!(
+                            "<bash-input>{command}</bash-input>\n<bash-stdout>{}{stopped}</bash-stdout><bash-stderr>{}</bash-stderr>",
+                            clip(&stdout),
+                            clip(&stderr)
+                        ));
+                        agent.chat.notice("Claude sees this with your next message.", "dim");
+                        return;
                     }
                 }
-                if let Some(socket) = socket {
-                    shell.env("LOOM_SOCKET", socket);
-                }
-                shell.output()
-            })
-            .await;
+            }
+        });
+    }
+
+    /// Esc while a `!command` runs: it stops (its whole process group).
+    fn stop_shell(&self) -> bool {
+        let Some(pid) = self.shell_pid.get() else { return false };
+        // SAFETY: plain kill(2) on the group the command leads.
+        unsafe { libc::kill(-pid, libc::SIGTERM) };
+        true
+    }
+
+    /// A message as ACP content: `!command` runs first (as Claude Code puts them before the
+    /// message), then the images, then the text.
+    fn prompt_blocks(&self, text: &str, images: &[glib::Bytes]) -> Vec<Value> {
+        let mut prompt: Vec<Value> = self.context.borrow().iter().map(|c| json!({ "type": "text", "text": c })).collect();
+        for png in images {
+            prompt.push(json!({ "type": "image", "mimeType": "image/png", "data": glib::base64_encode(png).as_str() }));
+        }
+        if !text.is_empty() || prompt.is_empty() {
+            prompt.push(json!({ "type": "text", "text": text }));
+        }
+        prompt
+    }
+
+    /// Sends a message into the turn that is running. If the turn ended meanwhile, it goes as
+    /// a prompt of its own; if steering fails, it waits for the turn's end (nothing is lost).
+    fn steer(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else {
+            self.queue.borrow_mut().push_back((text, images));
+            return;
+        };
+        let prompt = self.prompt_blocks(&text, &images);
+        let weak = Rc::downgrade(self);
+        let params = json!({ "sessionId": session, "prompt": prompt, "_meta": { "steering": { "idleBehavior": "promptRequired" } } });
+        conn.request("_session/steering", params, move |result| {
             let Some(agent) = weak.upgrade() else { return };
-            let (stdout, stderr, code) = match result {
-                Ok(Ok(out)) => (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned(), out.status.code()),
-                Ok(Err(err)) => (String::new(), format!("could not run it: {err}"), None),
-                Err(_) => (String::new(), "could not run it".to_owned(), None),
-            };
-            let shown = format!("{stdout}{}{stderr}", if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') { "\n" } else { "" });
-            agent.chat.tool_output(&id, &shown.replace('\n', "\r\n"));
-            agent.chat.tool_exit(&id, code.map(i64::from));
-            let ok = code == Some(0);
-            agent.chat.tool(&json!({ "toolCallId": id, "status": if ok { "completed" } else { "failed" } }));
-            agent.chat.open_tool(&id);
-            let clip = |text: &str| -> String {
-                if text.chars().count() > 30_000 {
-                    format!("{}\n[… cut, {} characters in all]", text.chars().take(30_000).collect::<String>(), text.chars().count())
-                } else {
-                    text.trim_end().to_owned()
+            match result {
+                Ok(answer) if answer["outcome"].as_str() == Some("promptRequired") => {
+                    agent.queue.borrow_mut().push_back((text, images));
+                    agent.send_next();
                 }
-            };
-            agent.context.borrow_mut().push(format!(
-                "<bash-input>{command}</bash-input>\n<bash-stdout>{}</bash-stdout><bash-stderr>{}</bash-stderr>",
-                clip(&stdout),
-                clip(&stderr)
-            ));
-            agent.chat.notice("Claude sees this with your next message.", "dim");
+                Ok(_) => agent.context.borrow_mut().clear(),
+                Err(_) => {
+                    agent.chat.notice("Queued: sent when this turn ends.", "dim");
+                    agent.queue.borrow_mut().push_back((text, images));
+                    agent.send_next();
+                }
+            }
         });
     }
 
@@ -720,14 +831,8 @@ impl Agent {
         self.chat.set_working(Some(started));
         self.refresh_status();
         let weak = Rc::downgrade(self);
-        // `!command` output first, as Claude Code puts it before the message.
-        let mut prompt: Vec<Value> = self.context.borrow_mut().drain(..).map(|c| json!({ "type": "text", "text": c })).collect();
-        for png in &images {
-            prompt.push(json!({ "type": "image", "mimeType": "image/png", "data": glib::base64_encode(png).as_str() }));
-        }
-        if !text.is_empty() || prompt.is_empty() {
-            prompt.push(json!({ "type": "text", "text": text }));
-        }
+        let prompt = self.prompt_blocks(&text, &images);
+        self.context.borrow_mut().clear();
         conn.request(
             "session/prompt",
             json!({ "sessionId": session, "prompt": prompt }),
@@ -762,6 +867,8 @@ impl Agent {
     }
 
     pub fn cancel(self: &Rc<Self>) {
+        // A `!command` running stops too (Esc stops what is going on, whichever it is).
+        self.stop_shell();
         if !self.turn.get() {
             return;
         }
