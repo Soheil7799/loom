@@ -67,7 +67,20 @@ fn main() -> glib::ExitCode {
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     settings::init(&app_id);
-    let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::empty()).build();
+    // `loom <folder>`: that folder's project page (in the running window, if there is one).
+    let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
+    app.connect_open(|app, files, _| {
+        app.activate();
+        let Some(window) = app.active_window() else { return };
+        // SAFETY: "loom" holds the App, set when the window was made (below).
+        let Some(loom) = (unsafe { window.data::<std::rc::Rc<app::App>>("loom") }) else { return };
+        let loom = unsafe { loom.as_ref() }.clone();
+        for file in files {
+            if let Some(path) = file.path().filter(|p| p.is_dir()) {
+                loom.show_project(&app::project_of(&path), &path);
+            }
+        }
+    });
     app.connect_startup(|_| {
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);

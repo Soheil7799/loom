@@ -142,6 +142,8 @@ struct Message {
 
 struct ToolCard {
     root: gtk::Box,
+    /// A task's own steps (a subagent at work), under it.
+    children: gtk::Box,
     glyph: gtk::Label,
     spinner: gtk::Spinner,
     kind: gtk::Label,
@@ -1452,6 +1454,15 @@ impl Chat {
         let existing = self.tools.borrow().get(id).cloned();
         let card = existing.unwrap_or_else(|| {
             let card = ToolCard::new();
+            // A subagent's step goes under the task that started it, not in the main run.
+            let parent = update["_meta"]["claudeCode"]["parentToolUseId"].as_str().and_then(|p| self.tools.borrow().get(p).cloned());
+            if let Some(parent) = parent {
+                parent.children.append(&card.root);
+                parent.children.set_visible(true);
+                self.tools.borrow_mut().insert(id.to_owned(), card.clone());
+                card.update(update);
+                return card;
+            }
             *self.last.borrow_mut() = Last::None;
             let group = self.group.borrow().clone();
             let group = group.unwrap_or_else(|| {
@@ -1607,7 +1618,7 @@ impl Chat {
         for (key, field) in &properties {
             let title = field["title"].as_str().unwrap_or(key).to_owned();
             let description = field["description"].as_str().unwrap_or("");
-            let choices = choices_of(field);
+            let choices = choices_with_previews(field);
             let box_ = gtk::Box::new(gtk::Orientation::Vertical, 4);
             // Claude Code's per-question "Other" box sits under its options without a heading.
             let other = choices.is_empty() && title == "Other";
@@ -1628,7 +1639,7 @@ impl Chat {
                 };
                 let mut buttons = Vec::new();
                 let mut group: Option<gtk::CheckButton> = None;
-                for (i, (value, name, about)) in choices.into_iter().enumerate() {
+                for (i, (value, name, about, preview)) in choices.into_iter().enumerate() {
                     let line = gtk::Box::new(gtk::Orientation::Vertical, 1);
                     let shown = if number_these && i < 9 { format!("{}  {name}", i + 1) } else { name.clone() };
                     line.append(&gtk::Label::builder().label(shown).xalign(0.0).wrap(true).build());
@@ -1637,6 +1648,13 @@ impl Chat {
                         about.add_css_class("dim");
                         about.add_css_class("small");
                         line.append(&about);
+                    }
+                    if !preview.is_empty() {
+                        let shown = gtk::Label::builder().label(&preview).xalign(0.0).wrap(true).selectable(true).build();
+                        shown.set_wrap_mode(pango::WrapMode::Char);
+                        shown.add_css_class("code-block");
+                        shown.add_css_class("option-preview");
+                        line.append(&shown);
                     }
                     let check = gtk::CheckButton::new();
                     check.set_child(Some(&line));
@@ -1842,7 +1860,13 @@ impl Field {
 
 /// A field's options as (value, name, description): `oneOf`/`anyOf` of `{const, title,
 /// description}`, or a plain `enum` (also inside `items`, for a multiple choice).
+#[cfg(test)]
 fn choices_of(field: &Value) -> Vec<(Value, String, String)> {
+    choices_with_previews(field).into_iter().map(|(v, n, d, _)| (v, n, d)).collect()
+}
+
+/// The options with the preview Claude may attach to each (a mock-up, a snippet to compare).
+fn choices_with_previews(field: &Value) -> Vec<(Value, String, String, String)> {
     let source = if field["type"].as_str() == Some("array") { &field["items"] } else { field };
     let name_of = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
     for key in ["oneOf", "anyOf"] {
@@ -1853,7 +1877,8 @@ fn choices_of(field: &Value) -> Vec<(Value, String, String)> {
                 .map(|o| {
                     let value = o["const"].clone();
                     let name = o["title"].as_str().map_or_else(|| name_of(&value), str::to_owned);
-                    (value, name, o["description"].as_str().unwrap_or("").to_owned())
+                    let preview = o["_meta"]["_claude/askUserQuestionOption"]["preview"].as_str().unwrap_or("").to_owned();
+                    (value, name, o["description"].as_str().unwrap_or("").to_owned(), preview)
                 })
                 .collect();
         }
@@ -1866,7 +1891,7 @@ fn choices_of(field: &Value) -> Vec<(Value, String, String)> {
         .enumerate()
         .map(|(i, v)| {
             let name = names.and_then(|n| n.get(i)).and_then(Value::as_str).map_or_else(|| name_of(v), str::to_owned);
-            (v.clone(), name, String::new())
+            (v.clone(), name, String::new(), String::new())
         })
         .collect()
 }
@@ -2117,7 +2142,12 @@ impl ToolCard {
         let revealer = gtk::Revealer::builder().child(&detail).reveal_child(false).build();
         root.append(&top);
         root.append(&revealer);
+        let children = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        children.add_css_class("tool-children");
+        children.set_visible(false);
+        root.append(&children);
         let card = Rc::new(ToolCard {
+            children,
             root,
             glyph,
             spinner,

@@ -288,6 +288,16 @@ impl App {
         this.wire_toast(&toast_go, &toast_close);
         this.wire_history();
         this.wire_links();
+        // "Ask Claude" in the editor: into the input of the agent in view.
+        let weak = Rc::downgrade(&this);
+        *this.files.on_ask.borrow_mut() = Some(Rc::new(move |text: String| {
+            let Some(app) = weak.upgrade() else { return };
+            let Some(agent) = app.focused_agent() else { return };
+            let buffer = agent.chat.input.buffer();
+            buffer.place_cursor(&buffer.end_iter());
+            buffer.insert_at_cursor(&text);
+            agent.chat.input.grab_focus();
+        }));
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
         let weak = Rc::downgrade(&this);
@@ -458,6 +468,8 @@ impl App {
 
         match (ctrl, shift, alt, base) {
             (true, false, false, gdk::Key::grave) => self.toggle_scratch(),
+            (false, true, true, gdk::Key::Up) => self.move_agent(-1),
+            (false, true, true, gdk::Key::Down) => self.move_agent(1),
             (false, false, true, gdk::Key::Up) => self.step(-1),
             (false, false, true, gdk::Key::Down) => self.step(1),
             (false, false, true, gdk::Key::Left | gdk::Key::Right) => self.swap(),
@@ -806,6 +818,11 @@ impl App {
                 }
             }),
             act("Let this agent work in another folder too…", "", |a| a.add_dir()),
+            act("Save this conversation as Markdown…", "", |a| a.export()),
+            act("Move this agent up", "Alt+Shift+↑", |a| a.move_agent(-1)),
+            act("Move this agent down", "Alt+Shift+↓", |a| a.move_agent(1)),
+            act("Move this project up", "", |a| a.move_project(-1)),
+            act("Move this project down", "", |a| a.move_project(1)),
             act("Restart this agent", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.restart();
@@ -1217,6 +1234,59 @@ impl App {
                 true
             }));
         });
+    }
+
+    /// Saves the conversation in view as a Markdown file (asks where).
+    fn export(self: &Rc<Self>) {
+        let Some(agent) = self.focused_agent() else { return };
+        let name: String = agent.title().chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+        let dialog = gtk::FileDialog::builder().title("Save the conversation").initial_name(format!("{}.md", name.trim())).modal(true).build();
+        dialog.set_initial_folder(Some(&gio::File::for_path(&agent.cwd)));
+        dialog.save(Some(&self.window), None::<&gio::Cancellable>, move |result| {
+            if let Ok(file) = result
+                && let Some(path) = file.path()
+            {
+                let text = format!("# {}\n\n{}", agent.title(), agent.chat.transcript());
+                match std::fs::write(&path, text) {
+                    Ok(()) => agent.chat.notice(&format!("Saved to {}", path.display()), "dim"),
+                    Err(err) => agent.chat.notice(&format!("Could not save it: {err}"), "error"),
+                }
+            }
+        });
+    }
+
+    /// Moves the focused agent up or down among its project's agents.
+    fn move_agent(self: &Rc<Self>, by: i32) {
+        let Some(agent) = self.focused_agent() else { return };
+        {
+            let mut agents = self.agents.borrow_mut();
+            let mine: Vec<usize> = agents.iter().enumerate().filter(|(_, a)| a.project == agent.project).map(|(i, _)| i).collect();
+            let Some(at) = mine.iter().position(|&i| Rc::ptr_eq(&agents[i], &agent)) else { return };
+            let to = at as i32 + by;
+            if to < 0 || to as usize >= mine.len() {
+                return;
+            }
+            agents.swap(mine[at], mine[to as usize]);
+        }
+        self.refresh_sidebar();
+        self.save();
+    }
+
+    /// Moves the project in view up or down the sidebar.
+    fn move_project(self: &Rc<Self>, by: i32) {
+        let project = self.focused_agent().map(|a| a.project.clone()).or_else(|| self.showing_project());
+        let Some(project) = project else { return };
+        {
+            let mut projects = self.projects.borrow_mut();
+            let Some(at) = projects.iter().position(|p| p.path == project) else { return };
+            let to = at as i32 + by;
+            if to < 0 || to as usize >= projects.len() {
+                return;
+            }
+            projects.swap(at, to as usize);
+        }
+        self.refresh_sidebar();
+        self.save();
     }
 
     /// Asks for a folder the focused agent may work in besides its own (another repo).

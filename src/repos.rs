@@ -9,7 +9,8 @@ use std::process::Command;
 pub struct Repo {
     pub path: PathBuf,
     pub branch: String,
-    /// Changed files (staged, unstaged, untracked).
+    /// Changed files (staged, unstaged, untracked): git's two-letter status ("M ": staged,
+    /// " M": not yet, "??": new) and the path.
     pub changes: Vec<(String, String)>,
     /// Commits ahead of / behind the upstream.
     pub ahead: u32,
@@ -76,7 +77,7 @@ fn parse_status(repo: &Path, text: &str) -> Repo {
             let (code, path) = line.split_at(3);
             // A rename shows "old -> new": the new name is the file now.
             let path = path.rsplit(" -> ").next().unwrap_or(path).trim_matches('"');
-            repo.changes.push((code.trim().to_owned(), path.to_owned()));
+            repo.changes.push((code[..2].to_owned(), path.to_owned()));
         }
     }
     repo
@@ -133,7 +134,7 @@ mod tests {
         assert_eq!((repo.ahead, repo.behind), (2, 1));
         assert_eq!(
             repo.changes,
-            vec![("M".into(), "src/a.rs".into()), ("??".into(), "new.txt".into()), ("R".into(), "moved.rs".into())]
+            vec![(" M".into(), "src/a.rs".into()), ("??".into(), "new.txt".into()), ("R ".into(), "moved.rs".into())]
         );
         assert_eq!(repo.summary(), "main ●3 ↑2 ↓1");
     }

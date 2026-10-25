@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::{glib, pango, prelude::*};
+use gtk::{gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
 use crate::acp::Conn;
@@ -75,6 +75,47 @@ pub fn list(done: impl FnOnce(Result<Vec<Past>, String>) + 'static) -> Option<st
         }
     });
     Some(Rc::downgrade(&conn))
+}
+
+/// Deletes a past conversation for good (ACP session/delete, through a short-lived adapter).
+pub fn delete(session: String, done: impl FnOnce(Result<(), String>) + 'static) {
+    let done = Rc::new(RefCell::new(Some(Box::new(done) as Box<dyn FnOnce(Result<(), String>)>)));
+    let finish = {
+        let done = done.clone();
+        Rc::new(move |result: Result<(), String>| {
+            if let Some(done) = done.borrow_mut().take() {
+                done(result);
+            }
+        })
+    };
+    let on_exit = finish.clone();
+    let conn = match Conn::spawn(&glib::home_dir(), move |incoming| {
+        if let crate::acp::Incoming::Exited = incoming {
+            on_exit(Err("the agent program stopped".to_owned()));
+        }
+    }) {
+        Ok(conn) => conn,
+        Err(err) => return finish(Err(err.to_string())),
+    };
+    let weak = Rc::downgrade(&conn);
+    glib::timeout_add_local_once(Duration::from_secs(20), move || {
+        if let Some(conn) = weak.upgrade() {
+            conn.stop();
+        }
+    });
+    let params = json!({ "protocolVersion": 1, "clientCapabilities": {}, "clientInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") } });
+    let next = conn.clone();
+    conn.request("initialize", params, move |result| {
+        if let Err(err) = result {
+            next.stop();
+            return finish(Err(message(&err)));
+        }
+        let again = next.clone();
+        next.request("session/delete", json!({ "sessionId": session }), move |result| {
+            again.stop();
+            finish(result.map(|_| ()).map_err(|e| message(&e)));
+        });
+    });
 }
 
 fn newest_first(found: &RefCell<Vec<Past>>) -> Vec<Past> {
@@ -167,6 +208,7 @@ pub struct Page {
     /// Answers for an earlier project are dropped (and its listing stopped).
     round: Cell<u64>,
     filter: gtk::SearchEntry,
+    me: RefCell<std::rc::Weak<Page>>,
     listing: RefCell<Option<std::rc::Weak<Conn>>>,
     pub on_new: Callback<PathBuf>,
     pub on_resume: Callback<Past>,
@@ -218,11 +260,13 @@ impl Page {
             rows: RefCell::default(),
             round: Cell::new(0),
             filter: filter.clone(),
+            me: RefCell::default(),
             listing: RefCell::default(),
             on_new: RefCell::default(),
             on_resume: RefCell::default(),
             is_open: RefCell::default(),
         });
+        *page.me.borrow_mut() = Rc::downgrade(&page);
         // Rows whose title has every word typed (the "New conversation" row always stays).
         let weak = Rc::downgrade(&page);
         page.list.set_filter_func(move |row| {
@@ -362,6 +406,18 @@ impl Page {
                 when.add_css_class("small");
                 line.append(&when);
             }
+            let remove = gtk::Button::with_label("delete");
+            remove.add_css_class("flat");
+            remove.add_css_class("small");
+            remove.add_css_class("history-delete");
+            remove.set_tooltip_text(Some("Delete this conversation for good (asks first)"));
+            let (me, id, title) = (self.me.borrow().clone(), past.session_id.clone(), past.title.clone().unwrap_or_else(|| "Untitled".to_owned()));
+            remove.connect_clicked(move |button| {
+                if let Some(page) = me.upgrade() {
+                    page.ask_delete(button, id.clone(), title.clone());
+                }
+            });
+            line.append(&remove);
             let row = gtk::ListBoxRow::builder().child(&line).build();
             row.set_tooltip_text(Some(&past.cwd.to_string_lossy()));
             self.list.append(&row);
@@ -389,6 +445,35 @@ impl Page {
 
     pub fn project(&self) -> PathBuf {
         self.project.borrow().clone()
+    }
+
+    fn ask_delete(&self, button: &gtk::Button, session: String, title: String) {
+        let dialog = gtk::AlertDialog::builder()
+            .message(format!("Delete “{title}”?"))
+            .detail("The conversation is removed from Claude Code for good; it can't be resumed afterwards.")
+            .buttons(["Keep it", "Delete"])
+            .cancel_button(0)
+            .default_button(0)
+            .build();
+        let me = self.me.borrow().clone();
+        let parent = button.root().and_downcast::<gtk::Window>();
+        dialog.choose(parent.as_ref(), None::<&gio::Cancellable>, move |choice| {
+            if choice != Ok(1) {
+                return;
+            }
+            delete(session.clone(), move |result| {
+                let Some(page) = me.upgrade() else { return };
+                match result {
+                    Ok(()) => {
+                        let project = page.project();
+                        let cwd = page.cwd.borrow().clone();
+                        let name = page.title.label().to_string();
+                        page.show(&project, &cwd, &name);
+                    }
+                    Err(err) => page.note.set_label(&format!("Could not delete it: {err}.")),
+                }
+            });
+        });
     }
 
     /// Typing on the page filters it (the text goes into the filter).

@@ -102,6 +102,8 @@ struct Pending {
     title: String,
     /// A question form rather than a permission (answered with its content).
     form: Option<Rc<crate::chat::FormCard>>,
+    /// A step in the browser rather than a permission (answered accept/decline).
+    url: Option<String>,
 }
 
 pub struct Agent {
@@ -466,7 +468,7 @@ impl Agent {
                 // Retries, warnings and compaction come as their own updates, not as text.
                 "session": { "notices": {}, "compaction": {} },
                 // Claude Code's questions (AskUserQuestion) and MCP servers' come as forms.
-                "elicitation": { "form": {} }
+                "elicitation": { "form": {}, "url": {} }
             },
             "clientInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") }
         });
@@ -1048,7 +1050,7 @@ impl Agent {
         let conn = self.conn.borrow().clone();
         for question in pending {
             if let Some(conn) = &conn {
-                let answer = if question.form.is_some() { json!({ "action": "cancel" }) } else { json!({ "outcome": { "outcome": "cancelled" } }) };
+                let answer = if question.form.is_some() || question.url.is_some() { json!({ "action": "cancel" }) } else { json!({ "outcome": { "outcome": "cancelled" } }) };
                 conn.respond(question.rpc, answer);
             }
             question.card.resolve("Cancelled");
@@ -1140,6 +1142,30 @@ impl Agent {
 
     /// Claude (or an MCP server) asks something: a form in the chat.
     fn elicit(self: &Rc<Self>, rpc: Value, params: &Value) {
+        // A step in the browser (an MCP server's sign-in): opened only when the user says so.
+        if params["mode"].as_str() == Some("url") {
+            let url = params["url"].as_str().unwrap_or("").to_owned();
+            let message = params["message"].as_str().unwrap_or("A step in the browser").to_owned();
+            let options = vec![
+                ("open".to_owned(), "Open in the browser".to_owned(), "allow_once".to_owned()),
+                ("decline".to_owned(), "Decline".to_owned(), "reject_once".to_owned()),
+            ];
+            let serial = self.asked.get() + 1;
+            self.asked.set(serial);
+            let weak = Rc::downgrade(self);
+            let choose: Rc<dyn Fn(String)> = Rc::new(move |id: String| {
+                let Some(agent) = weak.upgrade() else { return };
+                let index = agent.pending.borrow().iter().position(|p| p.serial == serial);
+                if let Some(index) = index {
+                    agent.choose(index, &id);
+                }
+            });
+            let card = self.chat.permission(&message, Some(&url), false, &options, choose);
+            self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: message.clone(), form: None, url: Some(url) });
+            self.refresh_status();
+            self.emit(Event::Asked(message));
+            return;
+        }
         // No mode means a form (older MCP servers leave it out).
         if !matches!(params["mode"].as_str(), None | Some("form")) {
             if let Some(conn) = self.conn.borrow().clone() {
@@ -1158,7 +1184,7 @@ impl Agent {
         });
         let form = self.chat.form(&message, &params["requestedSchema"], answer);
         let card = form.card.clone();
-        self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), form: Some(form) });
+        self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), form: Some(form), url: None });
         self.refresh_status();
         self.emit(Event::Asked(message));
     }
@@ -1173,7 +1199,15 @@ impl Agent {
         };
         let name = question.options.iter().find(|(id, _, _)| id == option_id).map(|(_, name, _)| name.clone()).unwrap_or_default();
         if let Some(conn) = self.conn.borrow().clone() {
-            conn.respond(question.rpc, json!({ "outcome": { "outcome": "selected", "optionId": option_id } }));
+            let answer = match &question.url {
+                Some(url) if option_id == "open" => {
+                    gtk::UriLauncher::new(url).launch(None::<&gtk::Window>, None::<&gio::Cancellable>, |_| {});
+                    json!({ "action": "accept" })
+                }
+                Some(_) => json!({ "action": "decline" }),
+                None => json!({ "outcome": { "outcome": "selected", "optionId": option_id } }),
+            };
+            conn.respond(question.rpc, answer);
         }
         question.card.resolve(&format!("→ {name}"));
         self.last_active.set(Instant::now());
@@ -1216,7 +1250,7 @@ impl Agent {
             }
         });
         let card = self.chat.permission(&format!("Allow {title}?"), detail.as_deref(), is_plan, &options, choose);
-        self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), form: None });
+        self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), form: None, url: None });
         self.refresh_status();
         self.emit(Event::Asked(title));
     }

@@ -51,6 +51,16 @@ pub struct Files {
     tree: gtk::ListView,
     /// The folder the tree shows.
     project: RefCell<PathBuf>,
+    /// Itself, for the buttons made later (rows of Changes).
+    me: RefCell<std::rc::Weak<Files>>,
+    /// Files opened lately, as tabs over the editor.
+    tabs: gtk::Box,
+    recent: RefCell<Vec<PathBuf>>,
+    /// "Ask Claude" about the file or the selection: the text for the chat's input.
+    pub on_ask: RefCell<Option<Rc<dyn Fn(String)>>>,
+    /// Committing in the repo the Changes view shows.
+    commit_entry: gtk::Entry,
+    changes_repo: RefCell<Option<PathBuf>>,
 }
 
 impl Files {
@@ -123,6 +133,14 @@ impl Files {
         changes_view.append(&pick_line);
         changes_view.append(&repo_line);
         changes_view.append(&changes_scroller);
+        let commit_entry = gtk::Entry::builder().placeholder_text("Commit message (commits what is staged)").hexpand(true).build();
+        let commit = gtk::Button::with_label("Commit");
+        commit.add_css_class("suggested");
+        let commit_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        commit_line.add_css_class("commit-line");
+        commit_line.append(&commit_entry);
+        commit_line.append(&commit);
+        changes_view.append(&commit_line);
         let views = gtk::Stack::new();
         views.add_named(&agent_view, Some("agent"));
         views.add_named(&tree_scroller, Some("project"));
@@ -152,6 +170,10 @@ impl Files {
         editor_header.append(&name);
         editor_header.append(&find);
         editor_header.append(&dirty);
+        let ask = gtk::Button::with_label("Ask Claude");
+        ask.add_css_class("flat");
+        ask.set_tooltip_text(Some("Mention this file (or the selected lines) in the chat"));
+        editor_header.append(&ask);
         editor_header.append(&in_nevis);
         editor_header.append(&save);
         editor_header.append(&close);
@@ -168,6 +190,11 @@ impl Files {
         let view_scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
         editor_box.set_size_request(-1, 200);
         editor_box.append(&editor_header);
+        let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+        tabs.add_css_class("editor-tabs");
+        tabs.set_visible(false);
+        let tabs_scroller = gtk::ScrolledWindow::builder().child(&tabs).vscrollbar_policy(gtk::PolicyType::Never).hscrollbar_policy(gtk::PolicyType::External).build();
+        editor_box.append(&tabs_scroller);
         let message = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
         message.add_css_class("editor-message");
         editor_box.append(&message);
@@ -212,6 +239,12 @@ impl Files {
             changes_round: Cell::new(0),
             tree,
             project: RefCell::default(),
+            me: RefCell::default(),
+            tabs,
+            recent: RefCell::default(),
+            on_ask: RefCell::default(),
+            commit_entry,
+            changes_repo: RefCell::default(),
         });
         let views = files.views.clone();
         agent_tab.connect_toggled(move |tab| {
@@ -317,6 +350,25 @@ impl Files {
         save.connect_clicked(move |_| {
             if let Some(files) = weak.upgrade() {
                 files.save();
+            }
+        });
+        *files.me.borrow_mut() = Rc::downgrade(&files);
+        let weak = Rc::downgrade(&files);
+        ask.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.ask();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        commit.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.commit();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        files.commit_entry.connect_activate(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.commit();
             }
         });
         let weak = Rc::downgrade(&files);
@@ -466,6 +518,7 @@ impl Files {
         self.warned.set(None);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
+        self.remember(path);
         self.editor_box.set_visible(true);
         self.view.grab_focus();
         true
@@ -678,10 +731,18 @@ impl Files {
         parts.push(if status.changes.is_empty() { "clean".to_owned() } else { format!("{} changed", status.changes.len()) });
         self.repo_line.set_label(&parts.join("  ·  "));
         let mut paths = Vec::new();
-        for (code, file) in &status.changes {
+        *self.changes_repo.borrow_mut() = Some(repo.to_owned());
+        for (raw, file) in &status.changes {
+            let code = raw.trim();
+            let staged = !raw.starts_with(' ') && !raw.starts_with('?');
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.add_css_class("file-row");
+            row.add_css_class("change-row");
             let badge = gtk::Label::new(Some(code));
+            if staged {
+                badge.add_css_class("staged");
+                badge.set_tooltip_text(Some("Staged: goes into the next commit"));
+            }
             badge.add_css_class("git-code");
             badge.add_css_class(match code.chars().next() {
                 Some('?') | Some('A') => "added",
@@ -691,10 +752,204 @@ impl Files {
             let name = gtk::Label::builder().label(file).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
             row.append(&badge);
             row.append(&name);
+            let actions = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            actions.add_css_class("change-actions");
+            let add = |label: &str, tip: &str, act: Box<dyn Fn(&Files)>| {
+                let button = gtk::Button::with_label(label);
+                button.add_css_class("flat");
+                button.add_css_class("small");
+                button.set_tooltip_text(Some(tip));
+                let me = self.me.borrow().clone();
+                button.connect_clicked(move |_| {
+                    if let Some(files) = me.upgrade() {
+                        act(&files);
+                    }
+                });
+                actions.append(&button);
+            };
+            let (r, p) = (repo.to_owned(), file.clone());
+            add("diff", "What changed in it", Box::new(move |files| files.show_diff(&r, &p)));
+            let (r, p) = (repo.to_owned(), file.clone());
+            if staged {
+                add("unstage", "Leave it out of the next commit", Box::new(move |files| files.git_then_refresh(&r, &["restore", "--staged", "--", &p])));
+            } else {
+                add("stage", "Put it in the next commit", Box::new(move |files| files.git_then_refresh(&r, &["add", "--", &p])));
+            }
+            if raw != "??" {
+                let (r, p) = (repo.to_owned(), file.clone());
+                add("revert", "Throw its changes away (asks first)", Box::new(move |files| files.revert(&r, &p)));
+            }
+            row.append(&actions);
             self.changes.append(&row);
             paths.push(repo.join(file));
         }
         *self.shown_changes.borrow_mut() = paths;
+    }
+
+    /// Runs git in `repo`: its output, or what it said went wrong.
+    fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
+        let output = std::process::Command::new("git").arg("-C").arg(repo).args(args).output().map_err(|e| e.to_string())?;
+        if output.status.success() {
+            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+        } else {
+            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
+        }
+    }
+
+    fn git_then_refresh(&self, repo: &Path, args: &[&str]) {
+        if let Err(err) = Files::git(repo, args) {
+            self.repo_line.set_label(&format!("git: {err}"));
+            return;
+        }
+        if let Some(files) = self.me.borrow().upgrade() {
+            files.fill_changes();
+        }
+    }
+
+    /// A file's changes against the last commit (a new file: all of it), in a window.
+    fn show_diff(&self, repo: &Path, file: &str) {
+        let diff = Files::git(repo, &["-c", "core.quotePath=false", "diff", "HEAD", "--", file])
+            .ok()
+            .filter(|d| !d.trim().is_empty())
+            .or_else(|| {
+                // Untracked: the whole file is new.
+                std::fs::read_to_string(repo.join(file)).ok().map(|text| text.lines().map(|l| format!("+{l}\n")).collect())
+            })
+            .unwrap_or_else(|| "No changes to show.".to_owned());
+        let buffer = sourceview::Buffer::new(None);
+        buffer.set_language(sourceview::LanguageManager::default().language("diff").as_ref());
+        buffer.set_text(&diff);
+        if let Some(scheme) = self.buffer.style_scheme() {
+            buffer.set_style_scheme(Some(&scheme));
+        }
+        let view = sourceview::View::with_buffer(&buffer);
+        view.set_editable(false);
+        view.set_monospace(true);
+        view.add_css_class("editor");
+        let scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
+        let window = gtk::Window::builder().title(format!("{file} — changes")).default_width(900).default_height(640).child(&scroller).build();
+        if let Some(parent) = self.root.root().and_downcast::<gtk::Window>() {
+            window.set_transient_for(Some(&parent));
+        }
+        let keys = gtk::EventControllerKey::new();
+        let weak = window.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape
+                && let Some(window) = weak.upgrade()
+            {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+        window.present();
+    }
+
+    /// Throws a file's changes away, after asking.
+    fn revert(&self, repo: &Path, file: &str) {
+        let dialog = gtk::AlertDialog::builder()
+            .message(format!("Throw away the changes to {file}?"))
+            .detail("It goes back to how it was at the last commit. This can't be undone.")
+            .buttons(["Keep them", "Throw away"])
+            .cancel_button(0)
+            .default_button(0)
+            .build();
+        let (me, repo, file) = (self.me.borrow().clone(), repo.to_owned(), file.to_owned());
+        let parent = self.root.root().and_downcast::<gtk::Window>();
+        dialog.choose(parent.as_ref(), None::<&gio::Cancellable>, move |choice| {
+            if let (Ok(1), Some(files)) = (choice, me.upgrade()) {
+                files.git_then_refresh(&repo, &["restore", "--staged", "--worktree", "--source=HEAD", "--", &file]);
+            }
+        });
+    }
+
+    /// Commits what is staged in the repo shown, with the message typed.
+    fn commit(&self) {
+        let Some(repo) = self.changes_repo.borrow().clone() else { return };
+        let message = self.commit_entry.text().trim().to_owned();
+        if message.is_empty() {
+            self.commit_entry.grab_focus();
+            self.repo_line.set_label("Type a commit message first.");
+            return;
+        }
+        match Files::git(&repo, &["commit", "-m", &message]) {
+            Ok(_) => {
+                self.commit_entry.set_text("");
+                if let Some(files) = self.me.borrow().upgrade() {
+                    files.fill_changes();
+                }
+            }
+            Err(err) => self.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err))),
+        }
+    }
+
+    /// The file opened goes first in the tabs (eight at most).
+    fn remember(&self, path: &Path) {
+        {
+            let mut recent = self.recent.borrow_mut();
+            recent.retain(|p| p != path);
+            recent.insert(0, path.to_owned());
+            recent.truncate(8);
+        }
+        self.show_tabs();
+    }
+
+    fn show_tabs(&self) {
+        while let Some(child) = self.tabs.first_child() {
+            self.tabs.remove(&child);
+        }
+        let open = self.open.borrow().clone();
+        let recent = self.recent.borrow().clone();
+        for path in &recent {
+            let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let tab = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+            tab.add_css_class("editor-tab");
+            if open.as_deref() == Some(path.as_path()) {
+                tab.add_css_class("current");
+            }
+            let go = gtk::Button::with_label(&name);
+            go.add_css_class("flat");
+            go.set_tooltip_text(Some(&path.to_string_lossy()));
+            let close = gtk::Button::with_label("×");
+            close.add_css_class("flat");
+            close.set_tooltip_text(Some("Take it off the tabs"));
+            let (me, target) = (self.me.borrow().clone(), path.clone());
+            go.connect_clicked(move |_| {
+                if let Some(files) = me.upgrade() {
+                    files.open_file(&target);
+                }
+            });
+            let (me, target) = (self.me.borrow().clone(), path.clone());
+            close.connect_clicked(move |_| {
+                if let Some(files) = me.upgrade() {
+                    files.recent.borrow_mut().retain(|p| *p != target);
+                    files.show_tabs();
+                }
+            });
+            tab.append(&go);
+            tab.append(&close);
+            self.tabs.append(&tab);
+        }
+        self.tabs.set_visible(recent.len() > 1);
+    }
+
+    /// "Ask Claude": the file, or the lines selected (quoted), into the chat's input.
+    fn ask(&self) {
+        let Some(path) = self.open.borrow().clone() else { return };
+        let callback = self.on_ask.borrow().clone();
+        let Some(callback) = callback else { return };
+        let shown = path.strip_prefix(self.base.borrow().as_path()).map(Path::to_path_buf).unwrap_or(path.clone());
+        let text = match self.buffer.selection_bounds() {
+            Some((start, end)) => {
+                let (from, to) = (start.line() + 1, end.line() + 1);
+                let lines = if from == to { format!("#L{from}") } else { format!("#L{from}-{to}") };
+                let selected = self.buffer.text(&start, &end, false);
+                format!("@{}{lines}\n```\n{}\n```\n", shown.display(), selected.trim_end())
+            }
+            None => format!("@{} ", shown.display()),
+        };
+        callback(text);
     }
 
     /// Switches to the Changes view.
