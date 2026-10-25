@@ -111,6 +111,11 @@ fn page(conn: Rc<Conn>, cursor: Option<String>, found: Rc<RefCell<Vec<Past>>>, f
     });
 }
 
+/// The folder with symlinks resolved (as it is, if it is gone).
+pub fn real(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_owned())
+}
+
 fn parse(value: &Value) -> Vec<Past> {
     value["sessions"]
         .as_array()
@@ -246,7 +251,17 @@ impl Page {
             match result {
                 Ok(all) => {
                     let project = page.project.borrow().clone();
-                    let mine: Vec<Past> = all.into_iter().filter(|p| p.cwd.starts_with(&project) && crate::app::project_of(&p.cwd) == project).collect();
+                    // Compared as real folders: one opened through a symlink (~/Projects/hr →
+                    // faratamin/personnel) is recorded under the link's name.
+                    let project = real(&project);
+                    let mine: Vec<Past> = all
+                        .into_iter()
+                        .map(|mut p| {
+                            p.cwd = real(&p.cwd);
+                            p
+                        })
+                        .filter(|p| p.cwd.starts_with(&project) && real(&crate::app::project_of(&p.cwd)) == project)
+                        .collect();
                     page.note.set_label(if mine.is_empty() { "No past conversations here yet." } else { "" });
                     page.note.set_visible(mine.is_empty());
                     page.fill(&mine);
