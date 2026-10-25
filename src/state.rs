@@ -26,6 +26,8 @@ impl Saved {
 pub struct Project {
     pub path: PathBuf,
     pub collapsed: bool,
+    /// Given by hand (empty: the folder's name).
+    pub name: String,
 }
 
 /// The open agents, in order, and where to show them.
@@ -100,7 +102,13 @@ fn parse(text: &str) -> Layout {
         .as_array()
         .map(|all| {
             all.iter()
-                .filter_map(|p| Some(Project { path: PathBuf::from(p["path"].as_str()?), collapsed: p["collapsed"].as_bool().unwrap_or(false) }))
+                .filter_map(|p| {
+                    Some(Project {
+                        path: PathBuf::from(p["path"].as_str()?),
+                        collapsed: p["collapsed"].as_bool().unwrap_or(false),
+                        name: p["name"].as_str().unwrap_or("").to_owned(),
+                    })
+                })
                 .collect()
         })
         .unwrap_or_default();
@@ -115,7 +123,7 @@ fn parse(text: &str) -> Layout {
 
 fn render(layout: &Layout) -> String {
     let projects: Vec<Value> =
-        layout.projects.iter().map(|p| json!({ "path": p.path.to_string_lossy(), "collapsed": p.collapsed })).collect();
+        layout.projects.iter().map(|p| json!({ "path": p.path.to_string_lossy(), "collapsed": p.collapsed, "name": p.name })).collect();
     serde_json::to_string_pretty(&json!({
         "projects": projects,
         "agents": layout.agents.iter().map(saved_json).collect::<Vec<_>>(),
@@ -149,7 +157,10 @@ mod tests {
             Saved::new("/tmp".into()),
         ];
         let layout = Layout {
-            projects: vec![Project { path: "/home/x/p".into(), collapsed: true }, Project { path: "/tmp".into(), collapsed: false }],
+            projects: vec![
+                Project { path: "/home/x/p".into(), collapsed: true, name: "Starview".into() },
+                Project { path: "/tmp".into(), collapsed: false, name: String::new() },
+            ],
             agents: agents.clone(),
             focused: 1,
             pinned: Some(0),

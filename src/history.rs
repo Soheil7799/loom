@@ -228,10 +228,10 @@ impl Page {
     }
 
     /// Shows `project` (a new conversation starts in `cwd`) and lists its past ones.
-    pub fn show(self: &Rc<Self>, project: &Path, cwd: &Path) {
+    pub fn show(self: &Rc<Self>, project: &Path, cwd: &Path, name: &str) {
         *self.project.borrow_mut() = project.to_owned();
         *self.cwd.borrow_mut() = cwd.to_owned();
-        self.title.set_label(&project.file_name().map_or_else(|| project.to_string_lossy(), |n| n.to_string_lossy()));
+        self.set_name(name);
         self.place.set_label(&project.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1));
         self.place.set_tooltip_text(Some(&project.to_string_lossy()));
         self.rows.borrow_mut().clear();
@@ -342,6 +342,10 @@ impl Page {
         if let (Some(past), Some(callback)) = (past, callback) {
             callback(past);
         }
+    }
+
+    pub fn set_name(&self, name: &str) {
+        self.title.set_label(name);
     }
 
     pub fn project(&self) -> PathBuf {

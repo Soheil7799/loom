@@ -60,6 +60,8 @@ pub struct App {
     run_entry: gtk::Entry,
     rename: gtk::Popover,
     rename_entry: gtk::Entry,
+    /// The project being renamed (None: the focused agent).
+    renaming: RefCell<Option<PathBuf>>,
     help: gtk::Popover,
     quitting: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
@@ -271,6 +273,7 @@ impl App {
             run_entry,
             rename,
             rename_entry,
+            renaming: RefCell::default(),
             help,
             quitting: Cell::new(false),
             prefix: Cell::new(false),
@@ -344,7 +347,9 @@ impl App {
             let Some(app) = weak.upgrade() else { return };
             app.rename.popdown();
             let name = entry.text().trim().to_owned();
-            if let Some(agent) = app.focused_agent() {
+            if let Some(project) = app.renaming.take() {
+                app.rename_project(&project, &name);
+            } else if let Some(agent) = app.focused_agent() {
                 agent.rename(&name);
                 app.refresh_sidebar();
                 app.save();
@@ -662,9 +667,18 @@ impl App {
         }
     }
 
+    /// F2: the focused agent, or on a project's page, the project.
     fn begin_rename(&self) {
-        let Some(agent) = self.focused_agent() else { return };
-        self.rename_entry.set_text(&agent.title());
+        let agent = self.focused_agent();
+        let project = if agent.is_none() { self.showing_project() } else { None };
+        let (text, placeholder) = match (&agent, &project) {
+            (Some(agent), _) => (agent.title(), "Agent name"),
+            (None, Some(project)) => (self.project_label(project), "Project name (empty: the folder's)"),
+            (None, None) => return,
+        };
+        *self.renaming.borrow_mut() = project;
+        self.rename_entry.set_placeholder_text(Some(placeholder));
+        self.rename_entry.set_text(&text);
         self.rename.set_pointing_to(Some(&gdk::Rectangle::new(24, 30, 1, 1)));
         self.rename.popup();
         self.rename_entry.grab_focus();
@@ -688,7 +702,7 @@ impl App {
             act("New agent… (or resume one)", "Ctrl+N", |a| a.new_agent(false)),
             act("Open a project folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
             act("Reopen the last closed agent", "Ctrl+Shift+T", |a| a.reopen_closed()),
-            act("Rename this agent", "F2", |a| a.begin_rename()),
+            act("Rename this agent or project", "F2", |a| a.begin_rename()),
             act("Restart this agent", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.restart();
@@ -729,7 +743,7 @@ impl App {
         for agent in self.agents_in_order() {
             let weak = weak.clone();
             let target = Rc::downgrade(&agent);
-            let mut choice = Choice::new(format!("Go to {}", agent.title()), project_name(&agent.project), move || {
+            let mut choice = Choice::new(format!("Go to {}", agent.title()), self.project_label(&agent.project), move || {
                 if let (Some(app), Some(target)) = (weak.upgrade(), target.upgrade()) {
                     app.focus(&target);
                 }
@@ -741,7 +755,7 @@ impl App {
             let weak = weak.clone();
             let saved = saved.clone();
             let title = if saved.title.is_empty() { "an agent".to_owned() } else { saved.title.clone() };
-            choices.push(Choice::new(format!("Reopen {title}"), project_name(&state_project(&saved.cwd)), move || {
+            choices.push(Choice::new(format!("Reopen {title}"), self.project_label(&state_project(&saved.cwd)), move || {
                 if let Some(app) = weak.upgrade() {
                     app.reopen(saved.clone());
                 }
@@ -757,7 +771,7 @@ impl App {
         for agent in self.agents_in_order() {
             let weak = weak.clone();
             let target = Rc::downgrade(&agent);
-            let mut choice = Choice::new(agent.title(), project_name(&agent.project), move || {
+            let mut choice = Choice::new(agent.title(), self.project_label(&agent.project), move || {
                 if let (Some(app), Some(target)) = (weak.upgrade(), target.upgrade()) {
                     app.focus(&target);
                 }
@@ -768,7 +782,7 @@ impl App {
         for project in self.projects.borrow().iter() {
             let weak = weak.clone();
             let path = project.path.clone();
-            choices.push(Choice::new(project_name(&project.path), "project · conversations", move || {
+            choices.push(Choice::new(self.project_label(&project.path), "project · conversations", move || {
                 if let Some(app) = weak.upgrade() {
                     app.show_project(&path, &path);
                 }
@@ -800,7 +814,7 @@ impl App {
     fn ensure_project(&self, path: &Path) {
         let mut projects = self.projects.borrow_mut();
         if !projects.iter().any(|p| p.path == path) {
-            projects.push(Project { path: path.to_owned(), collapsed: false });
+            projects.push(Project { path: path.to_owned(), collapsed: false, name: String::new() });
         }
     }
 
@@ -1073,6 +1087,48 @@ impl App {
         self.history.activate(n);
     }
 
+    /// The project's name: given by hand, else its folder's.
+    fn project_label(&self, path: &Path) -> String {
+        let projects = self.projects.borrow();
+        let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());
+        named.map_or_else(|| project_name(path), str::to_owned)
+    }
+
+    /// Names a project (empty: back to its folder's name).
+    fn rename_project(self: &Rc<Self>, path: &Path, name: &str) {
+        if let Some(project) = self.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
+            project.name = name.to_owned();
+        }
+        if self.showing_project().is_some_and(|p| p == path) {
+            self.history.set_name(&self.project_label(path));
+        }
+        self.refresh_sidebar();
+        self.save();
+    }
+
+    pub fn name_project(self: &Rc<Self>, path: &Path, name: &str) {
+        self.rename_project(path, name);
+    }
+
+    /// The right-click menu turns into the name field, where it was opened.
+    fn rename_project_at(self: &Rc<Self>, path: &Path, x: f64, y: f64) {
+        let entry = gtk::Entry::builder().width_chars(30).placeholder_text("Project name (empty: the folder's)").build();
+        entry.set_text(&self.project_label(path));
+        let weak = Rc::downgrade(self);
+        let path = path.to_owned();
+        entry.connect_activate(move |entry| {
+            if let Some(app) = weak.upgrade() {
+                app.menu.popdown();
+                app.rename_project(&path, entry.text().trim());
+            }
+        });
+        self.menu.set_child(Some(&entry));
+        self.menu.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        self.menu.popup();
+        entry.grab_focus();
+        entry.select_region(0, -1);
+    }
+
     fn agent_with_session(&self, id: &str) -> Option<Rc<Agent>> {
         self.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(id)).cloned()
     }
@@ -1089,7 +1145,7 @@ impl App {
             *self.previous.borrow_mut() = Some(old);
         }
         self.chat_stack.set_visible_child_name("project");
-        self.history.show(project, cwd);
+        self.history.show(project, cwd, &self.project_label(project));
         let tray = self.tray_for(project);
         self.show_tray(project, &tray);
         self.files.show(cwd, project, &[]);
@@ -1571,8 +1627,9 @@ impl App {
         };
         match self.rows.borrow().get(index) {
             Some(Row::Project(path)) | Some(Row::Empty(path)) => {
-                let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
+                let (p1, p2, p3, p4, p5) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
                 item("Conversations (new or past)", Box::new(move |app| app.show_project(&p1, &p1)));
+                item("Rename…", Box::new(move |app| app.rename_project_at(&p5, x, y)));
                 item("Scratch terminal here", Box::new(move |app| {
                     app.scratch.hide();
                     app.scratch.toggle(&p2);
@@ -1677,7 +1734,7 @@ impl App {
                 app.toggle_collapsed(&path);
             }
         });
-        let name = gtk::Label::builder().label(project_name(&project.path)).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        let name = gtk::Label::builder().label(self.project_label(&project.path)).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         name.add_css_class("project-name");
         line.append(&arrow);
         line.append(&name);
@@ -1705,7 +1762,7 @@ impl App {
         let add = gtk::Button::with_label("+");
         add.add_css_class("flat");
         add.add_css_class("add");
-        add.set_tooltip_text(Some(&format!("New or past conversation in {}", project_name(&project.path))));
+        add.set_tooltip_text(Some(&format!("New or past conversation in {}", self.project_label(&project.path))));
         let weak = Rc::downgrade(self);
         let path = project.path.clone();
         add.connect_clicked(move |_| {
@@ -1828,7 +1885,7 @@ impl App {
             middle.append(&heading);
             for project in projects.iter().take(6) {
                 let line = gtk::Box::new(gtk::Orientation::Horizontal, 12);
-                let name = gtk::Label::builder().label(project_name(&project.path)).xalign(0.0).build();
+                let name = gtk::Label::builder().label(self.project_label(&project.path)).xalign(0.0).build();
                 let place = gtk::Label::builder()
                     .label(project.path.to_string_lossy().replace(&*glib::home_dir().to_string_lossy(), "~"))
                     .xalign(1.0)

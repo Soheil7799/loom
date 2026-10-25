@@ -18,6 +18,7 @@
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
 //! - `agent:<n>`: focus the n-th agent (from 1)
 //! - `new:<folder>`: start an agent in a folder
+//! - `name:<folder>=<name>`: names a project (empty: its folder's name)
 //! - `pick:<n>`: row n of the project page (0: new conversation)
 //! - `project:<folder>`: that folder's project page (new or past conversations)
 //! - `key:<letter>`: Ctrl+B then that key (shift for capitals)
@@ -112,6 +113,10 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
+        "name" => {
+            let (path, name) = argument.split_once('=').ok_or("name:<folder>=<name>")?;
+            app.name_project(Path::new(path), name);
+        }
         "pick" => app.pick_history(argument.parse().map_err(|_| "pick:<n>")?),
         "project" => app.show_project(&crate::app::project_of(Path::new(argument)), Path::new(argument)),
         "quit" => app.window.close(),
