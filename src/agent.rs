@@ -785,10 +785,13 @@ impl Agent {
                         return glib::ControlFlow::Continue;
                     }
                     agent.login_watch.take();
-                    if job.exit_code() == Some(0) {
-                        agent.restart();
-                    } else {
-                        agent.chat.notice("The login did not finish; Log in again when ready.", "dim");
+                    // 0, or closed from the tray after logging in (SIGTERM/SIGINT): start again.
+                    // A real failure (1–127) says so instead.
+                    match job.exit_code() {
+                        Some(code) if (1..=127).contains(&code) => {
+                            agent.chat.notice("The login did not finish; Log in again when ready.", "dim");
+                        }
+                        _ => agent.restart(),
                     }
                     glib::ControlFlow::Break
                 });
@@ -1011,15 +1014,15 @@ impl Agent {
         let Some(pid) = self.shell_pid.get() else { return false };
         // SAFETY: plain kill(2) on the group the command leads.
         unsafe { libc::kill(-pid, libc::SIGTERM) };
-        // One that ignores SIGTERM gets SIGKILL after 3 s (its group: children too), only if
-        // it is still the same command: a pid freed meanwhile may belong to something else.
+        // What ignores SIGTERM gets SIGKILL after 3 s: the whole group, children that outlived
+        // the shell too (a group id is not reused while any member lives). Not if another `!`
+        // command started meanwhile, which could have got the freed pid.
         let (weak, run) = (Rc::downgrade(self), self.shells.get());
         glib::timeout_add_local_once(Duration::from_secs(3), move || {
             if let Some(agent) = weak.upgrade()
-                && agent.shell_pid.get() == Some(pid)
                 && agent.shells.get() == run
             {
-                // SAFETY: as above, on the group still running.
+                // SAFETY: as above.
                 unsafe { libc::kill(-pid, libc::SIGKILL) };
             }
         });

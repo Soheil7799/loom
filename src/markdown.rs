@@ -186,21 +186,30 @@ const KNOWN: &[&str] = &[
     "log", "csv", "svg", "png", "jpg", "jpeg", "pdf", "typ", "tex", "nix", "lua", "zig", "dart", "proto", "graphql",
 ];
 
-/// A file or folder path, maybe with a line ("src/app.rs", "Cargo.toml:12", "src/ui/",
-/// "docker/Makefile", "~/notes/todo.md"), not code ("foo()", "a + b", "agent.cwd").
+/// Files that have no extension but are files all the same.
+const BARE: &[&str] = &["Makefile", "Dockerfile", "Justfile", "Containerfile", "LICENSE", "README", "CHANGELOG", "Procfile", "Gemfile", "Rakefile"];
+
+/// A file or folder path, maybe with a line and column ("src/app.rs", "Cargo.toml:12",
+/// "src/app.rs:12:5", "src/ui/", "docker/Makefile", "../README.md", "~/notes/todo.md"), not
+/// code or other slashed words ("foo()", "agent.cwd", "origin/main", "application/json").
 pub fn looks_like_path(text: &str) -> bool {
     let path = text.split(':').next().unwrap_or(text);
-    // After the path only a line number may follow (":12").
+    // After the path only a line, maybe a column (":12", ":12:5").
     let rest = &text[path.len()..];
-    let line_ok = rest.is_empty() || rest.len() > 1 && rest[1..].chars().all(|c| c.is_ascii_digit());
+    let line_ok = rest.is_empty() || rest.split(':').skip(1).all(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit())) && rest.split(':').count() <= 3;
     let allowed = path.chars().all(|c| c.is_alphanumeric() || "._-/~@+".contains(c));
-    if path.is_empty() || path.len() >= 200 || !allowed || path.contains("..") || !line_ok {
+    // "../" only at the front (a parent of the agent's folder), never inside.
+    let inner = path.trim_start_matches("../");
+    if path.is_empty() || path.len() >= 200 || !allowed || inner.contains("..") || !line_ok {
         return false;
     }
-    let name = path.trim_end_matches('/').rsplit('/').next().unwrap_or(path);
+    let name = inner.trim_end_matches('/').rsplit('/').next().unwrap_or(inner);
     let known = name.rsplit_once('.').is_some_and(|(stem, ext)| !stem.is_empty() && KNOWN.contains(&ext.to_ascii_lowercase().as_str()));
-    // With a slash, any name (a folder, a Makefile); without, only a known file kind.
-    known || path.contains('/') && name.chars().any(char::is_alphabetic)
+    // A slash alone is not enough ("origin/main"): a folder says so with its last "/", a
+    // path from somewhere with "./", "../", "~/" or "/", and some files have no extension.
+    let anchored = ["./", "../", "~/", "/"].iter().any(|p| path.starts_with(p)) && name.chars().any(char::is_alphabetic);
+    let folder = path.contains('/') && path.ends_with('/') && name.chars().any(char::is_alphabetic);
+    known || anchored || folder || BARE.contains(&name)
 }
 
 #[cfg(test)]
@@ -212,10 +221,13 @@ mod tests {
         for path in ["src/app.rs", "Cargo.toml", "Cargo.toml:12", "~/notes/todo.md", "web/README.md:3"] {
             assert!(looks_like_path(path), "{path}");
         }
-        for path in ["src/ui/", "docker/Makefile", "src/components"] {
+        for path in ["src/ui/", "docker/Makefile", "src/app.rs:12:5", "../README.md", "../shared/config.toml", "./build", "/etc/hosts"] {
             assert!(looks_like_path(path), "{path}");
         }
-        for code in ["foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95", "agent.cwd", "self.chat", "README.md:see below", "config.toml:foo", "../../x.rs"] {
+        for code in [
+            "foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95", "agent.cwd", "self.chat", "README.md:see below", "config.toml:foo",
+            "src/../x.rs", "origin/main", "application/json", "and/or", "owner/repo", "src/app.rs:12:5:9",
+        ] {
             assert!(!looks_like_path(code), "{code}");
         }
     }

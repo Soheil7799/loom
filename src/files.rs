@@ -45,6 +45,8 @@ pub struct Files {
     /// Bumped by each graph fill (an older answer is dropped), and the repo shown.
     graph_round: Cell<u64>,
     graph_repo: RefCell<Option<PathBuf>>,
+    /// A commit is running (one at a time).
+    committing: Cell<bool>,
     repo_bar: gtk::Box,
     repo_pick: gtk::DropDown,
     repo_line: gtk::Label,
@@ -266,6 +268,7 @@ impl Files {
             graph_commits: RefCell::default(),
             graph_round: Cell::new(0),
             graph_repo: RefCell::default(),
+            committing: Cell::new(false),
             repo_bar: pick_line.clone(),
         });
         let views = files.views.clone();
@@ -743,10 +746,15 @@ impl Files {
         let repo = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned();
         let round = self.graph_round.get() + 1;
         self.graph_round.set(round);
-        let Some(repo) = repo else {
-            self.clear_graph();
-            return;
-        };
+        // The old repo's commits go at once (a click must not open them under the new name).
+        self.clear_graph();
+        *self.graph_repo.borrow_mut() = None;
+        let Some(repo) = repo else { return };
+        let loading = gtk::Label::builder().label("Reading the history…").xalign(0.0).build();
+        loading.add_css_class("dim");
+        loading.set_margin_start(10);
+        self.graph.append(&loading);
+        self.graph_commits.borrow_mut().push(None);
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let reading = repo.clone();
@@ -817,7 +825,6 @@ impl Files {
         *self.graph_commits.borrow_mut() = commits;
     }
 
-    /// A commit in full (message, files, changes), in a window.
     fn clear_graph(&self) {
         while let Some(row) = self.graph.row_at_index(0) {
             self.graph.remove(&row);
@@ -825,6 +832,7 @@ impl Files {
         self.graph_commits.borrow_mut().clear();
     }
 
+    /// A commit in full (message, files, changes), in a window.
     fn show_commit(&self, hash: &str) {
         // The repo the graph shows (the picker may have moved on meanwhile).
         let Some(repo) = self.graph_repo.borrow().clone() else { return };
@@ -957,11 +965,12 @@ impl Files {
     /// Runs git in the background (a commit hook or a signing prompt may take a while), then
     /// shows the Changes again, or what went wrong.
     fn git_then_refresh(&self, repo: &Path, args: Vec<String>) {
-        self.git_then(repo, args, |_| {});
+        self.git_then(repo, args, |_, _| {});
     }
 
-    /// Runs git in the background, then `done` (if it worked) and the Changes again.
-    fn git_then(&self, repo: &Path, args: Vec<String>, done: impl FnOnce(&Files) + 'static) {
+    /// Runs git in the background, then `done` (with whether it worked) and, if it did, the
+    /// Changes again.
+    fn git_then(&self, repo: &Path, args: Vec<String>, done: impl FnOnce(&Files, bool) + 'static) {
         let me = self.me.borrow().clone();
         let repo = repo.to_owned();
         self.repo_line.set_label("git…");
@@ -975,9 +984,10 @@ impl Files {
             let Some(files) = me.upgrade() else { return };
             if let Err(err) = result {
                 files.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err)));
+                done(&files, false);
                 return;
             }
-            done(&files);
+            done(&files, true);
             files.fill_changes();
         });
     }
@@ -1063,7 +1073,19 @@ impl Files {
             self.repo_line.set_label("Type a commit message first.");
             return;
         }
-        self.git_then(&repo, vec!["commit".into(), "-m".into(), message], |files| files.commit_entry.set_text(""));
+        // One commit at a time; the message goes once it is in (and only if not retyped).
+        if self.committing.replace(true) {
+            return;
+        }
+        self.commit_entry.set_sensitive(false);
+        let sent = message.clone();
+        self.git_then(&repo, vec!["commit".into(), "-m".into(), message], move |files, worked| {
+            files.committing.set(false);
+            files.commit_entry.set_sensitive(true);
+            if worked && files.commit_entry.text().trim() == sent {
+                files.commit_entry.set_text("");
+            }
+        });
     }
 
     /// The file opened goes first in the tabs (eight at most).
