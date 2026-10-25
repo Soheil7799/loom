@@ -2465,7 +2465,12 @@ fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
     // Where it works: the repo it last touched (name when it isn't the project itself), its
     // branch and changes; else the subfolder it runs in.
     let place = place_of(agent);
-    let sub = [state, place].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
+    // Files it wrote or edited in this conversation.
+    let edited = match agent.files().len() {
+        0 => String::new(),
+        n => format!("✎{n}"),
+    };
+    let sub = [state, place, edited].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     if !sub.is_empty() {
         let sub = gtk::Label::builder().label(sub).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         sub.add_css_class("dim");
