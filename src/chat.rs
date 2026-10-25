@@ -108,7 +108,11 @@ struct ToolCard {
     detail: gtk::Box,
     revealer: gtk::Revealer,
     content: RefCell<Vec<Value>>,
-    has_terminal_button: Cell<bool>,
+    /// A command's output (its last 200 KB, as the terminal got it) and how it ended.
+    output: RefCell<String>,
+    exit: Cell<Option<Option<i64>>>,
+    output_button: RefCell<Option<gtk::Button>>,
+    rendering: Cell<bool>,
     /// Opened by itself once (a small diff shows without a click).
     auto_opened: Cell<bool>,
     status: RefCell<String>,
@@ -116,9 +120,28 @@ struct ToolCard {
     group: RefCell<std::rc::Weak<ToolGroup>>,
 }
 
+#[derive(Clone)]
 pub struct PermissionCard {
-    buttons: gtk::FlowBox,
+    buttons: gtk::Widget,
     answer: gtk::Label,
+}
+
+/// A question form (Claude Code's AskUserQuestion, or an MCP server asking for input).
+pub struct FormCard {
+    pub card: PermissionCard,
+    fields: Vec<Field>,
+    /// The fields that must be answered.
+    required: Vec<String>,
+    /// Why it can't be sent yet.
+    problem: gtk::Label,
+}
+
+enum Field {
+    /// One of the options (`multi`: any of them); each button with the value it stands for
+    /// and its name.
+    Choice { key: String, title: String, multi: bool, buttons: Vec<(gtk::CheckButton, Value, String)> },
+    Text { key: String, title: String, entry: gtk::Entry, number: Option<bool> },
+    Flag { key: String, title: String, check: gtk::CheckButton },
 }
 
 impl Chat {
@@ -215,7 +238,7 @@ impl Chat {
             .build();
         // The hint shown while the input is empty (a text view has none of its own).
         let placeholder = gtk::Label::builder()
-            .label("Ask Claude…   @ to add a file · / for commands")
+            .label("Ask Claude…   @ to add a file · / for commands · ! to run a command")
             .xalign(0.0)
             .valign(gtk::Align::Start)
             .margin_start(14)
@@ -241,8 +264,9 @@ impl Chat {
         send.add_css_class("send");
         send.set_tooltip_text(Some("Send (Enter)"));
         let pickers = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-        pickers.append(&options);
+        // The mode first: it decides what Claude may do without asking.
         pickers.append(&mode);
+        pickers.append(&options);
         let pickers_scroller = gtk::ScrolledWindow::builder()
             .child(&pickers)
             .hscrollbar_policy(gtk::PolicyType::External)
@@ -360,20 +384,33 @@ impl Chat {
 
     fn wire(self: &Rc<Self>) {
         // Follow the bottom while it is in view; leave the reader alone once they scroll up.
+        // Only a move up lets go of the bottom: content growing (which can report a value
+        // short of the new end before the end is followed) must not.
         let adjustment = self.scroller.vadjustment();
         let stick = self.stick.clone();
         let latest = self.latest.clone();
+        let last = Rc::new(Cell::new(0.0));
         adjustment.connect_value_changed(move |adj| {
             let at_bottom = adj.value() >= adj.upper() - adj.page_size() - 40.0;
-            stick.set(at_bottom);
-            latest.set_visible(!at_bottom && adj.upper() > adj.page_size() * 1.2);
-        });
-        let stick = self.stick.clone();
-        adjustment.connect_upper_notify(move |adj| {
-            if stick.get() {
-                adj.set_value(adj.upper() - adj.page_size());
+            if at_bottom {
+                stick.set(true);
+            } else if adj.value() < last.get() - 1.0 {
+                stick.set(false);
             }
+            last.set(adj.value());
+            latest.set_visible(!stick.get() && adj.upper() > adj.page_size() * 1.2);
         });
+        let follow = {
+            let stick = self.stick.clone();
+            move |adj: &gtk::Adjustment| {
+                if stick.get() {
+                    adj.set_value(adj.upper() - adj.page_size());
+                }
+            }
+        };
+        let also = follow.clone();
+        adjustment.connect_upper_notify(move |adj| follow(adj));
+        adjustment.connect_page_size_notify(move |adj| also(adj));
 
         let weak = Rc::downgrade(self);
         self.mode.connect_clicked(move |_| {
@@ -622,60 +659,31 @@ impl Chat {
     }
 
     /// Session settings as pickers: each `{id, name, currentValue, options}` (options flat or
-    /// in groups). The mode has its own pill, so it is left out here. Model and effort get a
-    /// chip each; the rest (fast mode, agent…) share one, which names them only when changed.
+    /// in groups), shown like the mode: "Model · Opus 5.5", "Effort · High". The mode has its
+    /// own pill, so it is left out here.
     pub fn set_options(&self, options: &Value) {
         while let Some(child) = self.options.first_child() {
             self.options.remove(&child);
         }
-        let options: Vec<&Value> = options
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter(|o| o["id"].as_str().is_some_and(|id| id != "mode") && !flat_values(&o["options"]).is_empty())
-            .collect();
-        let main = |o: &Value| {
-            let key = format!("{} {}", o["id"].as_str().unwrap_or(""), o["name"].as_str().unwrap_or("")).to_lowercase();
-            key.contains("model") || key.contains("effort")
-        };
-        let more_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        more_list.add_css_class("option-list");
-        let more_popover = gtk::Popover::builder().child(&more_list).build();
-        let mut changed = Vec::new();
-        for option in &options {
-            let id = option["id"].as_str().unwrap_or("");
-            let name = option["name"].as_str().unwrap_or(id);
+        for option in options.as_array().into_iter().flatten() {
+            let Some(id) = option["id"].as_str().filter(|id| *id != "mode") else { continue };
             let values = flat_values(&option["options"]);
-            let current = option["currentValue"].as_str().unwrap_or("");
-            let current_name = values.iter().find(|(v, _, _)| v == current).map_or(current.to_owned(), |(_, n, _)| n.clone());
-            // "Model · Opus", "Effort · High": short, and saying what it is.
-            let short = current_name.split(" (").next().unwrap_or(&current_name).to_owned();
-            let is_default = short.eq_ignore_ascii_case("default") || short.eq_ignore_ascii_case("off");
-            if main(option) {
-                let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-                list.add_css_class("option-list");
-                let popover = gtk::Popover::builder().child(&list).build();
-                self.option_items(&list, &popover, id, name, &values, current);
-                let label = if is_default { name.to_owned() } else { format!("{name} · {short}") };
-                let button = gtk::MenuButton::builder().label(&label).popover(&popover).build();
-                button.add_css_class("chip-picker");
-                button.add_css_class("flat");
-                button.set_tooltip_text(option["description"].as_str().or(Some(name)));
-                self.options.append(&button);
-            } else {
-                self.option_items(&more_list, &more_popover, id, name, &values, current);
-                if !is_default {
-                    // "Fast mode · On" reads as "Fast mode"; others keep their value.
-                    changed.push(if short.eq_ignore_ascii_case("on") { name.to_owned() } else { format!("{name} · {short}") });
-                }
+            if values.is_empty() {
+                continue;
             }
-        }
-        if more_list.first_child().is_some() {
-            let label = if changed.is_empty() { "More".to_owned() } else { changed.join(" · ") };
-            let button = gtk::MenuButton::builder().label(&label).popover(&more_popover).build();
+            let name = option["name"].as_str().unwrap_or(id);
+            let current = option["currentValue"].as_str().unwrap_or("");
+            // "Fast mode · Off" reads as "Fast · Off": the chip is short, the menu says the rest.
+            let short = name.strip_suffix(" mode").unwrap_or(name);
+            let label = format!("{short} · {}", chip_value(&values, current));
+            let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            list.add_css_class("option-list");
+            let popover = gtk::Popover::builder().child(&list).build();
+            self.option_items(&list, &popover, id, name, &values, current);
+            let button = gtk::MenuButton::builder().label(&label).popover(&popover).build();
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
-            button.set_tooltip_text(Some("More session settings"));
+            button.set_tooltip_text(option["description"].as_str().or(Some(name)));
             self.options.append(&button);
         }
     }
@@ -738,7 +746,8 @@ impl Chat {
 
     fn tick_working(&self) {
         if let Some(since) = self.working_since.get() {
-            self.working.set_label(&format!("Working · {} · Esc to stop", elapsed(since.elapsed().as_secs())));
+            self.working.set_label(&format!("Working {}", elapsed(since.elapsed().as_secs())));
+            self.working.set_tooltip_text(Some("Esc stops it"));
         }
     }
 
@@ -799,6 +808,7 @@ impl Chat {
     }
 
     pub fn user(&self, text: &str) {
+        self.scroll_to_latest();
         let message = self.message(Kind::User);
         message.text.borrow_mut().push_str(text);
         message.render_soon();
@@ -924,17 +934,53 @@ impl Chat {
     }
 
     /// Adds a button to a tool card that opens its terminal.
-    pub fn tool_terminal(&self, id: &str, open: Rc<dyn Fn()>) {
+    /// A command's output as it comes (kept with its tool call, not in the tray: the tray is
+    /// for jobs Claude means you to watch). An "output" button opens it for a look.
+    pub fn tool_output(&self, id: &str, data: &str) {
         let Some(card) = self.tools.borrow().get(id).cloned() else { return };
-        if card.has_terminal_button.replace(true) {
-            return;
+        {
+            let mut output = card.output.borrow_mut();
+            output.push_str(data);
+            if output.len() > 200_000 {
+                let mut cut = output.len() - 150_000;
+                while !output.is_char_boundary(cut) {
+                    cut += 1;
+                }
+                output.drain(..cut);
+            }
         }
-        let button = gtk::Button::with_label("terminal");
-        button.add_css_class("flat");
-        button.add_css_class("small");
-        button.set_tooltip_text(Some("Show this command's output"));
-        button.connect_clicked(move |_| open());
-        card.actions.append(&button);
+        card.output_button();
+        if card.revealer.reveals_child() {
+            card.render_soon();
+        }
+    }
+
+    /// Opens a tool card on its detail (and keeps its run of calls from folding).
+    pub fn open_tool(&self, id: &str) {
+        let Some(card) = self.tools.borrow().get(id).cloned() else { return };
+        if let Some(group) = card.group.borrow().upgrade() {
+            group.touched.set(true);
+            group.refresh();
+        }
+        card.render_detail();
+        card.revealer.set_reveal_child(true);
+    }
+
+    /// The command ended (`code`: its exit code, if known).
+    pub fn tool_exit(&self, id: &str, code: Option<i64>) {
+        let Some(card) = self.tools.borrow().get(id).cloned() else { return };
+        card.exit.set(Some(code));
+        let button = card.output_button();
+        match code {
+            Some(0) | None => button.set_label("output"),
+            Some(code) => {
+                button.set_label(&format!("output · exit {code}"));
+                button.add_css_class("failed");
+            }
+        }
+        if card.revealer.reveals_child() {
+            card.render_detail();
+        }
     }
 
     pub fn permission(&self, question: &str, detail: Option<&str>, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> PermissionCard {
@@ -964,14 +1010,154 @@ impl Chat {
             button.connect_clicked(move |_| choose(id.clone()));
             buttons.append(&button);
         }
-        root.append(&buttons);
+        let controls = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        controls.append(&buttons);
+        let n = options.len().min(9);
+        if n > 0 {
+            let mut keys = vec![if n == 1 { "1 or Alt+1".to_owned() } else { format!("1–{n} (Alt+1–{n} while typing)") }];
+            if options.iter().any(|(_, _, kind)| kind.starts_with("allow")) {
+                keys.push("Alt+Y allow".to_owned());
+            }
+            if options.iter().any(|(_, _, kind)| kind.starts_with("reject")) {
+                keys.push("Alt+N deny".to_owned());
+            }
+            keys.push("Esc stop".to_owned());
+            let hint = gtk::Label::builder().label(keys.join(" · ")).xalign(0.0).build();
+            hint.add_css_class("dim");
+            hint.add_css_class("small");
+            controls.append(&hint);
+        }
+        root.append(&controls);
         let answer = gtk::Label::builder().xalign(0.0).visible(false).wrap(true).build();
         answer.set_wrap_mode(pango::WrapMode::WordChar);
         answer.add_css_class("dim");
         root.append(&answer);
         self.list.append(&root);
         *self.last.borrow_mut() = Last::None;
-        PermissionCard { buttons, answer }
+        self.group.take();
+        PermissionCard { buttons: controls.upcast(), answer }
+    }
+
+    /// A form to fill in: `schema` is the request's JSON schema (an object of fields, in the
+    /// order they are asked). `answer` gets the filled-in content, or None when skipped.
+    pub fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<FormCard> {
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        root.add_css_class("permission-card");
+        root.add_css_class("question-card");
+        root.append(&text_label(&format!("<b>{}</b>", glib::markup_escape_text(message))));
+        let controls = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let mut fields = Vec::new();
+        let properties = schema["properties"].as_object().cloned().unwrap_or_default();
+        // Digits pick in the first question with options: its options are numbered.
+        let mut numbered = false;
+        for (key, field) in &properties {
+            let title = field["title"].as_str().unwrap_or(key).to_owned();
+            let description = field["description"].as_str().unwrap_or("");
+            let choices = choices_of(field);
+            let box_ = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            // Claude Code's per-question "Other" box sits under its options without a heading.
+            let other = choices.is_empty() && title == "Other";
+            if !other {
+                let heading = if description.is_empty() { title.clone() } else if title == *key { description.to_owned() } else { format!("{title} · {description}") };
+                let label = text_label(&glib::markup_escape_text(&heading));
+                label.add_css_class("question-heading");
+                box_.append(&label);
+            }
+            if !choices.is_empty() {
+                let multi = field["type"].as_str() == Some("array");
+                let number_these = !numbered;
+                numbered = true;
+                let defaults: Vec<Value> = match &field["default"] {
+                    Value::Array(all) => all.clone(),
+                    Value::Null => Vec::new(),
+                    one => vec![one.clone()],
+                };
+                let mut buttons = Vec::new();
+                let mut group: Option<gtk::CheckButton> = None;
+                for (i, (value, name, about)) in choices.into_iter().enumerate() {
+                    let line = gtk::Box::new(gtk::Orientation::Vertical, 1);
+                    let shown = if number_these && i < 9 { format!("{}  {name}", i + 1) } else { name.clone() };
+                    line.append(&gtk::Label::builder().label(shown).xalign(0.0).wrap(true).build());
+                    if !about.is_empty() {
+                        let about = gtk::Label::builder().label(&about).xalign(0.0).wrap(true).build();
+                        about.add_css_class("dim");
+                        about.add_css_class("small");
+                        line.append(&about);
+                    }
+                    let check = gtk::CheckButton::new();
+                    check.set_child(Some(&line));
+                    if !multi {
+                        match &group {
+                            Some(first) => check.set_group(Some(first)),
+                            None => group = Some(check.clone()),
+                        }
+                    }
+                    check.set_active(defaults.contains(&value));
+                    box_.append(&check);
+                    buttons.push((check, value, name));
+                }
+                fields.push(Field::Choice { key: key.clone(), title: title.clone(), multi, buttons });
+            } else if field["type"].as_str() == Some("boolean") {
+                let check = gtk::CheckButton::with_label(&title);
+                check.set_active(field["default"].as_bool().unwrap_or(false));
+                box_.append(&check);
+                fields.push(Field::Flag { key: key.clone(), title, check });
+            } else {
+                let kind = match field["type"].as_str() {
+                    Some("integer") => Some(true),
+                    Some("number") => Some(false),
+                    _ => None,
+                };
+                let entry = gtk::Entry::builder().hexpand(true).build();
+                if other {
+                    entry.set_placeholder_text(Some("Other: your own answer (optional)"));
+                }
+                match &field["default"] {
+                    Value::String(text) => entry.set_text(text),
+                    Value::Number(n) => entry.set_text(&n.to_string()),
+                    _ => {}
+                }
+                box_.append(&entry);
+                fields.push(Field::Text { key: key.clone(), title, entry, number: kind });
+            }
+            controls.append(&box_);
+        }
+        let problem = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
+        problem.add_css_class("form-problem");
+        controls.append(&problem);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let send = gtk::Button::with_label("Answer  Alt+Enter");
+        send.add_css_class("suggested");
+        let skip = gtk::Button::with_label("Skip");
+        skip.add_css_class("plain");
+        let hint_text = if numbered { "1–9 pick (Alt+1–9 while typing) · Esc stops the turn" } else { "Esc stops the turn" };
+        let hint = gtk::Label::builder().label(hint_text).xalign(0.0).hexpand(true).build();
+        hint.add_css_class("dim");
+        hint.add_css_class("small");
+        buttons.append(&send);
+        buttons.append(&skip);
+        buttons.append(&hint);
+        controls.append(&buttons);
+        root.append(&controls);
+        let answered = gtk::Label::builder().xalign(0.0).visible(false).wrap(true).build();
+        answered.set_wrap_mode(pango::WrapMode::WordChar);
+        answered.add_css_class("dim");
+        root.append(&answered);
+        self.list.append(&root);
+        *self.last.borrow_mut() = Last::None;
+        self.group.take();
+        let required = schema["required"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_owned)).collect();
+        let form = Rc::new(FormCard { card: PermissionCard { buttons: controls.upcast(), answer: answered }, fields, required, problem });
+        let (weak, reply) = (Rc::downgrade(&form), answer.clone());
+        send.connect_clicked(move |_| {
+            if let Some(form) = weak.upgrade()
+                && let Some(content) = form.checked()
+            {
+                reply(Some(content));
+            }
+        });
+        skip.connect_clicked(move |_| answer(None));
+        form
     }
 
     // ---- plan -----------------------------------------------------------------------------
@@ -999,6 +1185,172 @@ impl Chat {
         }
         self.plan_revealer.set_reveal_child(!entries.is_empty() && open);
     }
+}
+
+impl FormCard {
+    /// What was filled in, as the schema's object, or why it can't be sent (a required
+    /// field left empty, a number that isn't one).
+    pub fn content(&self) -> Result<Value, String> {
+        let mut content = serde_json::Map::new();
+        for field in &self.fields {
+            match field {
+                Field::Choice { key, multi, buttons, .. } => {
+                    let picked: Vec<Value> = buttons.iter().filter(|(b, _, _)| b.is_active()).map(|(_, v, _)| v.clone()).collect();
+                    if *multi {
+                        if !picked.is_empty() {
+                            content.insert(key.clone(), Value::Array(picked));
+                        }
+                    } else if let Some(one) = picked.into_iter().next() {
+                        content.insert(key.clone(), one);
+                    }
+                }
+                Field::Text { key, title, entry, number } => {
+                    let text = entry.text().trim().to_owned();
+                    if text.is_empty() {
+                        continue;
+                    }
+                    let value = match number {
+                        Some(true) => Value::from(text.parse::<i64>().map_err(|_| format!("“{title}” needs a whole number."))?),
+                        Some(false) => Value::from(text.parse::<f64>().map_err(|_| format!("“{title}” needs a number."))?),
+                        None => Value::String(text),
+                    };
+                    content.insert(key.clone(), value);
+                }
+                Field::Flag { key, check, .. } => {
+                    content.insert(key.clone(), Value::Bool(check.is_active()));
+                }
+            }
+        }
+        if let Some(missing) = self.required.iter().find(|k| !content.contains_key(k.as_str())) {
+            let title = self.fields.iter().find(|f| f.key() == missing).map_or(missing.as_str(), Field::title);
+            return Err(format!("“{title}” needs an answer."));
+        }
+        Ok(Value::Object(content))
+    }
+
+    /// The content if it can be sent; else the card says what is missing.
+    pub fn checked(&self) -> Option<Value> {
+        match self.content() {
+            Ok(content) => {
+                self.problem.set_visible(false);
+                Some(content)
+            }
+            Err(problem) => {
+                self.problem.set_label(&problem);
+                self.problem.set_visible(true);
+                None
+            }
+        }
+    }
+
+    /// "Approach: Small steps · Other: keep the API", for the card once answered.
+    pub fn summary(&self) -> String {
+        let mut parts = Vec::new();
+        for field in &self.fields {
+            match field {
+                Field::Choice { title, buttons, .. } => {
+                    let picked: Vec<&str> = buttons.iter().filter(|(b, _, _)| b.is_active()).map(|(_, _, name)| name.as_str()).collect();
+                    if !picked.is_empty() {
+                        parts.push(format!("{title}: {}", picked.join(", ")));
+                    }
+                }
+                Field::Text { title, entry, .. } if !entry.text().trim().is_empty() => parts.push(format!("{title}: {}", entry.text().trim())),
+                Field::Flag { title, check, .. } => parts.push(format!("{title}: {}", if check.is_active() { "yes" } else { "no" })),
+                _ => {}
+            }
+        }
+        if parts.is_empty() { "→ (nothing picked)".to_owned() } else { format!("→ {}", parts.join(" · ")) }
+    }
+
+    /// Option `n` (from 0) of the first question with options: picked (a multiple choice:
+    /// toggled). Focus stays where it is, so the next digit picks again.
+    pub fn pick(&self, n: usize) -> bool {
+        let Some(Field::Choice { buttons, multi, .. }) = self.fields.iter().find(|f| matches!(f, Field::Choice { .. })) else { return false };
+        let Some((button, _, _)) = buttons.get(n) else { return false };
+        button.set_active(if *multi { !button.is_active() } else { true });
+        true
+    }
+}
+
+impl Field {
+    fn key(&self) -> &str {
+        match self {
+            Field::Choice { key, .. } | Field::Text { key, .. } | Field::Flag { key, .. } => key,
+        }
+    }
+
+    fn title(&self) -> &str {
+        match self {
+            Field::Choice { title, .. } | Field::Text { title, .. } | Field::Flag { title, .. } => title,
+        }
+    }
+}
+
+/// A field's options as (value, name, description): `oneOf`/`anyOf` of `{const, title,
+/// description}`, or a plain `enum` (also inside `items`, for a multiple choice).
+fn choices_of(field: &Value) -> Vec<(Value, String, String)> {
+    let source = if field["type"].as_str() == Some("array") { &field["items"] } else { field };
+    let name_of = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
+    for key in ["oneOf", "anyOf"] {
+        if let Some(options) = source[key].as_array() {
+            return options
+                .iter()
+                .filter(|o| !o["const"].is_null())
+                .map(|o| {
+                    let value = o["const"].clone();
+                    let name = o["title"].as_str().map_or_else(|| name_of(&value), str::to_owned);
+                    (value, name, o["description"].as_str().unwrap_or("").to_owned())
+                })
+                .collect();
+        }
+    }
+    let names = source["enumNames"].as_array();
+    source["enum"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .enumerate()
+        .map(|(i, v)| {
+            let name = names.and_then(|n| n.get(i)).and_then(Value::as_str).map_or_else(|| name_of(v), str::to_owned);
+            (v.clone(), name, String::new())
+        })
+        .collect()
+}
+
+/// The last `lines` lines of terminal output as plain text: colours and cursor codes
+/// dropped, a line rewritten in place (progress bars, \r) shown as it ended.
+fn plain_tail(output: &str, lines: usize) -> String {
+    let mut text = String::with_capacity(output.len());
+    let mut chars = output.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\u{1b}' => match chars.next() {
+                // CSI: parameters up to a final byte in @..~
+                Some('[') => {
+                    for c in chars.by_ref() {
+                        if ('@'..='~').contains(&c) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: up to BEL or ESC \
+                Some(']') => {
+                    while let Some(c) = chars.next() {
+                        if c == '\u{7}' || (c == '\u{1b}' && chars.next_if_eq(&'\\').is_some()) {
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            '\r' if chars.peek() == Some(&'\n') => {}
+            c if c.is_control() && c != '\n' && c != '\r' && c != '\t' => {}
+            c => text.push(c),
+        }
+    }
+    let shown: Vec<&str> = text.lines().map(|line| line.rsplit('\r').next().unwrap_or(line)).collect();
+    let start = shown.len().saturating_sub(lines);
+    shown[start..].join("\n").trim_end().to_owned()
 }
 
 impl PermissionCard {
@@ -1096,6 +1448,48 @@ impl ToolGroup {
 }
 
 impl ToolCard {
+    /// The "output" button (made once): opens the card on the output, or closes it.
+    fn output_button(self: &Rc<Self>) -> gtk::Button {
+        if let Some(button) = self.output_button.borrow().as_ref() {
+            return button.clone();
+        }
+        let button = gtk::Button::with_label("output");
+        button.add_css_class("flat");
+        button.add_css_class("small");
+        button.add_css_class("output-button");
+        button.set_tooltip_text(Some("What the command printed"));
+        let weak = Rc::downgrade(self);
+        button.connect_clicked(move |_| {
+            if let Some(card) = weak.upgrade() {
+                let open = !card.revealer.reveals_child();
+                if open {
+                    card.render_detail();
+                    if let Some(group) = card.group.borrow().upgrade() {
+                        group.touched.set(true);
+                    }
+                }
+                card.revealer.set_reveal_child(open);
+            }
+        });
+        self.actions.append(&button);
+        *self.output_button.borrow_mut() = Some(button.clone());
+        button
+    }
+
+    /// Output streaming into an open card: shown again at most every 250 ms.
+    fn render_soon(self: &Rc<Self>) {
+        if self.rendering.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(250), move || {
+            if let Some(card) = weak.upgrade() {
+                card.rendering.set(false);
+                card.render_detail();
+            }
+        });
+    }
+
     fn new() -> Rc<ToolCard> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("tool-card");
@@ -1138,7 +1532,10 @@ impl ToolCard {
             detail,
             revealer,
             content: RefCell::default(),
-            has_terminal_button: Cell::new(false),
+            output: RefCell::default(),
+            exit: Cell::new(None),
+            output_button: RefCell::default(),
+            rendering: Cell::new(false),
             auto_opened: Cell::new(false),
             status: RefCell::default(),
             has_diff: Cell::new(false),
@@ -1243,9 +1640,17 @@ impl ToolCard {
                     }
                 }
                 Some("terminal") => {
-                    let hint = text_label("Output is in the job tray.");
-                    hint.add_css_class("dim");
-                    self.detail.append(&hint);
+                    let output = self.output.borrow();
+                    let tail = plain_tail(&output, 60);
+                    if tail.is_empty() {
+                        let none = text_label(if self.exit.get().is_some() { "It printed nothing." } else { "No output yet." });
+                        none.add_css_class("dim");
+                        self.detail.append(&none);
+                    } else {
+                        let view = code_label(&tail);
+                        view.add_css_class("command-output");
+                        self.detail.append(&view);
+                    }
                 }
                 _ => {}
             }
@@ -1347,6 +1752,18 @@ fn code_label(code: &str) -> gtk::Overlay {
 }
 
 /// The values of a select option, groups flattened: (value, name, description).
+/// The current value, short: "Default (recommended)" says what it stands for ("Opus 5.5"),
+/// anything longer than a chip holds ends in "…".
+fn chip_value(values: &[(String, String, String)], current: &str) -> String {
+    let Some((_, name, description)) = values.iter().find(|(v, _, _)| v == current) else { return current.to_owned() };
+    let name = if name.starts_with("Default") && !description.is_empty() && description.chars().count() <= 24 {
+        description.clone()
+    } else {
+        name.split(" (").next().unwrap_or(name).to_owned()
+    };
+    if name.chars().count() > 18 { format!("{}…", name.chars().take(17).collect::<String>()) } else { name }
+}
+
 fn flat_values(options: &Value) -> Vec<(String, String, String)> {
     let mut out = Vec::new();
     for entry in options.as_array().into_iter().flatten() {
@@ -1397,7 +1814,14 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::changed_lines;
+    use super::{changed_lines, chip_value, choices_of, plain_tail};
+
+    #[test]
+    fn output_reads_as_plain_text() {
+        let raw = "\u{1b}[32mok\u{1b}[0m\r\nstep 1\rstep 2\r\n\u{1b}]0;title\u{7}done\r\n";
+        assert_eq!(plain_tail(raw, 10), "ok\nstep 2\ndone");
+        assert_eq!(plain_tail("a\nb\nc\n", 2), "b\nc");
+    }
 
     #[test]
     fn only_the_changed_middle_is_shown() {
@@ -1410,6 +1834,28 @@ mod tests {
         assert_eq!(super::tool_title("mcp__loom__loom_run"), "loom · run");
         assert_eq!(super::tool_title("mcp__github__create_issue"), "github · create issue");
         assert_eq!(super::tool_title("`ls -la`"), "ls -la");
+    }
+
+    #[test]
+    fn choices_come_from_one_of_and_enum() {
+        let single = serde_json::json!({ "type": "string", "oneOf": [{ "const": "a", "title": "Apple", "description": "red" }] });
+        assert_eq!(choices_of(&single), vec![("a".into(), "Apple".into(), "red".into())]);
+        let multi = serde_json::json!({ "type": "array", "items": { "anyOf": [{ "const": "x", "title": "X" }] } });
+        assert_eq!(choices_of(&multi), vec![("x".into(), "X".into(), String::new())]);
+        let plain = serde_json::json!({ "type": "string", "enum": ["s", "m"], "enumNames": ["Small", "Medium"] });
+        assert_eq!(choices_of(&plain)[1], ("m".into(), "Medium".into(), String::new()));
+        let numbers = serde_json::json!({ "type": "integer", "enum": [1, 2] });
+        assert_eq!(choices_of(&numbers)[1], (serde_json::json!(2), "2".into(), String::new()));
+    }
+
+    #[test]
+    fn chips_say_what_default_means() {
+        let model = vec![("default".into(), "Default (recommended)".into(), "Opus 5.5".into()), ("opus".into(), "Opus 5.5".into(), "For complex work".into())];
+        assert_eq!(chip_value(&model, "default"), "Opus 5.5");
+        let effort = vec![("default".into(), "Default".into(), String::new())];
+        assert_eq!(chip_value(&effort, "default"), "Default");
+        let long = vec![("x".into(), "A really very long agent name".into(), String::new())];
+        assert_eq!(chip_value(&long, "x"), "A really very lon…");
     }
 
     #[test]

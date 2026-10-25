@@ -447,7 +447,7 @@ impl App {
             return glib::Propagation::Stop;
         }
         if !ctrl && !alt {
-            return glib::Propagation::Proceed;
+            return self.type_into_chat(key);
         }
         let in_terminal = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some());
 
@@ -461,6 +461,29 @@ impl App {
             (true, true, false, gdk::Key::p) => self.palette(),
             // Everything else belongs to a focused terminal (Ctrl+W, Ctrl+K… mean something there).
             _ if in_terminal => return glib::Propagation::Proceed,
+            // Questions, answered while typing: Alt+1…9 an option, Alt+Y allow, Alt+N deny,
+            // Alt+Enter sends a form.
+            (false, false, true, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
+                let option = k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1;
+                if !self.focused_agent().is_some_and(|a| a.answer(0, option)) {
+                    return glib::Propagation::Proceed;
+                }
+            }
+            (false, false, true, gdk::Key::y) => {
+                if !self.focused_agent().is_some_and(|a| a.answer_kind("allow")) {
+                    return glib::Propagation::Proceed;
+                }
+            }
+            (false, false, true, gdk::Key::n) => {
+                if !self.focused_agent().is_some_and(|a| a.answer_kind("reject")) {
+                    return glib::Propagation::Proceed;
+                }
+            }
+            (false, false, true, gdk::Key::Return | gdk::Key::KP_Enter) => {
+                if !self.focused_agent().is_some_and(|a| a.send_form()) {
+                    return glib::Propagation::Proceed;
+                }
+            }
             (true, false, false, gdk::Key::n) => self.new_agent(false),
             (true, true, false, gdk::Key::n) => self.new_agent(true),
             (true, true, false, gdk::Key::t) => self.reopen_closed(),
@@ -486,6 +509,34 @@ impl App {
             }
             _ => return glib::Propagation::Proceed,
         }
+        glib::Propagation::Stop
+    }
+
+    /// A character typed where nothing takes text (the sidebar, a button, a tool row) goes
+    /// to the focused agent's input, so typing never needs the mouse first. Space and Enter
+    /// still press what has focus.
+    fn type_into_chat(&self, key: gdk::Key) -> glib::Propagation {
+        let Some(c) = key.to_unicode().filter(|c| !c.is_control() && *c != ' ') else { return glib::Propagation::Proceed };
+        let Some(agent) = self.focused_agent() else { return glib::Propagation::Proceed };
+        // A digit with a question open and nothing typed yet answers it, wherever focus is.
+        if let Some(n) = crate::chat::any_digit(c).filter(|n| *n >= 1)
+            && agent.chat.input.buffer().char_count() == 0
+            && agent.answer(0, n as usize - 1)
+        {
+            return glib::Propagation::Stop;
+        }
+        let focus = GtkWindowExt::focus(&self.window);
+        let takes_text = focus.as_ref().is_some_and(|w| {
+            w.is::<gtk::Text>() || w.is::<gtk::TextView>() || w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some()
+        });
+        if takes_text {
+            return glib::Propagation::Proceed;
+        }
+        let input = &agent.chat.input;
+        let buffer = input.buffer();
+        buffer.place_cursor(&buffer.end_iter());
+        buffer.insert_at_cursor(&c.to_string());
+        input.grab_focus();
         glib::Propagation::Stop
     }
 
@@ -902,6 +953,14 @@ impl App {
             agent.start();
         }
         agent.chat.input.grab_focus();
+        // Again once the click (or key) that chose it is done: a sidebar row takes focus
+        // on release.
+        let input = agent.chat.input.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(input) = input.upgrade() {
+                input.grab_focus();
+            }
+        });
         self.refresh_sidebar();
         self.save();
     }
@@ -1810,6 +1869,20 @@ impl App {
                 let label = gtk::Label::builder().label(title).xalign(0.0).wrap(true).max_width_chars(50).build();
                 self.inbox_list.append(&label);
                 let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                // A question form is answered in the chat.
+                if agent.is_form(serial) {
+                    let open = gtk::Button::with_label("Answer in the chat");
+                    open.add_css_class("suggested");
+                    let target = Rc::downgrade(&agent);
+                    let weak = Rc::downgrade(self);
+                    open.connect_clicked(move |_| {
+                        if let (Some(app), Some(target)) = (weak.upgrade(), target.upgrade()) {
+                            app.inbox.popdown();
+                            app.focus(&target);
+                        }
+                    });
+                    buttons.append(&open);
+                }
                 for (oi, (name, kind)) in options.iter().enumerate() {
                     let button = gtk::Button::with_label(name);
                     button.add_css_class(if kind.starts_with("allow") { "suggested" } else { "plain" });

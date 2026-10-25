@@ -94,6 +94,8 @@ struct Pending {
     options: Vec<(String, String, String)>,
     card: PermissionCard,
     title: String,
+    /// A question form rather than a permission (answered with its content).
+    form: Option<Rc<crate::chat::FormCard>>,
 }
 
 pub struct Agent {
@@ -117,6 +119,10 @@ pub struct Agent {
     turn: Cell<bool>,
     replaying: Cell<bool>,
     queue: RefCell<VecDeque<String>>,
+    /// `!command` runs and their output, for Claude with the next message (as Claude Code's
+    /// own `!` does).
+    context: RefCell<Vec<String>>,
+    shells: Cell<u64>,
     modes: RefCell<Vec<String>>,
     mode: RefCell<String>,
     pending: RefCell<Vec<Pending>>,
@@ -129,7 +135,6 @@ pub struct Agent {
     /// A git status read is under way (off the main thread).
     reading_repo: Cell<bool>,
     /// Commands in the tray still running for this agent.
-    jobs: RefCell<Vec<Rc<crate::jobs::Job>>>,
     /// Files a tool call will write, kept until it completes (a refused edit writes nothing).
     planned: RefCell<HashMap<String, Vec<(PathBuf, Mark)>>>,
     /// A turn ended while someone looked elsewhere.
@@ -158,6 +163,8 @@ impl Agent {
             turn: Cell::new(false),
             replaying: Cell::new(false),
             queue: RefCell::default(),
+            context: RefCell::default(),
+            shells: Cell::new(0),
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
             pending: RefCell::default(),
@@ -166,7 +173,6 @@ impl Agent {
             repos: RefCell::default(),
             repo_status: RefCell::default(),
             reading_repo: Cell::new(false),
-            jobs: RefCell::default(),
             planned: RefCell::default(),
             unseen: Cell::new(false),
             last_active: Cell::new(Instant::now()),
@@ -335,6 +341,9 @@ impl Agent {
 
     /// Answers the question numbered `serial` (if still open) with option `option`.
     pub fn answer_serial(self: &Rc<Self>, serial: u64, option: usize) -> bool {
+        if self.is_form(serial) {
+            return false;
+        }
         let index = self.pending.borrow().iter().position(|p| p.serial == serial);
         index.is_some_and(|index| self.answer(index, option))
     }
@@ -412,7 +421,9 @@ impl Agent {
                 "fs": { "readTextFile": false, "writeTextFile": false },
                 "terminal": false,
                 // Commands' output comes as display terminals (shown in the job tray).
-                "_meta": { "terminal_output_delta": true }
+                "_meta": { "terminal_output_delta": true },
+                // Claude Code's questions (AskUserQuestion) and MCP servers' come as forms.
+                "elicitation": { "form": {} }
             },
             "clientInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") }
         });
@@ -556,7 +567,6 @@ impl Agent {
         self.turn.set(false);
         self.queue.borrow_mut().clear();
         self.drop_questions("The agent stopped");
-        self.end_jobs();
         self.chat.set_working(None);
         self.set_status(Status::Failed);
     }
@@ -579,7 +589,6 @@ impl Agent {
         self.turn.set(false);
         self.queue.borrow_mut().clear();
         self.drop_questions("Stopped");
-        self.end_jobs();
         self.chat.set_working(None);
         self.status.set(Status::Suspended);
         self.refresh_header();
@@ -590,6 +599,10 @@ impl Agent {
 
     pub fn submit(self: &Rc<Self>, text: String) {
         self.last_active.set(Instant::now());
+        if let Some(command) = text.trim_start().strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()) {
+            self.shell(command.to_owned());
+            return;
+        }
         self.chat.user(&text);
         if self.turn.get() || !self.ready.get() {
             if self.turn.get() {
@@ -601,6 +614,64 @@ impl Agent {
         }
         self.queue.borrow_mut().push_back(text);
         self.send_next();
+    }
+
+    /// `!command`: runs it here, shows what it printed, and hands both to Claude with the
+    /// next message.
+    fn shell(self: &Rc<Self>, command: String) {
+        let n = self.shells.get() + 1;
+        self.shells.set(n);
+        let id = format!("shell-{n}");
+        self.chat.tool(&json!({
+            "toolCallId": id, "title": format!("! {command}"), "kind": "execute",
+            "status": "in_progress", "content": [{ "type": "terminal" }]
+        }));
+        self.chat.open_tool(&id);
+        let cwd = self.cwd.clone();
+        let socket = crate::control::current();
+        let weak = Rc::downgrade(self);
+        let run = command.clone();
+        glib::spawn_future_local(async move {
+            let result = gio::spawn_blocking(move || {
+                let mut shell = std::process::Command::new("bash");
+                shell.arg("-c").arg(&run).current_dir(&cwd).stdin(std::process::Stdio::null());
+                for (name, _) in std::env::vars_os() {
+                    if name.to_string_lossy().starts_with("HERDR_") {
+                        shell.env_remove(name);
+                    }
+                }
+                if let Some(socket) = socket {
+                    shell.env("LOOM_SOCKET", socket);
+                }
+                shell.output()
+            })
+            .await;
+            let Some(agent) = weak.upgrade() else { return };
+            let (stdout, stderr, code) = match result {
+                Ok(Ok(out)) => (String::from_utf8_lossy(&out.stdout).into_owned(), String::from_utf8_lossy(&out.stderr).into_owned(), out.status.code()),
+                Ok(Err(err)) => (String::new(), format!("could not run it: {err}"), None),
+                Err(_) => (String::new(), "could not run it".to_owned(), None),
+            };
+            let shown = format!("{stdout}{}{stderr}", if !stdout.is_empty() && !stderr.is_empty() && !stdout.ends_with('\n') { "\n" } else { "" });
+            agent.chat.tool_output(&id, &shown.replace('\n', "\r\n"));
+            agent.chat.tool_exit(&id, code.map(i64::from));
+            let ok = code == Some(0);
+            agent.chat.tool(&json!({ "toolCallId": id, "status": if ok { "completed" } else { "failed" } }));
+            agent.chat.open_tool(&id);
+            let clip = |text: &str| -> String {
+                if text.chars().count() > 30_000 {
+                    format!("{}\n[… cut, {} characters in all]", text.chars().take(30_000).collect::<String>(), text.chars().count())
+                } else {
+                    text.trim_end().to_owned()
+                }
+            };
+            agent.context.borrow_mut().push(format!(
+                "<bash-input>{command}</bash-input>\n<bash-stdout>{}</bash-stdout><bash-stderr>{}</bash-stderr>",
+                clip(&stdout),
+                clip(&stderr)
+            ));
+            agent.chat.notice("Claude sees this with your next message.", "dim");
+        });
     }
 
     fn send_next(self: &Rc<Self>) {
@@ -615,9 +686,12 @@ impl Agent {
         self.chat.set_working(Some(started));
         self.refresh_status();
         let weak = Rc::downgrade(self);
+        // `!command` output first, as Claude Code puts it before the message.
+        let mut prompt: Vec<Value> = self.context.borrow_mut().drain(..).map(|c| json!({ "type": "text", "text": c })).collect();
+        prompt.push(json!({ "type": "text", "text": text }));
         conn.request(
             "session/prompt",
-            json!({ "sessionId": session, "prompt": [{ "type": "text", "text": text }] }),
+            json!({ "sessionId": session, "prompt": prompt }),
             move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.turn.set(false);
@@ -631,7 +705,6 @@ impl Agent {
                     Ok(result) => {
                         if result["stopReason"].as_str() == Some("cancelled") {
                             agent.chat.notice("Stopped.", "dim");
-                            agent.end_jobs();
                         } else if let Some(reason) = result["stopReason"].as_str().filter(|r| *r != "end_turn") {
                             agent.chat.notice(&format!("Turn ended: {}", reason.replace('_', " ")), "dim");
                         }
@@ -659,7 +732,8 @@ impl Agent {
         let conn = self.conn.borrow().clone();
         for question in pending {
             if let Some(conn) = &conn {
-                conn.respond(question.rpc, json!({ "outcome": { "outcome": "cancelled" } }));
+                let answer = if question.form.is_some() { json!({ "action": "cancel" }) } else { json!({ "outcome": { "outcome": "cancelled" } }) };
+                conn.respond(question.rpc, answer);
             }
             question.card.resolve("Cancelled");
         }
@@ -684,16 +758,93 @@ impl Agent {
 
     // ---- permission questions -------------------------------------------------------------
 
-    /// Answers question `index` with option `option`. False if there is no such question.
+    /// Answers question `index` with option `option` (in a form: picks it). False if there
+    /// is no such question or option.
     pub fn answer(self: &Rc<Self>, index: usize, option: usize) -> bool {
         let id = {
             let pending = self.pending.borrow();
             let Some(question) = pending.get(index) else { return false };
+            if let Some(form) = &question.form {
+                return form.pick(option);
+            }
             let Some((id, _, _)) = question.options.get(option) else { return false };
             id.clone()
         };
         self.choose(index, &id);
         true
+    }
+
+    /// Alt+Y / Alt+N: the oldest permission question's first option of that kind ("allow",
+    /// "reject").
+    pub fn answer_kind(self: &Rc<Self>, kind: &str) -> bool {
+        // The oldest question only: the one the keys are shown on.
+        let option = self.pending.borrow().first().and_then(|q| q.options.iter().position(|(_, _, k)| k.starts_with(kind)));
+        option.is_some_and(|option| self.answer(0, option))
+    }
+
+    /// Alt+Enter: sends the oldest question form as filled in (or shows what it lacks).
+    pub fn send_form(self: &Rc<Self>) -> bool {
+        let found = self.pending.borrow().iter().find_map(|q| q.form.as_ref().map(|f| (q.serial, f.checked())));
+        let Some((serial, content)) = found else { return false };
+        if let Some(content) = content {
+            self.reply_form(serial, Some(content));
+        }
+        true
+    }
+
+    /// Whether question `serial` is a form (answered in the chat, not from the inbox).
+    pub fn is_form(&self, serial: u64) -> bool {
+        self.pending.borrow().iter().any(|q| q.serial == serial && q.form.is_some())
+    }
+
+    /// A form answered (None: skipped).
+    fn reply_form(self: &Rc<Self>, serial: u64, content: Option<Value>) {
+        let question = {
+            let mut pending = self.pending.borrow_mut();
+            let Some(index) = pending.iter().position(|p| p.serial == serial) else { return };
+            pending.remove(index)
+        };
+        let summary = match (&content, &question.form) {
+            (Some(_), Some(form)) => form.summary(),
+            _ => "→ Skipped".to_owned(),
+        };
+        if let Some(conn) = self.conn.borrow().clone() {
+            let answer = match content {
+                Some(content) => json!({ "action": "accept", "content": content }),
+                None => json!({ "action": "decline" }),
+            };
+            conn.respond(question.rpc, answer);
+        }
+        question.card.resolve(&summary);
+        self.last_active.set(Instant::now());
+        self.refresh_status();
+        self.emit(Event::Changed);
+        self.chat.input.grab_focus();
+    }
+
+    /// Claude (or an MCP server) asks something: a form in the chat.
+    fn elicit(self: &Rc<Self>, rpc: Value, params: &Value) {
+        // No mode means a form (older MCP servers leave it out).
+        if !matches!(params["mode"].as_str(), None | Some("form")) {
+            if let Some(conn) = self.conn.borrow().clone() {
+                conn.respond(rpc, json!({ "action": "decline" }));
+            }
+            return;
+        }
+        let message = params["message"].as_str().unwrap_or("Claude asks").to_owned();
+        let serial = self.asked.get() + 1;
+        self.asked.set(serial);
+        let weak = Rc::downgrade(self);
+        let answer: Rc<dyn Fn(Option<Value>)> = Rc::new(move |content| {
+            if let Some(agent) = weak.upgrade() {
+                agent.reply_form(serial, content);
+            }
+        });
+        let form = self.chat.form(&message, &params["requestedSchema"], answer);
+        let card = form.card.clone();
+        self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), form: Some(form) });
+        self.refresh_status();
+        self.emit(Event::Asked(message));
     }
 
     fn choose(self: &Rc<Self>, index: usize, option_id: &str) {
@@ -748,18 +899,9 @@ impl Agent {
             }
         });
         let card = self.chat.permission(&format!("Allow {title}?"), detail.as_deref(), &options, choose);
-        self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone() });
+        self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), form: None });
         self.refresh_status();
         self.emit(Event::Asked(title));
-    }
-
-    /// Marks this agent's running commands ended: nothing more will be heard of them.
-    fn end_jobs(&self) {
-        for job in self.jobs.borrow_mut().drain(..) {
-            if job.is_running() {
-                job.finish(None);
-            }
-        }
     }
 
     fn drop_questions(&self, why: &str) {
@@ -780,6 +922,7 @@ impl Agent {
             Incoming::Call { id, method, params } => match (method.as_str(), id) {
                 ("session/update", _) => self.update(&params["update"]),
                 ("session/request_permission", Some(id)) => self.ask(id, &params),
+                ("elicitation/create", Some(id)) => self.elicit(id, &params),
                 (_, Some(id)) => {
                     if let Some(conn) = self.conn.borrow().clone() {
                         conn.respond_error(id, -32601, "Method not found");
@@ -900,52 +1043,17 @@ impl Agent {
             _ => {}
         }
 
-        // Commands: their output goes to a job in the tray. A replay has none to show.
+        // A command's output stays with its tool call (the tray is for loom_run's jobs, the
+        // ones meant to be watched). A replay has none to show.
         if self.replaying.get() {
             return;
         }
-        // The command itself, once known (the first report may carry only "Terminal"); the
-        // report that names it need not carry terminal data, and the adapter names a
-        // command's terminal after its tool call.
-        let name = update["rawInput"]["command"]
-            .as_str()
-            .map(str::to_owned)
-            .or_else(|| update["title"].as_str().filter(|t| *t != "Terminal").map(|t| t.replace('`', "")))
-            .map(|c| c.lines().next().unwrap_or(&c).to_owned());
-        if let (Some(name), Some(job)) = (&name, self.tray.agent_job_for(&id)) {
-            job.rename(name);
-        }
         let meta = &update["_meta"];
-        let terminal = meta["terminal_info"]["terminal_id"]
-            .as_str()
-            .or_else(|| meta["terminal_output_delta"]["terminal_id"].as_str())
-            .or_else(|| meta["terminal_exit"]["terminal_id"].as_str());
-        let Some(terminal) = terminal else { return };
-        let job = match self.tray.agent_job_for(terminal) {
-            Some(job) => {
-                if let Some(name) = &name {
-                    job.rename(name);
-                }
-                job
-            }
-            None => {
-                let fallback = update["title"].as_str().unwrap_or("command").replace('`', "");
-                let job = self.tray.agent_job(terminal, name.as_deref().unwrap_or(&fallback), &self.title());
-                self.jobs.borrow_mut().push(job.clone());
-                let tray = self.tray.clone();
-                let shown = job.clone();
-                self.chat.tool_terminal(&id, Rc::new(move || tray.peek(&shown)));
-                job
-            }
-        };
-        if let Some(data) = meta["terminal_output_delta"]["data"].as_str() {
-            job.feed(data);
-        } else if let Some(data) = meta["terminal_output"]["data"].as_str() {
-            job.feed(data);
+        if let Some(data) = meta["terminal_output_delta"]["data"].as_str().or_else(|| meta["terminal_output"]["data"].as_str()) {
+            self.chat.tool_output(&id, data);
         }
         if meta.get("terminal_exit").is_some_and(|e| !e.is_null()) {
-            job.finish(meta["terminal_exit"]["exit_code"].as_i64());
-            self.jobs.borrow_mut().retain(|j| !Rc::ptr_eq(j, &job));
+            self.chat.tool_exit(&id, meta["terminal_exit"]["exit_code"].as_i64());
         }
     }
 }

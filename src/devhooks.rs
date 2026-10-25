@@ -5,6 +5,7 @@
 //!
 //! - `prompt:<text>`: send text from the focused agent's input
 //! - `latest`: scroll the focused chat to its end
+//! - `send`: sends the focused agent's question form (Alt+Enter)
 //! - `toast:<text>`: the in-window notice, about the focused agent
 //! - `snapchat:<file.png>`: the focused chat's whole message list, scrolled or not
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
@@ -63,6 +64,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;
             app.focused_agent().ok_or("no agent")?.chat.scroll_to_latest();
+        }
+        "send" => {
+            if !app.focused_agent().ok_or("no agent")?.send_form() {
+                return Err("no question form open".into());
+            }
         }
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,

@@ -5,7 +5,6 @@
 //! a read-only terminal), and commands run from here (a real process in the terminal).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
@@ -19,7 +18,6 @@ const KEEP: usize = 12;
 
 pub struct Job {
     pub name: RefCell<String>,
-    label: gtk::Label,
     title: gtk::Label,
     command: RefCell<Option<String>>,
     term: vte::Terminal,
@@ -52,7 +50,6 @@ pub struct Tray {
     chips: gtk::Box,
     hint: gtk::Label,
     jobs: RefCell<Vec<Rc<Job>>>,
-    by_terminal: RefCell<HashMap<String, Rc<Job>>>,
     cwd: PathBuf,
 }
 
@@ -75,24 +72,10 @@ impl Tray {
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
         dock.set_visible(false);
-        Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), by_terminal: RefCell::default(), cwd })
+        Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), cwd })
     }
 
     /// The job showing an agent's command (made on first sight of `terminal_id`).
-    pub fn agent_job(self: &Rc<Self>, terminal_id: &str, name: &str, owner: &str) -> Rc<Job> {
-        if let Some(job) = self.by_terminal.borrow().get(terminal_id) {
-            return job.clone();
-        }
-        let job = self.add(name, None, &format!("{owner}: {name}"));
-        job.term.set_input_enabled(false);
-        self.by_terminal.borrow_mut().insert(terminal_id.to_owned(), job.clone());
-        job
-    }
-
-    pub fn agent_job_for(&self, terminal_id: &str) -> Option<Rc<Job>> {
-        self.by_terminal.borrow().get(terminal_id).cloned()
-    }
-
     /// Runs `line` in the project ("name: command" names the chip).
     pub fn run(self: &Rc<Self>, line: &str) {
         let (name, command) = match line.split_once(": ") {
@@ -159,7 +142,6 @@ impl Tray {
         let title = gtk::Label::new(Some(name));
         let job = Rc::new(Job {
             name: RefCell::new(name.to_owned()),
-            label: label.clone(),
             title,
             command: RefCell::new(command),
             term,
@@ -259,7 +241,6 @@ impl Tray {
         self.chips.remove(&job.chip);
         self.jobs.borrow_mut().retain(|other| !Rc::ptr_eq(other, job));
         self.hint.set_visible(self.jobs.borrow().is_empty());
-        self.by_terminal.borrow_mut().retain(|_, other| !Rc::ptr_eq(other, job));
     }
 
     /// Drops the oldest finished, unpinned jobs past KEEP.
@@ -356,15 +337,6 @@ impl Job {
     }
 
     /// Names the job (an agent's command is known only after its first report).
-    pub fn rename(&self, name: &str) {
-        if *self.name.borrow() == name {
-            return;
-        }
-        *self.name.borrow_mut() = name.to_owned();
-        self.label.set_label(&ellipsize(name, 28));
-        self.title.set_label(name);
-        self.chip.set_tooltip_text(Some(name));
-    }
 
     /// Output an agent's command printed.
     pub fn feed(&self, data: &str) {
