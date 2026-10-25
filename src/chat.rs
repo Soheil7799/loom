@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::{gdk, gio, glib, pango, prelude::*};
+use gtk::{gdk, gdk_pixbuf, gio, glib, pango, prelude::*};
 use serde_json::Value;
 
 use crate::markdown::{self, Segment};
@@ -988,19 +988,36 @@ impl Chat {
         if pngs.is_empty() {
             return;
         }
-        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // They wrap onto more lines: in one row, several would hold the chat wider than the window.
+        let row = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            .column_spacing(8)
+            .row_spacing(8)
+            .max_children_per_line(16)
+            .can_focus(false)
+            .build();
         row.add_css_class("msg-images");
-        row.set_halign(gtk::Align::Start);
         for png in pngs {
-            let Ok(texture) = gdk::Texture::from_bytes(png) else { continue };
+            // A thumbnail the size it is shown: a full-size picture would ask for its own height
+            // (taller than shown), and the chat could not scroll down to its end.
+            let Ok(full) = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec())) else { continue };
+            let (w, h) = (full.width().max(1), full.height().max(1));
+            let height = h.min(220);
+            let width = (w * height / h).min(360).max(1);
+            let height = (h * width / w).max(1);
+            let Some(thumbnail) = full.scale_simple(width, height, gdk_pixbuf::InterpType::Bilinear) else { continue };
+            #[allow(deprecated)]
+            let texture = gdk::Texture::for_pixbuf(&thumbnail);
             let picture = gtk::Picture::for_paintable(&texture);
             picture.set_content_fit(gtk::ContentFit::Contain);
-            picture.set_can_shrink(true);
-            let (w, h) = (texture.width().max(1), texture.height().max(1));
-            let height = h.min(220);
-            picture.set_size_request((w * height / h).min(360), height);
+            picture.set_can_shrink(false);
+            picture.set_size_request(width, height);
             picture.add_css_class("msg-image");
-            row.append(&picture);
+            picture.set_halign(gtk::Align::Start);
+            row.insert(&picture, -1);
+            if let Some(cell) = picture.parent() {
+                cell.set_can_focus(false);
+            }
         }
         self.list.append(&row);
         *self.last.borrow_mut() = Last::None;

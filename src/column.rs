@@ -34,7 +34,10 @@ mod imp {
             // Height is asked for a width: the child gets no more than the column's.
             let for_size = if orientation == gtk::Orientation::Vertical && for_size > 0 { for_size.min(self.max.get()) } else { for_size };
             let (min, natural, _, _) = child.measure(orientation, for_size);
-            (min, natural, -1, -1)
+            // A scroller gives its child the least height it asks for. Content laid out taller
+            // than that (a wrapped line, a picture) would hang past the end, out of reach: so
+            // the height asked is the whole of it.
+            if orientation == gtk::Orientation::Vertical { (natural, natural, -1, -1) } else { (min, natural, -1, -1) }
         }
 
         fn allocate(&self, widget: &gtk::Widget, width: i32, height: i32, baseline: i32) {
