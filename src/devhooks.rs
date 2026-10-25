@@ -76,6 +76,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let texture = gtk::gdk::Texture::from_filename(argument).map_err(|e| e.to_string())?;
             app.focused_agent().ok_or("no agent")?.chat.attach(&texture);
         }
+        "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
         "snapchat" => {
@@ -175,6 +176,8 @@ fn lay_out(window: &gtk::Window) -> Result<gtk::Widget, String> {
         (0, _) | (_, 0) => window.default_size(),
         size => size,
     };
+    content.allocate(width.max(400), height.max(300), -1, None);
+    // Twice: a scroll position set while laying out (following the end) applies on the next.
     content.allocate(width.max(400), height.max(300), -1, None);
     Ok(content)
 }

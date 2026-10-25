@@ -267,3 +267,5 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .ref.branch { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
 .ref.remote { color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); }
 .ref.tag { color: @loom_warn; background: alpha(@loom_warn, 0.14); }
+/* Room under the last message, so it never sits against the input. */
+.messages { padding-bottom: 28px; }

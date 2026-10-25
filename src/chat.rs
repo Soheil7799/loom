@@ -75,6 +75,8 @@ pub struct Chat {
     /// Where the next tool call goes, until something else is said.
     group: RefCell<Option<Rc<ToolGroup>>>,
     stick: Rc<Cell<bool>>,
+    /// A follow is due once the layout settles.
+    follow_pending: Cell<bool>,
     commands: RefCell<Vec<(String, String)>>,
     completion: gtk::Popover,
     completion_list: gtk::ListBox,
@@ -402,6 +404,7 @@ impl Chat {
             group: RefCell::default(),
             tools: RefCell::default(),
             stick: Rc::new(Cell::new(true)),
+            follow_pending: Cell::new(false),
             commands: RefCell::default(),
             completion,
             completion_list,
@@ -579,6 +582,46 @@ impl Chat {
     }
 
     /// To the bottom, and following it again.
+    /// The scroll state, for tests: value, page, upper, following, the list's height and
+    /// the height its column measures for its width.
+    pub fn scroll_info(&self) -> String {
+        let adj = self.scroller.vadjustment();
+        let clamp = self.list.parent();
+        let measured = clamp.as_ref().map(|c| c.measure(gtk::Orientation::Vertical, c.width()).1).unwrap_or(-1);
+        format!(
+            "value={:.0} page={:.0} upper={:.0} stick={} list_h={} clamp_w={} clamp_h={} measured_h={}",
+            adj.value(),
+            adj.page_size(),
+            adj.upper(),
+            self.stick.get(),
+            self.list.height(),
+            clamp.as_ref().map_or(-1, |c| c.width()),
+            clamp.as_ref().map_or(-1, |c| c.height()),
+            measured
+        )
+    }
+
+    /// To the end if following (now, and again once the layout has settled).
+    fn follow(self: &Rc<Self>) {
+        if !self.stick.get() {
+            return;
+        }
+        let adj = self.scroller.vadjustment();
+        adj.set_value(adj.upper() - adj.page_size());
+        if self.follow_pending.replace(true) {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(chat) = weak.upgrade() else { return };
+            chat.follow_pending.set(false);
+            if chat.stick.get() {
+                let adj = chat.scroller.vadjustment();
+                adj.set_value(adj.upper() - adj.page_size());
+            }
+        });
+    }
+
     pub fn scroll_to_latest(&self) {
         self.stick.set(true);
         let adj = self.scroller.vadjustment();
@@ -587,34 +630,60 @@ impl Chat {
     }
 
     fn wire(self: &Rc<Self>) {
-        // Follow the bottom while it is in view; leave the reader alone once they scroll up.
-        // Only a move up lets go of the bottom: content growing (which can report a value
-        // short of the new end before the end is followed) must not.
+        // Follow the bottom unless the reader moved away from it themselves (wheel, scrollbar,
+        // keys). Anything loom does — a run of tool calls folding, a chat hidden and shown
+        // again, the input growing — never lets go of it, and is followed once laid out.
         let adjustment = self.scroller.vadjustment();
         let stick = self.stick.clone();
         let latest = self.latest.clone();
-        let last = Rc::new(Cell::new(0.0));
+        let dragging = Rc::new(Cell::new(false));
+        let drag = dragging.clone();
         adjustment.connect_value_changed(move |adj| {
             let at_bottom = adj.value() >= adj.upper() - adj.page_size() - 40.0;
             if at_bottom {
                 stick.set(true);
-            } else if adj.value() < last.get() - 1.0 {
+            } else if drag.get() {
+                // The scrollbar dragged up by hand.
                 stick.set(false);
             }
-            last.set(adj.value());
-            latest.set_visible(!stick.get() && adj.upper() > adj.page_size() * 1.2);
+            latest.set_visible(!stick.get() && !at_bottom && adj.upper() > adj.page_size() * 1.2);
         });
-        let follow = {
-            let stick = self.stick.clone();
-            move |adj: &gtk::Adjustment| {
-                if stick.get() {
-                    adj.set_value(adj.upper() - adj.page_size());
-                }
+        // The wheel or touchpad up lets go; down to the end catches it again (above).
+        let wheel = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        wheel.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let stick = self.stick.clone();
+        wheel.connect_scroll(move |_, _, dy| {
+            if dy < 0.0 {
+                stick.set(false);
+            }
+            glib::Propagation::Proceed
+        });
+        self.scroller.add_controller(wheel);
+        let grab = gtk::GestureDrag::new();
+        grab.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let drag = dragging.clone();
+        grab.connect_drag_begin(move |_, _, _| drag.set(true));
+        let drag = dragging;
+        grab.connect_drag_end(move |_, _, _| drag.set(false));
+        self.scroller.vscrollbar().add_controller(grab);
+        // Following: now, and once more after the layout settles (a size can change twice in
+        // one frame, the second time after this ran).
+        let weak = Rc::downgrade(self);
+        let follow = move |_: &gtk::Adjustment| {
+            if let Some(chat) = weak.upgrade() {
+                chat.follow();
             }
         };
         let also = follow.clone();
         adjustment.connect_upper_notify(move |adj| follow(adj));
         adjustment.connect_page_size_notify(move |adj| also(adj));
+        // Shown again (another agent was in view): where it was, at the end if following.
+        let weak = Rc::downgrade(self);
+        self.root.connect_map(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.follow();
+            }
+        });
 
         let weak = Rc::downgrade(self);
         self.mode.connect_clicked(move |_| {
@@ -782,6 +851,9 @@ impl Chat {
 
     /// A page up or down through the conversation.
     fn scroll_page(&self, down: bool) {
+        if !down {
+            self.stick.set(false);
+        }
         let adj = self.scroller.vadjustment();
         let step = adj.page_size() * 0.85;
         let value = if down { adj.value() + step } else { adj.value() - step };
