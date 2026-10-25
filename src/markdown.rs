@@ -225,3 +225,4 @@ mod tests {
         assert_eq!(s, vec![Segment::Text("سلام <b>دنیا</b>".into())]);
     }
 }
+

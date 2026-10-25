@@ -338,14 +338,24 @@ impl Chat {
         let weak = Rc::downgrade(&chat);
         latest.connect_clicked(move |_| {
             if let Some(chat) = weak.upgrade() {
-                chat.stick.set(true);
-                let adj = chat.scroller.vadjustment();
-                adj.set_value(adj.upper() - adj.page_size());
-                chat.latest.set_visible(false);
+                chat.scroll_to_latest();
                 chat.input.grab_focus();
             }
         });
         chat
+    }
+
+    /// The messages, all of them (for pictures in tests).
+    pub fn messages(&self) -> gtk::Widget {
+        self.list.clone().upcast()
+    }
+
+    /// To the bottom, and following it again.
+    pub fn scroll_to_latest(&self) {
+        self.stick.set(true);
+        let adj = self.scroller.vadjustment();
+        adj.set_value(adj.upper() - adj.page_size());
+        self.latest.set_visible(false);
     }
 
     fn wire(self: &Rc<Self>) {

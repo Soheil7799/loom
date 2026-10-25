@@ -4,7 +4,9 @@
 //! and the file is deleted. Lines:
 //!
 //! - `prompt:<text>`: send text from the focused agent's input
+//! - `latest`: scroll the focused chat to its end
 //! - `toast:<text>`: the in-window notice, about the focused agent
+//! - `snapchat:<file.png>`: the focused chat's whole message list, scrolled or not
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
 //! - `snappop:<prefix>`: pictures of the open popovers
 //! - `snapall:<prefix>`: pictures of the other windows (settings…), <prefix>-1.png…
@@ -56,8 +58,22 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
         "prompt" => app.focused_agent().ok_or("no agent")?.submit(argument.to_owned()),
+        "latest" => {
+            // Laid out first, so the end is where the latest message really is.
+            lay_out(app.window.upcast_ref())?;
+            app.focused_agent().ok_or("no agent")?.chat.scroll_to_latest();
+        }
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
+        "snapchat" => {
+            let list = app.focused_agent().ok_or("no agent")?.chat.messages();
+            lay_out(app.window.upcast_ref())?;
+            let snap = gtk::Snapshot::new();
+            list.parent().ok_or("no parent")?.snapshot_child(&list, &snap);
+            let node = snap.to_node().ok_or("nothing was drawn")?;
+            let renderer = app.window.renderer().ok_or("window has no renderer")?;
+            renderer.render_texture(&node, None).save_to_png(argument).map_err(|e| e.to_string())?;
+        }
         // Open popovers (palette, menus, pickers): <prefix>-1.png, -2…
         "snappop" => {
             let mut found = Vec::new();
@@ -134,15 +150,20 @@ fn popovers(widget: &gtk::Widget, found: &mut Vec<gtk::Popover>) {
     }
 }
 
-fn snapshot(window: &gtk::Window, path: &str) -> Result<(), String> {
+/// A window the compositor isn't drawing (another workspace) has its layout pending
+/// forever: lay it out here, at its last size or else the size it opened at.
+fn lay_out(window: &gtk::Window) -> Result<gtk::Widget, String> {
     let content = window.child().ok_or("window has no content")?;
-    // A window the compositor isn't drawing (another workspace) has its layout pending
-    // forever: lay it out here, at its last size or else the size it opened at.
     let (width, height) = match (content.width(), content.height()) {
         (0, _) | (_, 0) => window.default_size(),
         size => size,
     };
     content.allocate(width.max(400), height.max(300), -1, None);
+    Ok(content)
+}
+
+fn snapshot(window: &gtk::Window, path: &str) -> Result<(), String> {
+    let content = lay_out(window)?;
     let snap = gtk::Snapshot::new();
     window.snapshot_child(&content, &snap);
     let node = snap.to_node().ok_or("nothing was drawn")?;

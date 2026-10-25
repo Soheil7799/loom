@@ -83,6 +83,17 @@ impl Conn {
             .stdout(Stdio::piped())
             .stderr(stderr)
             .process_group(0);
+        // loom started from a herdr pane: its agents are not in that pane (herdr's hooks would
+        // report them there, and CLAUDE.md's herdr rules would apply).
+        for (name, _) in std::env::vars_os() {
+            if name.to_string_lossy().starts_with("HERDR_") {
+                command.env_remove(name);
+            }
+        }
+        // So the agent, its commands and its hooks know they run in loom.
+        if let Some(socket) = crate::control::current() {
+            command.env("LOOM_SOCKET", socket);
+        }
         // SAFETY: prctl only, between fork and exec.
         unsafe {
             command.pre_exec(|| {
