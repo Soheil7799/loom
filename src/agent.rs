@@ -77,6 +77,8 @@ pub enum Event {
     Asked(String),
     /// A turn finished.
     Done,
+    /// The agent stopped on an error (what it said).
+    Failed(String),
 }
 
 /// The latest repo's status as last read (None: git could not), and when.
@@ -147,6 +149,7 @@ pub struct Agent {
 
 impl Agent {
     pub fn new(id: u32, saved: Saved, tray: Rc<Tray>) -> Rc<Agent> {
+        let draft = saved.draft.clone();
         let agent = Rc::new(Agent {
             id,
             project: crate::app::project_of(&saved.cwd),
@@ -209,6 +212,7 @@ impl Agent {
             weak.upgrade().is_some_and(|agent| agent.answer(0, option))
         }));
         agent.chat.set_cwd(&agent.cwd);
+        agent.chat.input.buffer().set_text(&draft);
         // Started inside a repo: that is where it works until it touches another.
         if let Some(repo) = crate::repos::repo_of(&agent.cwd) {
             agent.repos.borrow_mut().push(repo);
@@ -251,6 +255,7 @@ impl Agent {
             session_id: self.session_id.borrow().clone(),
             title: self.title.borrow().clone(),
             named: self.named.get(),
+            draft: self.chat.draft(),
         }
     }
 
@@ -567,10 +572,30 @@ impl Agent {
         }
         self.ready.set(false);
         self.turn.set(false);
-        self.queue.borrow_mut().clear();
+        let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        self.chat.restore_unsent(unsent);
         self.drop_questions("The agent stopped");
         self.chat.set_working(None);
         self.set_status(Status::Failed);
+        // Not logged in: a way to log in, in the tray (Claude Code's own login).
+        let lower = text.to_lowercase();
+        if ["auth", "log in", "login", "logged", "401", "credential"].iter().any(|w| lower.contains(w)) {
+            let weak = Rc::downgrade(self);
+            self.chat.notice_action("Claude Code needs you to log in.", "Log in", Rc::new(move || {
+                if let Some(agent) = weak.upgrade() {
+                    agent.login();
+                }
+            }));
+        }
+        self.emit(Event::Failed(text.to_owned()));
+    }
+
+    /// Runs Claude Code's login in the tray, then starts the agent again once it is done.
+    fn login(self: &Rc<Self>) {
+        match self.tray.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
+            Ok(job) => self.tray.peek(&job),
+            Err(err) => self.chat.notice(&err, "error"),
+        }
     }
 
     /// Stops the process, keeping the session to resume. False (and nothing done) while busy.
@@ -589,7 +614,8 @@ impl Agent {
         }
         self.ready.set(false);
         self.turn.set(false);
-        self.queue.borrow_mut().clear();
+        let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        self.chat.restore_unsent(unsent);
         self.drop_questions("Stopped");
         self.chat.set_working(None);
         self.status.set(Status::Suspended);
@@ -739,7 +765,8 @@ impl Agent {
         if !self.turn.get() {
             return;
         }
-        self.queue.borrow_mut().clear();
+        let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        self.chat.restore_unsent(unsent);
         // The protocol wants every open question answered as cancelled.
         let pending: Vec<Pending> = self.pending.borrow_mut().drain(..).collect();
         let conn = self.conn.borrow().clone();
@@ -884,6 +911,7 @@ impl Agent {
         let tool = &params["toolCall"];
         let title = tool["title"].as_str().unwrap_or("this tool").replace('`', "");
         let input = &tool["rawInput"];
+        let is_plan = input["plan"].is_string() && input["command"].is_null() && input["file_path"].is_null();
         let detail = input["command"]
             .as_str()
             .or_else(|| input["file_path"].as_str())
@@ -911,7 +939,7 @@ impl Agent {
                 agent.choose(index, &id);
             }
         });
-        let card = self.chat.permission(&format!("Allow {title}?"), detail.as_deref(), &options, choose);
+        let card = self.chat.permission(&format!("Allow {title}?"), detail.as_deref(), is_plan, &options, choose);
         self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), form: None });
         self.refresh_status();
         self.emit(Event::Asked(title));
@@ -989,6 +1017,7 @@ impl Agent {
             }
             "usage_update" => {
                 self.chat.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
+                self.chat.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
             }
             _ => {}
         }
@@ -1072,6 +1101,36 @@ impl Agent {
             self.chat.tool_exit(&id, meta["terminal_exit"]["exit_code"].as_i64());
         }
     }
+}
+
+/// "$0.42" from a usage update's cost.
+fn cost(cost: &Value) -> Option<String> {
+    let amount = cost["amount"].as_f64()?;
+    Some(match cost["currency"].as_str() {
+        Some("USD") | None => format!("${amount:.2}"),
+        Some(other) => format!("{amount:.2} {other}"),
+    })
+}
+
+/// ("5h 38%", "5-hour limit: 38% used, resets 14:00") from the account's rate limit.
+fn limit(info: &Value) -> Option<(String, String)> {
+    let used = info["utilization"].as_f64()?;
+    let percent = if used <= 1.0 { used * 100.0 } else { used };
+    let (short, long) = match info["rateLimitType"].as_str() {
+        Some("five_hour") => ("5h", "5-hour limit"),
+        Some("seven_day") => ("week", "Weekly limit"),
+        Some("seven_day_opus") => ("week Opus", "Weekly Opus limit"),
+        Some("seven_day_sonnet") => ("week Sonnet", "Weekly Sonnet limit"),
+        Some("overage") | Some("seven_day_overage_included") => ("extra", "Extra usage"),
+        _ => ("limit", "Limit"),
+    };
+    let resets = info["resetsAt"]
+        .as_i64()
+        .and_then(|t| glib::DateTime::from_unix_local(t).ok())
+        .and_then(|t| t.format("%a %H:%M").ok())
+        .map(|t| format!(", resets {t}"))
+        .unwrap_or_default();
+    Some((format!("{short} {percent:.0}%"), format!("{long}: {percent:.0}% used{resets}")))
 }
 
 /// This program's path, for agents to start `loom mcp`. Replaced on disk while running (a

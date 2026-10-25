@@ -124,10 +124,12 @@ impl App {
         new_button.set_hexpand(true);
         new_button.set_tooltip_text(Some("Start an agent in another folder (Ctrl+Shift+N)"));
         let settings_button = gtk::Button::from_icon_name("emblem-system-symbolic");
+        settings_button.update_property(&[gtk::accessible::Property::Label("Settings")]);
         settings_button.add_css_class("flat");
         settings_button.add_css_class("icon");
         settings_button.set_tooltip_text(Some("Settings (Ctrl+,)"));
         let help_button = gtk::Button::builder().icon_name("help-about-symbolic").tooltip_text("Keyboard shortcuts (Ctrl+/)").build();
+        help_button.update_property(&[gtk::accessible::Property::Label("Keyboard shortcuts")]);
         help_button.add_css_class("flat");
         help_button.add_css_class("icon");
         bottom.append(&new_button);
@@ -514,6 +516,9 @@ impl App {
             (true, false, false, gdk::Key::backslash) => self.toggle_split(),
             (true, false, false, gdk::Key::slash) => crate::cheatsheet::open(&self.window),
             (true, false, false, gdk::Key::comma) => crate::prefs::open(&self.window),
+            (true, _, false, gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add) => zoom(0.1),
+            (true, false, false, gdk::Key::minus | gdk::Key::KP_Subtract) => zoom(-0.1),
+            (true, false, false, gdk::Key::_0 | gdk::Key::KP_0) => settings::update(|s| s.text_scale = 1.0),
             (true, false, false, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
             }
@@ -856,6 +861,12 @@ impl App {
 
     fn restore(self: &Rc<Self>) {
         let layout = state::load(&self.app_id);
+        if layout.width > 200 && layout.height > 200 {
+            self.window.set_default_size(layout.width, layout.height);
+        }
+        if layout.maximized {
+            self.window.maximize();
+        }
         *self.projects.borrow_mut() = layout.projects;
         *self.closed.borrow_mut() = layout.closed;
         for saved in layout.agents {
@@ -917,6 +928,22 @@ impl App {
                 dock_stack.set_visible(dock.is_visible());
             }
         });
+        // A job ending (a build, the tests) is worth a word when the window is elsewhere.
+        let (app, project_name) = (self.window.clone(), self.project_label(project));
+        let application = self.app.clone();
+        *tray.on_finish.borrow_mut() = Some(Rc::new(move |name: &str, code: Option<i64>| {
+            if app.is_active() || !settings::get().notify_done {
+                return;
+            }
+            let how = match code {
+                Some(0) => "finished".to_owned(),
+                Some(code) => format!("failed (exit {code})"),
+                None => "ended".to_owned(),
+            };
+            let notification = gio::Notification::new(&format!("{name} {how}"));
+            notification.set_body(Some(&format!("Job in {project_name}")));
+            application.send_notification(Some(&format!("job-{name}")), &notification);
+        }));
         self.trays.borrow_mut().insert(project.to_owned(), tray.clone());
         tray
     }
@@ -1233,7 +1260,7 @@ impl App {
         self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(past.session_id.as_str()));
         // A folder deleted since resumes in its project (or home): the adapter can't start in it.
         let cwd = [past.cwd.clone(), project_of(&past.cwd), glib::home_dir()].into_iter().find(|d| d.is_dir()).unwrap_or(past.cwd);
-        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false };
+        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false, draft: String::new() };
         let agent = self.add_agent(saved);
         self.focus(&agent);
     }
@@ -1421,6 +1448,13 @@ impl App {
                 }
                 self.refresh_sidebar();
             }
+            Event::Failed(why) => {
+                if self.window.is_active() && !looking {
+                    self.show_toast(agent, &format!("{} stopped: {why}", agent.title()), false);
+                } else if !looking {
+                    self.notify(agent, &format!("Stopped: {why}"));
+                }
+            }
         }
     }
 
@@ -1520,6 +1554,9 @@ impl App {
                 focused,
                 pinned,
                 closed: self.closed.borrow().clone(),
+                width: if self.window.is_maximized() { self.window.default_width() } else { self.window.width() },
+                height: if self.window.is_maximized() { self.window.default_height() } else { self.window.height() },
+                maximized: self.window.is_maximized(),
             },
         );
     }
@@ -1528,13 +1565,20 @@ impl App {
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let busy: Vec<String> =
             self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked)).map(|a| a.title()).collect();
-        let ask = (!busy.is_empty() && settings::get().confirm_quit) || self.files.has_unsaved();
+        let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
+        let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {
-            let what = if busy.is_empty() {
-                "A file has unsaved changes".to_owned()
-            } else {
-                format!("{} agent{} working: {}", busy.len(), if busy.len() == 1 { " is" } else { "s are" }, busy.join(", "))
-            };
+            let mut what = Vec::new();
+            if !busy.is_empty() {
+                what.push(format!("{} agent{} working: {}", busy.len(), if busy.len() == 1 { " is" } else { "s are" }, busy.join(", ")));
+            }
+            if jobs > 0 {
+                what.push(format!("{jobs} job{} running in the tray", if jobs == 1 { " is" } else { "s are" }));
+            }
+            if self.files.has_unsaved() {
+                what.push("a file has unsaved changes".to_owned());
+            }
+            let what = what.join("; ");
             let dialog = gtk::AlertDialog::builder()
                 .message("Quit loom?")
                 .detail(format!("{what}. Quitting stops them; conversations are kept and resume next time."))
@@ -1737,7 +1781,18 @@ impl App {
         self.menu.popup();
     }
 
+    /// "agent — project · loom", for the window list and the taskbar.
+    fn refresh_title(&self) {
+        let title = match (self.focused_agent(), self.showing_project()) {
+            (Some(agent), _) => format!("{} — {} · loom", agent.title(), self.project_label(&agent.project)),
+            (None, Some(project)) => format!("{} · loom", self.project_label(&project)),
+            _ => "loom".to_owned(),
+        };
+        self.window.set_title(Some(&title));
+    }
+
     fn refresh_sidebar(self: &Rc<Self>) {
+        self.refresh_title();
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
@@ -2056,6 +2111,11 @@ pub fn project_of(cwd: &Path) -> PathBuf {
 
 fn state_project(cwd: &Path) -> PathBuf {
     project_of(cwd)
+}
+
+/// Chat text a step bigger or smaller (Ctrl+= / Ctrl+-).
+fn zoom(step: f64) {
+    settings::update(|s| s.text_scale = ((s.text_scale + step) * 10.0).round().clamp(7.0, 16.0) / 10.0);
 }
 
 fn project_name(project: &Path) -> String {

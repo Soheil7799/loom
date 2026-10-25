@@ -25,6 +25,13 @@ pub struct Chat {
     state: gtk::Label,
     mode: gtk::Button,
     usage: gtk::Label,
+    /// The conversation's cost and the account's limit, from the agent.
+    spend: gtk::Label,
+    /// Sent messages, newest last (Up/Down in the input), where Up has got to, and what
+    /// was typed before.
+    history: RefCell<Vec<String>>,
+    history_at: Cell<Option<usize>>,
+    history_draft: RefCell<String>,
     /// Pickers for the session's settings (model, effort…).
     options: gtk::Box,
     show_thinking: Cell<bool>,
@@ -194,6 +201,11 @@ impl Chat {
         header.append(&state);
         header.append(&context);
         header.append(&usage);
+        let spend = gtk::Label::new(None);
+        spend.add_css_class("dim");
+        spend.add_css_class("small");
+        spend.set_visible(false);
+        header.append(&spend);
         root.append(&header);
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -262,11 +274,13 @@ impl Chat {
         attach.add_css_class("flat");
         attach.add_css_class("round");
         attach.set_tooltip_text(Some("Mention a file (or drop files here)"));
+        attach.update_property(&[gtk::accessible::Property::Label("Mention a file")]);
         let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).width_chars(4).build();
         working.add_css_class("working");
         let send = gtk::Button::with_label("↑");
         send.add_css_class("send");
         send.set_tooltip_text(Some("Send (Enter)"));
+        send.update_property(&[gtk::accessible::Property::Label("Send")]);
         let pickers = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         // The mode first: it decides what Claude may do without asking.
         pickers.append(&mode);
@@ -320,6 +334,10 @@ impl Chat {
             state,
             mode,
             usage,
+            spend,
+            history: RefCell::default(),
+            history_at: Cell::new(None),
+            history_draft: RefCell::default(),
             options,
             show_thinking: Cell::new(true),
             placeholder,
@@ -534,6 +552,7 @@ impl Chat {
 
     fn key(self: &Rc<Self>, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
+        let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
         let completing = self.completion.is_visible();
         match key {
             gdk::Key::Return | gdk::Key::KP_Enter if completing && !shift => {
@@ -550,6 +569,20 @@ impl Chat {
                     self.completion_list.select_row(Some(&row));
                 }
             }
+            // Reading back without the mouse: a page, the ends, message to message.
+            gdk::Key::Page_Up | gdk::Key::Page_Down => self.scroll_page(key == gdk::Key::Page_Down),
+            gdk::Key::Home | gdk::Key::End if ctrl => {
+                if key == gdk::Key::End {
+                    self.scroll_to_latest();
+                } else {
+                    self.stick.set(false);
+                    self.scroller.vadjustment().set_value(0.0);
+                }
+            }
+            gdk::Key::Up | gdk::Key::Down if ctrl => self.jump_message(key == gdk::Key::Down),
+            // Earlier messages, from the first line up (and back down from the last).
+            gdk::Key::Up if self.cursor_on_edge(true) && self.recall(true) => {}
+            gdk::Key::Down if self.history_at.get().is_some() && self.cursor_on_edge(false) && self.recall(false) => {}
             _ if !completing && self.input.buffer().char_count() == 0 && digit(key).is_some() => {
                 let answer = self.on_answer.borrow().clone();
                 let answered = answer.is_some_and(|answer| answer(digit(key).unwrap_or(1) - 1));
@@ -563,6 +596,111 @@ impl Chat {
             _ => return glib::Propagation::Proceed,
         }
         glib::Propagation::Stop
+    }
+
+    /// Whether the input's cursor is on its first line (`top`) or its last.
+    fn cursor_on_edge(&self, top: bool) -> bool {
+        let buffer = self.input.buffer();
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        if top { cursor.line() == 0 } else { cursor.line() == buffer.end_iter().line() }
+    }
+
+    /// Up (`older`) or Down through the sent messages; past the newest, what was being typed.
+    fn recall(&self, older: bool) -> bool {
+        let history = self.history.borrow();
+        if history.is_empty() {
+            return false;
+        }
+        let buffer = self.input.buffer();
+        let next = match (self.history_at.get(), older) {
+            (None, true) => {
+                *self.history_draft.borrow_mut() = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+                Some(history.len() - 1)
+            }
+            (None, false) => return false,
+            (Some(0), true) => Some(0),
+            (Some(i), true) => Some(i - 1),
+            (Some(i), false) if i + 1 < history.len() => Some(i + 1),
+            (Some(_), false) => None,
+        };
+        self.history_at.set(next);
+        let text = next.map_or_else(|| self.history_draft.borrow().clone(), |i| history[i].clone());
+        buffer.set_text(&text);
+        buffer.place_cursor(&if older { buffer.start_iter() } else { buffer.end_iter() });
+        true
+    }
+
+    /// A page up or down through the conversation.
+    fn scroll_page(&self, down: bool) {
+        let adj = self.scroller.vadjustment();
+        let step = adj.page_size() * 0.85;
+        let value = if down { adj.value() + step } else { adj.value() - step };
+        adj.set_value(value.clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+    }
+
+    /// To the previous (or next) message you sent.
+    fn jump_message(&self, down: bool) {
+        let adj = self.scroller.vadjustment();
+        let now = adj.value();
+        let mut tops = Vec::new();
+        let mut child = self.list.first_child();
+        while let Some(widget) = child {
+            if widget.has_css_class("msg-wrap-user")
+                && let Some(point) = widget.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0))
+            {
+                tops.push(f64::from(point.y()) - 12.0);
+            }
+            child = widget.next_sibling();
+        }
+        let target = if down { tops.into_iter().find(|y| *y > now + 4.0) } else { tops.into_iter().rev().find(|y| *y < now - 4.0) };
+        if let Some(y) = target {
+            self.stick.set(false);
+            adj.set_value(y.clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+        } else if down {
+            self.scroll_to_latest();
+        }
+    }
+
+    /// Messages that never went out (the turn was stopped first): back in the input, with
+    /// their images, so nothing typed is lost.
+    pub fn restore_unsent(self: &Rc<Self>, messages: Vec<(String, Vec<glib::Bytes>)>) {
+        if messages.is_empty() {
+            return;
+        }
+        let buffer = self.input.buffer();
+        let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+        let mut texts: Vec<String> = messages.iter().map(|(t, _)| t.clone()).filter(|t| !t.is_empty()).collect();
+        if !typed.trim().is_empty() {
+            texts.push(typed);
+        }
+        buffer.set_text(&texts.join("\n\n"));
+        for (_, images) in messages {
+            self.attachments.borrow_mut().extend(images);
+        }
+        self.show_attachments();
+        self.notice("Not sent (the turn was stopped first): it is back in the input.", "dim");
+    }
+
+    /// The draft in the input (kept across restarts).
+    pub fn draft(&self) -> String {
+        let buffer = self.input.buffer();
+        buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string()
+    }
+
+    /// The conversation's cost and the account's limit ("$0.42 · 5h 38%").
+    pub fn set_spend(&self, cost: Option<String>, limit: Option<(String, String)>) {
+        let mut parts = Vec::new();
+        if let Some(cost) = cost {
+            parts.push(cost);
+        }
+        let mut tooltip = String::from("What this conversation has cost");
+        if let Some((short, long)) = limit {
+            parts.push(short);
+            tooltip = format!("{tooltip}\n{long}");
+        }
+        self.spend.set_label(&parts.join(" · "));
+        self.spend.set_tooltip_text(Some(&tooltip));
+        self.spend.set_visible(!parts.is_empty());
     }
 
     fn call<T>(&self, callback: &Callback<T>, value: T) {
@@ -579,6 +717,13 @@ impl Chat {
             return;
         }
         buffer.set_text("");
+        if !text.is_empty() {
+            let mut history = self.history.borrow_mut();
+            if history.last() != Some(&text) {
+                history.push(text.clone());
+            }
+        }
+        self.history_at.set(None);
         let images = self.attachments.take();
         self.show_attachments();
         self.stick.set(true);
@@ -910,10 +1055,11 @@ impl Chat {
     pub fn turn_done(&self, seconds: u64) {
         self.group.take();
         *self.last.borrow_mut() = Last::None;
-        if seconds < 3 {
-            return;
-        }
-        let label = gtk::Label::builder().label(format!("Worked for {}", elapsed(seconds))).xalign(0.0).build();
+        // Files written meanwhile can be mentioned next.
+        self.project_files.borrow_mut().take();
+        let time = glib::DateTime::now_local().ok().and_then(|t| t.format("%H:%M").ok()).map(|t| t.to_string()).unwrap_or_default();
+        let text = if seconds < 3 { time } else { format!("{time} · Worked for {}", elapsed(seconds)) };
+        let label = gtk::Label::builder().label(text).xalign(0.0).build();
         label.add_css_class("turn-footer");
         self.list.append(&label);
         *self.last.borrow_mut() = Last::None;
@@ -1036,7 +1182,38 @@ impl Chat {
             }
             Kind::User => {
                 body.add_css_class("msg-user");
-                self.list.append(&body);
+                let wrap = gtk::Overlay::builder().child(&body).build();
+                wrap.add_css_class("msg-wrap");
+                wrap.add_css_class("msg-wrap-user");
+                let actions = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+                actions.set_halign(gtk::Align::End);
+                actions.set_valign(gtk::Align::Start);
+                let copy = gtk::Button::with_label("copy");
+                let edit = gtk::Button::with_label("edit");
+                edit.set_tooltip_text(Some("Put it back in the input to change and send again"));
+                for button in [&copy, &edit] {
+                    button.add_css_class("copy");
+                    button.add_css_class("flat");
+                    actions.append(button);
+                }
+                wrap.add_overlay(&actions);
+                self.list.append(&wrap);
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false) });
+                let weak = Rc::downgrade(&message);
+                copy.connect_clicked(move |button| {
+                    if let Some(message) = weak.upgrade() {
+                        button.clipboard().set_text(message.text.borrow().trim());
+                    }
+                });
+                let (weak, input) = (Rc::downgrade(&message), self.input.clone());
+                edit.connect_clicked(move |_| {
+                    if let Some(message) = weak.upgrade() {
+                        let (_, rest) = split_shell_runs(&message.text.borrow());
+                        input.buffer().set_text(rest.trim());
+                        input.grab_focus();
+                    }
+                });
+                return message;
             }
             Kind::Thought => {
                 let expander = gtk::Expander::new(Some("Thinking"));
@@ -1048,6 +1225,24 @@ impl Chat {
             }
         }
         Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false) })
+    }
+
+    /// A notice with a button that does something about it.
+    pub fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        line.add_css_class("notice");
+        line.add_css_class("error");
+        let label = text_label(&glib::markup_escape_text(text));
+        label.set_hexpand(true);
+        let go = gtk::Button::with_label(button);
+        go.add_css_class("suggested");
+        go.set_valign(gtk::Align::Center);
+        go.connect_clicked(move |_| action());
+        line.append(&label);
+        line.append(&go);
+        self.list.append(&line);
+        *self.last.borrow_mut() = Last::None;
+        self.group.take();
     }
 
     pub fn notice(&self, text: &str, class: &str) {
@@ -1138,16 +1333,30 @@ impl Chat {
         }
     }
 
-    pub fn permission(&self, question: &str, detail: Option<&str>, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> PermissionCard {
+    pub fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> PermissionCard {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.add_css_class("permission-card");
         let title = text_label(&format!("<b>{}</b>", glib::markup_escape_text(question)));
         root.append(&title);
         if let Some(detail) = detail.filter(|d| !d.is_empty()) {
-            let detail = gtk::Label::builder().label(detail).xalign(0.0).wrap(true).selectable(true).build();
-            detail.set_wrap_mode(pango::WrapMode::WordChar);
-            detail.add_css_class("code-block");
-            root.append(&detail);
+            if markdown {
+                // A plan: read as written, headings and lists and code.
+                let plan = gtk::Box::new(gtk::Orientation::Vertical, 6);
+                plan.add_css_class("plan-detail");
+                for segment in markdown::segments(detail) {
+                    match segment {
+                        Segment::Text(markup) => plan.append(&text_label(&markup)),
+                        Segment::Code { code, .. } => plan.append(&code_label(&code)),
+                        Segment::Table(rows) => plan.append(&table_view(&rows)),
+                    }
+                }
+                root.append(&plan);
+            } else {
+                let detail = gtk::Label::builder().label(detail).xalign(0.0).wrap(true).selectable(true).build();
+                detail.set_wrap_mode(pango::WrapMode::WordChar);
+                detail.add_css_class("code-block");
+                root.append(&detail);
+            }
         }
         // Options wrap onto more lines rather than widen the chat.
         let buttons = gtk::FlowBox::builder()

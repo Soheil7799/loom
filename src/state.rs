@@ -14,11 +14,13 @@ pub struct Saved {
     pub title: String,
     /// The title was given by hand: the agent's own titles don't replace it.
     pub named: bool,
+    /// Typed but not sent.
+    pub draft: String,
 }
 
 impl Saved {
     pub fn new(cwd: PathBuf) -> Saved {
-        Saved { cwd, session_id: None, title: String::new(), named: false }
+        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new() }
     }
 }
 
@@ -40,6 +42,10 @@ pub struct Layout {
     pub pinned: Option<usize>,
     /// Closed lately, newest first.
     pub closed: Vec<Saved>,
+    /// The window: its size (0: never saved) and whether it was maximized.
+    pub width: i32,
+    pub height: i32,
+    pub maximized: bool,
 }
 
 /// How many closed agents are remembered.
@@ -88,11 +94,12 @@ fn saved(a: &Value) -> Option<Saved> {
         session_id: a["sessionId"].as_str().map(str::to_owned),
         title: a["title"].as_str().unwrap_or("").to_owned(),
         named: a["named"].as_bool().unwrap_or(false),
+        draft: a["draft"].as_str().unwrap_or("").to_owned(),
     })
 }
 
 fn saved_json(a: &Saved) -> Value {
-    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named })
+    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft })
 }
 
 fn parse(text: &str) -> Layout {
@@ -118,6 +125,9 @@ fn parse(text: &str) -> Layout {
         focused: value["focused"].as_u64().unwrap_or(0) as usize,
         pinned: value["pinned"].as_u64().map(|p| p as usize),
         closed: list("closed"),
+        width: value["window"]["width"].as_i64().unwrap_or(0) as i32,
+        height: value["window"]["height"].as_i64().unwrap_or(0) as i32,
+        maximized: value["window"]["maximized"].as_bool().unwrap_or(false),
     }
 }
 
@@ -127,6 +137,7 @@ fn render(layout: &Layout) -> String {
     serde_json::to_string_pretty(&json!({
         "projects": projects,
         "agents": layout.agents.iter().map(saved_json).collect::<Vec<_>>(),
+        "window": { "width": layout.width, "height": layout.height, "maximized": layout.maximized },
         "focused": layout.focused,
         "pinned": layout.pinned,
         "closed": layout.closed.iter().take(CLOSED_KEPT).map(saved_json).collect::<Vec<_>>(),
@@ -153,7 +164,7 @@ mod tests {
     #[test]
     fn saved_layouts_read_back() {
         let agents = vec![
-            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true },
+            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into() },
             Saved::new("/tmp".into()),
         ];
         let layout = Layout {
@@ -165,6 +176,9 @@ mod tests {
             focused: 1,
             pinned: Some(0),
             closed: vec![agents[0].clone()],
+            width: 1200,
+            height: 800,
+            maximized: true,
         };
         assert_eq!(parse(&render(&layout)), layout);
     }

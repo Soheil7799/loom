@@ -51,6 +51,8 @@ pub struct Tray {
     hint: gtk::Label,
     jobs: RefCell<Vec<Rc<Job>>>,
     cwd: PathBuf,
+    /// Told when a job ends: its name and exit code.
+    pub on_finish: RefCell<Option<Rc<dyn Fn(&str, Option<i64>)>>>,
 }
 
 impl Tray {
@@ -72,7 +74,7 @@ impl Tray {
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
         dock.set_visible(false);
-        Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), cwd })
+        Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), cwd, on_finish: RefCell::default() })
     }
 
     /// The job showing an agent's command (made on first sight of `terminal_id`).
@@ -113,6 +115,11 @@ impl Tray {
     }
 
     /// Every job: (name, running, exit code).
+    /// How many jobs are running.
+    pub fn running(&self) -> usize {
+        self.jobs.borrow().iter().filter(|j| j.is_running()).count()
+    }
+
     pub fn list(&self) -> Vec<(String, bool, Option<i64>)> {
         self.jobs.borrow().iter().map(|j| (j.name.borrow().clone(), j.is_running(), j.outcome.get().flatten())).collect()
     }
@@ -177,6 +184,10 @@ impl Tray {
                 // A wait status: the exit code in the second byte when the low 7 bits are 0.
                 let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
                 job.finish(Some(i64::from(code)));
+                let told = job.tray.upgrade().and_then(|tray| tray.on_finish.borrow().clone());
+                if let Some(told) = told {
+                    told(&job.name.borrow(), Some(i64::from(code)));
+                }
             });
         }
 
