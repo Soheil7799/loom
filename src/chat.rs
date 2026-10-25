@@ -1309,6 +1309,12 @@ impl Chat {
         while let Some(child) = self.options.first_child() {
             self.options.remove(&child);
         }
+        // Settings at their default go behind one "⋯" chip (its tooltip says what they are);
+        // the model, and anything changed, keep a chip of their own.
+        let more_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        more_list.add_css_class("option-list");
+        let more_popover = gtk::Popover::builder().child(&more_list).build();
+        let mut more = Vec::new();
         for option in options.as_array().into_iter().flatten() {
             let Some(id) = option["id"].as_str().filter(|id| *id != "mode") else { continue };
             let values = flat_values(&option["options"]);
@@ -1320,6 +1326,11 @@ impl Chat {
             // "Fast mode · Off" reads as "Fast · Off": the chip is short, the menu says the rest.
             let short = name.strip_suffix(" mode").unwrap_or(name);
             let label = format!("{short} · {}", chip_value(&values, current));
+            if option["category"].as_str() != Some("model") && at_default(&values, current) {
+                self.option_items(&more_list, &more_popover, id, name, &values, current);
+                more.push(label);
+                continue;
+            }
             let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
             list.add_css_class("option-list");
             let popover = gtk::Popover::builder().child(&list).build();
@@ -1328,6 +1339,14 @@ impl Chat {
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
             button.set_tooltip_text(option["description"].as_str().or(Some(name)));
+            self.options.append(&button);
+        }
+        if !more.is_empty() {
+            let button = gtk::MenuButton::builder().label("⋯").popover(&more_popover).build();
+            button.add_css_class("chip-picker");
+            button.add_css_class("flat");
+            button.set_tooltip_text(Some(&format!("More settings: {}", more.join(", "))));
+            button.update_property(&[gtk::accessible::Property::Label("More settings")]);
             self.options.append(&button);
         }
     }
@@ -2820,6 +2839,12 @@ pub(crate) fn code_label(code: &str) -> gtk::Overlay {
     overlay.add_css_class("code-wrap");
     overlay.add_overlay(&copy);
     overlay
+}
+
+/// Whether a setting is at its default: "default", "off", or a choice named "Default…".
+fn at_default(values: &[(String, String, String)], current: &str) -> bool {
+    let name = values.iter().find(|(v, _, _)| v == current).map_or("", |(_, n, _)| n.as_str());
+    matches!(current.to_lowercase().as_str(), "default" | "off" | "false" | "") || name.starts_with("Default")
 }
 
 /// The values of a select option, groups flattened: (value, name, description).
