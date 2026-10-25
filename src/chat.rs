@@ -1848,17 +1848,52 @@ impl Chat {
         root.add_css_class("permission-card");
         let title = text_label(&format!("<b>{}</b>", glib::markup_escape_text(question)));
         root.append(&title);
+        // A plan's comments, by part: (what the part says, the comment).
+        let comments: Rc<RefCell<Vec<(String, String)>>> = Rc::default();
+        let request_changes = gtk::Button::with_label("Request changes");
         if let Some(detail) = detail.filter(|d| !d.is_empty()) {
             if markdown {
-                // A plan: read as written, headings and lists and code.
+                // A plan: read as written, headings and lists and code; each part can take a
+                // comment (💬), and Request changes sends them back together.
                 let plan = gtk::Box::new(gtk::Orientation::Vertical, 6);
                 plan.add_css_class("plan-detail");
                 for segment in markdown::segments(detail) {
-                    match segment {
-                        Segment::Text(markup) => plan.append(&text_label(&markup)),
-                        Segment::Code { code, .. } => plan.append(&code_label(&code)),
-                        Segment::Table(rows) => plan.append(&table_view(&rows)),
-                    }
+                    let (widget, quote): (gtk::Widget, String) = match segment {
+                        Segment::Text(markup) => {
+                            let quote = pango::parse_markup(&markup, '\0').map(|(_, text, _)| text.to_string()).unwrap_or(markup.clone());
+                            (text_label(&markup).upcast(), quote)
+                        }
+                        Segment::Code { code, .. } => (code_label(&code).upcast(), code.clone()),
+                        Segment::Table(rows) => (table_view(&rows).upcast(), rows.iter().map(|r| r.join(" | ")).collect::<Vec<_>>().join("\n")),
+                    };
+                    let index = comments.borrow().len();
+                    comments.borrow_mut().push((quote, String::new()));
+                    widget.set_hexpand(true);
+                    let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                    line.add_css_class("plan-part");
+                    line.append(&widget);
+                    let add = gtk::Button::with_label("💬");
+                    add.add_css_class("flat");
+                    add.add_css_class("plan-comment-button");
+                    add.set_valign(gtk::Align::Start);
+                    add.set_tooltip_text(Some("Comment on this part"));
+                    line.append(&add);
+                    let entry = gtk::Entry::builder().placeholder_text("Your comment on this part (Enter keeps it)").build();
+                    entry.add_css_class("plan-comment");
+                    let reveal = gtk::Revealer::builder().child(&entry).reveal_child(false).build();
+                    let (r, e) = (reveal.clone(), entry.clone());
+                    add.connect_clicked(move |_| {
+                        r.set_reveal_child(true);
+                        e.grab_focus();
+                    });
+                    let (all, rc) = (comments.clone(), request_changes.clone());
+                    entry.connect_changed(move |entry| {
+                        all.borrow_mut()[index].1 = entry.text().trim().to_owned();
+                        let n = all.borrow().iter().filter(|(_, c)| !c.is_empty()).count();
+                        rc.set_label(&if n == 0 { "Request changes".to_owned() } else { format!("Request changes ({n})") });
+                    });
+                    plan.append(&line);
+                    plan.append(&reveal);
                 }
                 root.append(&plan);
             } else {
@@ -1883,6 +1918,32 @@ impl Chat {
             let id = id.clone();
             button.connect_clicked(move |_| choose(id.clone()));
             buttons.append(&button);
+        }
+        // A plan: declined with the comments, sent as one message quoting what each is about.
+        let decline = options.iter().find(|(_, _, kind)| kind.starts_with("reject")).map(|(id, _, _)| id.clone());
+        if markdown && let Some(decline) = decline {
+            request_changes.add_css_class("plain");
+            request_changes.set_tooltip_text(Some("Keep planning, with your comments (💬 on a part adds one)"));
+            let submit = self.on_submit.borrow().clone();
+            let choose = choose.clone();
+            request_changes.connect_clicked(move |_| {
+                let notes: Vec<String> = comments
+                    .borrow()
+                    .iter()
+                    .filter(|(_, c)| !c.is_empty())
+                    .map(|(quote, comment)| {
+                        let quote: String = quote.trim().chars().take(240).collect();
+                        format!("> {}\n\n{comment}", quote.replace('\n', "\n> "))
+                    })
+                    .collect();
+                choose(decline.clone());
+                if let Some(submit) = &submit
+                    && !notes.is_empty()
+                {
+                    submit((format!("Changes to the plan:\n\n{}", notes.join("\n\n")), Vec::new()));
+                }
+            });
+            buttons.append(&request_changes);
         }
         let controls = gtk::Box::new(gtk::Orientation::Vertical, 6);
         controls.append(&buttons);

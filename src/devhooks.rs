@@ -96,6 +96,25 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let agent = app.agents_for_tests().into_iter().next().ok_or("no agent")?;
             app.schedule_for(&agent);
         }
+        // A plan to review: "fakeplan", then "plancomment:<text>" (on its first part) and
+        // "planchanges" (Request changes).
+        "fakeplan" => {
+            let chat = app.focused_agent().ok_or("no agent")?.chat.clone();
+            let plan = "## Plan\n\nAdd a **price estimate** column to the purchase form.\n\n```sql\nALTER TABLE items ADD estimate numeric;\n```\n\nThen show the sum under the table.";
+            let options = [("go".to_owned(), "Yes, start".to_owned(), "allow_once".to_owned()), ("keep".to_owned(), "No, keep planning".to_owned(), "reject_once".to_owned())];
+            chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
+        }
+        "plancomment" => {
+            let entry = find(app.window.upcast_ref(), &|w| w.has_css_class("plan-comment")).and_downcast::<gtk::Entry>().ok_or("no comment field")?;
+            entry.set_text(argument);
+        }
+        "planchanges" => {
+            let button = find(app.window.upcast_ref(), &|w| w.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l.starts_with("Request changes")))
+                .and_downcast::<gtk::Button>()
+                .ok_or("no Request changes button")?;
+            eprintln!("BUTTON {}", button.label().unwrap_or_default());
+            button.emit_clicked();
+        }
         "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
@@ -194,6 +213,20 @@ fn print_labels(widget: &gtk::Widget) {
         print_labels(&w);
         child = w.next_sibling();
     }
+}
+
+fn find(widget: &gtk::Widget, test: &dyn Fn(&gtk::Widget) -> bool) -> Option<gtk::Widget> {
+    if test(widget) {
+        return Some(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        if let Some(found) = find(&w, test) {
+            return Some(found);
+        }
+        child = w.next_sibling();
+    }
+    None
 }
 
 fn popovers(widget: &gtk::Widget, found: &mut Vec<gtk::Popover>) {

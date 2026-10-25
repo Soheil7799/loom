@@ -322,3 +322,6 @@ label.error { color: @loom_err; }
 .state-pill.blocked { color: @loom_wait; background: alpha(@loom_wait, 0.14); font-weight: 600; }
 .state-pill.failed { color: @loom_err; background: alpha(@loom_err, 0.12); }
 .state-pill.done { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
+.plan-part button.plan-comment-button { opacity: 0.3; min-height: 22px; min-width: 26px; padding: 0 4px; border-radius: 6px; }
+.plan-part:hover button.plan-comment-button, .plan-part button.plan-comment-button:focus { opacity: 0.8; }
+entry.plan-comment { margin: 2px 32px 6px 0; }
