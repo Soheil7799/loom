@@ -6,6 +6,7 @@
 //! - `prompt:<text>`: send text from the focused agent's input
 //! - `latest`: scroll the focused chat to its end
 //! - `send`: sends the focused agent's question form (Alt+Enter)
+//! - `attach:<image file>`: attaches an image to the next message (as a paste would)
 //! - `toast:<text>`: the in-window notice, about the focused agent
 //! - `snapchat:<file.png>`: the focused chat's whole message list, scrolled or not
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
@@ -59,7 +60,8 @@ pub fn watch(app: &Rc<App>) {
 fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
-        "prompt" => app.focused_agent().ok_or("no agent")?.submit(argument.to_owned()),
+        // As if typed and sent: attachments waiting in the composer go with it.
+        "prompt" => app.focused_agent().ok_or("no agent")?.chat.send_text(argument),
         "latest" => {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;
@@ -69,6 +71,10 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             if !app.focused_agent().ok_or("no agent")?.send_form() {
                 return Err("no question form open".into());
             }
+        }
+        "attach" => {
+            let texture = gtk::gdk::Texture::from_filename(argument).map_err(|e| e.to_string())?;
+            app.focused_agent().ok_or("no agent")?.chat.attach(&texture);
         }
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,

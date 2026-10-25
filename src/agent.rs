@@ -118,7 +118,8 @@ pub struct Agent {
     ready: Cell<bool>,
     turn: Cell<bool>,
     replaying: Cell<bool>,
-    queue: RefCell<VecDeque<String>>,
+    /// Messages waiting to be sent: text and attached images (PNG).
+    queue: RefCell<VecDeque<(String, Vec<glib::Bytes>)>>,
     /// `!command` runs and their output, for Claude with the next message (as Claude Code's
     /// own `!` does).
     context: RefCell<Vec<String>>,
@@ -180,9 +181,9 @@ impl Agent {
             on_event: RefCell::default(),
         });
         let weak = Rc::downgrade(&agent);
-        *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |text| {
+        *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images)| {
             if let Some(agent) = weak.upgrade() {
-                agent.submit(text);
+                agent.submit_with(text, images);
             }
         }));
         let weak = Rc::downgrade(&agent);
@@ -453,8 +454,9 @@ impl Agent {
                 agent.replaying.set(false);
                 agent.emit(Event::Files);
                 // The view was cleared for the replay: what was typed meanwhile goes back.
-                for text in agent.queue.borrow().iter() {
+                for (text, images) in agent.queue.borrow().iter() {
                     agent.chat.user(text);
+                    agent.chat.user_images(images);
                 }
                 match result {
                     Ok(result) => agent.session_ready(&result),
@@ -597,22 +599,28 @@ impl Agent {
 
     // ---- turns ----------------------------------------------------------------------------
 
-    pub fn submit(self: &Rc<Self>, text: String) {
+    /// A message, with images attached (PNG).
+    pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
         self.last_active.set(Instant::now());
-        if let Some(command) = text.trim_start().strip_prefix('!').map(str::trim).filter(|c| !c.is_empty()) {
+        if images.is_empty()
+            && let Some(command) = text.trim_start().strip_prefix('!').map(str::trim).filter(|c| !c.is_empty())
+        {
             self.shell(command.to_owned());
             return;
         }
-        self.chat.user(&text);
+        if !text.is_empty() {
+            self.chat.user(&text);
+        }
+        self.chat.user_images(&images);
         if self.turn.get() || !self.ready.get() {
             if self.turn.get() {
                 self.chat.notice("Queued: sent when this turn ends.", "dim");
             }
-            self.queue.borrow_mut().push_back(text);
+            self.queue.borrow_mut().push_back((text, images));
             self.start();
             return;
         }
-        self.queue.borrow_mut().push_back(text);
+        self.queue.borrow_mut().push_back((text, images));
         self.send_next();
     }
 
@@ -678,7 +686,7 @@ impl Agent {
         if self.turn.get() || !self.ready.get() {
             return;
         }
-        let Some(text) = self.queue.borrow_mut().pop_front() else { return };
+        let Some((text, images)) = self.queue.borrow_mut().pop_front() else { return };
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
@@ -688,7 +696,12 @@ impl Agent {
         let weak = Rc::downgrade(self);
         // `!command` output first, as Claude Code puts it before the message.
         let mut prompt: Vec<Value> = self.context.borrow_mut().drain(..).map(|c| json!({ "type": "text", "text": c })).collect();
-        prompt.push(json!({ "type": "text", "text": text }));
+        for png in &images {
+            prompt.push(json!({ "type": "image", "mimeType": "image/png", "data": glib::base64_encode(png).as_str() }));
+        }
+        if !text.is_empty() || prompt.is_empty() {
+            prompt.push(json!({ "type": "text", "text": text }));
+        }
         conn.request(
             "session/prompt",
             json!({ "sessionId": session, "prompt": prompt }),
@@ -939,7 +952,10 @@ impl Agent {
             "agent_message_chunk" => self.chat.agent_text(text()),
             "agent_thought_chunk" => self.chat.thought(text()),
             // Only a replay echoes what was typed; live, the chat already shows it.
-            "user_message_chunk" if self.replaying.get() => self.chat.user_chunk(text()),
+            "user_message_chunk" if self.replaying.get() => match update["content"]["type"].as_str() {
+                Some("image") => self.chat.user_image_data(update["content"]["data"].as_str().unwrap_or("")),
+                _ => self.chat.user_chunk(text()),
+            },
             "tool_call" | "tool_call_update" => self.tool(update),
             "plan" => self.chat.set_plan(&update["entries"]),
             "available_commands_update" => {

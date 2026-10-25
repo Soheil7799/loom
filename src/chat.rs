@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::{gdk, glib, pango, prelude::*};
+use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde_json::Value;
 
 use crate::markdown::{self, Segment};
@@ -52,7 +52,11 @@ pub struct Chat {
     commands: RefCell<Vec<(String, String)>>,
     completion: gtk::Popover,
     completion_list: gtk::ListBox,
-    pub on_submit: Callback<String>,
+    /// What was typed, and the images attached (PNG).
+    pub on_submit: Callback<(String, Vec<glib::Bytes>)>,
+    /// Images pasted or dropped, waiting to go with the next message.
+    attachments: RefCell<Vec<glib::Bytes>>,
+    attach_box: gtk::Box,
     pub on_cancel: Callback<()>,
     pub on_cycle_mode: Callback<()>,
     /// A session setting picked: (its id, the value).
@@ -238,7 +242,7 @@ impl Chat {
             .build();
         // The hint shown while the input is empty (a text view has none of its own).
         let placeholder = gtk::Label::builder()
-            .label("Ask Claude…   @ to add a file · / for commands · ! to run a command")
+            .label("Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images")
             .xalign(0.0)
             .valign(gtk::Align::Start)
             .margin_start(14)
@@ -279,8 +283,12 @@ impl Chat {
         toolbar.append(&working);
         toolbar.append(&send);
 
+        let attach_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        attach_box.add_css_class("attachments");
+        attach_box.set_visible(false);
         let composer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         composer.add_css_class("composer");
+        composer.append(&attach_box);
         composer.append(&field);
         composer.append(&toolbar);
         let input_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -336,6 +344,8 @@ impl Chat {
             completion,
             completion_list,
             on_submit: RefCell::default(),
+            attachments: RefCell::default(),
+            attach_box,
             on_cancel: RefCell::default(),
             on_cycle_mode: RefCell::default(),
             on_option: RefCell::default(),
@@ -448,19 +458,36 @@ impl Chat {
         let keys = gtk::EventControllerKey::new();
         keys.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
-        keys.connect_key_pressed(move |_, key, _, modifiers| {
+        keys.connect_key_pressed(move |_, key, keycode, modifiers| {
             let Some(chat) = weak.upgrade() else { return glib::Propagation::Proceed };
+            if chat.paste_image(keycode, modifiers) {
+                return glib::Propagation::Stop;
+            }
             chat.key(key, modifiers)
         });
         self.input.add_controller(keys);
 
         let drop = gtk::DropTarget::new(gtk::gdk::FileList::static_type(), gtk::gdk::DragAction::COPY);
-        let input = self.input.clone();
+        let weak = Rc::downgrade(self);
         drop.connect_drop(move |_, value, _, _| {
+            let Some(chat) = weak.upgrade() else { return false };
             let Ok(files) = value.get::<gtk::gdk::FileList>() else { return false };
-            let mentions: Vec<String> = files.files().iter().filter_map(|f| f.path()).map(|p| format!("@{} ", p.display())).collect();
-            input.buffer().insert_at_cursor(&mentions.concat());
-            input.grab_focus();
+            let mut mentions = String::new();
+            for file in files.files() {
+                let Some(path) = file.path() else { continue };
+                let name = path.to_string_lossy();
+                let (kind, _) = gio::content_type_guess(Some(name.as_ref()), None);
+                // Pictures go as pictures (Claude sees them); anything else is mentioned.
+                if kind.starts_with("image/")
+                    && let Ok(texture) = gdk::Texture::from_file(&file)
+                {
+                    chat.attach(&texture);
+                } else {
+                    mentions.push_str(&format!("@{} ", path.display()));
+                }
+            }
+            chat.input.buffer().insert_at_cursor(&mentions);
+            chat.input.grab_focus();
             true
         });
         self.input.add_controller(drop);
@@ -480,7 +507,32 @@ impl Chat {
         });
     }
 
-    fn key(&self, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
+    /// Ctrl+V with an image on the clipboard (a screenshot, a copied picture): attached
+    /// instead of pasted as text. Any layout: the key is read on the first one.
+    fn paste_image(self: &Rc<Self>, keycode: u32, modifiers: gdk::ModifierType) -> bool {
+        let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+        let other = modifiers.intersects(gdk::ModifierType::ALT_MASK | gdk::ModifierType::SHIFT_MASK);
+        if !ctrl || other {
+            return false;
+        }
+        let base = WidgetExt::display(&self.input).translate_key(keycode, gdk::ModifierType::empty(), 0).map(|(k, ..)| k.to_lower());
+        if base != Some(gdk::Key::v) {
+            return false;
+        }
+        let clipboard = self.input.clipboard();
+        if !clipboard.formats().contains_type(gdk::Texture::static_type()) {
+            return false;
+        }
+        let weak = Rc::downgrade(self);
+        clipboard.read_texture_async(None::<&gio::Cancellable>, move |result| {
+            if let (Some(chat), Ok(Some(texture))) = (weak.upgrade(), result) {
+                chat.attach(&texture);
+            }
+        });
+        true
+    }
+
+    fn key(self: &Rc<Self>, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         let completing = self.completion.is_visible();
         match key {
@@ -520,15 +572,92 @@ impl Chat {
         }
     }
 
-    fn submit(&self) {
+    fn submit(self: &Rc<Self>) {
         let buffer = self.input.buffer();
         let text = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim().to_owned();
-        if text.is_empty() {
+        if text.is_empty() && self.attachments.borrow().is_empty() {
             return;
         }
         buffer.set_text("");
+        let images = self.attachments.take();
+        self.show_attachments();
         self.stick.set(true);
-        self.call(&self.on_submit, text);
+        self.call(&self.on_submit, (text, images));
+    }
+
+    /// Sends `text` as if typed and sent (with any images attached).
+    pub fn send_text(self: &Rc<Self>, text: &str) {
+        self.input.buffer().set_text(text);
+        self.submit();
+    }
+
+    /// An image to send with the next message (pasted or dropped), as PNG.
+    pub fn attach(self: &Rc<Self>, texture: &gdk::Texture) {
+        self.attachments.borrow_mut().push(texture.save_to_png_bytes());
+        self.show_attachments();
+        self.input.grab_focus();
+    }
+
+    /// The attached images over the input, each with a × to take it off.
+    fn show_attachments(self: &Rc<Self>) {
+        while let Some(child) = self.attach_box.first_child() {
+            self.attach_box.remove(&child);
+        }
+        let images = self.attachments.borrow().clone();
+        for (i, png) in images.iter().enumerate() {
+            let Ok(texture) = gdk::Texture::from_bytes(png) else { continue };
+            let picture = gtk::Picture::for_paintable(&texture);
+            picture.set_content_fit(gtk::ContentFit::Cover);
+            picture.set_size_request(64, 64);
+            picture.add_css_class("attachment");
+            let frame = gtk::Overlay::builder().child(&picture).build();
+            let remove = gtk::Button::with_label("×");
+            remove.add_css_class("attachment-remove");
+            remove.set_halign(gtk::Align::End);
+            remove.set_valign(gtk::Align::Start);
+            remove.set_tooltip_text(Some("Take this image off"));
+            let weak = Rc::downgrade(self);
+            remove.connect_clicked(move |_| {
+                if let Some(chat) = weak.upgrade() {
+                    if i < chat.attachments.borrow().len() {
+                        chat.attachments.borrow_mut().remove(i);
+                    }
+                    chat.show_attachments();
+                }
+            });
+            frame.add_overlay(&remove);
+            self.attach_box.append(&frame);
+        }
+        self.attach_box.set_visible(!images.is_empty());
+    }
+
+    /// Images sent with a message, under it.
+    pub fn user_images(&self, pngs: &[glib::Bytes]) {
+        if pngs.is_empty() {
+            return;
+        }
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.add_css_class("msg-images");
+        row.set_halign(gtk::Align::Start);
+        for png in pngs {
+            let Ok(texture) = gdk::Texture::from_bytes(png) else { continue };
+            let picture = gtk::Picture::for_paintable(&texture);
+            picture.set_content_fit(gtk::ContentFit::Contain);
+            picture.set_can_shrink(true);
+            let (w, h) = (texture.width().max(1), texture.height().max(1));
+            let height = h.min(220);
+            picture.set_size_request((w * height / h).min(360), height);
+            picture.add_css_class("msg-image");
+            row.append(&picture);
+        }
+        self.list.append(&row);
+        *self.last.borrow_mut() = Last::None;
+    }
+
+    /// An image from a resumed conversation (base64, as the agent replays it).
+    pub fn user_image_data(&self, base64: &str) {
+        let bytes = glib::base64_decode(base64);
+        self.user_images(&[glib::Bytes::from_owned(bytes)]);
     }
 
     // ---- slash commands -------------------------------------------------------------------
@@ -1343,6 +1472,37 @@ fn choices_of(field: &Value) -> Vec<(Value, String, String)> {
         .collect()
 }
 
+/// A message's `!command` runs (`<bash-input>…</bash-input>` and its output blocks, as
+/// Claude Code stores them) taken out: the commands, and the rest of the text.
+fn split_shell_runs(text: &str) -> (Vec<String>, String) {
+    let mut commands = Vec::new();
+    let mut rest = String::new();
+    let mut left = text;
+    while let Some(start) = left.find("<bash-input>") {
+        rest.push_str(&left[..start]);
+        let after = &left[start + "<bash-input>".len()..];
+        let Some(end) = after.find("</bash-input>") else {
+            left = &left[start..];
+            break;
+        };
+        commands.push(after[..end].trim().to_owned());
+        left = &after[end + "</bash-input>".len()..];
+        // Its output blocks, if they follow.
+        for tag in ["bash-stdout", "bash-stderr"] {
+            let trimmed = left.trim_start();
+            let open = format!("<{tag}>");
+            let close = format!("</{tag}>");
+            if trimmed.starts_with(&open)
+                && let Some(end) = trimmed.find(&close)
+            {
+                left = &trimmed[end + close.len()..];
+            }
+        }
+    }
+    rest.push_str(left);
+    (commands, rest)
+}
+
 /// The last `lines` lines of terminal output as plain text: colours and cursor codes
 /// dropped, a line rewritten in place (progress bars, \r) shown as it ended.
 fn plain_tail(output: &str, lines: usize) -> String {
@@ -1409,8 +1569,18 @@ impl Message {
         }
         let text = self.text.borrow();
         if self.kind != Kind::Agent {
-            // What people type, and thinking, are shown as written.
-            self.body.append(&text_label(&glib::markup_escape_text(text.trim())));
+            // What people type, and thinking, are shown as written; `!command` runs a
+            // resumed conversation carries come back as their command lines.
+            let (commands, rest) = split_shell_runs(&text);
+            for command in commands {
+                let line = gtk::Label::builder().label(format!("! {command}")).xalign(0.0).wrap(true).build();
+                line.set_wrap_mode(pango::WrapMode::WordChar);
+                line.add_css_class("shell-line");
+                self.body.append(&line);
+            }
+            if !rest.trim().is_empty() {
+                self.body.append(&text_label(&glib::markup_escape_text(rest.trim())));
+            }
             return;
         }
         for segment in markdown::segments(&text) {
@@ -1840,7 +2010,16 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_lines, chip_value, choices_of, plain_tail};
+    use super::{changed_lines, chip_value, choices_of, plain_tail, split_shell_runs};
+
+    #[test]
+    fn shell_runs_read_as_commands() {
+        let text = "<bash-input>ls</bash-input>\n<bash-stdout>a\nb</bash-stdout><bash-stderr></bash-stderr>What did it print?";
+        let (commands, rest) = split_shell_runs(text);
+        assert_eq!(commands, vec!["ls".to_owned()]);
+        assert_eq!(rest, "What did it print?");
+        assert_eq!(split_shell_runs("plain"), (Vec::new(), "plain".to_owned()));
+    }
 
     #[test]
     fn output_reads_as_plain_text() {
