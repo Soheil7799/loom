@@ -5,35 +5,6 @@ use gtk::{glib, pango, prelude::*};
 use crate::settings::{self, Settings};
 
 /// Every shortcut, for the Keyboard page and the in-app help.
-pub const KEYS: &[(&str, &str)] = &[
-    ("Ctrl+Shift+P", "command palette: everything below, by name"),
-    ("Ctrl+N", "new agent here"),
-    ("Ctrl+Shift+N", "new agent in a folder"),
-    ("Ctrl+Shift+T", "reopen the last closed agent"),
-    ("Ctrl+K", "go to agent"),
-    ("Alt+↑ / Alt+↓, Ctrl+Tab", "previous / next agent"),
-    ("Ctrl+1…9", "agent by position"),
-    ("Ctrl+\\", "previous agent beside this one"),
-    ("Alt+← / Alt+→", "swap with the agent beside"),
-    ("F2", "rename the agent"),
-    ("Ctrl+W", "close agent (conversation kept)"),
-    ("Enter / Shift+Enter", "send / new line"),
-    ("Esc", "stop the turn"),
-    ("Shift+Tab", "next permission mode"),
-    ("1…9 (empty input)", "answer the question"),
-    ("Ctrl+I", "questions from all agents"),
-    ("Ctrl+`", "scratch terminal"),
-    ("Ctrl+J", "run a command in the tray"),
-    ("Ctrl+Shift+J", "peek the newest job"),
-    ("Ctrl+Shift+X", "clear finished jobs"),
-    ("Ctrl+P", "find a file in the project"),
-    ("Ctrl+E / Ctrl+O", "files panel / open a file"),
-    ("Ctrl+S", "save (in the editor)"),
-    ("Ctrl+Shift+O", "open the file in nevis"),
-    ("Ctrl+L", "back to the input"),
-    ("Ctrl+,", "settings"),
-    ("Ctrl+B then…", "herdr's prefix: v split · h/l swap · j/k agents · c new · x close · z zoom · b sidebar · f files · t scratch · r run · g find file · s switch · i inbox"),
-];
 
 const MODES: &[(&str, &str)] = &[
     ("", "Claude Code's default"),
@@ -245,13 +216,13 @@ fn appearance(s: &Settings) -> gtk::Box {
 
 fn keyboard() -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
-    let keys = section("Shortcuts");
-    for (key, what) in KEYS {
-        let label = gtk::Label::builder().label(*key).xalign(1.0).build();
-        label.add_css_class("keycap");
-        row(&keys, what, "", &label);
+    for (title, shortcuts) in crate::cheatsheet::SECTIONS {
+        let keys = section(title);
+        for (key, what) in *shortcuts {
+            row(&keys, what, "", &crate::cheatsheet::keys(key));
+        }
+        content.append(&keys);
     }
-    content.append(&keys);
     content
 }
 

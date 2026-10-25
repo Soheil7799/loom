@@ -63,18 +63,23 @@ impl Files {
         let agent_tab = gtk::ToggleButton::builder().label("Agent").active(true).tooltip_text("Files the agent wrote").build();
         let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").build();
         let changes_tab = gtk::ToggleButton::builder().label("Changes").group(&agent_tab).tooltip_text("Git status of the repos in this project").build();
+        let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        tabs.add_css_class("segmented");
         for tab in [&agent_tab, &project_tab, &changes_tab] {
             tab.add_css_class("flat");
             tab.add_css_class("tab");
+            // The theme styles .text-button.toggle groups its own way (the first one tinted
+            // whatever is chosen): these are drawn as one segmented control instead.
+            tab.remove_css_class("text-button");
+            tab.remove_css_class("toggle");
+            tabs.append(tab);
         }
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
         let open_button = gtk::Button::from_icon_name("document-open-symbolic");
         open_button.add_css_class("flat");
         open_button.set_tooltip_text(Some("Open any file (Ctrl+O; Ctrl+P to find one by name)"));
-        header.append(&agent_tab);
-        header.append(&project_tab);
-        header.append(&changes_tab);
+        header.append(&tabs);
         header.append(&spacer);
         header.append(&open_button);
         root.append(&header);
@@ -82,14 +87,18 @@ impl Files {
         let list = gtk::ListBox::new();
         list.add_css_class("file-list");
         let empty = gtk::Label::builder()
-            .label("Files the agent writes show up here.")
+            .label("Files the agent writes or edits show up here, to read or fill in without leaving loom.")
             .wrap(true)
-            .margin_top(12)
-            .margin_bottom(12)
+            .justify(gtk::Justification::Center)
+            .max_width_chars(28)
             .build();
         empty.add_css_class("dim");
+        empty.add_css_class("files-empty");
         let list_scroller = gtk::ScrolledWindow::builder().child(&list).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         let agent_view = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        let caption = gtk::Label::builder().label("Written by this agent").xalign(0.0).build();
+        caption.add_css_class("panel-caption");
+        agent_view.append(&caption);
         agent_view.append(&empty);
         agent_view.append(&list_scroller);
 
@@ -328,8 +337,12 @@ impl Files {
             self.list.remove(&row);
         }
         for (path, mark) in entries {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
             row.add_css_class("file-row");
+            let icon = gtk::Image::from_gicon(&file_icon(path, false));
+            icon.add_css_class("file-icon");
+            icon.set_valign(gtk::Align::Center);
+            row.append(&icon);
             let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
             names.set_hexpand(true);
             let file = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -344,6 +357,7 @@ impl Files {
             }
             let badge = gtk::Label::new(Some(if *mark == Mark::Created { "new" } else { "edited" }));
             badge.add_css_class("badge");
+            badge.set_valign(gtk::Align::Center);
             badge.add_css_class(if *mark == Mark::Created { "new" } else { "edited" });
             row.append(&names);
             row.append(&badge);
@@ -712,8 +726,13 @@ fn tree_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
     factory.connect_setup(|_, item| {
         let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
-        let label = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
-        let expander = gtk::TreeExpander::builder().child(&label).build();
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let icon = gtk::Image::new();
+        icon.add_css_class("file-icon");
+        let label = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).hexpand(true).build();
+        line.append(&icon);
+        line.append(&label);
+        let expander = gtk::TreeExpander::builder().child(&line).indent_for_icon(true).build();
         item.set_child(Some(&expander));
     });
     factory.connect_bind(|_, item| {
@@ -722,9 +741,14 @@ fn tree_factory() -> gtk::SignalListItemFactory {
         let Some(expander) = item.child().and_downcast::<gtk::TreeExpander>() else { return };
         expander.set_list_row(Some(&row));
         let Some(info) = row.item().and_downcast::<gio::FileInfo>() else { return };
-        if let Some(label) = expander.child().and_downcast::<gtk::Label>() {
+        let Some(line) = expander.child().and_downcast::<gtk::Box>() else { return };
+        let is_dir = info.file_type() == gio::FileType::Directory;
+        if let Some(icon) = line.first_child().and_downcast::<gtk::Image>() {
+            icon.set_from_gicon(&file_icon(Path::new(info.name().as_path()), is_dir));
+        }
+        if let Some(label) = line.last_child().and_downcast::<gtk::Label>() {
             label.set_label(&info.display_name());
-            if info.file_type() == gio::FileType::Directory {
+            if is_dir {
                 label.add_css_class("folder");
             } else {
                 label.remove_css_class("folder");
@@ -732,6 +756,16 @@ fn tree_factory() -> gtk::SignalListItemFactory {
         }
     });
     factory
+}
+
+/// The theme's symbolic icon for a file's kind (from its name), or a folder's.
+fn file_icon(path: &Path, is_dir: bool) -> gio::Icon {
+    if is_dir {
+        return gio::ThemedIcon::new("folder-symbolic").upcast();
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let (kind, _) = gio::content_type_guess(Some(name.as_str()), None);
+    gio::content_type_get_symbolic_icon(&kind)
 }
 
 fn modified_time(path: &Path) -> Option<SystemTime> {

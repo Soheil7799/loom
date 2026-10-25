@@ -6,6 +6,7 @@ mod acp;
 mod agent;
 mod app;
 mod chat;
+mod cheatsheet;
 mod column;
 mod control;
 mod devhooks;

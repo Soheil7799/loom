@@ -374,6 +374,32 @@ impl Chat {
         self.list.clone().upcast()
     }
 
+    /// Copies the text selected in the chat (a message, a code block, a tool's output) to the
+    /// clipboard. False if nothing is selected.
+    pub fn copy_selection(&self) -> bool {
+        fn find(widget: &gtk::Widget) -> Option<String> {
+            if let Some(label) = widget.downcast_ref::<gtk::Label>()
+                && label.is_selectable()
+                && let Some((start, end)) = label.selection_bounds()
+                && start != end
+            {
+                let (start, end) = (start.min(end) as usize, start.max(end) as usize);
+                return Some(label.text().chars().skip(start).take(end - start).collect());
+            }
+            let mut child = widget.first_child();
+            while let Some(widget) = child {
+                if let Some(text) = find(&widget) {
+                    return Some(text);
+                }
+                child = widget.next_sibling();
+            }
+            None
+        }
+        let Some(text) = find(self.list.upcast_ref()) else { return false };
+        self.list.clipboard().set_text(&text);
+        true
+    }
+
     /// To the bottom, and following it again.
     pub fn scroll_to_latest(&self) {
         self.stick.set(true);

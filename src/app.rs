@@ -62,7 +62,6 @@ pub struct App {
     rename_entry: gtk::Entry,
     /// The project being renamed (None: the focused agent).
     renaming: RefCell<Option<PathBuf>>,
-    help: gtk::Popover,
     quitting: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
     prefix: Cell<bool>,
@@ -128,7 +127,7 @@ impl App {
         settings_button.add_css_class("flat");
         settings_button.add_css_class("icon");
         settings_button.set_tooltip_text(Some("Settings (Ctrl+,)"));
-        let help_button = gtk::MenuButton::builder().icon_name("help-about-symbolic").always_show_arrow(false).tooltip_text("Keys (Ctrl+/)").build();
+        let help_button = gtk::Button::builder().icon_name("help-about-symbolic").tooltip_text("Keyboard shortcuts (Ctrl+/)").build();
         help_button.add_css_class("flat");
         help_button.add_css_class("icon");
         bottom.append(&new_button);
@@ -234,8 +233,6 @@ impl App {
         let rename_entry = gtk::Entry::builder().width_chars(36).placeholder_text("Agent name").build();
         let rename = gtk::Popover::builder().child(&rename_entry).has_arrow(false).position(gtk::PositionType::Bottom).build();
         rename.set_parent(&chat_stack);
-        let help = gtk::Popover::builder().child(&help_text()).build();
-        help_button.set_popover(Some(&help));
 
         let scale_css = gtk::CssProvider::new();
         if let Some(display) = gdk::Display::default() {
@@ -274,7 +271,6 @@ impl App {
             rename,
             rename_entry,
             renaming: RefCell::default(),
-            help,
             quitting: Cell::new(false),
             prefix: Cell::new(false),
             prefix_hint,
@@ -291,6 +287,12 @@ impl App {
         this.wire_history();
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
+        let weak = Rc::downgrade(&this);
+        help_button.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                crate::cheatsheet::open(&app.window);
+            }
+        });
         this.apply_settings(&settings::get());
         this.restore();
         this.listen();
@@ -487,6 +489,14 @@ impl App {
             (true, false, false, gdk::Key::n) => self.new_agent(false),
             (true, true, false, gdk::Key::n) => self.new_agent(true),
             (true, true, false, gdk::Key::t) => self.reopen_closed(),
+            (true, false, false, gdk::Key::c) => {
+                // Chat text can be selected but never holds focus (the input keeps it): copy
+                // the chat's selection unless the input has one of its own.
+                let copied = self.focused_agent().is_some_and(|agent| !agent.chat.input.buffer().has_selection() && agent.chat.copy_selection());
+                if !copied {
+                    return glib::Propagation::Proceed;
+                }
+            }
             (true, false, false, gdk::Key::w) => self.close_focused(),
             (true, false, false, gdk::Key::k) => self.open_switcher(),
             (true, false, false, gdk::Key::i) => self.open_inbox(),
@@ -502,7 +512,7 @@ impl App {
             (true, false, false, gdk::Key::l) => self.focus_input(),
             (true, false, false, gdk::Key::p) => self.find_file(),
             (true, false, false, gdk::Key::backslash) => self.toggle_split(),
-            (true, false, false, gdk::Key::slash) => self.help.popup(),
+            (true, false, false, gdk::Key::slash) => crate::cheatsheet::open(&self.window),
             (true, false, false, gdk::Key::comma) => crate::prefs::open(&self.window),
             (true, false, false, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
@@ -587,7 +597,7 @@ impl App {
             (_, gdk::Key::i) => self.open_inbox(),
             (_, gdk::Key::colon | gdk::Key::semicolon) => self.palette(),
             (_, gdk::Key::comma) => crate::prefs::open(&self.window),
-            (_, gdk::Key::question | gdk::Key::slash) => self.help.popup(),
+            (_, gdk::Key::question | gdk::Key::slash) => crate::cheatsheet::open(&self.window),
             (_, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
             }
@@ -633,7 +643,7 @@ impl App {
             "switcher" => self.open_switcher(),
             "palette" => self.palette(),
             "inbox" => self.open_inbox(),
-            "help" => self.help.popup(),
+            "help" => crate::cheatsheet::open(&self.window),
             "settings" => crate::prefs::open(&self.window),
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
@@ -789,7 +799,7 @@ impl App {
             act("Clear finished jobs", "Ctrl+Shift+X", |a| a.current_tray().clear_finished()),
             act("Questions waiting", "Ctrl+I", |a| a.open_inbox()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
-            act("Keyboard shortcuts", "Ctrl+/", |a| a.help.popup()),
+            act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
         ];
         for agent in self.agents_in_order() {
             let weak = weak.clone();
@@ -2052,18 +2062,3 @@ fn project_name(project: &Path) -> String {
     project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| project.to_string_lossy().into_owned())
 }
 
-fn help_text() -> gtk::Box {
-    let grid = gtk::Grid::builder().column_spacing(18).row_spacing(4).build();
-    grid.add_css_class("help");
-    for (i, (key, what)) in crate::prefs::KEYS.iter().enumerate() {
-        let key = gtk::Label::builder().label(*key).xalign(1.0).build();
-        key.add_css_class("keycap");
-        let what = gtk::Label::builder().label(*what).xalign(0.0).wrap(true).max_width_chars(48).build();
-        grid.attach(&key, 0, i as i32, 1, 1);
-        grid.attach(&what, 1, i as i32, 1, 1);
-    }
-    let scroller = gtk::ScrolledWindow::builder().child(&grid).propagate_natural_height(true).max_content_height(560).hscrollbar_policy(gtk::PolicyType::Never).build();
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-    content.append(&scroller);
-    content
-}
