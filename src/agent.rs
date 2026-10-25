@@ -454,7 +454,13 @@ impl Agent {
         }) {
             Ok(conn) => conn,
             Err(err) => {
-                self.chat.notice(&format!("Could not start the agent ({}): {err}", acp::adapter_command().join(" ")), "error");
+                // Spawning in a folder that is gone fails like a missing program: say which.
+                let text = if !self.cwd.is_dir() {
+                    format!("Could not start: this agent's folder no longer exists ({}). Its conversation is kept; resume it from the project page in a folder that exists.", self.cwd.display())
+                } else {
+                    format!("Could not start Claude Code ({}): {err}", acp::adapter_command().join(" "))
+                };
+                self.chat.notice(&text, "error");
                 self.set_status(Status::Failed);
                 return;
             }

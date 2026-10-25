@@ -1641,6 +1641,13 @@ impl Chat {
     }
 
     pub fn notice(&self, text: &str, class: &str) {
+        // The same notice again right after itself (a second failed start) says nothing new.
+        if let Some(last) = self.list.last_child().and_downcast::<gtk::Label>()
+            && last.has_css_class("notice")
+            && last.text() == text
+        {
+            return;
+        }
         let label = text_label(&glib::markup_escape_text(text));
         label.add_css_class("notice");
         label.add_css_class(class);

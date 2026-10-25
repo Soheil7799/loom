@@ -24,8 +24,6 @@ use crate::state::{self, Project, Saved};
 enum Row {
     Project(PathBuf),
     Agent(Rc<Agent>),
-    /// "No agents" under an empty project.
-    Empty(PathBuf),
 }
 
 pub struct App {
@@ -93,7 +91,7 @@ impl App {
         // Left: projects and their agents.
         let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sidebar.add_css_class("sidebar");
-        sidebar.set_size_request(264, -1);
+        sidebar.set_size_request(290, -1);
         // Children that expand must not widen it.
         sidebar.set_hexpand(false);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -2101,7 +2099,6 @@ impl App {
         let what = match self.rows.borrow().get(index) {
             Some(Row::Project(path)) => Do::Start(path.clone()),
             Some(Row::Agent(agent)) => Do::Focus(agent.clone()),
-            Some(Row::Empty(path)) => Do::Start(path.clone()),
             None => return,
         };
         match what {
@@ -2131,7 +2128,7 @@ impl App {
             content.append(&button);
         };
         match self.rows.borrow().get(index) {
-            Some(Row::Project(path)) | Some(Row::Empty(path)) => {
+            Some(Row::Project(path)) => {
                 let (p1, p2, p3, p4, p5) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
                 item("Conversations (new or past)", Box::new(move |app| app.show_project(&p1, &p1)));
                 item("Rename…", Box::new(move |app| app.rename_project_at(&p5, x, y)));
@@ -2198,15 +2195,6 @@ impl App {
             rows.push(Row::Project(project.path.clone()));
             if project.collapsed {
                 continue;
-            }
-            if mine.is_empty() {
-                let empty = gtk::Label::builder().label("No agents open · Enter: new or past conversation").xalign(0.0).build();
-                empty.add_css_class("dim");
-                empty.add_css_class("small");
-                let row = gtk::ListBoxRow::builder().child(&empty).selectable(false).build();
-                row.add_css_class("empty-row");
-                self.list.append(&row);
-                rows.push(Row::Empty(project.path.clone()));
             }
             for agent in mine {
                 let row = agent_row(agent);

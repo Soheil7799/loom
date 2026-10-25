@@ -9,7 +9,7 @@
 
 window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
 .mono, .tool-title, .chip, .code-block, .diff label, .table-cell.mono { font-family: "JetBrains Mono", Vazirmatn, monospace; }
-.dim { opacity: 0.68; }
+.dim { color: alpha(@window_fg_color, 0.68); }
 .small { font-size: 0.88em; }
 .title { font-weight: 700; }
 window.loom scrolledwindow undershoot, window.loom scrolledwindow overshoot { background: none; }
@@ -126,7 +126,7 @@ textview.input, textview.input text { background: transparent; }
 .composer-bar button.mode.bypass-mode { color: @loom_err; box-shadow: inset 0 0 0 1px alpha(@loom_err, 0.6); }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
 button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
-button.send.stop { background: @loom_err; color: @window_bg_color; }
+button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
 .working { font-size: 0.88em; opacity: 0.75; margin-left: 6px; }
 .completion row { padding: 3px 8px; }
 .option-list { padding: 4px; min-width: 240px; }
@@ -174,7 +174,7 @@ listview.tree { background: transparent; padding: 4px 0; }
 .git-code.added { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
 .git-code.deleted { color: @loom_err; background: alpha(@loom_err, 0.12); }
 .scratch { background: @window_bg_color; border-radius: 12px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
-window.loom paned > separator { background: none; background-color: shade(@window_bg_color, 1.6); color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
+window.loom paned > separator { background: none; background-color: @loom_line; color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
 .toast { background: alpha(@window_bg_color, 0.97); border: 1px solid alpha(@loom_wait, 0.7); border-radius: 12px; padding: 6px 6px 6px 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
 .toast button { min-height: 26px; padding: 0 10px; }
 .toast .toast-go { font-weight: 600; color: @loom_wait; }
