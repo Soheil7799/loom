@@ -48,6 +48,8 @@ pub struct Layout {
     pub width: i32,
     pub height: i32,
     pub maximized: bool,
+    /// Prompts to send later.
+    pub schedules: Vec<crate::schedule::Schedule>,
 }
 
 /// How many closed agents are remembered.
@@ -131,6 +133,7 @@ fn parse(text: &str) -> Layout {
         width: value["window"]["width"].as_i64().unwrap_or(0) as i32,
         height: value["window"]["height"].as_i64().unwrap_or(0) as i32,
         maximized: value["window"]["maximized"].as_bool().unwrap_or(false),
+        schedules: value["schedules"].as_array().into_iter().flatten().filter_map(crate::schedule::from_json).collect(),
     }
 }
 
@@ -144,6 +147,7 @@ fn render(layout: &Layout) -> String {
         "focused": layout.focused,
         "pinned": layout.pinned,
         "closed": layout.closed.iter().take(CLOSED_KEPT).map(saved_json).collect::<Vec<_>>(),
+        "schedules": layout.schedules.iter().map(crate::schedule::to_json).collect::<Vec<_>>(),
     }))
     .unwrap_or_default()
 }
@@ -182,6 +186,7 @@ mod tests {
             width: 1200,
             height: 800,
             maximized: true,
+            schedules: Vec::new(),
         };
         assert_eq!(parse(&render(&layout)), layout);
     }

@@ -283,3 +283,20 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .crew row { padding: 3px 6px; border-radius: 6px; }
 .crew .crew-name { font-weight: 600; }
 .crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
+.overview { padding: 28px 28px 40px 28px; }
+.overview-title { font-size: 1.6em; font-weight: 700; }
+.overview-heading { font-size: 0.72em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 18px; }
+.overview-cards flowboxchild { padding: 0; border-radius: 10px; }
+.overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
+.overview-card { padding: 14px 16px 10px 16px; min-height: 150px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.08); }
+.overview-card:hover { background: alpha(@window_fg_color, 0.07); }
+.overview-card.needs-you { border-color: alpha(@accent_color, 0.55); }
+.overview-card .card-title { font-weight: 600; }
+.overview-card .card-reply { opacity: 0.8; margin-top: 4px; }
+.overview-card .card-waiting { color: @accent_color; font-weight: 600; }
+.overview-card .accent { color: @accent_color; font-weight: 600; }
+.schedule-row { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); }
+button.overview-button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; }
+.schedule-body { padding: 18px 20px; }
+.schedule-prompt { background: alpha(@window_fg_color, 0.04); }
+label.error { color: @loom_err; }

@@ -1496,6 +1496,14 @@ impl Chat {
     }
 
     /// The conversation as Markdown: who said what, and the tools used.
+    /// What Claude said last (for the overview).
+    pub fn last_reply(&self) -> Option<String> {
+        let messages = self.messages.borrow();
+        let last = messages.iter().rev().find(|m| m.kind == Kind::Agent)?;
+        let text = last.text.borrow().trim().to_owned();
+        (!text.is_empty()).then_some(text)
+    }
+
     pub fn transcript(&self) -> String {
         let mut out = String::new();
         for message in self.messages.borrow().iter() {

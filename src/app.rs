@@ -15,6 +15,7 @@ use crate::agent::{Agent, Event, Status};
 use crate::files::Files;
 use crate::jobs::Tray;
 use crate::picker::{Choice, Picker};
+use crate::schedule::{self, Schedule};
 use crate::scratch::Scratch;
 use crate::settings;
 use crate::state::{self, Project, Saved};
@@ -46,6 +47,9 @@ pub struct App {
     welcome: gtk::Box,
     /// A project's page: new conversation, or a past one.
     history: Rc<crate::history::Page>,
+    /// Every agent on one page, and the scheduled prompts.
+    overview: Rc<crate::overview::Overview>,
+    schedules: RefCell<Vec<Schedule>>,
     /// The second agent shown beside the focused one (Ctrl+\), and where it sits.
     pinned: RefCell<Option<Rc<Agent>>>,
     pinned_box: gtk::Box,
@@ -107,9 +111,14 @@ impl App {
             .build();
         inbox.add_css_class("inbox-button");
         inbox.add_css_class("flat");
+        let overview_button = gtk::Button::with_label("▦");
+        overview_button.add_css_class("flat");
+        overview_button.add_css_class("overview-button");
+        overview_button.set_tooltip_text(Some("Overview: every agent, and scheduled prompts (Ctrl+Shift+A)"));
         top.append(&mark);
         top.append(&name);
         top.append(&inbox);
+        top.append(&overview_button);
         sidebar.append(&top);
         let list = gtk::ListBox::new();
         list.add_css_class("agents");
@@ -147,6 +156,8 @@ impl App {
         chat_stack.add_named(&welcome, Some("empty"));
         let history = crate::history::Page::new();
         chat_stack.add_named(&history.root, Some("project"));
+        let overview = crate::overview::Overview::new();
+        chat_stack.add_named(&overview.root, Some("overview"));
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
@@ -278,6 +289,8 @@ impl App {
             inbox,
             inbox_list,
             chat_stack,
+            overview,
+            schedules: RefCell::default(),
             welcome,
             history,
             pinned: RefCell::default(),
@@ -322,6 +335,12 @@ impl App {
         }));
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
+        let weak = Rc::downgrade(&this);
+        overview_button.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.show_overview();
+            }
+        });
         let weak = Rc::downgrade(&this);
         help_button.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -548,6 +567,7 @@ impl App {
             (true, false, false, gdk::Key::w) => self.close_focused(),
             (true, false, false, gdk::Key::k) => self.open_switcher(),
             (true, false, false, gdk::Key::i) => self.open_inbox(),
+            (true, true, false, gdk::Key::a) => self.show_overview(),
             (true, false, false, gdk::Key::j) => self.ask_command(),
             (true, true, false, gdk::Key::j) => self.current_tray().peek_latest(),
             (true, true, false, gdk::Key::x) => self.current_tray().clear_finished(),
@@ -655,6 +675,7 @@ impl App {
             (_, gdk::Key::s) => self.open_switcher(),
             (_, gdk::Key::g) => self.find_file(),
             (_, gdk::Key::i) => self.open_inbox(),
+            (_, gdk::Key::a) => self.show_overview(),
             (_, gdk::Key::colon | gdk::Key::semicolon) => self.palette(),
             (_, gdk::Key::comma) => crate::prefs::open(&self.window),
             (_, gdk::Key::question | gdk::Key::slash) => crate::cheatsheet::open(&self.window),
@@ -880,6 +901,12 @@ impl App {
             act("Peek the newest job", "Ctrl+Shift+J", |a| a.current_tray().peek_latest()),
             act("Clear finished jobs", "Ctrl+Shift+X", |a| a.current_tray().clear_finished()),
             act("Questions waiting", "Ctrl+I", |a| a.open_inbox()),
+            act("Overview of all agents", "Ctrl+Shift+A", |a| a.show_overview()),
+            act("Schedule a prompt for this agent…", "", |a| {
+                if let Some(agent) = a.focused_agent() {
+                    a.schedule_for(&agent);
+                }
+            }),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
         ];
@@ -946,6 +973,7 @@ impl App {
         }
         *self.projects.borrow_mut() = layout.projects;
         *self.closed.borrow_mut() = layout.closed;
+        self.start_schedules(layout.schedules);
         for saved in layout.agents {
             self.add_agent(saved);
         }
@@ -984,6 +1012,19 @@ impl App {
         });
         self.agents.borrow_mut().push(agent.clone());
         agent
+    }
+
+    pub fn add_schedule_for_tests(&self, cwd: PathBuf, prompt: &str) {
+        let id = self.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.schedules.borrow_mut().push(Schedule {
+            id, cwd, session_id: None, title: String::new(), prompt: prompt.to_owned(), when: "in 1m".into(),
+            next: Some(schedule::now().to_unix()), paused: false, last_run: None,
+        });
+    }
+
+    /// The open agents in sidebar order (for the test hooks).
+    pub fn agents_for_tests(&self) -> Vec<Rc<Agent>> {
+        self.agents_in_order()
     }
 
     fn agent_by_id(&self, id: u32) -> Option<Rc<Agent>> {
@@ -1416,6 +1457,159 @@ impl App {
         self.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(id)).cloned()
     }
 
+    // ---- overview and schedules -----------------------------------------------------------
+
+    fn showing_overview(&self) -> bool {
+        self.focused.borrow().is_none() && self.chat_stack.visible_child_name().as_deref() == Some("overview")
+    }
+
+    /// Every agent on one page (no agent has the keyboard meanwhile).
+    pub fn show_overview(self: &Rc<Self>) {
+        if let Some(old) = self.focused.borrow_mut().take() {
+            old.focused.set(false);
+            *self.previous.borrow_mut() = Some(old);
+        }
+        self.chat_stack.set_visible_child_name("overview");
+        self.fill_overview();
+        self.mark_active();
+        self.refresh_sidebar();
+        self.overview.grab_focus();
+    }
+
+    fn fill_overview(self: &Rc<Self>) {
+        let schedules = self.schedules.borrow().clone();
+        let cards = self
+            .agents_in_order()
+            .iter()
+            .map(|agent| crate::overview::Card {
+                id: agent.id,
+                title: agent.title(),
+                project: self.project_label(&agent.project),
+                place: place_of(agent),
+                status: agent.status(),
+                unseen: agent.unseen.get(),
+                waiting: agent.questions().into_iter().map(|(_, title, _)| title).collect(),
+                reply: agent.chat.last_reply(),
+                idle_for: agent.last_active.get().elapsed().as_secs(),
+                scheduled: schedules.iter().filter(|s| s.session_id.is_some() && s.session_id == agent.session_id()).count(),
+            })
+            .collect();
+        self.overview.fill(cards, &schedules);
+    }
+
+    /// The schedules from the last run, and the clock that sends them. A run missed by more
+    /// than an hour while loom was closed is skipped.
+    fn start_schedules(self: &Rc<Self>, mut schedules: Vec<Schedule>) {
+        let now = schedule::now();
+        for s in schedules.iter_mut().filter(|s| s.next.is_some_and(|t| t < now.to_unix() - 3600)) {
+            s.next = match schedule::next_run(&s.when, &now) {
+                Ok((t, true)) => Some(t),
+                _ => None,
+            };
+        }
+        *self.schedules.borrow_mut() = schedules;
+        let weak = Rc::downgrade(self);
+        *self.overview.on_open.borrow_mut() = Some(Rc::new(move |id| {
+            if let Some(app) = weak.upgrade()
+                && let Some(agent) = app.agent_by_id(id)
+            {
+                app.focus(&agent);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.overview.on_schedule_for.borrow_mut() = Some(Rc::new(move |id| {
+            if let Some(app) = weak.upgrade()
+                && let Some(agent) = app.agent_by_id(id)
+            {
+                app.schedule_for(&agent);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.overview.on_schedule.borrow_mut() = Some(Rc::new(move |(id, act)| {
+            let Some(app) = weak.upgrade() else { return };
+            match act {
+                crate::overview::Act::RunNow => app.run_schedule(id, true),
+                crate::overview::Act::Pause => {
+                    if let Some(s) = app.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
+                        s.paused = !s.paused;
+                    }
+                }
+                crate::overview::Act::Remove => app.schedules.borrow_mut().retain(|s| s.id != id),
+            }
+            app.save();
+            app.fill_overview();
+        }));
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(20, move || {
+            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let now = schedule::now().to_unix();
+            let due: Vec<u64> = app.schedules.borrow().iter().filter(|s| !s.paused && s.next.is_some_and(|t| t <= now)).map(|s| s.id).collect();
+            for id in due {
+                app.run_schedule(id, false);
+            }
+            glib::ControlFlow::Continue
+        });
+    }
+
+    /// Asks for a prompt and when to send it to `agent`.
+    pub(crate) fn schedule_for(self: &Rc<Self>, agent: &Rc<Agent>) {
+        let weak = Rc::downgrade(self);
+        let (cwd, session, title) = (agent.cwd.clone(), agent.session_id(), agent.title());
+        schedule::ask(self.window.upcast_ref(), &agent.title(), move |prompt, when, same| {
+            let Some(app) = weak.upgrade() else { return };
+            let Ok((next, _)) = schedule::next_run(&when, &schedule::now()) else { return };
+            let id = app.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
+            app.schedules.borrow_mut().push(Schedule {
+                id,
+                cwd: cwd.clone(),
+                session_id: if same { session.clone() } else { None },
+                title: title.clone(),
+                prompt,
+                when,
+                next: Some(next),
+                paused: false,
+                last_run: None,
+            });
+            app.save();
+            if app.showing_overview() {
+                app.fill_overview();
+            }
+        });
+    }
+
+    /// Sends a scheduled prompt: to its conversation (reopened if closed), or a new one.
+    /// `by_hand`: Run now (the schedule keeps its next time).
+    fn run_schedule(self: &Rc<Self>, id: u64, by_hand: bool) {
+        let Some(schedule) = self.schedules.borrow().iter().find(|s| s.id == id).cloned() else { return };
+        let cwd = if schedule.cwd.is_dir() { schedule.cwd.clone() } else { glib::home_dir() };
+        let agent = match &schedule.session_id {
+            Some(session) => self.agent_with_session(session).unwrap_or_else(|| {
+                self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session.as_str()));
+                self.add_agent(Saved { cwd, session_id: Some(session.clone()), title: schedule.title.clone(), named: false, draft: String::new(), dirs: Vec::new() })
+            }),
+            None => self.add_agent(Saved::new(cwd)),
+        };
+        agent.submit_with(schedule.prompt.clone(), Vec::new());
+        let now = schedule::now();
+        if let Some(s) = self.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
+            s.last_run = Some(now.to_unix());
+            if !by_hand {
+                s.next = match schedule::next_run(&s.when, &now) {
+                    Ok((t, true)) => Some(t),
+                    _ => None,
+                };
+            }
+        }
+        if !by_hand && settings::get().notify_done {
+            self.notify(&agent, "Scheduled prompt sent");
+        }
+        self.refresh_sidebar();
+        self.save();
+        if self.showing_overview() {
+            self.fill_overview();
+        }
+    }
+
     /// Opens `project`'s page: nothing starts until a conversation is picked there.
     pub fn show_project(self: &Rc<Self>, project: &Path, cwd: &Path) {
         self.ensure_project(project);
@@ -1607,6 +1801,9 @@ impl App {
             Event::Changed => {
                 self.toast_settled(agent);
                 self.refresh_sidebar();
+                if self.showing_overview() {
+                    self.fill_overview();
+                }
                 self.refresh_inbox();
                 if agent.focused.get() {
                     self.files.set_repos(agent.repos());
@@ -1751,6 +1948,7 @@ impl App {
                 width: if self.window.is_maximized() { self.window.default_width() } else { self.window.width() },
                 height: if self.window.is_maximized() { self.window.default_height() } else { self.window.height() },
                 maximized: self.window.is_maximized(),
+                schedules: self.schedules.borrow().clone(),
             },
         );
     }
@@ -2244,6 +2442,16 @@ impl App {
     }
 }
 
+/// Where an agent works: the repo it last touched (named when it isn't the project itself),
+/// its branch and changes; else the subfolder it runs in.
+fn place_of(agent: &Rc<Agent>) -> String {
+    match agent.repo() {
+        Some(repo) if repo.path == agent.project => repo.summary(),
+        Some(repo) => format!("{} · {}", repo.name(), repo.summary()),
+        None => agent.cwd.strip_prefix(&agent.project).ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+    }
+}
+
 fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -2264,11 +2472,7 @@ fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
     };
     // Where it works: the repo it last touched (name when it isn't the project itself), its
     // branch and changes; else the subfolder it runs in.
-    let place = match agent.repo() {
-        Some(repo) if repo.path == agent.project => repo.summary(),
-        Some(repo) => format!("{} · {}", repo.name(), repo.summary()),
-        None => agent.cwd.strip_prefix(&agent.project).ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
-    };
+    let place = place_of(agent);
     let sub = [state, place].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     if !sub.is_empty() {
         let sub = gtk::Label::builder().label(sub).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();

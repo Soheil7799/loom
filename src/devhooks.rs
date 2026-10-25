@@ -89,6 +89,13 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 }));
             }
         }
+        "overview" => app.show_overview(),
+        // A schedule due now: a new conversation in <dir> that runs `!echo scheduled-ok`.
+        "schedtest" => app.add_schedule_for_tests(PathBuf::from(argument), "!echo scheduled-ok"),
+        "schedule" => {
+            let agent = app.agents_for_tests().into_iter().next().ok_or("no agent")?;
+            app.schedule_for(&agent);
+        }
         "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
