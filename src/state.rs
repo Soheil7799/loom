@@ -16,11 +16,13 @@ pub struct Saved {
     pub named: bool,
     /// Typed but not sent.
     pub draft: String,
+    /// Folders beyond `cwd` it may work in (ACP additionalDirectories).
+    pub dirs: Vec<PathBuf>,
 }
 
 impl Saved {
     pub fn new(cwd: PathBuf) -> Saved {
-        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new() }
+        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new() }
     }
 }
 
@@ -95,11 +97,12 @@ fn saved(a: &Value) -> Option<Saved> {
         title: a["title"].as_str().unwrap_or("").to_owned(),
         named: a["named"].as_bool().unwrap_or(false),
         draft: a["draft"].as_str().unwrap_or("").to_owned(),
+        dirs: a["dirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(PathBuf::from)).collect(),
     })
 }
 
 fn saved_json(a: &Saved) -> Value {
-    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft })
+    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>() })
 }
 
 fn parse(text: &str) -> Layout {
@@ -164,7 +167,7 @@ mod tests {
     #[test]
     fn saved_layouts_read_back() {
         let agents = vec![
-            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into() },
+            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()] },
             Saved::new("/tmp".into()),
         ];
         let layout = Layout {

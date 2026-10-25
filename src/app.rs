@@ -676,6 +676,11 @@ impl App {
             "find" => self.find_file(),
             "nevis" => self.files.open_in_nevis(),
             "tree" => self.files.show_project(),
+            "fork" => {
+                if let Some(agent) = self.focused_agent() {
+                    agent.fork(None, String::new());
+                }
+            }
             "changes" => self.files.show_changes(),
             "close" => self.close_focused(),
             "reopen" => self.reopen_closed(),
@@ -790,6 +795,17 @@ impl App {
             act("Open a project folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
             act("Reopen the last closed agent", "Ctrl+Shift+T", |a| a.reopen_closed()),
             act("Rename this agent or project", "F2", |a| a.begin_rename()),
+            act("Copy this conversation (fork)", "", |a| {
+                if let Some(agent) = a.focused_agent() {
+                    agent.fork(None, String::new());
+                }
+            }),
+            act("Clear: a fresh conversation here (/clear)", "", |a| {
+                if let Some(agent) = a.focused_agent() {
+                    agent.clear_conversation();
+                }
+            }),
+            act("Let this agent work in another folder too…", "", |a| a.add_dir()),
             act("Restart this agent", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.restart();
@@ -1203,6 +1219,20 @@ impl App {
         });
     }
 
+    /// Asks for a folder the focused agent may work in besides its own (another repo).
+    fn add_dir(self: &Rc<Self>) {
+        let Some(agent) = self.focused_agent() else { return };
+        let dialog = gtk::FileDialog::builder().title("Another folder this agent may work in").modal(true).build();
+        dialog.set_initial_folder(Some(&gio::File::for_path(agent.project.parent().unwrap_or(&agent.project))));
+        dialog.select_folder(Some(&self.window), None::<&gio::Cancellable>, move |result| {
+            if let Ok(folder) = result
+                && let Some(path) = folder.path()
+            {
+                agent.add_dir(path);
+            }
+        });
+    }
+
     fn wire_history(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
         *self.history.on_new.borrow_mut() = Some(Rc::new(move |cwd| {
@@ -1310,7 +1340,7 @@ impl App {
         self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(past.session_id.as_str()));
         // A folder deleted since resumes in its project (or home): the adapter can't start in it.
         let cwd = [past.cwd.clone(), project_of(&past.cwd), glib::home_dir()].into_iter().find(|d| d.is_dir()).unwrap_or(past.cwd);
-        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false, draft: String::new() };
+        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false, draft: String::new(), dirs: Vec::new() };
         let agent = self.add_agent(saved);
         self.focus(&agent);
     }
@@ -1497,6 +1527,11 @@ impl App {
                     self.notify(agent, "Finished");
                 }
                 self.refresh_sidebar();
+            }
+            Event::Forked(saved) => {
+                let copy = self.add_agent(saved);
+                self.focus(&copy);
+                self.save();
             }
             Event::Failed(why) => {
                 if self.window.is_active() && !looking {

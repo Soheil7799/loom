@@ -78,6 +78,11 @@ pub struct Chat {
     commands: RefCell<Vec<(String, String)>>,
     completion: gtk::Popover,
     completion_list: gtk::ListBox,
+    /// The conversation's messages in order (export, rewind).
+    messages: Rc<RefCell<Vec<Rc<Message>>>>,
+    /// "Rewind to here" on a message you sent: the id of the agent's message before it (None:
+    /// from the start) and the text, to fork the conversation there.
+    pub on_rewind: Callback<(Option<String>, String)>,
     /// What was typed, and the images attached (PNG).
     pub on_submit: Callback<(String, Vec<glib::Bytes>)>,
     /// Find in the conversation (Ctrl+F): the bar, what is typed, how many, which one.
@@ -131,6 +136,8 @@ struct Message {
     text: RefCell<String>,
     body: gtk::Box,
     scheduled: Cell<bool>,
+    /// The agent's id for it (to fork the conversation from here).
+    id: RefCell<Option<String>>,
 }
 
 struct ToolCard {
@@ -398,6 +405,8 @@ impl Chat {
             completion_list,
             on_submit: RefCell::default(),
             attachments: RefCell::default(),
+            messages: Rc::default(),
+            on_rewind: RefCell::default(),
             find_bar,
             find_entry,
             find_count,
@@ -1243,6 +1252,7 @@ impl Chat {
         }
         *self.last.borrow_mut() = Last::None;
         self.group.take();
+        self.messages.borrow_mut().clear();
         self.tools.borrow_mut().clear();
         self.set_plan(&Value::Null);
     }
@@ -1276,8 +1286,31 @@ impl Chat {
         message.render_soon();
     }
 
-    pub fn agent_text(&self, text: &str) {
+    /// A piece of the agent's message, with the agent's id for the message.
+    pub fn agent_text_with(&self, text: &str, id: Option<&str>) {
         self.chunk(Kind::Agent, text);
+        if let (Some(id), Last::Agent(message)) = (id, &*self.last.borrow()) {
+            message.id.borrow_mut().get_or_insert_with(|| id.to_owned());
+        }
+    }
+
+    /// Whether anything is shown yet (a resume can skip the replay then).
+    pub fn has_messages(&self) -> bool {
+        !self.messages.borrow().is_empty()
+    }
+
+    /// The conversation as Markdown: who said what, and the tools used.
+    pub fn transcript(&self) -> String {
+        let mut out = String::new();
+        for message in self.messages.borrow().iter() {
+            let text = message.text.borrow();
+            match message.kind {
+                Kind::User => out.push_str(&format!("## You\n\n{}\n\n", text.trim())),
+                Kind::Agent => out.push_str(&format!("## Claude\n\n{}\n\n", text.trim())),
+                Kind::Thought => {}
+            }
+        }
+        out
     }
 
     pub fn thought(&self, text: &str) {
@@ -1289,6 +1322,12 @@ impl Chat {
     }
 
     fn message(&self, kind: Kind) -> Rc<Message> {
+        let message = self.make_message(kind);
+        self.messages.borrow_mut().push(message.clone());
+        message
+    }
+
+    fn make_message(&self, kind: Kind) -> Rc<Message> {
         // Hidden thinking between tool calls doesn't part them.
         if kind != Kind::Thought || self.show_thinking.get() {
             self.group.take();
@@ -1307,7 +1346,7 @@ impl Chat {
                 copy.set_tooltip_text(Some("Copy the message (Markdown)"));
                 wrap.add_overlay(&copy);
                 self.list.append(&wrap);
-                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false) });
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
                 let weak = Rc::downgrade(&message);
                 copy.connect_clicked(move |button| {
                     if let Some(message) = weak.upgrade() {
@@ -1330,19 +1369,31 @@ impl Chat {
                 let copy = gtk::Button::with_label("copy");
                 let edit = gtk::Button::with_label("edit");
                 edit.set_tooltip_text(Some("Put it back in the input to change and send again"));
-                for button in [&copy, &edit] {
+                let rewind = gtk::Button::with_label("rewind");
+                rewind.set_tooltip_text(Some("A copy of the conversation from just before this message, with it in the input to change (this one is kept)"));
+                for button in [&copy, &edit, &rewind] {
                     button.add_css_class("copy");
                     button.add_css_class("flat");
                     actions.append(button);
                 }
                 wrap.add_overlay(&actions);
                 self.list.append(&wrap);
-                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false) });
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
                 let weak = Rc::downgrade(&message);
                 copy.connect_clicked(move |button| {
                     if let Some(message) = weak.upgrade() {
                         button.clipboard().set_text(message.text.borrow().trim());
                     }
+                });
+                let (weak, callback) = (Rc::downgrade(&message), self.on_rewind.borrow().clone());
+                let messages = Rc::downgrade(&self.messages);
+                rewind.connect_clicked(move |_| {
+                    let (Some(message), Some(callback), Some(messages)) = (weak.upgrade(), callback.clone(), messages.upgrade()) else { return };
+                    let messages = messages.borrow();
+                    let position = messages.iter().position(|m| Rc::ptr_eq(m, &message)).unwrap_or(0);
+                    let before = messages[..position].iter().rev().find(|m| m.kind == Kind::Agent).and_then(|m| m.id.borrow().clone());
+                    let (_, rest) = split_shell_runs(&message.text.borrow());
+                    callback((before, rest.trim().to_owned()));
                 });
                 let (weak, input) = (Rc::downgrade(&message), self.input.clone());
                 edit.connect_clicked(move |_| {
@@ -1363,7 +1414,7 @@ impl Chat {
                 self.list.append(&expander);
             }
         }
-        Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false) })
+        Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() })
     }
 
     /// A notice with a button that does something about it.

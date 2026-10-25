@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::io::Read;
 use std::os::unix::process::CommandExt;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use gtk::prelude::*;
 use gtk::{gio, glib};
@@ -81,6 +81,8 @@ pub enum Event {
     Done,
     /// The agent stopped on an error (what it said).
     Failed(String),
+    /// A copy of the conversation was made (fork, rewind): to open beside it.
+    Forked(Saved),
 }
 
 /// The latest repo's status as last read (None: git could not), and when.
@@ -128,6 +130,14 @@ pub struct Agent {
     /// own `!` does).
     context: RefCell<Vec<String>>,
     shells: Cell<u64>,
+    /// The adapter can resume a session without replaying it.
+    can_resume: Cell<bool>,
+    /// Folders beyond `cwd` it may work in.
+    dirs: RefCell<Vec<PathBuf>>,
+    /// A turn Claude started by itself (a background task ended): since when, and the timer
+    /// that ends it once quiet.
+    autonomous: Cell<Option<Instant>>,
+    quiet_timer: RefCell<Option<glib::SourceId>>,
     /// The `!command` running, if one is (its process group).
     shell_pid: Cell<Option<i32>>,
     modes: RefCell<Vec<String>>,
@@ -174,6 +184,10 @@ impl Agent {
             context: RefCell::default(),
             shells: Cell::new(0),
             shell_pid: Cell::new(None),
+            can_resume: Cell::new(false),
+            dirs: RefCell::new(saved.dirs.clone()),
+            autonomous: Cell::new(None),
+            quiet_timer: RefCell::default(),
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
             pending: RefCell::default(),
@@ -192,6 +206,21 @@ impl Agent {
         *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images)| {
             if let Some(agent) = weak.upgrade() {
                 agent.submit_with(text, images);
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
+        *agent.chat.on_rewind.borrow_mut() = Some(Rc::new(move |(at, text): (Option<String>, String)| {
+            if let Some(agent) = weak.upgrade() {
+                match at {
+                    Some(at) => agent.fork(Some(at), text),
+                    // Before Claude said anything: a fresh conversation with it.
+                    None => {
+                        let mut saved = Saved::new(agent.cwd.clone());
+                        saved.draft = text;
+                        saved.dirs = agent.dirs.borrow().clone();
+                        agent.emit(Event::Forked(saved));
+                    }
+                }
             }
         }));
         let weak = Rc::downgrade(&agent);
@@ -261,6 +290,7 @@ impl Agent {
             title: self.title.borrow().clone(),
             named: self.named.get(),
             draft: self.chat.draft(),
+            dirs: self.dirs.borrow().clone(),
         }
     }
 
@@ -377,7 +407,7 @@ impl Agent {
             Status::Starting
         } else if !self.pending.borrow().is_empty() {
             Status::Blocked
-        } else if self.turn.get() {
+        } else if self.turn.get() || self.autonomous.get().is_some() {
             Status::Working
         } else {
             Status::Idle
@@ -433,6 +463,8 @@ impl Agent {
                 "terminal": false,
                 // Commands' output comes as display terminals (shown in the job tray).
                 "_meta": { "terminal_output_delta": true },
+                // Retries, warnings and compaction come as their own updates, not as text.
+                "session": { "notices": {}, "compaction": {} },
                 // Claude Code's questions (AskUserQuestion) and MCP servers' come as forms.
                 "elicitation": { "form": {} }
             },
@@ -442,10 +474,23 @@ impl Agent {
         conn.request("initialize", params, move |result| {
             let Some(agent) = weak.upgrade() else { return };
             match result {
-                Ok(_) => agent.open_session(),
+                Ok(result) => {
+                    agent.can_resume.set(!result["agentCapabilities"]["sessionCapabilities"]["resume"].is_null());
+                    agent.open_session();
+                }
                 Err(err) => agent.fail(&format!("The agent did not start: {}", message(&err))),
             }
         });
+    }
+
+    /// The session's parameters: folder, loom's MCP server, the extra folders.
+    fn session_params(&self) -> Value {
+        let mut params = json!({ "cwd": self.cwd.to_string_lossy(), "mcpServers": self.mcp_servers() });
+        let dirs = self.dirs.borrow();
+        if !dirs.is_empty() {
+            params["additionalDirectories"] = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>().into();
+        }
+        params
     }
 
     fn open_session(self: &Rc<Self>) {
@@ -454,12 +499,32 @@ impl Agent {
         let session = self.session_id.borrow().clone();
         let servers = self.mcp_servers();
         let weak = Rc::downgrade(self);
+        // Woken from an idle suspend, the view still holds the conversation: resume it as it
+        // is (no replay, nothing cleared).
+        if let Some(session) = session.clone().filter(|_| self.can_resume.get() && self.chat.has_messages()) {
+            let mut params = self.session_params();
+            params["sessionId"] = session.into();
+            conn.request("session/resume", params, move |result| {
+                let Some(agent) = weak.upgrade() else { return };
+                match result {
+                    Ok(result) => agent.session_ready(&result),
+                    Err(_) => {
+                        agent.can_resume.set(false);
+                        agent.open_session();
+                    }
+                }
+            });
+            return;
+        }
         if let Some(session) = session {
             // The conversation comes back as updates; start from an empty view.
             self.chat.clear();
             self.files.borrow_mut().clear();
             self.replaying.set(true);
-            conn.request("session/load", json!({ "sessionId": session, "cwd": cwd, "mcpServers": servers }), move |result| {
+            let mut params = self.session_params();
+            params["sessionId"] = session.into();
+            let _ = (&cwd, &servers);
+            conn.request("session/load", params, move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 agent.replaying.set(false);
                 agent.emit(Event::Files);
@@ -480,7 +545,7 @@ impl Agent {
                 }
             });
         } else {
-            conn.request("session/new", json!({ "cwd": cwd, "mcpServers": servers }), move |result| {
+            conn.request("session/new", self.session_params(), move |result| {
                 let Some(agent) = weak.upgrade() else { return };
                 match result {
                     Ok(result) => {
@@ -595,6 +660,104 @@ impl Agent {
         self.emit(Event::Failed(text.to_owned()));
     }
 
+    /// Claude is at work without a prompt from loom (it went on by itself after a background
+    /// task): shown as working until it has been quiet a moment.
+    fn note_activity(self: &Rc<Self>) {
+        if self.replaying.get() || self.turn.get() {
+            return;
+        }
+        if self.autonomous.get().is_none() {
+            let now = Instant::now();
+            self.autonomous.set(Some(now));
+            self.chat.set_working(Some(now));
+            self.refresh_status();
+        }
+        if let Some(timer) = self.quiet_timer.take() {
+            timer.remove();
+        }
+        let weak = Rc::downgrade(self);
+        let timer = glib::timeout_add_local_once(Duration::from_secs(4), move || {
+            let Some(agent) = weak.upgrade() else { return };
+            agent.quiet_timer.take();
+            agent.end_autonomous(true);
+        });
+        *self.quiet_timer.borrow_mut() = Some(timer);
+    }
+
+    /// The self-started turn is over (`done`: it finished, rather than a prompt took over).
+    fn end_autonomous(self: &Rc<Self>, done: bool) {
+        if let Some(timer) = self.quiet_timer.take() {
+            timer.remove();
+        }
+        let Some(started) = self.autonomous.take() else { return };
+        if done {
+            self.chat.set_working(None);
+            self.chat.turn_done(started.elapsed().as_secs());
+            if !self.focused.get() {
+                self.unseen.set(true);
+            }
+            self.emit(Event::Done);
+        }
+        self.refresh_status();
+    }
+
+    /// A copy of this conversation (at `at`, the agent message to end on; None: all of it),
+    /// announced as Forked with `draft` in its input.
+    pub fn fork(self: &Rc<Self>, at: Option<String>, draft: String) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else {
+            self.chat.notice("Nothing to copy yet: send a message first.", "dim");
+            return;
+        };
+        let mut params = self.session_params();
+        params["sessionId"] = session.into();
+        if let Some(at) = &at {
+            params["_meta"] = json!({ "jetbrains": { "air": { "fork": { "version": 1, "messageId": at } } } });
+        }
+        let weak = Rc::downgrade(self);
+        let title = format!("{} (copy)", self.title());
+        conn.request("session/fork", params, move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            match result {
+                Ok(result) => {
+                    let Some(id) = result["sessionId"].as_str() else { return };
+                    let mut saved = agent.saved();
+                    saved.session_id = Some(id.to_owned());
+                    saved.title = title.clone();
+                    saved.named = true;
+                    saved.draft = draft.clone();
+                    // The fork's own process opens it; this one is not needed for it.
+                    let _ = conn_close(&agent, id);
+                    agent.emit(Event::Forked(saved));
+                }
+                Err(err) => agent.chat.notice(&format!("Could not copy the conversation: {}", message(&err)), "error"),
+            }
+        });
+    }
+
+    /// /clear: this agent starts a new conversation (the old one stays in the history).
+    pub fn clear_conversation(self: &Rc<Self>) {
+        self.stop();
+        *self.session_id.borrow_mut() = None;
+        if !self.named.get() {
+            self.title.borrow_mut().clear();
+        }
+        self.chat.clear();
+        self.chat.set_plan(&Value::Null);
+        self.emit(Event::Session);
+        self.start();
+    }
+
+    /// Lets it work in `dir` too (from the next start of its session: restarted now).
+    pub fn add_dir(self: &Rc<Self>, dir: PathBuf) {
+        if dir == self.cwd || self.dirs.borrow().contains(&dir) {
+            return;
+        }
+        self.dirs.borrow_mut().push(dir.clone());
+        self.chat.notice(&format!("Claude may work in {} too.", dir.display()), "dim");
+        self.emit(Event::Session);
+        self.restart();
+    }
+
     /// Runs Claude Code's login in the tray, then starts the agent again once it is done.
     fn login(self: &Rc<Self>) {
         match self.tray.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
@@ -633,6 +796,11 @@ impl Agent {
     /// A message, with images attached (PNG).
     pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
         self.last_active.set(Instant::now());
+        // /clear: a fresh conversation in this place (the old one stays in the history).
+        if images.is_empty() && text.trim() == "/clear" {
+            self.clear_conversation();
+            return;
+        }
         if images.is_empty()
             && let Some(command) = text.trim_start().strip_prefix('!').map(str::trim).filter(|c| !c.is_empty())
         {
@@ -824,6 +992,7 @@ impl Agent {
             return;
         }
         let Some((text, images)) = self.queue.borrow_mut().pop_front() else { return };
+        self.end_autonomous(false);
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
@@ -869,7 +1038,7 @@ impl Agent {
     pub fn cancel(self: &Rc<Self>) {
         // A `!command` running stops too (Esc stops what is going on, whichever it is).
         self.stop_shell();
-        if !self.turn.get() {
+        if !self.turn.get() && self.autonomous.get().is_none() {
             return;
         }
         let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
@@ -1084,14 +1253,34 @@ impl Agent {
     fn update(self: &Rc<Self>, update: &Value) {
         let text = || update["content"]["text"].as_str().unwrap_or("");
         match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_message_chunk" => self.chat.agent_text(text()),
+            "agent_message_chunk" => {
+                self.note_activity();
+                self.chat.agent_text_with(text(), update["messageId"].as_str());
+            }
+            "notice" => {
+                let line = match update["description"].as_str() {
+                    Some(more) => format!("{}: {more}", update["title"].as_str().unwrap_or("Notice")),
+                    None => update["title"].as_str().unwrap_or("Notice").to_owned(),
+                };
+                let class = if update["severity"].as_str() == Some("error") { "error" } else { "dim" };
+                self.chat.notice(&line, class);
+            }
+            "compaction_update" => match update["status"].as_str() {
+                Some("in_progress") => self.chat.notice("Compacting the conversation (the context was nearly full)…", "dim"),
+                Some("completed") => self.chat.notice("Compacted: Claude carries on with a summary of what came before.", "dim"),
+                Some("failed") => self.chat.notice("Compacting failed.", "error"),
+                _ => {}
+            },
             "agent_thought_chunk" => self.chat.thought(text()),
             // Only a replay echoes what was typed; live, the chat already shows it.
             "user_message_chunk" if self.replaying.get() => match update["content"]["type"].as_str() {
                 Some("image") => self.chat.user_image_data(update["content"]["data"].as_str().unwrap_or("")),
                 _ => self.chat.user_chunk(text()),
             },
-            "tool_call" | "tool_call_update" => self.tool(update),
+            "tool_call" | "tool_call_update" => {
+                self.note_activity();
+                self.tool(update);
+            }
             "plan" => self.chat.set_plan(&update["entries"]),
             "available_commands_update" => {
                 let commands = update["availableCommands"]
@@ -1208,6 +1397,14 @@ impl Agent {
             self.chat.tool_exit(&id, meta["terminal_exit"]["exit_code"].as_i64());
         }
     }
+}
+
+/// A fork made through `agent`'s process is opened by a process of its own: this one lets
+/// go of it (best effort; the adapter closes it when it stops anyway).
+fn conn_close(agent: &Agent, session: &str) -> Option<()> {
+    let conn = agent.conn.borrow().clone()?;
+    conn.request("session/close", json!({ "sessionId": session }), |_| {});
+    Some(())
 }
 
 /// "$0.42" from a usage update's cost.
