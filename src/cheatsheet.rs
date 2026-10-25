@@ -18,14 +18,22 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+Shift+T", "Reopen the last closed agent"),
             ("F2", "Rename the agent (or the project, on its page)"),
             ("Ctrl+W", "Close the agent (the conversation is kept)"),
+            ("Alt+Shift+↑ / Alt+Shift+↓", "Move the agent up or down"),
         ],
     ),
     (
         "Chat",
         &[
-            ("Enter", "Send"),
+            ("Enter", "Send (while Claude works: into the running turn)"),
             ("Shift+Enter", "New line"),
-            ("Esc", "Stop the turn"),
+            ("↑ / ↓", "Earlier messages you sent"),
+            ("Esc", "Stop the turn (or a ! command)"),
+            ("Ctrl+F", "Find in the conversation"),
+            ("Page Up / Page Down", "Scroll the conversation"),
+            ("Ctrl+↑ / Ctrl+↓", "Your previous / next message"),
+            ("Ctrl+Home / Ctrl+End", "Top / latest"),
+            ("Ctrl+V", "Paste an image"),
+            ("/clear", "A fresh conversation here"),
             ("Shift+Tab", "Next permission mode"),
             ("@", "Mention a file"),
             ("/", "Claude Code's commands"),
@@ -65,6 +73,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+E", "Files panel"),
             ("Ctrl+O", "Open a file"),
             ("Ctrl+S", "Save (in the editor)"),
+            ("Ctrl+F (in the editor)", "Find in the file"),
             ("Ctrl+Shift+O", "Open the file in nevis"),
         ],
     ),
@@ -86,7 +95,15 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("I", "Questions"),
         ],
     ),
-    ("App", &[("Ctrl+,", "Settings"), ("Ctrl+/", "This cheatsheet")]),
+    (
+        "App",
+        &[
+            ("Ctrl+,", "Settings"),
+            ("Ctrl+/", "This cheatsheet"),
+            ("Ctrl+= / Ctrl+-", "Bigger / smaller text"),
+            ("Ctrl+0", "Normal text size"),
+        ],
+    ),
 ];
 
 /// The keys of one shortcut as caps: "Ctrl+Shift+P" → [Ctrl] + [Shift] + [P], alternatives
