@@ -137,7 +137,7 @@ fn general(s: &Settings) -> gtk::Box {
     row(
         &behaviour,
         "Agents that need you first",
-        "In each project: waiting for you, failed, working, finished and unread, then the rest. Projects with an agent waiting move to the top.",
+        "An agent waiting for your answer goes to the top of its project (and its project to the top) until answered, then back to its place. Nothing else moves.",
         &switch(s.sort_by_urgency, |s, on| s.sort_by_urgency = on),
     );
     content.append(&behaviour);

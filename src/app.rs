@@ -1222,23 +1222,27 @@ impl App {
         let mut projects = self.projects.borrow().clone();
         if settings::get().sort_by_urgency {
             let agents = self.agents.borrow();
-            let needs_you = |p: &Project| agents.iter().any(|a| a.project == p.path && a.status().urgency(false) <= 1);
+            let needs_you = |p: &Project| agents.iter().any(|a| a.project == p.path && a.status() == Status::Blocked);
             projects.sort_by_key(|p| !needs_you(p));
         }
         projects
     }
 
-    /// Agents in sidebar order (number keys follow it too): by project, and within one, by
-    /// urgency when sorting is on (a stable sort, so equals keep the order they started in).
+    /// Agents in sidebar order (number keys follow it too): by project, each where it was put;
+    /// with sorting on, one that needs you goes up until answered, then back to its place.
     fn agents_in_order(&self) -> Vec<Rc<Agent>> {
-        let projects = self.projects_in_order();
+        self.ordered(settings::get().sort_by_urgency)
+    }
+
+    /// `urgent`: those waiting for you first. What is saved is the order without that.
+    fn ordered(&self, urgent: bool) -> Vec<Rc<Agent>> {
+        let projects = if urgent { self.projects_in_order() } else { self.projects.borrow().clone() };
         let agents = self.agents.borrow();
-        let urgent = settings::get().sort_by_urgency;
         let mut ordered: Vec<Rc<Agent>> = Vec::new();
         for project in &projects {
             let mut mine: Vec<Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).cloned().collect();
             if urgent {
-                mine.sort_by_key(|a| a.status().urgency(a.unseen.get()));
+                mine.sort_by_key(|a| a.status() != Status::Blocked);
             }
             ordered.extend(mine);
         }
@@ -1930,7 +1934,7 @@ impl App {
     }
 
     fn save(&self) {
-        let order = self.agents_in_order();
+        let order = self.ordered(false);
         // On a project's page, the agent that had focus before it.
         let focused = self.focused.borrow().clone().or_else(|| self.previous.borrow().clone());
         let focused = focused.and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, &f))).unwrap_or(0);
