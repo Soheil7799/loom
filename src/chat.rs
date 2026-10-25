@@ -46,6 +46,10 @@ pub struct Chat {
     usage: gtk::Label,
     /// The conversation's cost and the account's limit, from the agent.
     spend: gtk::Label,
+    /// What the usage popover shows of this conversation: (used, size) tokens, its cost, the
+    /// account limit the agent last reported.
+    spent: RefCell<(Option<(u64, u64)>, Option<String>, Option<String>)>,
+    usage_body: gtk::Box,
     /// Sent messages, newest last (Up/Down in the input), where Up has got to, and what
     /// was typed before.
     history: RefCell<Vec<String>>,
@@ -223,7 +227,6 @@ impl Chat {
         let usage = gtk::Label::new(None);
         usage.add_css_class("dim");
         usage.add_css_class("small");
-        usage.set_tooltip_text(Some("Context window in use"));
         let context = gtk::LevelBar::builder().min_value(0.0).max_value(1.0).valign(gtk::Align::Center).visible(false).build();
         context.add_css_class("context-bar");
         let options = gtk::Box::new(gtk::Orientation::Horizontal, 4);
@@ -235,13 +238,23 @@ impl Chat {
         }
         header.append(&names);
         header.append(&state);
-        header.append(&context);
-        header.append(&usage);
         let spend = gtk::Label::new(None);
         spend.add_css_class("dim");
         spend.add_css_class("small");
         spend.set_visible(false);
-        header.append(&spend);
+        // Context, cost and limit in one button: clicked, the details and the account's limits.
+        let meter = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        meter.append(&context);
+        meter.append(&usage);
+        meter.append(&spend);
+        let usage_body = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        usage_body.add_css_class("usage-pop");
+        let usage_pop = gtk::Popover::builder().child(&usage_body).build();
+        let usage_button = gtk::MenuButton::builder().child(&meter).popover(&usage_pop).valign(gtk::Align::Center).build();
+        usage_button.add_css_class("flat");
+        usage_button.add_css_class("usage-button");
+        usage_button.set_tooltip_text(Some("Context and usage limits"));
+        header.append(&usage_button);
         root.append(&header);
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
@@ -381,6 +394,8 @@ impl Chat {
             mode,
             usage,
             spend,
+            spent: RefCell::default(),
+            usage_body: usage_body.clone(),
             history: RefCell::default(),
             history_at: Cell::new(None),
             history_draft: RefCell::default(),
@@ -670,6 +685,16 @@ impl Chat {
             }
         });
 
+        // Filled each time the usage popover opens.
+        if let Some(popover) = self.usage_body.ancestor(gtk::Popover::static_type()) {
+            let weak = Rc::downgrade(self);
+            popover.connect_show(move |_| {
+                if let Some(chat) = weak.upgrade() {
+                    chat.fill_usage();
+                }
+            });
+        }
+
         let weak = Rc::downgrade(self);
         self.mode.connect_clicked(move |_| {
             if let Some(chat) = weak.upgrade() {
@@ -894,19 +919,91 @@ impl Chat {
         buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string()
     }
 
+    /// The usage popover: this conversation's context and cost, then the account's limits
+    /// (from `ai-usagebar`, when installed; else the limit the agent last reported).
+    fn fill_usage(self: &Rc<Self>) {
+        let body = &self.usage_body;
+        while let Some(child) = body.first_child() {
+            body.remove(&child);
+        }
+        let (context, cost, limit) = self.spent.borrow().clone();
+        let k = |n: u64| if n >= 1000 { format!("{}k", n / 1000) } else { n.to_string() };
+        body.append(&usage_heading("This conversation"));
+        match context {
+            Some((used, size)) if size > 0 => {
+                let share = used as f64 / size as f64;
+                body.append(&usage_row(
+                    "Context",
+                    share,
+                    &format!("{}%", (share * 100.0).round()),
+                    &format!("{} of {} tokens · {} left", k(used), k(size), k(size.saturating_sub(used))),
+                ));
+            }
+            Some((used, _)) => body.append(&usage_note(&format!("Context: {} tokens", k(used)))),
+            None => body.append(&usage_note("Context: not reported yet")),
+        }
+        if let Some(cost) = cost {
+            body.append(&usage_note(&format!("Cost: {cost}")));
+        }
+        let account = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        account.append(&usage_heading("Account"));
+        account.append(&usage_note("Loading…"));
+        body.append(&account);
+        glib::spawn_future_local(async move {
+            let found = gio::spawn_blocking(account_usage).await.ok().flatten();
+            account.first_child().and_then(|h| h.next_sibling()).inspect(|loading| account.remove(loading));
+            let Some(found) = found else {
+                account.append(&usage_note(&limit.unwrap_or_else(|| "No limits reported yet (ai-usagebar not available).".into())));
+                return;
+            };
+            if let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
+                && let Some(plan) = found["plan"].as_str()
+            {
+                heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
+            }
+            for metric in found["metrics"].as_array().into_iter().flatten() {
+                let percent = metric["percent"].as_f64().unwrap_or(0.0);
+                account.append(&usage_row(
+                    metric["label"].as_str().unwrap_or("Limit"),
+                    percent / 100.0,
+                    metric["value"].as_str().unwrap_or(""),
+                    metric["detail"].as_str().unwrap_or(""),
+                ));
+            }
+            let credits = &found["reset_credits"];
+            if !credits.is_null() {
+                let text = credits.as_str().map(str::to_owned).unwrap_or_else(|| credits.to_string());
+                account.append(&usage_note(&format!("Usage resets left: {text}")));
+            }
+            if let Some(error) = found["error"].as_str() {
+                account.append(&usage_note(error));
+            }
+        });
+    }
+
+    /// The usage popover's content, filled (for tests: a popover cannot open off screen).
+    pub fn usage_content(self: &Rc<Self>, fill: bool) -> gtk::Widget {
+        if fill {
+            self.fill_usage();
+        }
+        self.usage_body.clone().upcast()
+    }
+
     /// The conversation's cost and the account's limit ("$0.42 · 5h 38%").
     pub fn set_spend(&self, cost: Option<String>, limit: Option<(String, String)>) {
+        {
+            let mut spent = self.spent.borrow_mut();
+            spent.1 = cost.clone();
+            spent.2 = limit.as_ref().map(|(_, long)| long.clone());
+        }
         let mut parts = Vec::new();
         if let Some(cost) = cost {
             parts.push(cost);
         }
-        let mut tooltip = String::from("What this conversation has cost");
-        if let Some((short, long)) = limit {
+        if let Some((short, _)) = limit {
             parts.push(short);
-            tooltip = format!("{tooltip}\n{long}");
         }
         self.spend.set_label(&parts.join(" · "));
-        self.spend.set_tooltip_text(Some(&tooltip));
         self.spend.set_visible(!parts.is_empty());
     }
 
@@ -957,10 +1054,8 @@ impl Chat {
         }
         let images = self.attachments.borrow().clone();
         for (i, png) in images.iter().enumerate() {
-            let Ok(texture) = gdk::Texture::from_bytes(png) else { continue };
-            let picture = gtk::Picture::for_paintable(&texture);
-            picture.set_content_fit(gtk::ContentFit::Cover);
-            picture.set_size_request(64, 64);
+            let Some(picture) = thumbnail(png, 96, 64) else { continue };
+            picture.set_valign(gtk::Align::Center);
             picture.add_css_class("attachment");
             let frame = gtk::Overlay::builder().child(&picture).build();
             let remove = gtk::Button::with_label("×");
@@ -998,20 +1093,7 @@ impl Chat {
             .build();
         row.add_css_class("msg-images");
         for png in pngs {
-            // A thumbnail the size it is shown: a full-size picture would ask for its own height
-            // (taller than shown), and the chat could not scroll down to its end.
-            let Ok(full) = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec())) else { continue };
-            let (w, h) = (full.width().max(1), full.height().max(1));
-            let height = h.min(220);
-            let width = (w * height / h).min(360).max(1);
-            let height = (h * width / w).max(1);
-            let Some(thumbnail) = full.scale_simple(width, height, gdk_pixbuf::InterpType::Bilinear) else { continue };
-            #[allow(deprecated)]
-            let texture = gdk::Texture::for_pixbuf(&thumbnail);
-            let picture = gtk::Picture::for_paintable(&texture);
-            picture.set_content_fit(gtk::ContentFit::Contain);
-            picture.set_can_shrink(false);
-            picture.set_size_request(width, height);
+            let Some(picture) = thumbnail(png, 360, 220) else { continue };
             picture.add_css_class("msg-image");
             picture.set_halign(gtk::Align::Start);
             row.insert(&picture, -1);
@@ -1302,6 +1384,7 @@ impl Chat {
 
     pub fn set_usage(&self, used: u64, size: u64) {
         let k = |n: u64| if n >= 1000 { format!("{}k", n / 1000) } else { n.to_string() };
+        self.spent.borrow_mut().0 = Some((used, size));
         if size == 0 {
             self.usage.set_label(&k(used));
             self.context.set_visible(false);
@@ -1309,7 +1392,6 @@ impl Chat {
         }
         let share = used as f64 / size as f64;
         self.usage.set_label(&format!("{}%", (share * 100.0).round() as u32));
-        self.usage.set_tooltip_text(Some(&format!("Context: {} of {} tokens", k(used), k(size))));
         self.context.set_value(share.min(1.0));
         self.context.set_visible(true);
         if share > 0.8 {
@@ -2424,6 +2506,68 @@ pub fn any_digit(c: char) -> Option<u32> {
         0x0660..=0x0669 => Some(c as u32 - 0x0660),
         _ => c.to_digit(10),
     }
+}
+
+/// A picture at most `max_w` × `max_h`, scaled down once. A full-size picture would ask for its
+/// own size: the input would grow to hold it, and the chat would be laid out taller than shown.
+fn thumbnail(png: &glib::Bytes, max_w: i32, max_h: i32) -> Option<gtk::Picture> {
+    let full = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec())).ok()?;
+    let (w, h) = (full.width().max(1), full.height().max(1));
+    let scale = (f64::from(max_w) / f64::from(w)).min(f64::from(max_h) / f64::from(h)).min(1.0);
+    let (width, height) = (((f64::from(w) * scale) as i32).max(1), ((f64::from(h) * scale) as i32).max(1));
+    let small = full.scale_simple(width, height, gdk_pixbuf::InterpType::Bilinear)?;
+    #[allow(deprecated)]
+    let texture = gdk::Texture::for_pixbuf(&small);
+    let picture = gtk::Picture::for_paintable(&texture);
+    picture.set_can_shrink(false);
+    picture.set_size_request(width, height);
+    Some(picture)
+}
+
+/// The Claude account's limits from `ai-usagebar` (its entry for Anthropic), if installed.
+fn account_usage() -> Option<serde_json::Value> {
+    let output = std::process::Command::new("ai-usagebar").args(["usage", "--json"]).output().ok()?;
+    let all: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    all["entries"].as_array()?.iter().find(|e| e["id"] == "anthropic").cloned()
+}
+
+fn usage_heading(text: &str) -> gtk::Label {
+    let label = gtk::Label::builder().label(text.to_uppercase()).xalign(0.0).build();
+    label.add_css_class("usage-heading");
+    label
+}
+
+fn usage_note(text: &str) -> gtk::Label {
+    let label = gtk::Label::builder().label(text).xalign(0.0).wrap(true).max_width_chars(44).build();
+    label.add_css_class("dim");
+    label.add_css_class("small");
+    label
+}
+
+/// "Weekly (7d)   ▬▬▬▭▭  57%" over "Resets in 1d 5h".
+fn usage_row(name: &str, share: f64, value: &str, detail: &str) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Vertical, 3);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let label = gtk::Label::builder().label(name).xalign(0.0).width_chars(14).build();
+    let bar = gtk::LevelBar::builder().min_value(0.0).max_value(1.0).value(share.clamp(0.0, 1.0)).hexpand(true).valign(gtk::Align::Center).build();
+    bar.set_mode(gtk::LevelBarMode::Continuous);
+    for name in ["low", "high", "full"] {
+        bar.remove_offset_value(Some(name));
+    }
+    bar.add_css_class("context-bar");
+    if share > 0.8 {
+        bar.add_css_class("full");
+    }
+    let amount = gtk::Label::builder().label(value).xalign(1.0).width_chars(5).build();
+    amount.add_css_class("numeric");
+    line.append(&label);
+    line.append(&bar);
+    line.append(&amount);
+    row.append(&line);
+    if !detail.is_empty() {
+        row.append(&usage_note(detail));
+    }
+    row
 }
 
 /// A Markdown table: a header row in small caps, hairlines between rows.

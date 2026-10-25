@@ -76,6 +76,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let texture = gtk::gdk::Texture::from_filename(argument).map_err(|e| e.to_string())?;
             app.focused_agent().ok_or("no agent")?.chat.attach(&texture);
         }
+        "usage" => print_labels(&app.focused_agent().ok_or("no agent")?.chat.usage_content(argument != "read")),
         "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
@@ -105,6 +106,14 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             }
             if found.is_empty() {
                 return Err("no popover open".into());
+            }
+        }
+        // The text in open popovers, for when they cannot be drawn.
+        "poptext" => {
+            let mut found = Vec::new();
+            popovers(app.window.upcast_ref(), &mut found);
+            for popover in found {
+                print_labels(popover.upcast_ref());
             }
         }
         // Every other window too (settings…): <prefix>-1.png, -2…
@@ -152,6 +161,19 @@ fn measure(widget: &gtk::Widget, depth: usize, threshold: i32) {
             }
             child = w.next_sibling();
         }
+    }
+}
+
+fn print_labels(widget: &gtk::Widget) {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        eprintln!("LABEL {}", label.label());
+    } else if let Some(bar) = widget.downcast_ref::<gtk::LevelBar>() {
+        eprintln!("BAR {:.2}", bar.value());
+    }
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        print_labels(&w);
+        child = w.next_sibling();
     }
 }
 
