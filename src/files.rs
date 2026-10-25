@@ -38,6 +38,11 @@ pub struct Files {
     project_tab: gtk::ToggleButton,
     /// Changes: the repo picked, its branch line, and its changed files.
     changes_tab: gtk::ToggleButton,
+    /// Graph: the commits (hash per row, None for a line of the graph alone).
+    graph: gtk::ListBox,
+    graph_tab: gtk::ToggleButton,
+    graph_commits: RefCell<Vec<Option<String>>>,
+    repo_bar: gtk::Box,
     repo_pick: gtk::DropDown,
     repo_line: gtk::Label,
     changes: gtk::ListBox,
@@ -73,9 +78,10 @@ impl Files {
         let agent_tab = gtk::ToggleButton::builder().label("Agent").active(true).tooltip_text("Files the agent wrote").build();
         let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").build();
         let changes_tab = gtk::ToggleButton::builder().label("Changes").group(&agent_tab).tooltip_text("Git status of the repos in this project").build();
+        let graph_tab = gtk::ToggleButton::builder().label("Graph").group(&agent_tab).tooltip_text("The repo's commits and where each branch is").build();
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         tabs.add_css_class("segmented");
-        for tab in [&agent_tab, &project_tab, &changes_tab] {
+        for tab in [&agent_tab, &project_tab, &changes_tab, &graph_tab] {
             tab.add_css_class("flat");
             tab.add_css_class("tab");
             // The theme styles .text-button.toggle groups its own way (the first one tinted
@@ -130,7 +136,9 @@ impl Files {
         let changes_scroller = gtk::ScrolledWindow::builder().child(&changes).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         let changes_view = gtk::Box::new(gtk::Orientation::Vertical, 6);
         changes_view.add_css_class("changes-view");
-        changes_view.append(&pick_line);
+        pick_line.add_css_class("repo-bar");
+        pick_line.set_visible(false);
+        root.append(&pick_line);
         changes_view.append(&repo_line);
         changes_view.append(&changes_scroller);
         let commit_entry = gtk::Entry::builder().placeholder_text("Commit message (commits what is staged)").hexpand(true).build();
@@ -145,6 +153,11 @@ impl Files {
         views.add_named(&agent_view, Some("agent"));
         views.add_named(&tree_scroller, Some("project"));
         views.add_named(&changes_view, Some("changes"));
+        let graph = gtk::ListBox::new();
+        graph.add_css_class("graph");
+        graph.set_selection_mode(gtk::SelectionMode::Browse);
+        let graph_scroller = gtk::ScrolledWindow::builder().child(&graph).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        views.add_named(&graph_scroller, Some("graph"));
         views.set_size_request(-1, 120);
 
         let editor_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -245,6 +258,10 @@ impl Files {
             on_ask: RefCell::default(),
             commit_entry,
             changes_repo: RefCell::default(),
+            graph,
+            graph_tab: graph_tab.clone(),
+            graph_commits: RefCell::default(),
+            repo_bar: pick_line.clone(),
         });
         let views = files.views.clone();
         agent_tab.connect_toggled(move |tab| {
@@ -291,11 +308,30 @@ impl Files {
         });
         let weak = Rc::downgrade(&files);
         changes_tab.connect_toggled(move |tab| {
-            if let Some(files) = weak.upgrade()
-                && tab.is_active()
-            {
-                files.views.set_visible_child_name("changes");
-                files.fill_repos();
+            if let Some(files) = weak.upgrade() {
+                files.repo_bar.set_visible(tab.is_active() || files.views.visible_child_name().as_deref() == Some("graph"));
+                if tab.is_active() {
+                    files.views.set_visible_child_name("changes");
+                    files.fill_repos();
+                }
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        graph_tab.connect_toggled(move |tab| {
+            if let Some(files) = weak.upgrade() {
+                files.repo_bar.set_visible(tab.is_active() || files.changes_tab.is_active());
+                if tab.is_active() {
+                    files.views.set_visible_child_name("graph");
+                    files.fill_repos();
+                }
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        files.graph.connect_row_activated(move |_, row| {
+            let Some(files) = weak.upgrade() else { return };
+            let hash = files.graph_commits.borrow().get(row.index() as usize).cloned().flatten();
+            if let Some(hash) = hash {
+                files.show_commit(&hash);
             }
         });
         let weak = Rc::downgrade(&files);
@@ -303,13 +339,13 @@ impl Files {
             if let Some(files) = weak.upgrade()
                 && !files.filling.get()
             {
-                files.fill_changes();
+                files.fill_repo_view();
             }
         });
         let weak = Rc::downgrade(&files);
         refresh.connect_clicked(move |_| {
             if let Some(files) = weak.upgrade() {
-                files.fill_changes();
+                files.fill_repo_view();
             }
         });
         let weak = Rc::downgrade(&files);
@@ -685,7 +721,104 @@ impl Files {
         self.repo_pick.set_selected(0);
         self.filling.set(false);
         *self.repos.borrow_mut() = repos;
-        self.fill_changes();
+        self.fill_repo_view();
+    }
+
+    /// Changes or Graph, whichever is in view, for the repo picked.
+    fn fill_repo_view(self: &Rc<Self>) {
+        if self.views.visible_child_name().as_deref() == Some("graph") {
+            self.fill_graph();
+        } else {
+            self.fill_changes();
+        }
+    }
+
+    /// The repo's commits as a graph (all branches, newest first), with each branch's head.
+    fn fill_graph(self: &Rc<Self>) {
+        let repo = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned();
+        while let Some(row) = self.graph.row_at_index(0) {
+            self.graph.remove(&row);
+        }
+        self.graph_commits.borrow_mut().clear();
+        let Some(repo) = repo else { return };
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let reading = repo.clone();
+            let found = gio::spawn_blocking(move || {
+                let log = Files::git(
+                    &reading,
+                    &["-c", "core.quotePath=false", "log", "--graph", "--all", "--date-order", "--color=never", "-n", "400", "--format=%x1f%h%x1f%D%x1f%s%x1f%an%x1f%ar"],
+                )?;
+                let remotes: Vec<String> = Files::git(&reading, &["remote"]).unwrap_or_default().lines().map(str::to_owned).collect();
+                Ok::<_, String>((log, remotes))
+            })
+            .await
+            .unwrap_or_else(|_| Err("git did not finish".to_owned()));
+            let Some(files) = weak.upgrade() else { return };
+            match found {
+                Ok((log, remotes)) => files.show_graph(&log, &remotes),
+                Err(err) => {
+                    let note = gtk::Label::builder().label(format!("git: {err}")).xalign(0.0).wrap(true).build();
+                    note.add_css_class("dim");
+                    files.graph.append(&note);
+                }
+            }
+        });
+    }
+
+    fn show_graph(&self, log: &str, remotes: &[String]) {
+        let mut commits = Vec::new();
+        for line in log.lines() {
+            let (lanes, rest) = line.split_once('\x1f').unwrap_or((line, ""));
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            row.add_css_class("graph-row");
+            let drawn = gtk::Label::builder().use_markup(true).xalign(0.0).build();
+            drawn.set_markup(&graph_markup(lanes.trim_end()));
+            drawn.add_css_class("graph-lanes");
+            row.append(&drawn);
+            let fields: Vec<&str> = rest.split('\x1f').collect();
+            if let [hash, refs, subject, author, age] = fields[..] {
+                let hash_label = gtk::Label::new(Some(hash));
+                hash_label.add_css_class("graph-hash");
+                row.append(&hash_label);
+                for (name, kind) in ref_badges(refs, remotes) {
+                    let badge = gtk::Label::new(Some(&name));
+                    badge.add_css_class("ref");
+                    badge.add_css_class(kind);
+                    row.append(&badge);
+                }
+                let text = gtk::Label::builder().label(subject).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+                row.append(&text);
+                // The age, short ("4 min"); who wrote it is in the tooltip.
+                let short = age.replace(" minutes", " min").replace(" minute", " min").replace(" hours", " h").replace(" hour", " h").replace(" days", " d").replace(" day", " d").replace(" weeks", " w").replace(" week", " w").replace(" months", " mo").replace(" month", " mo").replace(" years", " y").replace(" year", " y").replace(" ago", "");
+                let who = gtk::Label::new(Some(&short));
+                who.add_css_class("dim");
+                who.add_css_class("small");
+                row.append(&who);
+                row.set_tooltip_text(Some(&format!("{hash} {subject}\n{author}, {age}")));
+                commits.push(Some(hash.to_owned()));
+            } else {
+                commits.push(None);
+            }
+            let list_row = gtk::ListBoxRow::builder().child(&row).activatable(!rest.is_empty()).selectable(!rest.is_empty()).build();
+            self.graph.append(&list_row);
+        }
+        *self.graph_commits.borrow_mut() = commits;
+    }
+
+    /// A commit in full (message, files, changes), in a window.
+    fn show_commit(&self, hash: &str) {
+        let Some(repo) = self.repos.borrow().get(self.repo_pick.selected() as usize).cloned() else { return };
+        let (me, hash) = (self.me.borrow().clone(), hash.to_owned());
+        glib::spawn_future_local(async move {
+            let showing = hash.clone();
+            let text = gio::spawn_blocking(move || Files::git(&repo, &["-c", "core.quotePath=false", "show", "--stat", "--patch", "--format=fuller", &showing]).unwrap_or_else(|e| e))
+                .await
+                .unwrap_or_default();
+            if let Some(files) = me.upgrade() {
+                files.diff_window(&format!("commit {hash}"), &text);
+            }
+        });
     }
 
     fn fill_changes(self: &Rc<Self>) {
@@ -847,7 +980,7 @@ impl Files {
             .await
             .unwrap_or_default();
             if let Some(files) = me.upgrade() {
-                files.diff_window(&file, &diff);
+                files.diff_window(&format!("{file} — changes"), &diff);
             }
         });
     }
@@ -864,7 +997,7 @@ impl Files {
         view.set_monospace(true);
         view.add_css_class("editor");
         let scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
-        let window = gtk::Window::builder().title(format!("{file} — changes")).default_width(900).default_height(640).child(&scroller).build();
+        let window = gtk::Window::builder().title(file.to_owned()).default_width(900).default_height(640).child(&scroller).build();
         if let Some(parent) = self.root.root().and_downcast::<gtk::Window>() {
             window.set_transient_for(Some(&parent));
         }
@@ -988,6 +1121,12 @@ impl Files {
         self.changes_tab.set_active(true);
     }
 
+    /// Switches to the commit graph (devhooks).
+    pub fn show_graph_view(&self) {
+        self.root.set_visible(true);
+        self.graph_tab.set_active(true);
+    }
+
     /// Switches to the project tree (devhooks).
     pub fn show_project(&self) {
         self.root.set_visible(true);
@@ -1103,6 +1242,46 @@ fn tree_factory() -> gtk::SignalListItemFactory {
     factory
 }
 
+/// The lanes of `git log --graph` in colour: each column its own, commits as dots.
+fn graph_markup(lanes: &str) -> String {
+    const COLOURS: &[&str] = &["#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7", "#7dcfff", "#ff9e64"];
+    let mut out = String::new();
+    for (i, c) in lanes.chars().enumerate() {
+        let colour = COLOURS[(i / 2) % COLOURS.len()];
+        let shown = match c {
+            '*' => "●".to_owned(),
+            '|' => "│".to_owned(),
+            ' ' => {
+                out.push(' ');
+                continue;
+            }
+            other => glib::markup_escape_text(&other.to_string()).to_string(),
+        };
+        out.push_str(&format!("<span foreground=\"{colour}\">{shown}</span>"));
+    }
+    out
+}
+
+/// A commit's refs as badges: (name, kind) with kind head / branch / remote / tag.
+fn ref_badges(refs: &str, remotes: &[String]) -> Vec<(String, &'static str)> {
+    let mut badges = Vec::new();
+    for part in refs.split(", ").map(str::trim).filter(|p| !p.is_empty()) {
+        if let Some(branch) = part.strip_prefix("HEAD -> ") {
+            badges.push(("HEAD".to_owned(), "head"));
+            badges.push((branch.to_owned(), "branch"));
+        } else if part == "HEAD" {
+            badges.push(("HEAD (detached)".to_owned(), "head"));
+        } else if let Some(tag) = part.strip_prefix("tag: ") {
+            badges.push((tag.to_owned(), "tag"));
+        } else if remotes.iter().any(|r| part.starts_with(&format!("{r}/"))) {
+            badges.push((part.to_owned(), "remote"));
+        } else {
+            badges.push((part.to_owned(), "branch"));
+        }
+    }
+    badges
+}
+
 /// The theme's symbolic icon for a file's kind (from its name), or a folder's.
 fn file_icon(path: &Path, is_dir: bool) -> gio::Icon {
     if is_dir {
@@ -1128,4 +1307,22 @@ fn relative(dir: &Path, base: &Path) -> String {
 fn is_dark(widget: &impl IsA<gtk::Widget>) -> bool {
     let fg = widget.as_ref().color();
     0.299 * fg.red() + 0.587 * fg.green() + 0.114 * fg.blue() > 0.5
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn refs_read_as_badges() {
+        let remotes = vec!["origin".to_owned()];
+        assert_eq!(
+            super::ref_badges("HEAD -> main, origin/main, tag: v1.0, feature/x", &remotes),
+            vec![
+                ("HEAD".to_owned(), "head"),
+                ("main".to_owned(), "branch"),
+                ("origin/main".to_owned(), "remote"),
+                ("v1.0".to_owned(), "tag"),
+                ("feature/x".to_owned(), "branch"),
+            ]
+        );
+    }
 }

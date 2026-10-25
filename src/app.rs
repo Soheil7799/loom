@@ -688,6 +688,7 @@ impl App {
             "find" => self.find_file(),
             "nevis" => self.files.open_in_nevis(),
             "tree" => self.files.show_project(),
+            "graph" => self.files.show_graph_view(),
             "fork" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.fork(None, String::new());
@@ -1404,6 +1405,8 @@ impl App {
         let tray = self.tray_for(project);
         self.show_tray(project, &tray);
         self.files.show(cwd, project, &[]);
+        // No agent here: the repos offered are the project's own, not the last agent's.
+        self.files.set_repos(Vec::new());
         self.mark_active();
         self.refresh_sidebar();
         self.save();
