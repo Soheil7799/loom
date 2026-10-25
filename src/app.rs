@@ -44,6 +44,8 @@ pub struct App {
     inbox_list: gtk::Box,
     chat_stack: gtk::Stack,
     welcome: gtk::Box,
+    /// A project's page: new conversation, or a past one.
+    history: Rc<crate::history::Page>,
     /// The second agent shown beside the focused one (Ctrl+\), and where it sits.
     pinned: RefCell<Option<Rc<Agent>>>,
     pinned_box: gtk::Box,
@@ -139,6 +141,8 @@ impl App {
         let welcome = gtk::Box::new(gtk::Orientation::Vertical, 0);
         welcome.add_css_class("chat");
         chat_stack.add_named(&welcome, Some("empty"));
+        let history = crate::history::Page::new();
+        chat_stack.add_named(&history.root, Some("project"));
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
@@ -253,6 +257,7 @@ impl App {
             inbox_list,
             chat_stack,
             welcome,
+            history,
             pinned: RefCell::default(),
             pinned_box,
             previous: RefCell::default(),
@@ -280,6 +285,7 @@ impl App {
             toast_timeout: RefCell::default(),
         });
         this.wire_toast(&toast_go, &toast_close);
+        this.wire_history();
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
         this.apply_settings(&settings::get());
@@ -606,7 +612,8 @@ impl App {
     // ---- small actions --------------------------------------------------------------------
 
     fn current_project(&self) -> PathBuf {
-        self.focused.borrow().as_ref().map(|a| a.project.clone()).unwrap_or_else(glib::home_dir)
+        let focused = self.focused.borrow().as_ref().map(|a| a.project.clone());
+        focused.or_else(|| self.showing_project()).unwrap_or_else(glib::home_dir)
     }
 
     fn ask_command(&self) {
@@ -678,8 +685,8 @@ impl App {
             })
         };
         let mut choices = vec![
-            act("New agent here", "Ctrl+N", |a| a.new_agent(false)),
-            act("New agent in a folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
+            act("New agent… (or resume one)", "Ctrl+N", |a| a.new_agent(false)),
+            act("Open a project folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
             act("Reopen the last closed agent", "Ctrl+Shift+T", |a| a.reopen_closed()),
             act("Rename this agent", "F2", |a| a.begin_rename()),
             act("Restart this agent", "", |a| {
@@ -761,9 +768,9 @@ impl App {
         for project in self.projects.borrow().iter() {
             let weak = weak.clone();
             let path = project.path.clone();
-            choices.push(Choice::new(project_name(&project.path), "project · new agent", move || {
+            choices.push(Choice::new(project_name(&project.path), "project · conversations", move || {
                 if let Some(app) = weak.upgrade() {
-                    app.start_agent_in(path.clone());
+                    app.show_project(&path, &path);
                 }
             }));
         }
@@ -865,6 +872,9 @@ impl App {
         agent.last_active.set(std::time::Instant::now());
         *self.focused.borrow_mut() = Some(agent.clone());
         self.toast_settled(agent);
+        if self.is_pinned(agent) && self.chat_stack.visible_child_name().as_deref() == Some("project") {
+            self.unpin();
+        }
         if !self.is_pinned(agent) {
             self.chat_stack.set_visible_child(&agent.chat.root);
         }
@@ -1008,12 +1018,16 @@ impl App {
         ordered
     }
 
+    /// A new agent starts from its project's page (where a past conversation can be picked
+    /// up instead): this one's (`choose`: a folder asked for).
     fn new_agent(self: &Rc<Self>, choose: bool) {
-        let here = self.focused.borrow().as_ref().map(|a| a.cwd.clone());
+        let here = self.focused.borrow().as_ref().map(|a| (a.project.clone(), a.cwd.clone()));
+        let here = here.or_else(|| self.showing_project().map(|p| (p.clone(), p)));
         match here {
-            Some(cwd) if !choose => self.start_agent_in(cwd),
+            Some((project, cwd)) if !choose => self.show_project(&project, &cwd),
             _ => {
-                let dialog = gtk::FileDialog::builder().title("Start an agent in…").modal(true).build();
+                let here = here.map(|(_, cwd)| cwd);
+                let dialog = gtk::FileDialog::builder().title("Open a project folder").modal(true).build();
                 if let Some(cwd) = here {
                     dialog.set_initial_folder(Some(&gio::File::for_path(project_of(&cwd).parent().unwrap_or(&cwd))));
                 }
@@ -1022,11 +1036,81 @@ impl App {
                     if let (Some(app), Ok(folder)) = (weak.upgrade(), result)
                         && let Some(path) = folder.path()
                     {
-                        app.start_agent_in(path);
+                        app.show_project(&project_of(&path), &path);
                     }
                 });
             }
         }
+    }
+
+    fn wire_history(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        *self.history.on_new.borrow_mut() = Some(Rc::new(move |cwd| {
+            if let Some(app) = weak.upgrade() {
+                app.start_agent_in(cwd);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.history.on_resume.borrow_mut() = Some(Rc::new(move |past| {
+            if let Some(app) = weak.upgrade() {
+                app.resume(past);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.history.is_open.borrow_mut() = Some(Rc::new(move |id: &str| {
+            weak.upgrade().is_some_and(|app| app.agent_with_session(id).is_some())
+        }));
+    }
+
+    /// The project whose page is showing, if it is.
+    fn showing_project(&self) -> Option<PathBuf> {
+        let showing = self.focused.borrow().is_none() && self.chat_stack.visible_child_name().as_deref() == Some("project");
+        showing.then(|| self.history.project())
+    }
+
+    /// Picks row `n` of the project page (0: new conversation).
+    pub fn pick_history(&self, n: i32) {
+        self.history.activate(n);
+    }
+
+    fn agent_with_session(&self, id: &str) -> Option<Rc<Agent>> {
+        self.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(id)).cloned()
+    }
+
+    /// Opens `project`'s page: nothing starts until a conversation is picked there.
+    pub fn show_project(self: &Rc<Self>, project: &Path, cwd: &Path) {
+        self.ensure_project(project);
+        if let Some(entry) = self.projects.borrow_mut().iter_mut().find(|p| p.path == project) {
+            entry.collapsed = false;
+        }
+        // No agent has the keyboard while the page shows (the last one is "previous").
+        if let Some(old) = self.focused.borrow_mut().take() {
+            old.focused.set(false);
+            *self.previous.borrow_mut() = Some(old);
+        }
+        self.chat_stack.set_visible_child_name("project");
+        self.history.show(project, cwd);
+        let tray = self.tray_for(project);
+        self.show_tray(project, &tray);
+        self.files.show(cwd, project, &[]);
+        self.mark_active();
+        self.refresh_sidebar();
+        self.save();
+        self.history.grab_focus();
+    }
+
+    /// Picks up a past conversation (or goes to it, when it is open already).
+    fn resume(self: &Rc<Self>, past: crate::history::Past) {
+        if let Some(agent) = self.agent_with_session(&past.session_id) {
+            self.focus(&agent);
+            return;
+        }
+        self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(past.session_id.as_str()));
+        // A folder deleted since resumes in its project (or home): the adapter can't start in it.
+        let cwd = [past.cwd.clone(), project_of(&past.cwd), glib::home_dir()].into_iter().find(|d| d.is_dir()).unwrap_or(past.cwd);
+        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false };
+        let agent = self.add_agent(saved);
+        self.focus(&agent);
     }
 
     fn start_agent_in(self: &Rc<Self>, cwd: PathBuf) {
@@ -1140,12 +1224,16 @@ impl App {
         let weak = Rc::downgrade(self);
         let go = move || {
             let Some(app) = weak.upgrade() else { return };
+            let had_focus = agents.iter().any(|a| a.focused.get());
             for agent in &agents {
                 app.remove_agent_then(agent, false);
             }
             app.projects.borrow_mut().retain(|p| p.path != path);
+            if app.showing_project().is_some_and(|p| p == path) {
+                app.show_welcome();
+            }
             // Focus moves to what is left (only now, so no closing agent is started first).
-            let next = if app.focused.borrow().is_none() { app.agents_in_order().into_iter().next() } else { None };
+            let next = if had_focus { app.agents_in_order().into_iter().next() } else { None };
             match next {
                 Some(next) => app.focus(&next),
                 None if app.agents.borrow().is_empty() => app.show_welcome(),
@@ -1295,7 +1383,9 @@ impl App {
 
     fn save(&self) {
         let order = self.agents_in_order();
-        let focused = self.focused.borrow().as_ref().and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, f))).unwrap_or(0);
+        // On a project's page, the agent that had focus before it.
+        let focused = self.focused.borrow().clone().or_else(|| self.previous.borrow().clone());
+        let focused = focused.and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, &f))).unwrap_or(0);
         let pinned = self.pinned.borrow().as_ref().and_then(|p| order.iter().position(|a| Rc::ptr_eq(a, p)));
         state::save(
             &self.app_id,
@@ -1444,20 +1534,18 @@ impl App {
 
     fn activate_row(self: &Rc<Self>, index: usize) {
         enum Do {
-            Toggle(PathBuf),
             Focus(Rc<Agent>),
             Start(PathBuf),
         }
         let what = match self.rows.borrow().get(index) {
-            Some(Row::Project(path)) => Do::Toggle(path.clone()),
+            Some(Row::Project(path)) => Do::Start(path.clone()),
             Some(Row::Agent(agent)) => Do::Focus(agent.clone()),
             Some(Row::Empty(path)) => Do::Start(path.clone()),
             None => return,
         };
         match what {
-            Do::Toggle(path) => self.toggle_collapsed(&path),
             Do::Focus(agent) => self.focus(&agent),
-            Do::Start(path) => self.start_agent_in(path),
+            Do::Start(path) => self.show_project(&path, &path),
         }
     }
 
@@ -1484,7 +1572,7 @@ impl App {
         match self.rows.borrow().get(index) {
             Some(Row::Project(path)) | Some(Row::Empty(path)) => {
                 let (p1, p2, p3, p4) = (path.clone(), path.clone(), path.clone(), path.clone());
-                item("New agent here", Box::new(move |app| app.start_agent_in(p1.clone())));
+                item("Conversations (new or past)", Box::new(move |app| app.show_project(&p1, &p1)));
                 item("Scratch terminal here", Box::new(move |app| {
                     app.scratch.hide();
                     app.scratch.toggle(&p2);
@@ -1539,7 +1627,7 @@ impl App {
                 continue;
             }
             if mine.is_empty() {
-                let empty = gtk::Label::builder().label("No agents · Enter starts one").xalign(0.0).build();
+                let empty = gtk::Label::builder().label("No agents open · Enter: new or past conversation").xalign(0.0).build();
                 empty.add_css_class("dim");
                 empty.add_css_class("small");
                 let row = gtk::ListBoxRow::builder().child(&empty).selectable(false).build();
@@ -1578,8 +1666,17 @@ impl App {
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
     fn project_row(self: &Rc<Self>, project: &Project, agents: &[&Rc<Agent>]) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let arrow = gtk::Label::new(Some(if project.collapsed { "▸" } else { "▾" }));
+        let arrow = gtk::Button::with_label(if project.collapsed { "▸" } else { "▾" });
+        arrow.add_css_class("flat");
         arrow.add_css_class("arrow");
+        arrow.set_tooltip_text(Some(if project.collapsed { "Show its agents" } else { "Hide its agents" }));
+        let weak = Rc::downgrade(self);
+        let path = project.path.clone();
+        arrow.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.toggle_collapsed(&path);
+            }
+        });
         let name = gtk::Label::builder().label(project_name(&project.path)).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         name.add_css_class("project-name");
         line.append(&arrow);
@@ -1608,12 +1705,12 @@ impl App {
         let add = gtk::Button::with_label("+");
         add.add_css_class("flat");
         add.add_css_class("add");
-        add.set_tooltip_text(Some(&format!("New agent in {}", project_name(&project.path))));
+        add.set_tooltip_text(Some(&format!("New or past conversation in {}", project_name(&project.path))));
         let weak = Rc::downgrade(self);
         let path = project.path.clone();
         add.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
-                app.start_agent_in(path.clone());
+                app.show_project(&path, &path);
             }
         });
         line.append(&add);
@@ -1716,7 +1813,7 @@ impl App {
             });
             actions.append(&button);
         };
-        action("Start an agent in a folder…", "Ctrl+Shift+N", Box::new(|a| a.new_agent(true)));
+        action("Open a project folder…", "Ctrl+Shift+N", Box::new(|a| a.new_agent(true)));
         if !self.closed.borrow().is_empty() {
             action("Reopen the last closed agent", "Ctrl+Shift+T", Box::new(|a| a.reopen_closed()));
         }
@@ -1748,7 +1845,7 @@ impl App {
                 let path = project.path.clone();
                 button.connect_clicked(move |_| {
                     if let Some(app) = weak.upgrade() {
-                        app.start_agent_in(path.clone());
+                        app.show_project(&path, &path);
                     }
                 });
                 middle.append(&button);

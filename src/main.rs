@@ -10,6 +10,7 @@ mod column;
 mod control;
 mod devhooks;
 mod files;
+mod history;
 mod jobs;
 mod logo;
 mod markdown;

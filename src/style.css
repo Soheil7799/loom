@@ -35,7 +35,8 @@ button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible
 .agents row:selected .agent-title { font-weight: 600; }
 .agents row.project-row { margin: 14px 6px 2px 6px; padding: 2px 6px 2px 8px; }
 .agents row.project-row:hover { background: alpha(@window_fg_color, 0.04); }
-.project-row .arrow { opacity: 0.6; font-size: 0.78em; min-width: 12px; }
+.project-row button.arrow { opacity: 0.6; font-size: 0.78em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 4px; }
+.project-row button.arrow:hover { opacity: 1; }
 .project-name { font-size: 0.78em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.68; }
 .project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
 .project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
@@ -187,3 +188,16 @@ window.prefs scrolledwindow, window.prefs viewport, window.prefs stack { backgro
 .prefs-title { font-weight: 500; }
 .about-name { font-size: 1.8em; font-weight: 800; letter-spacing: 0.04em; }
 .about-blurb { margin: 6px 0; }
+
+/* A project's page: new conversation, or a past one. */
+.project-column { padding: 48px 24px 32px 24px; }
+.project-title { font-size: 1.6em; font-weight: 700; }
+list.history { background: transparent; }
+list.history row { padding: 9px 14px; border-radius: 10px; margin-bottom: 2px; }
+list.history row:hover { background: alpha(@window_fg_color, 0.05); }
+list.history row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+list.history row.history-new { margin-bottom: 10px; background: alpha(@window_fg_color, 0.04); }
+list.history row.history-new:selected { background: alpha(@accent_color, 0.16); }
+.history-plus { font-weight: 700; color: @accent_color; min-width: 14px; }
+.history-open { font-size: 0.78em; padding: 1px 7px; border-radius: 99px; color: @accent_color; background: alpha(@accent_color, 0.12); }
+.history-note { padding: 4px 14px; }

@@ -234,6 +234,10 @@ impl Agent {
         matches!(self.status.get(), Status::Working | Status::Blocked | Status::Starting)
     }
 
+    pub fn session_id(&self) -> Option<String> {
+        self.session_id.borrow().clone()
+    }
+
     pub fn saved(&self) -> Saved {
         Saved {
             cwd: self.cwd.clone(),
