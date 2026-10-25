@@ -2196,7 +2196,7 @@ impl ToolCard {
         spinner.set_visible(false);
         let kind = gtk::Label::new(None);
         kind.add_css_class("kind");
-        let title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        let title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).single_line_mode(true).build();
         title.add_css_class("tool-title");
         let chevron = gtk::Label::new(Some("›"));
         chevron.add_css_class("chevron");
@@ -2386,8 +2386,14 @@ impl ToolCard {
 }
 
 /// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
+/// One line: a multi-line command (a heredoc) shows its first line and "…"; the rest
+/// would spill over the card around it.
 fn tool_title(title: &str) -> String {
     let title = title.replace('`', "");
+    let title = match title.trim().split_once('\n') {
+        Some((first, _)) => format!("{} …", first.trim_end()),
+        None => title.trim().to_owned(),
+    };
     if let Some(rest) = title.strip_prefix("mcp__")
         && let Some((server, tool)) = rest.split_once("__")
     {
@@ -2566,6 +2572,7 @@ mod tests {
         assert_eq!(super::tool_title("mcp__loom__loom_run"), "loom · run");
         assert_eq!(super::tool_title("mcp__github__create_issue"), "github · create issue");
         assert_eq!(super::tool_title("`ls -la`"), "ls -la");
+        assert_eq!(super::tool_title("python3 - <<EOF\nprint(1)\nEOF"), "python3 - <<EOF …");
     }
 
     #[test]
