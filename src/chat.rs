@@ -221,8 +221,10 @@ impl Chat {
         title_line.append(&title);
         names.append(&title_line);
         names.append(&place);
-        let state = gtk::Label::new(None);
-        state.add_css_class("dim");
+        // The state as a pill right after the title, where the eye already is.
+        let state = gtk::Label::builder().valign(gtk::Align::Center).visible(false).build();
+        state.add_css_class("state-pill");
+        title_line.append(&state);
         let mode = gtk::Button::with_label("Mode");
         mode.add_css_class("mode");
         mode.add_css_class("flat");
@@ -241,7 +243,6 @@ impl Chat {
             context.remove_offset_value(Some(name));
         }
         header.append(&names);
-        header.append(&state);
         let spend = gtk::Label::new(None);
         spend.add_css_class("dim");
         spend.add_css_class("small");
@@ -1263,10 +1264,13 @@ impl Chat {
     /// `text` beside the title, and the status dot (a css class: working, blocked…).
     pub fn set_state(&self, text: &str, class: &str) {
         self.state.set_label(text);
+        self.state.set_visible(!text.is_empty());
         for c in ["working", "starting", "blocked", "done", "failed", "suspended", "idle"] {
             self.dot.remove_css_class(c);
+            self.state.remove_css_class(c);
         }
         self.dot.add_css_class(class);
+        self.state.add_css_class(class);
     }
 
     /// While the agent starts, the empty conversation says so.
@@ -1625,6 +1629,13 @@ impl Chat {
 
     /// A notice with a button that does something about it.
     pub fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
+        // A retry that failed again replaces its card rather than stacking another.
+        if let Some(last) = self.list.last_child()
+            && last.has_css_class("notice")
+            && last.first_child().and_downcast::<gtk::Label>().is_some_and(|l| l.text().replace(['\u{200E}', '\u{200F}'], "") == text)
+        {
+            self.list.remove(&last);
+        }
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         line.add_css_class("notice");
         line.add_css_class("error");
@@ -1645,7 +1656,7 @@ impl Chat {
         // The same notice again right after itself (a second failed start) says nothing new.
         if let Some(last) = self.list.last_child().and_downcast::<gtk::Label>()
             && last.has_css_class("notice")
-            && last.text() == text
+            && last.text().replace(['\u{200E}', '\u{200F}'], "") == text
         {
             return;
         }
@@ -2342,7 +2353,30 @@ impl ToolGroup {
         let running = shown.iter().any(|c| c.status.borrow().as_str() != "completed");
         let arrow = if self.open.get() { "⌄" } else { "›" };
         let glyph = if running { "○" } else { "✓" };
-        self.summary.set_label(&format!("{glyph}  {} tool calls  {arrow}", shown.len()));
+        // What was done, not how many calls: "Read 3 · Ran 2 · last: app.rs".
+        let mut counts: Vec<(&str, usize)> = Vec::new();
+        for card in &shown {
+            let verb = match card.kind.label().as_str() {
+                "read" => "Read",
+                "edit" => "Edited",
+                "run" => "Ran",
+                "search" => "Searched",
+                "web" => "Fetched",
+                "delete" => "Deleted",
+                "move" => "Moved",
+                "think" => "Delegated",
+                _ => "Other",
+            };
+            match counts.iter_mut().find(|(v, _)| *v == verb) {
+                Some(entry) => entry.1 += 1,
+                None => counts.push((verb, 1)),
+            }
+        }
+        let what = counts.iter().map(|(verb, n)| format!("{verb} {n}")).collect::<Vec<_>>().join(" · ");
+        let last = shown.last().map(|c| c.title.label().to_string()).unwrap_or_default();
+        let last: String = last.chars().take(48).collect::<String>() + if last.chars().count() > 48 { "…" } else { "" };
+        self.summary.set_label(&format!("{glyph}  {what}  ·  last: {last}  {arrow}"));
+        self.summary.set_tooltip_text(Some(&format!("{} tool calls", shown.len())));
     }
 }
 

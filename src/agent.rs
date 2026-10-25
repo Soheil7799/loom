@@ -460,7 +460,11 @@ impl Agent {
                 } else {
                     format!("Could not start Claude Code ({}): {err}", acp::adapter_command().join(" "))
                 };
-                self.chat.notice(&text, "error");
+                if self.cwd.is_dir() {
+                    self.offer_retry(&text);
+                } else {
+                    self.chat.notice(&text, "error");
+                }
                 self.set_status(Status::Failed);
                 return;
             }
@@ -646,9 +650,23 @@ impl Agent {
         });
     }
 
+    /// An error with a way on: Retry starts the agent again (the conversation is kept).
+    fn offer_retry(self: &Rc<Self>, text: &str) {
+        let weak = Rc::downgrade(self);
+        self.chat.notice_action(
+            text,
+            "Retry",
+            Rc::new(move || {
+                if let Some(agent) = weak.upgrade() {
+                    agent.restart();
+                }
+            }),
+        );
+    }
+
     fn fail(self: &Rc<Self>, text: &str) {
         self.end_autonomous(false);
-        self.chat.notice(text, "error");
+        self.offer_retry(text);
         if let Some(conn) = self.conn.borrow_mut().take() {
             conn.stop();
         }
