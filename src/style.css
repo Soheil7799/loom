@@ -5,6 +5,7 @@
 @define-color loom_ok #87d96c;
 @define-color loom_warn #ffcc66;
 @define-color loom_err #f28779;
+@define-color loom_run #73b8ff;
 @define-color loom_line alpha(@window_fg_color, 0.07);
 
 window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
@@ -300,3 +301,17 @@ button.overview-button { min-width: 26px; min-height: 26px; padding: 0; border-r
 .schedule-body { padding: 18px 20px; }
 .schedule-prompt { background: alpha(@window_fg_color, 0.04); }
 label.error { color: @loom_err; }
+/* Reading: air between lines; code a little tighter. */
+.msg-agent label, .msg-user label, .reader label { line-height: 1.4; }
+.msg-agent label.code-block, .reader label.code-block { line-height: 1.35; }
+
+/* Each kind of block its own look, so one ends visibly where the next begins:
+   Claude's words on a rail, edits green-edged, commands on a darker card, reads quiet. */
+.msg-agent { padding: 2px 0 2px 14px; border-left: 2px solid alpha(@accent_color, 0.45); color: alpha(@window_fg_color, 0.94); }
+.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.05); border-left: 2px solid alpha(@loom_ok, 0.6); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
+.tool-card.kind-execute { background: alpha(@window_fg_color, 0.05); border-left: 2px solid alpha(@loom_run, 0.6); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
+.tool-card.kind-edit:hover, .tool-card.kind-delete:hover, .tool-card.kind-move:hover { background: alpha(@loom_ok, 0.08); }
+.tool-card.kind-execute:hover { background: alpha(@window_fg_color, 0.08); }
+.tool-card.kind-edit .kind, .tool-card.kind-delete .kind, .tool-card.kind-move .kind { color: @loom_ok; opacity: 0.9; }
+.tool-card.kind-execute .kind { color: @loom_run; opacity: 0.9; }
+.tool-card.kind-read .tool-title, .tool-card.kind-search .tool-title, .tool-card.kind-fetch .tool-title { opacity: 0.7; }

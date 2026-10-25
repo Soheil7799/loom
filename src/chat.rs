@@ -261,14 +261,15 @@ impl Chat {
         header.append(&usage_button);
         root.append(&header);
 
-        let list = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 16);
         list.add_css_class("messages");
         let starting = gtk::Label::builder().visible(false).halign(gtk::Align::Center).build();
         starting.add_css_class("starting-note");
         list.append(&starting);
         let clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
         clamp.append(&list);
-        clamp.set_layout_manager(Some(crate::column::ColumnLayout::new(880)));
+        // About 75 characters a line: long lines are hard to follow back.
+        clamp.set_layout_manager(Some(crate::column::ColumnLayout::new(800)));
         let scroller = gtk::ScrolledWindow::builder()
             .child(&clamp)
             .hscrollbar_policy(gtk::PolicyType::Never)
@@ -304,7 +305,7 @@ impl Chat {
         crew_list.add_css_class("crew");
         let crew_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         crew_column.append(&crew_list);
-        crew_column.set_layout_manager(Some(crate::column::ColumnLayout::new(920)));
+        crew_column.set_layout_manager(Some(crate::column::ColumnLayout::new(840)));
         let crew_revealer = gtk::Revealer::builder().child(&crew_column).reveal_child(false).build();
         root.append(&crew_revealer);
 
@@ -381,7 +382,7 @@ impl Chat {
         input_box.append(&composer);
         let input_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         input_column.append(&input_box);
-        input_column.set_layout_manager(Some(crate::column::ColumnLayout::new(920)));
+        input_column.set_layout_manager(Some(crate::column::ColumnLayout::new(840)));
         root.append(&input_column);
 
         let completion_list = gtk::ListBox::new();
@@ -2476,6 +2477,13 @@ impl ToolCard {
             self.root.set_visible(true);
         }
         if let Some(kind) = update["kind"].as_str() {
+            // Its kind as a class: edits, commands and reads each look their own.
+            for class in self.root.css_classes() {
+                if class.starts_with("kind-") {
+                    self.root.remove_css_class(&class);
+                }
+            }
+            self.root.add_css_class(&format!("kind-{kind}"));
             self.kind.set_label(match kind {
                 "execute" => "run",
                 "fetch" => "web",
@@ -2713,10 +2721,46 @@ pub(crate) fn table_view(rows: &[Vec<String>]) -> gtk::Grid {
 pub(crate) fn text_label(markup: &str) -> gtk::Label {
     let label = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).use_markup(true).build();
     label.set_wrap_mode(pango::WrapMode::WordChar);
-    label.set_markup(markup);
+    label.set_markup(&one_direction(markup));
     label.set_focusable(false);
     label.connect_activate_link(link_clicked);
     label
+}
+
+/// Every line of a block in the direction of its first letter. Left alone, each line takes its
+/// own (Pango's default): in a block mixing Persian and English the lines zigzag between the
+/// left and right edges.
+pub(crate) fn one_direction(markup: &str) -> String {
+    let Some(rtl) = first_strong_rtl(markup) else { return markup.to_owned() };
+    let mark = if rtl { '\u{200F}' } else { '\u{200E}' };
+    let mut out = String::with_capacity(markup.len() + 16);
+    out.push(mark);
+    for c in markup.chars() {
+        out.push(c);
+        if c == '\n' {
+            out.push(mark);
+        }
+    }
+    out
+}
+
+/// Whether the first letter (outside markup tags and entities) is right-to-left; None: no letter.
+fn first_strong_rtl(markup: &str) -> Option<bool> {
+    let mut in_tag = false;
+    let mut in_entity = false;
+    for c in markup.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' if in_tag => in_tag = false,
+            '&' if !in_tag => in_entity = true,
+            ';' if in_entity => in_entity = false,
+            _ if in_tag || in_entity => {}
+            c if matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF) => return Some(true),
+            c if c.is_alphabetic() => return Some(false),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// A code block: monospace, selectable, with a copy button in its corner.
@@ -2816,6 +2860,13 @@ mod tests {
         assert_eq!(commands, vec!["ls".to_owned()]);
         assert_eq!(rest, "What did it print?");
         assert_eq!(split_shell_runs("plain"), (Vec::new(), "plain".to_owned()));
+    }
+
+    #[test]
+    fn a_block_keeps_one_direction() {
+        assert_eq!(super::one_direction("<b>which</b> is\nقیمت"), "\u{200E}<b>which</b> is\n\u{200E}قیمت");
+        assert_eq!(super::one_direction("&laquo;قیمت&raquo; price"), "\u{200F}&laquo;قیمت&raquo; price");
+        assert_eq!(super::one_direction("123"), "123");
     }
 
     #[test]
