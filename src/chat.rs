@@ -2419,7 +2419,7 @@ pub fn any_digit(c: char) -> Option<u32> {
 }
 
 /// A Markdown table: a header row in small caps, hairlines between rows.
-fn table_view(rows: &[Vec<String>]) -> gtk::Grid {
+pub(crate) fn table_view(rows: &[Vec<String>]) -> gtk::Grid {
     let grid = gtk::Grid::new();
     grid.add_css_class("md-table");
     for (r, row) in rows.iter().enumerate() {
@@ -2438,7 +2438,7 @@ fn table_view(rows: &[Vec<String>]) -> gtk::Grid {
 }
 
 /// A wrapping, selectable label for Pango markup.
-fn text_label(markup: &str) -> gtk::Label {
+pub(crate) fn text_label(markup: &str) -> gtk::Label {
     let label = gtk::Label::builder().xalign(0.0).wrap(true).selectable(true).use_markup(true).build();
     label.set_wrap_mode(pango::WrapMode::WordChar);
     label.set_markup(markup);
@@ -2448,7 +2448,7 @@ fn text_label(markup: &str) -> gtk::Label {
 }
 
 /// A code block: monospace, selectable, with a copy button in its corner.
-fn code_label(code: &str) -> gtk::Overlay {
+pub(crate) fn code_label(code: &str) -> gtk::Overlay {
     let label = gtk::Label::builder().label(code).xalign(0.0).wrap(true).selectable(true).build();
     label.set_wrap_mode(pango::WrapMode::Char);
     label.add_css_class("code-block");

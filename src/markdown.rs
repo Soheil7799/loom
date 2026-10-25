@@ -208,7 +208,8 @@ pub fn looks_like_path(text: &str) -> bool {
     // A slash alone is not enough ("origin/main"): a folder says so with its last "/", a
     // path from somewhere with "./", "../", "~/" or "/", and some files have no extension.
     let anchored = ["./", "../", "~/", "/"].iter().any(|p| path.starts_with(p)) && name.chars().any(char::is_alphabetic);
-    let folder = path.contains('/') && path.ends_with('/') && name.chars().any(char::is_alphabetic);
+    let plain = |n: &str| !n.is_empty() && n.chars().all(|c| c.is_alphanumeric() || "._-".contains(c)) && n.chars().any(char::is_alphabetic);
+    let folder = path.contains('/') && path.ends_with('/') && inner.trim_end_matches('/').split('/').all(plain);
     known || anchored || folder || BARE.contains(&name)
 }
 
@@ -226,7 +227,7 @@ mod tests {
         }
         for code in [
             "foo()", "a + b", "x.len()", "cargo build", "1.5", ".env", "v0.95", "agent.cwd", "self.chat", "README.md:see below", "config.toml:foo",
-            "src/../x.rs", "origin/main", "application/json", "and/or", "owner/repo", "src/app.rs:12:5:9",
+            "src/../x.rs", "origin/main", "application/json", "and/or", "owner/repo", "src/app.rs:12:5:9", "Ctrl+/",
         ] {
             assert!(!looks_like_path(code), "{code}");
         }

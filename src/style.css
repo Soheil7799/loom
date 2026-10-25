@@ -269,3 +269,9 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .ref.tag { color: @loom_warn; background: alpha(@loom_warn, 0.14); }
 /* Room under the last message, so it never sits against the input. */
 .messages { padding-bottom: 28px; }
+/* The open file, beside the chat. */
+.editor-pane { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
+.reader { padding: 24px 28px 40px 28px; }
+.reader label { font-size: 1.02em; }
+.editor-title { padding: 12px 14px 0 14px; font-weight: 600; }
+.editor-title label { font-family: inherit; }

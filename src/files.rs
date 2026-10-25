@@ -20,7 +20,12 @@ pub struct Files {
     pub root: gtk::Box,
     list: gtk::ListBox,
     empty: gtk::Label,
-    editor_box: gtk::Box,
+    /// The open file: shown beside the chat (the app places it), not in this panel.
+    pub editor_box: gtk::Box,
+    /// Markdown read as rendered (Read), or as text (Edit).
+    editor_stack: gtk::Stack,
+    reader: gtk::Box,
+    read_toggle: gtk::ToggleButton,
     name: gtk::Label,
     dirty: gtk::Label,
     view: sourceview::View,
@@ -185,12 +190,15 @@ impl Files {
         in_nevis.set_tooltip_text(Some("Open in nevis, with Live Preview (Ctrl+Shift+O)"));
         in_nevis.set_visible(glib::find_program_in_path("nevis").is_some());
         let find = gtk::SearchEntry::builder().placeholder_text("Find").width_chars(14).visible(false).build();
-        editor_header.append(&name);
         editor_header.append(&find);
-        editor_header.append(&dirty);
         let ask = gtk::Button::with_label("Ask Claude");
         ask.add_css_class("flat");
         ask.set_tooltip_text(Some("Mention this file (or the selected lines) in the chat"));
+        let read_toggle = gtk::ToggleButton::builder().label("Read").tooltip_text("Markdown as it reads, or as text to edit").visible(false).build();
+        read_toggle.add_css_class("flat");
+        read_toggle.remove_css_class("text-button");
+        read_toggle.remove_css_class("toggle");
+        editor_header.append(&read_toggle);
         editor_header.append(&ask);
         editor_header.append(&in_nevis);
         editor_header.append(&save);
@@ -206,7 +214,24 @@ impl Files {
         view.set_left_margin(6);
         view.add_css_class("editor");
         let view_scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
+        // Markdown, read: rendered as in the chat, in a column of a comfortable width.
+        let reader = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        reader.add_css_class("reader");
+        let reader_clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        reader_clamp.set_layout_manager(Some(crate::column::ColumnLayout::new(760)));
+        reader_clamp.append(&reader);
+        let reader_scroller = gtk::ScrolledWindow::builder().child(&reader_clamp).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        let editor_stack = gtk::Stack::new();
+        editor_stack.add_named(&view_scroller, Some("edit"));
+        editor_stack.add_named(&reader_scroller, Some("read"));
+
         editor_box.set_size_request(-1, 200);
+        // The file's name on a line of its own (the buttons would squeeze it), the actions under it.
+        let title_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        title_line.add_css_class("editor-title");
+        title_line.append(&name);
+        title_line.append(&dirty);
+        editor_box.append(&title_line);
         editor_box.append(&editor_header);
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tabs.add_css_class("editor-tabs");
@@ -216,18 +241,10 @@ impl Files {
         let message = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
         message.add_css_class("editor-message");
         editor_box.append(&message);
-        editor_box.append(&view_scroller);
-        // The lists above, the editor below; with no file open the lists take it all.
-        let split = gtk::Paned::builder()
-            .orientation(gtk::Orientation::Vertical)
-            .start_child(&views)
-            .end_child(&editor_box)
-            .shrink_start_child(false)
-            .shrink_end_child(false)
-            .vexpand(true)
-            .position(220)
-            .build();
-        root.append(&split);
+        editor_box.append(&editor_stack);
+        editor_box.add_css_class("editor-pane");
+        views.set_vexpand(true);
+        root.append(&views);
 
         let files = Rc::new(Files {
             root,
@@ -270,6 +287,9 @@ impl Files {
             graph_repo: RefCell::default(),
             committing: Cell::new(false),
             repo_bar: pick_line.clone(),
+            editor_stack,
+            reader,
+            read_toggle,
         });
         let views = files.views.clone();
         agent_tab.connect_toggled(move |tab| {
@@ -397,6 +417,12 @@ impl Files {
             }
         });
         *files.me.borrow_mut() = Rc::downgrade(&files);
+        let weak = Rc::downgrade(&files);
+        files.read_toggle.connect_toggled(move |toggle| {
+            if let Some(files) = weak.upgrade() {
+                files.set_reading(toggle.is_active());
+            }
+        });
         let weak = Rc::downgrade(&files);
         ask.connect_clicked(move |_| {
             if let Some(files) = weak.upgrade() {
@@ -557,12 +583,21 @@ impl Files {
         self.buffer.end_irreversible_action();
         self.buffer.set_modified(false);
         self.buffer.place_cursor(&self.buffer.start_iter());
-        self.name.set_label(&path.to_string_lossy());
+        // The name; where it is, on hover (the pane is narrow beside the chat).
+        self.name.set_label(&path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()));
+        self.name.set_tooltip_text(Some(&path.to_string_lossy()));
         self.notice("");
         self.warned.set(None);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
         self.remember(path);
+        let markdown = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
+        self.read_toggle.set_visible(markdown);
+        if self.read_toggle.is_active() != markdown {
+            self.read_toggle.set_active(markdown);
+        } else {
+            self.set_reading(markdown);
+        }
         self.editor_box.set_visible(true);
         self.view.grab_focus();
         true
@@ -1156,6 +1191,33 @@ impl Files {
         callback(text);
     }
 
+    /// Markdown shown rendered (`read`) or as text to edit.
+    fn set_reading(&self, read: bool) {
+        self.read_toggle.set_label(if read { "Edit" } else { "Read" });
+        if read {
+            self.render_reader();
+            self.editor_stack.set_visible_child_name("read");
+        } else {
+            self.editor_stack.set_visible_child_name("edit");
+            self.view.grab_focus();
+        }
+    }
+
+    /// The file's text, rendered as in the chat (headings, lists, tables, code).
+    fn render_reader(&self) {
+        while let Some(child) = self.reader.first_child() {
+            self.reader.remove(&child);
+        }
+        let text = self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
+        for segment in crate::markdown::segments(&text) {
+            match segment {
+                crate::markdown::Segment::Text(markup) => self.reader.append(&crate::chat::text_label(&markup)),
+                crate::markdown::Segment::Code { code, .. } => self.reader.append(&crate::chat::code_label(&code)),
+                crate::markdown::Segment::Table(rows) => self.reader.append(&crate::chat::table_view(&rows)),
+            }
+        }
+    }
+
     /// Switches to the Changes view.
     pub fn show_changes(&self) {
         self.root.set_visible(true);
@@ -1197,14 +1259,18 @@ impl Files {
         true
     }
 
+    /// The editor's find field (in its header rows).
     fn find_entry(&self) -> Option<gtk::SearchEntry> {
-        let header = self.editor_box.first_child()?;
-        let mut child = header.first_child();
-        while let Some(widget) = child {
-            if let Ok(entry) = widget.clone().downcast::<gtk::SearchEntry>() {
-                return Some(entry);
+        let mut row = self.editor_box.first_child();
+        while let Some(line) = row {
+            let mut child = line.first_child();
+            while let Some(widget) = child {
+                if let Ok(entry) = widget.clone().downcast::<gtk::SearchEntry>() {
+                    return Some(entry);
+                }
+                child = widget.next_sibling();
             }
-            child = widget.next_sibling();
+            row = line.next_sibling();
         }
         None
     }

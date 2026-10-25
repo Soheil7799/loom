@@ -159,9 +159,29 @@ impl App {
             .shrink_start_child(false)
             .shrink_end_child(false)
             .build();
+        // The open file beside the chat(s), above the tray: easy to read next to the agent.
+        let files = Files::new();
+        files.editor_box.set_size_request(320, -1);
+        let reading = gtk::Paned::builder()
+            .orientation(gtk::Orientation::Horizontal)
+            .start_child(&chats)
+            .end_child(&files.editor_box)
+            .shrink_start_child(false)
+            .shrink_end_child(false)
+            .build();
+        // Opened: about 45% of the width for the file (kept as dragged after that).
+        let pane = reading.clone();
+        files.editor_box.connect_visible_notify(move |editor| {
+            if editor.is_visible() {
+                let width = pane.width();
+                if width > 0 {
+                    pane.set_position(width * 55 / 100);
+                }
+            }
+        });
         let work = gtk::Paned::builder()
             .orientation(gtk::Orientation::Vertical)
-            .start_child(&chats)
+            .start_child(&reading)
             .end_child(&dock_stack)
             .resize_end_child(false)
             .shrink_end_child(false)
@@ -171,9 +191,8 @@ impl App {
         middle.append(&work);
         middle.append(&bar_stack);
 
-        // Right: files.
-        let files = Files::new();
-        files.root.set_size_request(400, -1);
+        // Right: the files panel (its lists; the file itself opens beside the chat).
+        files.root.set_size_request(340, -1);
         files.root.set_visible(false);
         let split = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
@@ -514,7 +533,7 @@ impl App {
             }
             (true, false, false, gdk::Key::f) => {
                 // The editor when it has the keyboard, the page of a project, else the chat.
-                let in_files = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is_ancestor(&self.files.root));
+                let in_files = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is_ancestor(&self.files.root) || w.is_ancestor(&self.files.editor_box));
                 if !(in_files && self.files.find()) {
                     if self.showing_project().is_some() {
                         self.history.focus_filter();
