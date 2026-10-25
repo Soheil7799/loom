@@ -163,6 +163,12 @@ fn general(s: &Settings) -> gtk::Box {
     let behaviour = section("Behaviour");
     row(&behaviour, "Confirm quitting while agents work", "Quitting stops a turn in flight; conversations are kept either way.", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
     row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
+    row(
+        &behaviour,
+        "Agents that need you first",
+        "In each project: waiting for you, failed, working, finished and unread, then the rest. Projects with an agent waiting move to the top.",
+        &switch(s.sort_by_urgency, |s, on| s.sort_by_urgency = on),
+    );
     content.append(&behaviour);
     content
 }

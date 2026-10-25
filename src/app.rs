@@ -382,6 +382,7 @@ impl App {
         settings::on_change(move |s| {
             if let Some(app) = weak.upgrade() {
                 app.apply_settings(s);
+                app.refresh_sidebar();
             }
         });
     }
@@ -976,11 +977,32 @@ impl App {
     }
 
     /// Agents in sidebar order: by project (in the sidebar's order), then as opened.
+    /// The projects as the sidebar shows them: with sorting on, those with an agent waiting
+    /// for the user (or failed) come first, the rest keep their place.
+    fn projects_in_order(&self) -> Vec<Project> {
+        let mut projects = self.projects.borrow().clone();
+        if settings::get().sort_by_urgency {
+            let agents = self.agents.borrow();
+            let needs_you = |p: &Project| agents.iter().any(|a| a.project == p.path && a.status().urgency(false) <= 1);
+            projects.sort_by_key(|p| !needs_you(p));
+        }
+        projects
+    }
+
+    /// Agents in sidebar order (number keys follow it too): by project, and within one, by
+    /// urgency when sorting is on (a stable sort, so equals keep the order they started in).
     fn agents_in_order(&self) -> Vec<Rc<Agent>> {
+        let projects = self.projects_in_order();
         let agents = self.agents.borrow();
-        let projects = self.projects.borrow();
-        let mut ordered: Vec<Rc<Agent>> =
-            projects.iter().flat_map(|p| agents.iter().filter(move |a| a.project == p.path).cloned()).collect();
+        let urgent = settings::get().sort_by_urgency;
+        let mut ordered: Vec<Rc<Agent>> = Vec::new();
+        for project in &projects {
+            let mut mine: Vec<Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).cloned().collect();
+            if urgent {
+                mine.sort_by_key(|a| a.status().urgency(a.unseen.get()));
+            }
+            ordered.extend(mine);
+        }
         // Any agent whose project is missing from the list still counts.
         ordered.extend(agents.iter().filter(|a| !projects.iter().any(|p| p.path == a.project)).cloned());
         ordered
@@ -1507,7 +1529,7 @@ impl App {
         }
         let mut rows = Vec::new();
         let focused = self.focused.borrow().clone();
-        let projects = self.projects.borrow().clone();
+        let projects = self.projects_in_order();
         let agents = self.agents_in_order();
         for project in &projects {
             let mine: Vec<&Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).collect();

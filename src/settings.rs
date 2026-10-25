@@ -26,6 +26,8 @@ pub struct Settings {
     pub terminal_font: String,
     /// Close the scratch terminal when focus leaves it.
     pub scratch_autohide: bool,
+    /// The sidebar puts agents that need you first (else in the order they started).
+    pub sort_by_urgency: bool,
 }
 
 impl Default for Settings {
@@ -41,6 +43,7 @@ impl Default for Settings {
             text_scale: 1.0,
             terminal_font: crate::term::FONT.to_owned(),
             scratch_autohide: false,
+            sort_by_urgency: true,
         }
     }
 }
@@ -111,6 +114,7 @@ fn parse(text: &str) -> Settings {
         text_scale: v["textScale"].as_f64().filter(|s| (0.7..=1.6).contains(s)).unwrap_or(d.text_scale),
         terminal_font: string("terminalFont", &d.terminal_font),
         scratch_autohide: flag("scratchAutohide", d.scratch_autohide),
+        sort_by_urgency: flag("sortByUrgency", d.sort_by_urgency),
     }
 }
 
@@ -126,6 +130,7 @@ fn render(s: &Settings) -> String {
         "textScale": s.text_scale,
         "terminalFont": s.terminal_font,
         "scratchAutohide": s.scratch_autohide,
+        "sortByUrgency": s.sort_by_urgency,
     }))
     .unwrap_or_default()
 }

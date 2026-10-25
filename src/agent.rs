@@ -31,6 +31,18 @@ pub enum Status {
 }
 
 impl Status {
+    /// How much an agent in this state needs the user: 0 most. `unseen`: it finished a turn
+    /// nobody has looked at yet.
+    pub fn urgency(self, unseen: bool) -> u8 {
+        match self {
+            Status::Blocked => 0,
+            Status::Failed => 1,
+            Status::Working => 2,
+            Status::Idle if unseen => 3,
+            _ => 4,
+        }
+    }
+
     pub fn css(self) -> &'static str {
         match self {
             Status::Suspended => "suspended",
@@ -947,4 +959,33 @@ fn own_program() -> Option<PathBuf> {
 
 fn message(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn who_needs_you_comes_first() {
+        let mut states = vec![
+            (Status::Suspended, false),
+            (Status::Idle, true),
+            (Status::Working, false),
+            (Status::Idle, false),
+            (Status::Blocked, false),
+            (Status::Failed, false),
+        ];
+        states.sort_by_key(|(s, unseen)| s.urgency(*unseen));
+        assert_eq!(
+            states,
+            vec![
+                (Status::Blocked, false),
+                (Status::Failed, false),
+                (Status::Working, false),
+                (Status::Idle, true),
+                (Status::Suspended, false),
+                (Status::Idle, false),
+            ]
+        );
+    }
 }
