@@ -77,6 +77,18 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             app.focused_agent().ok_or("no agent")?.chat.attach(&texture);
         }
         "usage" => print_labels(&app.focused_agent().ok_or("no agent")?.chat.usage_content(argument != "read")),
+        // Two subagents at work (for the strip over the input).
+        "fakecrew" => {
+            let chat = app.focused_agent().ok_or("no agent")?.chat.clone();
+            chat.set_working(Some(std::time::Instant::now()));
+            for (id, name, step) in [("t1", "Convert batch 1", "Edit HandoverPage.tsx"), ("t2", "Convert batch 2", "grep -rn \"آزاد\" web/src")] {
+                chat.tool(&serde_json::json!({ "toolCallId": id, "title": name, "kind": "think", "status": "completed" }));
+                chat.tool(&serde_json::json!({
+                    "toolCallId": format!("{id}-c"), "title": step, "kind": "edit", "status": "in_progress",
+                    "_meta": { "claudeCode": { "parentToolUseId": id } }
+                }));
+            }
+        }
         "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,

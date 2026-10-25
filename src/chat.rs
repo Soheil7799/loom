@@ -6,7 +6,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gtk::{gdk, gdk_pixbuf, gio, glib, pango, prelude::*};
 use serde_json::Value;
@@ -76,6 +76,10 @@ pub struct Chat {
     pub input: gtk::TextView,
     last: RefCell<Last>,
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
+    /// Subagents at work this turn: their task's tool call, what they last did, when.
+    crew: RefCell<Vec<(String, String, Instant)>>,
+    crew_list: gtk::ListBox,
+    crew_revealer: gtk::Revealer,
     /// Where the next tool call goes, until something else is said.
     group: RefCell<Option<Rc<ToolGroup>>>,
     stick: Rc<Cell<bool>>,
@@ -295,6 +299,14 @@ impl Chat {
         plan.add_css_class("plan");
         let plan_revealer = gtk::Revealer::builder().child(&plan).reveal_child(false).build();
         root.append(&plan_revealer);
+        // Subagents working (in the background too): what each last did; a click goes to it.
+        let crew_list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::None).build();
+        crew_list.add_css_class("crew");
+        let crew_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        crew_column.append(&crew_list);
+        crew_column.set_layout_manager(Some(crate::column::ColumnLayout::new(920)));
+        let crew_revealer = gtk::Revealer::builder().child(&crew_column).reveal_child(false).build();
+        root.append(&crew_revealer);
 
         let input = gtk::TextView::builder()
             .wrap_mode(gtk::WrapMode::WordChar)
@@ -418,6 +430,9 @@ impl Chat {
             last: RefCell::new(Last::None),
             group: RefCell::default(),
             tools: RefCell::default(),
+            crew: RefCell::default(),
+            crew_list,
+            crew_revealer,
             stick: Rc::new(Cell::new(true)),
             follow_pending: Cell::new(false),
             commands: RefCell::default(),
@@ -694,6 +709,24 @@ impl Chat {
                 }
             });
         }
+
+        let weak = Rc::downgrade(self);
+        self.crew_list.connect_row_activated(move |_, row| {
+            let Some(chat) = weak.upgrade() else { return };
+            let id = chat.crew.borrow().get(row.index() as usize).map(|(id, _, _)| id.clone());
+            if let Some(id) = id {
+                chat.go_to_tool(&id);
+            }
+        });
+        // The strip's "4s ago" kept current.
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(5, move || {
+            let Some(chat) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if !chat.crew.borrow().is_empty() {
+                chat.show_crew();
+            }
+            glib::ControlFlow::Continue
+        });
 
         let weak = Rc::downgrade(self);
         self.mode.connect_clicked(move |_| {
@@ -1335,6 +1368,8 @@ impl Chat {
         } else {
             self.send.remove_css_class("stop");
             self.working.set_label("");
+            self.crew.borrow_mut().clear();
+            self.show_crew();
         }
         if since.is_some() && was.is_none() {
             self.tick_working();
@@ -1359,6 +1394,8 @@ impl Chat {
 
     /// A quiet line under a finished turn: how long it took.
     pub fn turn_done(&self, seconds: u64) {
+        self.crew.borrow_mut().clear();
+        self.show_crew();
         self.group.take();
         *self.last.borrow_mut() = Last::None;
         // Files written meanwhile can be mentioned next.
@@ -1640,6 +1677,74 @@ impl Chat {
         if let Some(group) = group {
             group.refresh();
         }
+        // Only live work: a conversation read back replays its subagents too.
+        if self.working_since.get().is_some()
+            && let Some(parent) = update["_meta"]["claudeCode"]["parentToolUseId"].as_str()
+        {
+            self.crew_step(parent, update["title"].as_str().map(tool_title));
+        }
+    }
+
+    /// A subagent did something (`step`: its tool call's title, when it has one).
+    fn crew_step(&self, parent: &str, step: Option<String>) {
+        {
+            let mut crew = self.crew.borrow_mut();
+            match crew.iter_mut().find(|(id, _, _)| id == parent) {
+                Some(entry) => {
+                    if let Some(step) = step {
+                        entry.1 = step;
+                    }
+                    entry.2 = Instant::now();
+                }
+                None => crew.push((parent.to_owned(), step.unwrap_or_default(), Instant::now())),
+            }
+        }
+        self.show_crew();
+    }
+
+    /// The subagents strip: "◌ Convert batch 1 · Edit Foo.tsx · 4s ago".
+    fn show_crew(&self) {
+        while let Some(row) = self.crew_list.row_at_index(0) {
+            self.crew_list.remove(&row);
+        }
+        let crew = self.crew.borrow();
+        for (id, step, at) in crew.iter() {
+            let name = self.tools.borrow().get(id).map(|c| c.title.label().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| "Subagent".into());
+            let quiet = at.elapsed().as_secs();
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let glyph = if quiet < 90 { gtk::Spinner::builder().spinning(true).build().upcast::<gtk::Widget>() } else { gtk::Label::new(Some("○")).upcast() };
+            glyph.add_css_class("crew-glyph");
+            let who = gtk::Label::builder().label(&name).xalign(0.0).ellipsize(pango::EllipsizeMode::End).max_width_chars(36).build();
+            who.add_css_class("crew-name");
+            let what = gtk::Label::builder().label(step.as_str()).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+            what.add_css_class("dim");
+            let when = gtk::Label::new(Some(&if quiet < 5 { "now".to_owned() } else { format!("{} ago", elapsed(quiet)) }));
+            when.add_css_class("dim");
+            when.add_css_class("small");
+            line.append(&glyph);
+            line.append(&who);
+            line.append(&what);
+            line.append(&when);
+            let row = gtk::ListBoxRow::builder().child(&line).build();
+            row.set_tooltip_text(Some("Go to this subagent's work"));
+            self.crew_list.append(&row);
+        }
+        self.crew_revealer.set_reveal_child(!crew.is_empty());
+    }
+
+    /// Opens a tool call (its group unfolded) and scrolls to it.
+    fn go_to_tool(self: &Rc<Self>, id: &str) {
+        let Some(card) = self.tools.borrow().get(id).cloned() else { return };
+        self.open_tool(id);
+        let weak = Rc::downgrade(self);
+        glib::idle_add_local_once(move || {
+            let Some(chat) = weak.upgrade() else { return };
+            if let Some(point) = card.root.compute_point(&chat.list, &gtk::graphene::Point::new(0.0, 0.0)) {
+                let adj = chat.scroller.vadjustment();
+                chat.stick.set(false);
+                adj.set_value((f64::from(point.y()) - 24.0).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+            }
+        });
     }
 
     /// Adds a button to a tool card that opens its terminal.

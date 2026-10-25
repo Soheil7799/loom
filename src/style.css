@@ -279,3 +279,7 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .usage-button { padding: 2px 8px; min-height: 0; border-radius: 8px; }
 .usage-pop { padding: 10px 12px; min-width: 340px; }
 .usage-heading { font-size: 0.72em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 6px; }
+.crew { background: none; padding: 4px 6px 6px 6px; font-size: 0.9em; }
+.crew row { padding: 3px 6px; border-radius: 6px; }
+.crew .crew-name { font-weight: 600; }
+.crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
