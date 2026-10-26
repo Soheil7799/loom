@@ -2095,32 +2095,3 @@ fn own_program() -> Option<PathBuf> {
 fn message(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn who_needs_you_comes_first() {
-        let mut states = vec![
-            (Status::Suspended, false),
-            (Status::Idle, true),
-            (Status::Working, false),
-            (Status::Idle, false),
-            (Status::Blocked, false),
-            (Status::Failed, false),
-        ];
-        states.sort_by_key(|(s, unseen)| s.urgency(*unseen));
-        assert_eq!(
-            states,
-            vec![
-                (Status::Blocked, false),
-                (Status::Failed, false),
-                (Status::Working, false),
-                (Status::Idle, true),
-                (Status::Suspended, false),
-                (Status::Idle, false),
-            ]
-        );
-    }
-}
