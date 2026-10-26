@@ -54,7 +54,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 0);
     nav.add_css_class("prefs-nav");
     let top = gtk::Label::builder().label("Settings").xalign(0.0).build();
-    top.add_css_class("brand");
+    top.add_css_class("prefs-nav-title");
     top.add_css_class("prefs-nav-top");
     nav.append(&top);
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).vexpand(true).build();
@@ -73,9 +73,14 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     list.select_row(list.row_at_index(0).as_ref());
     nav.append(&list);
     let version = crate::acp::adapter_version().unwrap_or_else(|| "—".into());
-    let foot = gtk::Label::builder().label(format!("loom {} · adapter {version}", env!("CARGO_PKG_VERSION"))).xalign(0.0).build();
+    // The versions, and About behind them.
+    let foot_label = gtk::Label::builder().label(format!("loom {} · adapter {version}", env!("CARGO_PKG_VERSION"))).xalign(0.0).build();
+    foot_label.add_css_class("mono");
+    let foot = gtk::Button::builder().child(&foot_label).tooltip_text("About loom").build();
+    foot.add_css_class("flat");
     foot.add_css_class("prefs-nav-foot");
-    foot.add_css_class("mono");
+    let about_parent = window.clone();
+    foot.connect_clicked(move |_| crate::about::open(&about_parent));
     nav.append(&foot);
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);

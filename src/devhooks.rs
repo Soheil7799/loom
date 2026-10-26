@@ -108,6 +108,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             });
         }
         "overview" => app.show_overview(),
+        "about" => crate::about::open(&app.window),
         // A schedule due now: a new conversation in <dir> that runs `!echo scheduled-ok`.
         "schedtest" => app.add_schedule_for_tests(PathBuf::from(argument), "!echo scheduled-ok"),
         "schedule" => {

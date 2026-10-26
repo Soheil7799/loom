@@ -103,9 +103,24 @@ impl App {
         sidebar.set_hexpand(false);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         top.add_css_class("sidebar-top");
+        // The lockup: mark, name and who made it, on one baseline; it opens About.
+        let lockup = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        lockup.set_valign(gtk::Align::Center);
         let mark = crate::logo::mark(20);
-        let name = gtk::Label::builder().label("loom").xalign(0.0).hexpand(true).build();
+        let words = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let name = gtk::Label::builder().label("loom").valign(gtk::Align::BaselineFill).build();
         name.add_css_class("brand");
+        let by = gtk::Label::builder().label("by shirvani.dev").valign(gtk::Align::BaselineFill).build();
+        by.add_css_class("brand-by");
+        words.append(&name);
+        words.append(&by);
+        lockup.append(&mark);
+        lockup.append(&words);
+        let brand = gtk::Button::builder().child(&lockup).tooltip_text("About loom").build();
+        brand.update_property(&[gtk::accessible::Property::Label("About loom")]);
+        brand.add_css_class("flat");
+        brand.add_css_class("brand-button");
+        let spacer = gtk::Box::builder().hexpand(true).build();
         let inbox_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         inbox_list.add_css_class("inbox");
         let inbox = gtk::MenuButton::builder()
@@ -120,11 +135,16 @@ impl App {
         overview_button.add_css_class("flat");
         overview_button.add_css_class("overview-button");
         overview_button.set_tooltip_text(Some("Overview: every agent, and scheduled prompts (Ctrl+Shift+A)"));
-        top.append(&mark);
-        top.append(&name);
+        top.append(&brand);
+        top.append(&spacer);
         top.append(&inbox);
         top.append(&overview_button);
         sidebar.append(&top);
+        brand.connect_clicked(|button| {
+            if let Some(window) = button.root().and_downcast::<gtk::Window>() {
+                crate::about::open(&window);
+            }
+        });
         let list = gtk::ListBox::new();
         list.add_css_class("agents");
         let menu = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).build();
@@ -143,7 +163,7 @@ impl App {
         settings_button.add_css_class("flat");
         settings_button.add_css_class("icon");
         settings_button.set_tooltip_text(Some("Settings (Ctrl+,)"));
-        let help_button = gtk::Button::builder().icon_name("help-about-symbolic").tooltip_text("Keyboard shortcuts (Ctrl+/)").build();
+        let help_button = gtk::Button::builder().icon_name("input-keyboard-symbolic").tooltip_text("Keyboard shortcuts (Ctrl+/)").build();
         help_button.update_property(&[gtk::accessible::Property::Label("Keyboard shortcuts")]);
         help_button.add_css_class("flat");
         help_button.add_css_class("icon");
@@ -959,6 +979,7 @@ impl App {
             }),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
+            act("About loom", "", |a| crate::about::open(&a.window)),
         ];
         for agent in self.agents_in_order() {
             let weak = weak.clone();
@@ -2503,11 +2524,15 @@ impl App {
         middle.add_css_class("welcome");
         let mark = crate::logo::mark(84);
         mark.set_halign(gtk::Align::Center);
+        mark.set_margin_bottom(4);
         middle.append(&mark);
+        let lockup = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let title = gtk::Label::new(Some("loom"));
         title.add_css_class("welcome-title");
-        middle.append(&title);
-        let tagline = gtk::Label::new(Some("Your Claude Code agents, side by side."));
+        lockup.append(&title);
+        lockup.append(&crate::about::byline());
+        middle.append(&lockup);
+        let tagline = gtk::Label::new(Some(crate::about::TAGLINE));
         tagline.add_css_class("dim");
         middle.append(&tagline);
 

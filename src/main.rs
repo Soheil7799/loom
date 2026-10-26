@@ -2,6 +2,7 @@
 //! session over ACP (claude-agent-acp), shown as a native chat; commands land in a job tray,
 //! files in a side editor, and a scratch terminal is one key away.
 
+mod about;
 mod acp;
 mod agent;
 mod app;
