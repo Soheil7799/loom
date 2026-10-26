@@ -740,7 +740,8 @@ impl Agent {
         self.ready.set(false);
         self.turn.set(false);
         let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
-        unsent.extend(self.waiting.borrow_mut().drain(..));
+        // A command output placeholder is no message: its output stays for the next one.
+        unsent.extend(self.waiting.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()));
         self.show_waiting();
         self.chat.restore_unsent(unsent);
         self.drop_questions("The agent stopped");
@@ -914,7 +915,8 @@ impl Agent {
         self.ready.set(false);
         self.turn.set(false);
         let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
-        unsent.extend(self.waiting.borrow_mut().drain(..));
+        // A command output placeholder is no message: its output stays for the next one.
+        unsent.extend(self.waiting.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()));
         self.show_waiting();
         self.chat.restore_unsent(unsent);
         self.drop_questions("Stopped");
@@ -1204,6 +1206,10 @@ impl Agent {
     /// Ctrl+Enter: what waits goes into the running turn now (or as the next prompt).
     fn send_waiting_now(self: &Rc<Self>) {
         let Some((text, images)) = self.take_waiting() else { return };
+        // Nothing to say (a command output already went with an earlier message).
+        if text.is_empty() && images.is_empty() && self.context.borrow().is_empty() {
+            return;
+        }
         if self.turn.get() && self.ready.get() {
             self.steer(text, images);
         } else {
@@ -1277,7 +1283,8 @@ impl Agent {
             return;
         }
         let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
-        unsent.extend(self.waiting.borrow_mut().drain(..));
+        // A command output placeholder is no message: its output stays for the next one.
+        unsent.extend(self.waiting.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()));
         self.show_waiting();
         self.chat.restore_unsent(unsent);
         // The protocol wants every open question answered as cancelled.
