@@ -87,6 +87,12 @@ pub struct Chat {
     pub on_crew_open: Callback<String>,
     /// Stop pressed on a running subagent's row.
     pub on_crew_stop: Callback<String>,
+    /// A queued message taken back (its place in the queue).
+    pub on_unqueue: Callback<usize>,
+    /// Ctrl+Enter: the queued messages go into the running turn now.
+    pub on_send_now: Callback<()>,
+    /// Messages waiting for the turn to end, over the input.
+    queued_box: gtk::Box,
     /// The main conversation, or one subagent's ("aside").
     views: gtk::Stack,
     aside: gtk::Box,
@@ -402,7 +408,7 @@ impl Chat {
         toolbar.append(&pickers_scroller);
         let shell_badge = gtk::Label::builder().label("Shell mode").visible(false).valign(gtk::Align::Center).build();
         shell_badge.add_css_class("shell-badge");
-        shell_badge.set_tooltip_text(Some("Runs here, as you typed it. Claude sees what it printed with your next message, as in Claude Code."));
+        shell_badge.set_tooltip_text(Some("Runs here, as you typed it. What it prints goes to Claude when it ends."));
         toolbar.append(&shell_badge);
         toolbar.append(&working);
         toolbar.append(&send);
@@ -410,8 +416,12 @@ impl Chat {
         let attach_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         attach_box.add_css_class("attachments");
         attach_box.set_visible(false);
+        let queued_box = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        queued_box.add_css_class("queued");
+        queued_box.set_visible(false);
         let composer = gtk::Box::new(gtk::Orientation::Vertical, 0);
         composer.add_css_class("composer");
+        composer.append(&queued_box);
         composer.append(&attach_box);
         composer.append(&field);
         composer.append(&toolbar);
@@ -476,6 +486,9 @@ impl Chat {
             crew_revealer,
             on_crew_open: RefCell::default(),
             on_crew_stop: RefCell::default(),
+            on_unqueue: RefCell::default(),
+            on_send_now: RefCell::default(),
+            queued_box,
             views: views.clone(),
             aside: aside.clone(),
             aside_title,
@@ -907,6 +920,11 @@ impl Chat {
             gdk::Key::Return | gdk::Key::KP_Enter if completing && !shift => {
                 self.complete(self.completion_list.selected_row().map_or(0, |row| row.index()));
             }
+            // Ctrl+Enter: what is typed joins the queue, and the queue goes in now.
+            gdk::Key::Return | gdk::Key::KP_Enter if ctrl && !shift => {
+                self.submit();
+                self.call(&self.on_send_now, ());
+            }
             gdk::Key::Return | gdk::Key::KP_Enter if !shift => self.submit(),
             gdk::Key::Tab if completing => {
                 self.complete(self.completion_list.selected_row().map_or(0, |row| row.index()));
@@ -1013,6 +1031,51 @@ impl Chat {
         } else if down {
             self.scroll_to_latest();
         }
+    }
+
+    /// The messages waiting for the turn to end (an empty one: a `!command`'s output), each
+    /// with a × to take it back.
+    pub fn show_queued(self: &Rc<Self>, messages: &[String]) {
+        while let Some(child) = self.queued_box.first_child() {
+            self.queued_box.remove(&child);
+        }
+        for (i, text) in messages.iter().enumerate() {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            line.add_css_class("queued-row");
+            let shown = if text.is_empty() { "The output of your ! command".to_owned() } else { text.lines().next().unwrap_or("").to_owned() };
+            let label = gtk::Label::builder().label(&shown).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).single_line_mode(true).build();
+            label.set_tooltip_text(Some(text));
+            let mark = gtk::Label::new(Some("Queued"));
+            mark.add_css_class("queued-mark");
+            let remove = gtk::Button::with_label("×");
+            remove.add_css_class("flat");
+            remove.set_tooltip_text(Some("Take it back into the input"));
+            let weak = Rc::downgrade(self);
+            remove.connect_clicked(move |_| {
+                if let Some(chat) = weak.upgrade() {
+                    chat.call(&chat.on_unqueue, i);
+                }
+            });
+            line.append(&mark);
+            line.append(&label);
+            line.append(&remove);
+            self.queued_box.append(&line);
+        }
+        let hint = gtk::Label::builder().label("Sent when Claude finishes · Ctrl+Enter sends now").xalign(0.0).build();
+        hint.add_css_class("queued-hint");
+        self.queued_box.append(&hint);
+        self.queued_box.set_visible(!messages.is_empty());
+    }
+
+    /// A queued message taken back: into the input (before what is typed there).
+    pub fn unqueue(self: &Rc<Self>, text: &str, images: Vec<glib::Bytes>) {
+        let buffer = self.input.buffer();
+        let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
+        let joined = [text, typed.trim()].iter().filter(|t| !t.is_empty()).copied().collect::<Vec<_>>().join("\n\n");
+        buffer.set_text(&joined);
+        self.attachments.borrow_mut().extend(images);
+        self.show_attachments();
+        self.input.grab_focus();
     }
 
     /// Messages that never went out (the turn was stopped first): back in the input, with

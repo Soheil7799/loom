@@ -550,7 +550,10 @@ impl App {
             (true, false, false, gdk::Key::c) => {
                 // Chat text can be selected but never holds focus (the input keeps it): copy
                 // the chat's selection unless the input has one of its own.
-                let copied = self.focused_agent().is_some_and(|agent| !agent.chat.input.buffer().has_selection() && agent.chat.copy_selection());
+                // In a terminal, Ctrl+C is its own (an interrupt).
+                let in_terminal = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some());
+                let copied = !in_terminal
+                    && self.focused_agent().is_some_and(|agent| !agent.chat.input.buffer().has_selection() && agent.chat.copy_selection());
                 if !copied {
                     return glib::Propagation::Proceed;
                 }

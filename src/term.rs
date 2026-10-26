@@ -1,7 +1,7 @@
 //! The one terminal widget everything uses (scratchpad, jobs): VTE, set up in the window's
 //! colours and the code font. Swapping the engine later (libghostty) means changing this file.
 
-use gtk::{gdk, pango};
+use gtk::{gdk, glib, pango};
 use vte::prelude::*;
 
 pub const FONT: &str = "JetBrains Mono, Vazirmatn 10";
@@ -18,6 +18,25 @@ pub fn new(widget_for_colors: &impl IsA<gtk::Widget>) -> vte::Terminal {
     let (fg, bg) = colors(widget_for_colors.as_ref());
     term.set_colors(Some(&fg), Some(&bg), &[]);
     crate::theme::follow(&term);
+    // VTE has no keys for the clipboard: the usual terminal ones.
+    let keys = gtk::EventControllerKey::new();
+    keys.connect_key_pressed(|keys, key, _, modifiers| {
+        let Some(term) = keys.widget().and_downcast::<vte::Terminal>() else { return glib::Propagation::Proceed };
+        let ctrl_shift = modifiers.contains(gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK);
+        let shift_only = modifiers.contains(gdk::ModifierType::SHIFT_MASK) && !modifiers.contains(gdk::ModifierType::CONTROL_MASK);
+        match key.to_lower() {
+            gdk::Key::c if ctrl_shift => {
+                if term.has_selection() {
+                    term.copy_clipboard_format(vte::Format::Text);
+                }
+            }
+            gdk::Key::v if ctrl_shift => term.paste_clipboard(),
+            gdk::Key::Insert if shift_only => term.paste_clipboard(),
+            _ => return glib::Propagation::Proceed,
+        }
+        glib::Propagation::Stop
+    });
+    term.add_controller(keys);
     term
 }
 

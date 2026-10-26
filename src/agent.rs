@@ -148,6 +148,9 @@ pub struct Agent {
     /// `!command` runs and their output, for Claude with the next message (as Claude Code's
     /// own `!` does).
     context: RefCell<Vec<String>>,
+    /// Messages typed while a turn runs: sent together when it ends (Ctrl+Enter: now). An
+    /// empty one stands for a `!command`'s output, which goes with them.
+    waiting: RefCell<Vec<(String, Vec<glib::Bytes>)>>,
     shells: Cell<u64>,
     /// The adapter can resume a session without replaying it.
     can_resume: Cell<bool>,
@@ -207,6 +210,7 @@ impl Agent {
             replaying: Cell::new(false),
             queue: RefCell::default(),
             context: RefCell::default(),
+            waiting: RefCell::default(),
             shells: Cell::new(0),
             shell_pid: Cell::new(None),
             can_resume: Cell::new(false),
@@ -250,6 +254,24 @@ impl Agent {
         *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images)| {
             if let Some(agent) = weak.upgrade() {
                 agent.submit_with(text, images);
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
+        *agent.chat.on_unqueue.borrow_mut() = Some(Rc::new(move |index: usize| {
+            let Some(agent) = weak.upgrade() else { return };
+            let taken = {
+                let mut waiting = agent.waiting.borrow_mut();
+                (index < waiting.len()).then(|| waiting.remove(index))
+            };
+            if let Some((text, images)) = taken {
+                agent.chat.unqueue(&text, images);
+                agent.show_waiting();
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
+        *agent.chat.on_send_now.borrow_mut() = Some(Rc::new(move |()| {
+            if let Some(agent) = weak.upgrade() {
+                agent.send_waiting_now();
             }
         }));
         let weak = Rc::downgrade(&agent);
@@ -717,7 +739,9 @@ impl Agent {
         }
         self.ready.set(false);
         self.turn.set(false);
-        let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        unsent.extend(self.waiting.borrow_mut().drain(..));
+        self.show_waiting();
         self.chat.restore_unsent(unsent);
         self.drop_questions("The agent stopped");
         self.chat.set_working(None);
@@ -889,7 +913,9 @@ impl Agent {
         self.end_autonomous(false);
         self.ready.set(false);
         self.turn.set(false);
-        let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        unsent.extend(self.waiting.borrow_mut().drain(..));
+        self.show_waiting();
         self.chat.restore_unsent(unsent);
         self.drop_questions("Stopped");
         self.chat.set_working(None);
@@ -914,15 +940,17 @@ impl Agent {
             self.shell(command.to_owned());
             return;
         }
+        // Claude is working: it waits for the turn to end, as in Claude Code (Ctrl+Enter sends
+        // it in now).
+        if self.turn.get() && self.ready.get() {
+            self.waiting.borrow_mut().push((text, images));
+            self.show_waiting();
+            return;
+        }
         if !text.is_empty() {
             self.chat.user(&text);
         }
         self.chat.user_images(&images);
-        // Claude is working: the message goes into the running turn, as in the terminal.
-        if self.turn.get() && self.ready.get() {
-            self.steer(text, images);
-            return;
-        }
         if !self.ready.get() {
             self.queue.borrow_mut().push_back((text, images));
             self.start();
@@ -1072,7 +1100,18 @@ impl Agent {
                             clip(&stdout),
                             clip(&stderr)
                         ));
-                        agent.chat.notice("Not sent on its own: Claude sees this output with your next message (as in Claude Code).", "dim");
+                        // To Claude now; mid-turn, when the turn ends (with what else waits).
+                        if agent.turn.get() && agent.ready.get() {
+                            agent.waiting.borrow_mut().push((String::new(), Vec::new()));
+                            agent.show_waiting();
+                        } else {
+                            agent.queue.borrow_mut().push_back((String::new(), Vec::new()));
+                            if agent.ready.get() {
+                                agent.send_next();
+                            } else {
+                                agent.start();
+                            }
+                        }
                         return;
                     }
                 }
@@ -1140,11 +1179,53 @@ impl Agent {
         });
     }
 
+    /// What waits shown over the input.
+    fn show_waiting(self: &Rc<Self>) {
+        let texts: Vec<String> = self.waiting.borrow().iter().map(|(t, _)| t.clone()).collect();
+        self.chat.show_queued(&texts);
+    }
+
+    /// What waited for the turn, as one message: (text, images).
+    fn take_waiting(self: &Rc<Self>) -> Option<(String, Vec<glib::Bytes>)> {
+        let waiting: Vec<_> = self.waiting.borrow_mut().drain(..).collect();
+        if waiting.is_empty() {
+            return None;
+        }
+        self.show_waiting();
+        let text = waiting.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
+        let images: Vec<glib::Bytes> = waiting.into_iter().flat_map(|(_, i)| i).collect();
+        if !text.is_empty() {
+            self.chat.user(&text);
+        }
+        self.chat.user_images(&images);
+        Some((text, images))
+    }
+
+    /// Ctrl+Enter: what waits goes into the running turn now (or as the next prompt).
+    fn send_waiting_now(self: &Rc<Self>) {
+        let Some((text, images)) = self.take_waiting() else { return };
+        if self.turn.get() && self.ready.get() {
+            self.steer(text, images);
+        } else {
+            self.queue.borrow_mut().push_back((text, images));
+            self.send_next();
+        }
+    }
+
     fn send_next(self: &Rc<Self>) {
         if self.turn.get() || !self.ready.get() {
             return;
         }
+        // The turn ended with messages waiting: they are next.
+        if let Some(message) = self.take_waiting() {
+            self.queue.borrow_mut().push_back(message);
+        }
         let Some((text, images)) = self.queue.borrow_mut().pop_front() else { return };
+        // Nothing to say (a command's output already went with an earlier message).
+        if text.is_empty() && images.is_empty() && self.context.borrow().is_empty() {
+            self.send_next();
+            return;
+        }
         self.end_autonomous(false);
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
@@ -1195,7 +1276,9 @@ impl Agent {
         if !self.turn.get() && self.autonomous.get().is_none() {
             return;
         }
-        let unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
+        unsent.extend(self.waiting.borrow_mut().drain(..));
+        self.show_waiting();
         self.chat.restore_unsent(unsent);
         // The protocol wants every open question answered as cancelled.
         let pending: Vec<Pending> = self.pending.borrow_mut().drain(..).collect();

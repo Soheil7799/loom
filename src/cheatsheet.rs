@@ -24,7 +24,8 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
     (
         "Chat",
         &[
-            ("Enter", "Send (while Claude works: into the running turn)"),
+            ("Enter", "Send (while Claude works: queued for when it finishes)"),
+            ("Ctrl+Enter", "Send now, into the running turn (the queue too)"),
             ("Shift+Enter", "New line"),
             ("↑ / ↓", "Earlier messages you sent"),
             ("Esc", "Stop the turn (or a ! command)"),
@@ -37,7 +38,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Shift+Tab", "Next permission mode"),
             ("@", "Mention a file"),
             ("/", "Claude Code's commands"),
-            ("!", "Run a command; Claude sees its output with your next message"),
+            ("!", "Run a command; its output goes to Claude when it ends"),
             ("Ctrl+C", "Copy the text selected in the chat"),
             ("Ctrl+L", "Back to the input"),
         ],
@@ -64,6 +65,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+J", "Run a command in the tray"),
             ("Ctrl+Shift+J", "Peek at the newest job"),
             ("Ctrl+Shift+X", "Clear finished jobs"),
+            ("Ctrl+Shift+C / Ctrl+Shift+V", "Copy / paste in a terminal"),
         ],
     ),
     (

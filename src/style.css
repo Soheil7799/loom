@@ -334,3 +334,9 @@ entry.plan-comment { margin: 2px 32px 6px 0; }
 .shell-badge { font-size: 0.8em; font-weight: 700; padding: 1px 8px; border-radius: 99px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
 .tool-card.kind-shell { background: alpha(@loom_shell, 0.05); border-left: 2px solid alpha(@loom_shell, 0.7); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
 .tool-card.kind-shell .kind { color: @loom_shell; opacity: 0.9; }
+
+/* Messages waiting for the turn to end, over the input. */
+.composer .queued { padding: 6px 10px 4px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.composer .queued-row { min-height: 26px; }
+.composer .queued-mark { font-size: 0.8em; padding: 1px 6px; border-radius: 6px; background: alpha(@loom_run, 0.15); color: @loom_run; }
+.composer .queued-hint { font-size: 0.8em; opacity: 0.6; padding-top: 2px; }
