@@ -14,6 +14,7 @@ mod files;
 mod history;
 mod jobs;
 mod log;
+mod memory;
 mod logo;
 mod markdown;
 mod overview;

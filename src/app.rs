@@ -436,6 +436,16 @@ impl App {
             }
         });
         self.app.add_action(&focus_action);
+        // For the settings window: the overview (where schedules are).
+        let overview_action = gio::SimpleAction::new("show-overview", None);
+        let weak = Rc::downgrade(self);
+        overview_action.connect_activate(move |_, _| {
+            if let Some(app) = weak.upgrade() {
+                app.window.present();
+                app.show_overview();
+            }
+        });
+        self.app.add_action(&overview_action);
 
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
@@ -447,6 +457,28 @@ impl App {
         glib::timeout_add_seconds_local(60, move || {
             let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
             app.suspend_idle();
+            glib::ControlFlow::Continue
+        });
+
+        // With the debug log on: memory every 3 minutes (read off the main loop).
+        let (weak, last) = (Rc::downgrade(self), Rc::new(Cell::new(None::<u64>)));
+        glib::timeout_add_seconds_local(180, move || {
+            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if crate::log::on() {
+                let agents: Vec<crate::memory::AgentInfo> = app
+                    .agents_listed()
+                    .iter()
+                    .map(|a| (a.id, format!("{} · {}", app.project_label(&a.project), a.title()), a.status().css().to_owned(), a.adapter_pid()))
+                    .collect();
+                let last = last.clone();
+                glib::spawn_future_local(async move {
+                    let previous = last.get();
+                    if let Ok((text, total)) = gio::spawn_blocking(move || crate::memory::snapshot(&agents, previous)).await {
+                        last.set(Some(total));
+                        crate::log::write("memory", &text);
+                    }
+                });
+            }
             glib::ControlFlow::Continue
         });
 

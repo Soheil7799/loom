@@ -188,6 +188,11 @@ impl Conn {
         self.write(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }));
     }
 
+    /// The adapter's process id.
+    pub fn pid(&self) -> u32 {
+        self.pid
+    }
+
     pub fn notify(&self, method: &str, params: Value) {
         self.write(&json!({ "jsonrpc": "2.0", "method": method, "params": params }));
     }

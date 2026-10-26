@@ -365,6 +365,11 @@ impl Agent {
         if title.is_empty() { "New agent".to_owned() } else { title.clone() }
     }
 
+    /// The adapter process, while it runs.
+    pub fn adapter_pid(&self) -> Option<u32> {
+        self.conn.borrow().as_ref().map(|c| c.pid())
+    }
+
     pub fn status(&self) -> Status {
         self.status.get()
     }

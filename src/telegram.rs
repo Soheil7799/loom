@@ -89,23 +89,34 @@ pub struct Bot {
     typing: Cell<Option<u32>>,
 }
 
+/// The bot as the settings show it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Link {
+    Off,
+    NeedsToken,
+    Connecting,
+    /// `code`: no account linked yet, this links one. `problem`: the last message that could
+    /// not be sent.
+    Connected { bot: String, user: i64, code: Option<String>, problem: Option<String> },
+    Failed(String),
+}
+
 thread_local! {
-    /// The bot's state in a line, for the settings page.
-    static STATE: RefCell<String> = RefCell::new("Off.".to_owned());
-    static WATCHERS: RefCell<Vec<Box<dyn Fn(&str) -> bool>>> = RefCell::new(Vec::new());
+    static STATE: RefCell<Link> = const { RefCell::new(Link::Off) };
+    static WATCHERS: RefCell<Vec<Box<dyn Fn(&Link) -> bool>>> = RefCell::new(Vec::new());
 }
 
 /// Calls `f` with the bot's state now and on every change, while it returns true.
-pub fn watch(f: impl Fn(&str) -> bool + 'static) {
+pub fn watch(f: impl Fn(&Link) -> bool + 'static) {
     if STATE.with(|s| f(&s.borrow())) {
         WATCHERS.with(|w| w.borrow_mut().push(Box::new(f)));
     }
 }
 
-fn set_state(line: &str) {
-    STATE.with(|s| *s.borrow_mut() = line.to_owned());
+fn set_state(state: Link) {
+    STATE.with(|s| *s.borrow_mut() = state.clone());
     let watchers = WATCHERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
-    let kept: Vec<_> = watchers.into_iter().filter(|f| f(line)).collect();
+    let kept: Vec<_> = watchers.into_iter().filter(|f| f(&state)).collect();
     WATCHERS.with(|w| {
         let mut w = w.borrow_mut();
         let added = std::mem::take(&mut *w);
@@ -164,7 +175,7 @@ impl Bot {
         self.calls.borrow_mut().take();
         *self.running.borrow_mut() = wanted.clone();
         let Some((token, user)) = wanted else {
-            set_state(if s.telegram_enabled { "Needs the bot's token." } else { "Off." });
+            set_state(if s.telegram_enabled { Link::NeedsToken } else { Link::Off });
             return;
         };
         // Another bot: what was told was told by the old one.
@@ -186,7 +197,7 @@ impl Bot {
         self.user.set(user);
         *self.code.borrow_mut() = (user == 0).then(new_code);
         self.online.borrow_mut().take();
-        set_state("Connecting…");
+        set_state(Link::Connecting);
         let generation = self.generation.load(Ordering::SeqCst);
         let (to_main, from_threads) = async_channel::unbounded::<In>();
         let (calls, to_send) = async_channel::unbounded::<Call>();
@@ -389,18 +400,14 @@ impl Bot {
         self.call("editMessageText", body, About::Nothing);
     }
 
-    fn connected_line(&self, name: &str) -> String {
-        match self.code.borrow().as_deref() {
-            Some(code) => format!("Connected as @{name}. To link your Telegram account, send the bot this code: {code}"),
-            None => format!("Connected as @{name}."),
-        }
+    fn connected(&self, bot: &str, problem: Option<String>) -> Link {
+        Link::Connected { bot: bot.to_owned(), user: self.user.get(), code: self.code.borrow().clone(), problem }
     }
 
     fn incoming(self: &Rc<Self>, incoming: In) {
         match incoming {
             In::Online(name) => {
-                let line = self.connected_line(&name);
-                set_state(&line);
+                set_state(self.connected(&name, None));
                 // The menu under the chat replaces slash commands.
                 self.call("deleteMyCommands", json!({}), About::Nothing);
                 *self.online.borrow_mut() = Some(name);
@@ -411,7 +418,7 @@ impl Bot {
             In::Problem(problem) => {
                 crate::log::debug!("telegram", "problem: {problem}");
                 self.online.borrow_mut().take();
-                set_state(&problem);
+                set_state(Link::Failed(problem));
             }
             In::Unsent(why, about) => {
                 // A question that never arrived can be told again (tapping its agent does).
@@ -419,11 +426,11 @@ impl Bot {
                     self.told.borrow_mut().remove(&(agent, serial));
                 }
                 crate::log::debug!("telegram", "not sent: {why}");
-                let line = match self.online.borrow().as_deref() {
-                    Some(name) => format!("{} A message could not be sent: {why}", self.connected_line(name)),
-                    None => why,
+                let state = match self.online.borrow().as_deref() {
+                    Some(name) => self.connected(name, Some(why)),
+                    None => Link::Failed(why),
                 };
-                set_state(&line);
+                set_state(state);
             }
             In::Sent(about, message) => match about {
                 About::Nothing => {}

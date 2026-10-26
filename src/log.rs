@@ -57,7 +57,7 @@ pub fn write(area: &str, text: &str) {
     if !on() && area != "crash" {
         return;
     }
-    let text = if text.len() > LONGEST {
+    let text = if text.len() > LONGEST && area != "memory" {
         let mut cut = LONGEST;
         while !text.is_char_boundary(cut) {
             cut -= 1;

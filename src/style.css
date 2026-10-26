@@ -196,15 +196,35 @@ window.loom paned > separator { background: none; background-color: @loom_line; 
 button.welcome-action, button.welcome-project { padding: 10px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
 button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
 .welcome-heading { margin-top: 22px; font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; }
-window.prefs scrolledwindow, window.prefs viewport, window.prefs stack { background: @window_bg_color; }
-.prefs-sidebar { background: @sidebar_bg_color; padding: 8px 0; }
-.prefs-page { padding: 28px 36px; }
-.prefs-heading { font-size: 1.25em; font-weight: 700; margin-bottom: 4px; }
+window.prefs stack, window.prefs stack > scrolledwindow, window.prefs stack viewport { background: @window_bg_color; }
+.prefs-nav { background: @sidebar_bg_color; border-right: 1px solid @loom_line; min-width: 180px; }
+.prefs-nav-top { padding: 16px 12px 10px 18px; }
+.prefs-nav list { background: transparent; }
+.prefs-nav row { border-radius: 8px; margin: 1px 6px; padding: 7px 10px; outline: none; }
+.prefs-nav row:hover:not(:selected) { background: alpha(@window_fg_color, 0.05); }
+.prefs-nav row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.prefs-nav row:selected label { font-weight: 600; }
+.prefs-nav row image { -gtk-icon-size: 16px; opacity: 0.7; }
+.prefs-nav row:selected image { color: @accent_color; opacity: 1; }
+.prefs-nav row:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
+.prefs-nav-foot { padding: 10px 18px; border-top: 1px solid @loom_line; font-size: 0.8em; opacity: 0.6; }
+.prefs-page { padding: 28px 36px 36px; }
+.prefs-heading { font-size: 1.6em; font-weight: 700; margin-bottom: 4px; }
 .prefs-section { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px 4px; }
-.prefs-group { background: alpha(@window_fg_color, 0.035); border-radius: 10px; }
-.prefs-row { padding: 12px 16px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
+.prefs-group { background: alpha(@window_fg_color, 0.035); border: 1px solid alpha(@window_fg_color, 0.06); border-radius: 10px; }
+.prefs-row { padding: 10px 16px; min-height: 32px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
 .prefs-row:last-child { border-bottom: none; }
+.prefs-caption { font-size: 0.8em; opacity: 0.6; margin: 6px 4px 0 4px; }
 .prefs-title { font-weight: 500; }
+.prefs-page dropdown > button, .prefs-page fontbutton > button, .prefs-button {
+  min-height: 28px; padding: 0 10px; border-radius: 8px; font-size: 0.9em; font-weight: 500;
+  background: alpha(@window_fg_color, 0.06); box-shadow: none; border: none; }
+.prefs-page dropdown > button:hover, .prefs-page fontbutton > button:hover, .prefs-button:hover { background: alpha(@window_fg_color, 0.12); }
+.prefs-page entry, .prefs-page passwordentry { border-radius: 8px; min-height: 32px; }
+.prefs-status { padding: 14px 16px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); border: 1px solid alpha(@window_fg_color, 0.06); }
+.prefs-status.ok { border-color: alpha(@loom_ok, 0.45); }
+.prefs-status.failed { border-color: alpha(@loom_err, 0.5); }
+.link-code { font-family: "JetBrains Mono", monospace; font-size: 1.25em; letter-spacing: 0.12em; padding: 4px 12px; border-radius: 8px; color: @accent_color; background: alpha(@accent_color, 0.12); }
 .about-name { font-size: 1.6em; font-weight: 800; letter-spacing: 0.04em; }
 .about-blurb { margin: 6px 0; }
 
@@ -340,3 +360,4 @@ entry.plan-comment { margin: 2px 32px 6px 0; }
 .composer .queued-row { min-height: 26px; }
 .composer .queued-mark { font-size: 0.8em; padding: 1px 6px; border-radius: 6px; background: alpha(@loom_run, 0.15); color: @loom_run; }
 .composer .queued-hint { font-size: 0.8em; opacity: 0.6; padding-top: 2px; }
+.prefs-page dropdown > button > box, .prefs-page dropdown > button stack, .prefs-page dropdown > button label { background: none; box-shadow: none; }
