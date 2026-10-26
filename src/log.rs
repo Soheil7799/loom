@@ -11,6 +11,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gtk::glib;
 
 static ON: AtomicBool = AtomicBool::new(false);
+/// "debug.log", or "debug-<Suffix>.log" for a test instance (its own, as its settings are).
+static NAME: std::sync::OnceLock<String> = std::sync::OnceLock::new();
 static FILE: Mutex<Option<std::fs::File>> = Mutex::new(None);
 
 /// Biggest the file gets before it is moved to debug.log.1 (the one before is dropped).
@@ -19,7 +21,16 @@ const MOST: u64 = 10 * 1024 * 1024;
 const LONGEST: usize = 4000;
 
 pub fn path() -> PathBuf {
-    crate::state::dir().join("debug.log")
+    crate::state::dir().join(NAME.get().map_or("debug.log", String::as_str))
+}
+
+/// The file for `app_id` (before anything is written).
+pub fn name_for(app_id: &str) {
+    let name = match app_id.rsplit('.').next() {
+        Some("Loom") | None => "debug.log".to_owned(),
+        Some(suffix) => format!("debug-{suffix}.log"),
+    };
+    let _ = NAME.set(name);
 }
 
 pub fn on() -> bool {

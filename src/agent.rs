@@ -1889,6 +1889,14 @@ impl Agent {
             }
             "config_option_update" => self.set_config(&update["configOptions"]),
             "session_info_update" => {
+                // The prompt Claude Code predicts next (an empty list: none this turn).
+                if let Some(suggestions) = update["_meta"]["promptSuggestions"]["suggestions"].as_array()
+                    && !self.replaying.get()
+                {
+                    let text = suggestions.iter().filter_map(|s| s["text"].as_str()).find(|t| !t.trim().is_empty());
+                    crate::log::debug!(format!("agent {}", self.id), "prompt suggestion: {text:?}");
+                    self.chat.set_suggestion(text.map(str::to_owned));
+                }
                 // A name given by hand stays.
                 if let Some(title) = update["title"].as_str().filter(|t| !t.is_empty() && !self.named.get()) {
                     *self.title.borrow_mut() = title.to_owned();

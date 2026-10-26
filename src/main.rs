@@ -72,6 +72,7 @@ fn main() -> glib::ExitCode {
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     settings::init(&app_id);
+    log::name_for(&app_id);
     log::install();
     log::set(settings::get().debug_log);
     // `loom <folder>`: that folder's project page (in the running window, if there is one).

@@ -59,6 +59,9 @@ pub struct Chat {
     options: gtk::Box,
     show_thinking: Cell<bool>,
     placeholder: gtk::Label,
+    /// What Claude Code predicts you will send next (shown in the empty input; → or Tab
+    /// fills it in).
+    suggestion: RefCell<Option<String>>,
     send: gtk::Button,
     working: gtk::Label,
     /// The input box, and its "Shell mode" badge (text starting with !).
@@ -466,6 +469,7 @@ impl Chat {
             options,
             show_thinking: Cell::new(true),
             placeholder,
+            suggestion: RefCell::default(),
             send: send.clone(),
             working,
             composer: composer.clone(),
@@ -872,6 +876,10 @@ impl Chat {
         self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
                 chat.placeholder.set_visible(buffer.char_count() == 0);
+                // Typed something of one's own: the prediction is not wanted.
+                if buffer.char_count() > 0 && chat.suggestion.borrow().as_deref().is_some_and(|s| buffer.text(&buffer.start_iter(), &buffer.end_iter(), false) != s) {
+                    chat.set_suggestion(None);
+                }
                 chat.update_completion();
                 // "!" first: shell mode, as in Claude Code (a purple box that says so).
                 let shell = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim_start().starts_with('!');
@@ -930,6 +938,12 @@ impl Chat {
                 self.call(&self.on_send_now, ());
             }
             gdk::Key::Return | gdk::Key::KP_Enter if !shift => self.submit(),
+            // The prediction in the empty input: in, not sent.
+            gdk::Key::Right | gdk::Key::Tab if !completing && self.input.buffer().char_count() == 0 && self.suggestion.borrow().is_some() => {
+                let text = self.suggestion.borrow().clone().unwrap_or_default();
+                self.input.buffer().set_text(&text);
+                self.input.buffer().place_cursor(&self.input.buffer().end_iter());
+            }
             gdk::Key::Tab if completing => {
                 self.complete(self.completion_list.selected_row().map_or(0, |row| row.index()));
             }
@@ -1220,7 +1234,28 @@ impl Chat {
         let images = self.attachments.take();
         self.show_attachments();
         self.stick.set(true);
+        self.set_suggestion(None);
         self.call(&self.on_submit, (text, images));
+    }
+
+    /// The next prompt Claude Code predicts (None: none, the hint again).
+    pub fn set_suggestion(&self, text: Option<String>) {
+        let text = text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
+        match &text {
+            Some(text) => {
+                let first = text.lines().next().unwrap_or("");
+                self.placeholder.set_markup(&format!(
+                    "{}  <span size=\"small\" alpha=\"60%\">→ fills it in</span>",
+                    glib::markup_escape_text(first)
+                ));
+                self.placeholder.set_tooltip_text(Some(text));
+            }
+            None => {
+                self.placeholder.set_label("Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images");
+                self.placeholder.set_tooltip_text(None);
+            }
+        }
+        *self.suggestion.borrow_mut() = text;
     }
 
     /// Sends `text` as if typed and sent (with any images attached).
