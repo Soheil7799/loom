@@ -382,6 +382,23 @@ fn telegram(s: &Settings) -> gtk::Box {
     link.append(&open);
     link.set_visible(false);
     card.append(&link);
+    // Who sent the code: linked only when the user says so, here.
+    let proposal = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let proposed = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
+    proposed.add_css_class("small");
+    let accept = flat_button("Link this account");
+    proposal.append(&proposed);
+    proposal.append(&accept);
+    proposal.set_visible(false);
+    card.append(&proposal);
+    let candidate_id = Rc::new(std::cell::Cell::new(0i64));
+    let chosen = candidate_id.clone();
+    accept.connect_clicked(move |_| {
+        let id = chosen.get();
+        if id != 0 {
+            settings::update(|s| s.telegram_user = id);
+        }
+    });
     content.append(&card);
 
     let setup = section("Setup");
@@ -406,19 +423,34 @@ fn telegram(s: &Settings) -> gtk::Box {
         entry.set_tooltip_text(None);
         settings::update(|s| s.telegram_user = id);
     });
-    row_stacked(&setup, "Your Telegram account", "Its user ID. Only this account is obeyed; anyone else writing to the bot is ignored.", &user);
+    row_stacked(
+        &setup,
+        "Your Telegram account",
+        "Its user ID: typed here, or linked above after sending the bot the code. Only this account is obeyed; anyone else writing to the bot is ignored.",
+        &user,
+    );
     caption(&setup, "Messages pass through Telegram's servers. “Always allow” and ! commands stay in loom.");
     content.append(&setup);
 
     let bot_name = Rc::new(std::cell::RefCell::new(String::new()));
     let names = bot_name.clone();
     let (wd, wt, wdet, wl, wc, wu, wcard) = (dot.downgrade(), title.downgrade(), detail.downgrade(), link.downgrade(), code.downgrade(), user.downgrade(), card.downgrade());
+    let (wp, wpl) = (proposal.downgrade(), proposed.downgrade());
     crate::telegram::watch(move |state| {
-        let (Some(dot), Some(title), Some(detail), Some(link), Some(code), Some(user), Some(card)) =
-            (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wl.upgrade(), wc.upgrade(), wu.upgrade(), wcard.upgrade())
+        let (Some(dot), Some(title), Some(detail), Some(link), Some(code), Some(user), Some(card), Some(proposal), Some(proposed)) =
+            (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wl.upgrade(), wc.upgrade(), wu.upgrade(), wcard.upgrade(), wp.upgrade(), wpl.upgrade())
         else {
             return false;
         };
+        let candidate = match state {
+            Link::Connected { candidate, .. } => candidate.clone(),
+            _ => None,
+        };
+        proposal.set_visible(candidate.is_some());
+        if let Some((id, name)) = &candidate {
+            proposed.set_label(&format!("{name} ({id}) sent the code. Link it if this is you."));
+            candidate_id.set(*id);
+        }
         for class in ["suspended", "starting", "done", "failed"] {
             dot.remove_css_class(class);
         }
@@ -428,7 +460,7 @@ fn telegram(s: &Settings) -> gtk::Box {
             Link::Off => ("suspended", "Off".to_owned(), "Switch it on to reach your agents from Telegram.".to_owned(), None),
             Link::NeedsToken => ("suspended", "Needs a bot token".to_owned(), "Paste it below.".to_owned(), None),
             Link::Connecting => ("starting", "Connecting…".to_owned(), String::new(), None),
-            Link::Connected { bot, user, code, problem } => {
+            Link::Connected { bot, user, code, problem, .. } => {
                 *names.borrow_mut() = bot.clone();
                 card.add_css_class("ok");
                 let mut words = if *user != 0 { format!("Linked to account {user}.") } else { "No account linked yet.".to_owned() };

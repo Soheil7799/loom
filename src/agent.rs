@@ -79,6 +79,8 @@ pub enum Event {
     Asked(String),
     /// A turn finished.
     Done,
+    /// Messages that never went out (the turn was stopped first): how many.
+    Unsent(usize),
     /// The agent stopped on an error (what it said).
     Failed(String),
     /// A copy of the conversation was made (fork, rewind): to open beside it.
@@ -210,6 +212,10 @@ pub struct Agent {
     pub last_took: Cell<u64>,
     /// The last turn was stopped (Esc, Stop), not finished.
     pub last_cancelled: Cell<bool>,
+    /// The last turn ended on an error (what it said).
+    pub last_error: RefCell<Option<String>>,
+    /// The adapter sends its own next-message guesses: none of loom's then.
+    adapter_suggests: Cell<bool>,
     pub focused: Cell<bool>,
     on_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, Event)>>>,
 }
@@ -259,6 +265,8 @@ impl Agent {
             last_turn: Cell::new(Instant::now()),
             last_took: Cell::new(0),
             last_cancelled: Cell::new(false),
+            last_error: RefCell::default(),
+            adapter_suggests: Cell::new(false),
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
@@ -371,7 +379,8 @@ impl Agent {
     /// After a finished turn: what the user will likely write next, in the empty input (if
     /// still empty and nothing new started meanwhile).
     fn guess_next(self: &Rc<Self>) {
-        if !crate::settings::get().suggest_prompts || self.replaying.get() {
+        let more = !self.queue.borrow().is_empty() || !self.waiting.borrow().is_empty();
+        if !crate::settings::get().suggest_prompts || self.replaying.get() || more || self.adapter_suggests.get() {
             return;
         }
         let (Some(user), Some(reply)) = (self.chat.last_user(), self.chat.last_reply()) else { return };
@@ -383,6 +392,15 @@ impl Agent {
                 agent.chat.set_suggestion(text);
             }
         });
+    }
+
+    /// Messages that never went out: back in the input, and told (the phone, if they came from it).
+    fn restore_unsent(self: &Rc<Self>, unsent: Vec<(String, Vec<glib::Bytes>)>) {
+        let count = unsent.iter().filter(|(t, i)| !t.is_empty() || !i.is_empty()).count();
+        self.chat.restore_unsent(unsent);
+        if count > 0 {
+            self.emit(Event::Unsent(count));
+        }
     }
 
     /// The adapter process, while it runs.
@@ -797,8 +815,9 @@ impl Agent {
         // A command output placeholder is no message: its output stays for the next one.
         unsent.extend(self.waiting.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()));
         self.show_waiting();
-        self.chat.restore_unsent(unsent);
+        self.restore_unsent(unsent);
         self.drop_questions("The agent stopped");
+        self.chat.crew_clear();
         self.chat.set_working(None);
         self.set_status(Status::Failed);
         // Not logged in: a way to log in, in the tray (Claude Code's own login).
@@ -847,6 +866,7 @@ impl Agent {
         if done {
             self.last_took.set(started.elapsed().as_secs());
             self.last_cancelled.set(false);
+            self.last_error.borrow_mut().take();
             self.chat.set_working(None);
             self.chat.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
@@ -976,8 +996,9 @@ impl Agent {
         // A command output placeholder is no message: its output stays for the next one.
         unsent.extend(self.waiting.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()));
         self.show_waiting();
-        self.chat.restore_unsent(unsent);
+        self.restore_unsent(unsent);
         self.drop_questions("Stopped");
+        self.chat.crew_clear();
         self.chat.set_working(None);
         self.status.set(Status::Suspended);
         self.refresh_header();
@@ -1331,13 +1352,18 @@ impl Agent {
                 match result {
                     Ok(result) => {
                         agent.last_cancelled.set(result["stopReason"].as_str() == Some("cancelled"));
+                        agent.last_error.borrow_mut().take();
                         if result["stopReason"].as_str() == Some("cancelled") {
                             agent.chat.notice("Stopped.", "dim");
                         } else if let Some(reason) = result["stopReason"].as_str().filter(|r| *r != "end_turn") {
                             agent.chat.notice(&format!("Turn ended: {}", reason.replace('_', " ")), "dim");
                         }
                     }
-                    Err(err) => agent.chat.notice(&format!("Error: {}", message(&err)), "error"),
+                    Err(err) => {
+                        agent.last_cancelled.set(false);
+                        *agent.last_error.borrow_mut() = Some(message(&err));
+                        agent.chat.notice(&format!("Error: {}", message(&err)), "error");
+                    }
                 }
                 agent.chat.turn_done(started.elapsed().as_secs());
                 agent.last_turn.set(Instant::now());
@@ -1347,7 +1373,7 @@ impl Agent {
                 agent.refresh_status();
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.emit(Event::Done);
-                if !agent.last_cancelled.get() {
+                if !agent.last_cancelled.get() && agent.last_error.borrow().is_none() {
                     agent.guess_next();
                 }
                 agent.send_next();
@@ -1362,14 +1388,14 @@ impl Agent {
         if !self.turn.get() && self.autonomous.get().is_none() {
             // Still starting with a message to send: it is not sent (back in the input).
             let unsent: Vec<_> = self.queue.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()).collect();
-            self.chat.restore_unsent(unsent);
+            self.restore_unsent(unsent);
             return;
         }
         let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
         // A command output placeholder is no message: its output stays for the next one.
         unsent.extend(self.waiting.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()));
         self.show_waiting();
-        self.chat.restore_unsent(unsent);
+        self.restore_unsent(unsent);
         // The protocol wants every open question answered as cancelled.
         let pending: Vec<Pending> = self.pending.borrow_mut().drain(..).collect();
         let conn = self.conn.borrow().clone();
@@ -1762,6 +1788,7 @@ impl Agent {
     /// No subagents (the conversation is read back, or cleared): their views go too.
     fn forget_subs(&self) {
         self.subs.borrow_mut().clear();
+        self.chat.crew_clear();
         self.chat.show_main();
     }
 
@@ -1914,6 +1941,7 @@ impl Agent {
                 if let Some(suggestions) = update["_meta"]["promptSuggestions"]["suggestions"].as_array()
                     && !self.replaying.get()
                 {
+                    self.adapter_suggests.set(true);
                     let text = suggestions.iter().filter_map(|s| s["text"].as_str()).find(|t| !t.trim().is_empty());
                     crate::log::debug!(format!("agent {}", self.id), "prompt suggestion: {text:?}");
                     self.chat.set_suggestion(text.map(str::to_owned));

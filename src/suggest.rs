@@ -5,6 +5,10 @@
 
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+/// Guesses running now: several agents ending together start two at most.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
 
 use gtk::{gio, glib};
 
@@ -17,7 +21,13 @@ clear next step, reply with nothing at all.";
 /// loop; None if there is none (or `claude` can't be run).
 pub fn guess(user: String, reply: String, done: impl FnOnce(Option<String>) + 'static) {
     glib::spawn_future_local(async move {
+        if RUNNING.fetch_add(1, Ordering::SeqCst) >= 2 {
+            RUNNING.fetch_sub(1, Ordering::SeqCst);
+            done(None);
+            return;
+        }
         let found = gio::spawn_blocking(move || run(&user, &reply)).await.ok().flatten();
+        RUNNING.fetch_sub(1, Ordering::SeqCst);
         done(found);
     });
 }
@@ -42,7 +52,13 @@ fn run(user: &str, reply: &str) -> Option<String> {
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    child.stdin.take()?.write_all(input.as_bytes()).ok()?;
+    let written = child.stdin.take().map(|mut stdin| stdin.write_all(input.as_bytes()));
+    if !matches!(written, Some(Ok(()))) {
+        // Not left behind as a zombie.
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    }
     let output = child.wait_with_output().ok()?;
     let text = String::from_utf8_lossy(&output.stdout).trim().trim_matches(['"', '“', '”', '\'']).trim().to_owned();
     crate::log::debug!("suggest", "exit {:?}: {text:?}", output.status.code());

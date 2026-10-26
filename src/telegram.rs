@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 use crate::agent::{Agent, Asking, Event, Status};
 use crate::app::App;
-use crate::settings::{self, Settings};
+use crate::settings::Settings;
 
 /// Telegram takes 4096 characters a message; a long reply goes in parts of this many.
 const PART: usize = 3500;
@@ -73,6 +73,8 @@ pub struct Bot {
     code: RefCell<Option<String>>,
     /// Just linked: say so once connected.
     greet: Cell<bool>,
+    /// The account that sent the code, waiting for the user to link it in loom.
+    candidate: RefCell<Option<(i64, String)>>,
     /// "Connected as @bot." while it is.
     online: RefCell<Option<String>>,
     /// Who plain messages go to.
@@ -88,8 +90,8 @@ pub struct Bot {
     /// The agent whose "typing…" shows (while it works on a message from here), and its timer.
     typing: Cell<Option<u32>>,
     typing_timer: RefCell<Option<glib::SourceId>>,
-    /// Stopped from here: its turn's end is not told again.
-    stopped_here: Cell<Option<u32>>,
+    /// Stopped from here (and when): its turn's end is not told again.
+    stopped_here: Cell<Option<(u32, std::time::Instant)>>,
 }
 
 /// The bot as the settings show it.
@@ -98,9 +100,10 @@ pub enum Link {
     Off,
     NeedsToken,
     Connecting,
-    /// `code`: no account linked yet, this links one. `problem`: the last message that could
-    /// not be sent.
-    Connected { bot: String, user: i64, code: Option<String>, problem: Option<String> },
+    /// `code`: no account linked yet, sending it proposes one. `candidate`: who sent it, to be
+    /// linked by the user in loom (never by the bot itself). `problem`: the last message that
+    /// could not be sent.
+    Connected { bot: String, user: i64, code: Option<String>, candidate: Option<(i64, String)>, problem: Option<String> },
     Failed(String),
 }
 
@@ -153,6 +156,7 @@ impl Bot {
             user: Cell::new(0),
             code: RefCell::default(),
             greet: Cell::new(false),
+            candidate: RefCell::default(),
             online: RefCell::default(),
             talking_to: Cell::new(None),
             about: RefCell::default(),
@@ -178,6 +182,10 @@ impl Bot {
         }
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.calls.borrow_mut().take();
+        // Off until now: what was sent meanwhile is not acted on (as at a first start).
+        if self.running.borrow().is_none() {
+            self.offset.store(0, Ordering::SeqCst);
+        }
         *self.running.borrow_mut() = wanted.clone();
         let Some((token, user)) = wanted else {
             set_state(if s.telegram_enabled { Link::NeedsToken } else { Link::Off });
@@ -199,6 +207,10 @@ impl Bot {
             self.told.borrow_mut().clear();
             self.about.borrow_mut().clear();
         }
+        if self.user.get() == 0 && user != 0 && self.candidate.borrow().as_ref().is_some_and(|(id, _)| *id == user) {
+            self.greet.set(true);
+        }
+        self.candidate.borrow_mut().take();
         self.user.set(user);
         *self.code.borrow_mut() = (user == 0).then(new_code);
         self.online.borrow_mut().take();
@@ -417,7 +429,7 @@ impl Bot {
     }
 
     fn connected(&self, bot: &str, problem: Option<String>) -> Link {
-        Link::Connected { bot: bot.to_owned(), user: self.user.get(), code: self.code.borrow().clone(), problem }
+        Link::Connected { bot: bot.to_owned(), user: self.user.get(), code: self.code.borrow().clone(), candidate: self.candidate.borrow().clone(), problem }
     }
 
     fn incoming(self: &Rc<Self>, incoming: In) {
@@ -498,7 +510,8 @@ impl Bot {
             return;
         }
         if self.user.get() == 0 {
-            self.link(id, item["text"].as_str().unwrap_or(""));
+            let name = from["username"].as_str().map(|u| format!("@{u}")).or_else(|| from["first_name"].as_str().map(str::to_owned)).unwrap_or_default();
+            self.link(id, name, item["text"].as_str().unwrap_or(""));
             return;
         }
         if id != self.user.get() {
@@ -512,14 +525,16 @@ impl Bot {
     }
 
     /// Setting up: the account that sends the code shown in the settings is the one allowed.
-    fn link(&self, id: i64, text: &str) {
+    fn link(&self, id: i64, name: String, text: &str) {
         crate::log::debug!("telegram", "link attempt from {id}");
         let Some(code) = self.code.borrow().clone() else { return };
-        // "/start <code>" (a t.me link) or the code alone.
+        // "/start <code>" (a t.me link) or the code alone: proposed, for the user to confirm
+        // in loom's settings. Nothing is said to the sender.
         if text.split_whitespace().last() == Some(code.as_str()) {
-            self.code.borrow_mut().take();
-            self.greet.set(true);
-            settings::update(|s| s.telegram_user = id);
+            *self.candidate.borrow_mut() = Some((id, name));
+            if let Some(bot) = self.online.borrow().clone() {
+                set_state(self.connected(&bot, None));
+            }
             return;
         }
         // Anything else is ignored. (The code is never replaced on wrong tries: anyone could
@@ -570,7 +585,9 @@ impl Bot {
                 None => self.agents_menu(),
                 Some(agent) if text == STOP => {
                     if agent.is_busy() {
-                        self.stopped_here.set(Some(agent.id));
+                        if matches!(agent.status(), Status::Working | Status::Blocked) {
+                            self.stopped_here.set(Some((agent.id, std::time::Instant::now())));
+                        }
                         agent.cancel();
                         self.say(&format!("⏹ Stopped {}.", agent.title()), About::Agent(agent.id));
                     } else {
@@ -745,10 +762,15 @@ impl Bot {
                     self.stop_typing();
                 }
                 // Stopped: from here it was said already; from loom, said now.
+                let here = self.stopped_here.take().is_some_and(|(id, at)| id == agent.id && at.elapsed().as_secs() < 120);
                 if agent.last_cancelled.get() {
-                    if self.stopped_here.take() != Some(agent.id) {
+                    if !here {
                         self.say(&format!("⏹ {} was stopped.", agent.title()), About::Agent(agent.id));
                     }
+                    return;
+                }
+                if let Some(error) = agent.last_error.borrow().clone() {
+                    self.say(&format!("⚠️ {}: the turn ended on an error: {error}", agent.title()), About::Agent(agent.id));
                     return;
                 }
                 let project = self.app.borrow().upgrade().map(|app| app.project_label(&agent.project)).unwrap_or_default();
@@ -757,6 +779,10 @@ impl Bot {
                     Some(reply) => self.say_markdown(&header, &reply, About::Agent(agent.id)),
                     None => self.say(&header, About::Agent(agent.id)),
                 }
+            }
+            Event::Unsent(count) => {
+                let what = if *count == 1 { "A queued message".to_owned() } else { format!("{count} queued messages") };
+                self.say(&format!("⚠️ {what} to {} never went out (the turn stopped first): back in loom's input.", agent.title()), About::Agent(agent.id));
             }
             Event::Failed(why) if !looking => self.say(&format!("⚠️ {} stopped: {why}", agent.title()), About::Agent(agent.id)),
             Event::Changed => {
@@ -771,9 +797,11 @@ impl Bot {
                     // Still on its way (no message yet): the edit happens when it is sent.
                     .filter_map(|((_, serial), (message, text))| Some((*serial, (*message)?, text.clone())))
                     .collect();
+                // Still at it: answered in loom. Not any more: dropped as the agent stopped.
+                let outcome = if agent.is_busy() { "→ Answered in loom" } else { "→ Not answered: the agent stopped" };
                 for (serial, message, text) in gone {
                     self.told.borrow_mut().remove(&(agent.id, serial));
-                    self.edit(message, &format!("{text}\n\n→ Answered in loom"), None);
+                    self.edit(message, &format!("{text}\n\n{outcome}"), None);
                 }
             }
             _ => {}

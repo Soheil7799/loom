@@ -125,7 +125,12 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // Presses the last button labelled <label> (the newest card's).
         "click" => {
             let mut found = Vec::new();
-            collect(app.window.upcast_ref(), &|w| w.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l == argument), &mut found);
+            // In any window (settings…), the main one last so its buttons win.
+            let test = |w: &gtk::Widget| w.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l == argument);
+            for window in gtk::Window::list_toplevels().into_iter().filter(|w| w != app.window.upcast_ref::<gtk::Widget>()) {
+                collect(&window, &test, &mut found);
+            }
+            collect(app.window.upcast_ref(), &test, &mut found);
             found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
         }
         "type" => app.focused_agent().ok_or("no agent")?.chat.input.buffer().set_text(argument),

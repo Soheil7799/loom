@@ -1654,6 +1654,8 @@ impl Chat {
     // ---- messages -------------------------------------------------------------------------
 
     pub fn clear(&self) {
+        // The guess was about the conversation that went.
+        self.set_suggestion(None);
         // Everything but the "starting" note, which stays first.
         while let Some(child) = self.starting.next_sibling() {
             self.list.remove(&child);
@@ -1963,6 +1965,12 @@ impl Chat {
                 None => crew.push(Crew { key: parent.to_owned(), name, step: step.unwrap_or_default(), at: Instant::now(), started: Instant::now(), state: Some("running".into()), ended: None, guessed: true }),
             }
         }
+        self.show_crew();
+    }
+
+    /// No subagents any more (the agent stopped, failed or started over).
+    pub fn crew_clear(&self) {
+        self.crew.borrow_mut().clear();
         self.show_crew();
     }
 

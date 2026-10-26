@@ -80,6 +80,11 @@ pub struct App {
     /// The toast is a question (it goes once answered).
     toast_question: Cell<bool>,
     toast_timeout: RefCell<Option<glib::SourceId>>,
+    /// Opened on the overview: (the agent, the one pinned beside it) to put back side by side
+    /// when that agent is opened (and saved as it was meanwhile).
+    pending_pin: RefCell<Option<(Rc<Agent>, Rc<Agent>)>>,
+    /// An overview refresh is due (several changes at once make one).
+    overview_due: Cell<bool>,
     /// The Telegram bot (off unless switched on).
     bot: Rc<crate::telegram::Bot>,
 }
@@ -324,6 +329,8 @@ impl App {
             toast_agent: RefCell::default(),
             toast_question: Cell::new(false),
             toast_timeout: RefCell::default(),
+            pending_pin: RefCell::default(),
+            overview_due: Cell::new(false),
         });
         this.wire_toast(&toast_go, &toast_close);
         this.wire_history();
@@ -1023,7 +1030,14 @@ impl App {
         let agents = self.agents_in_order();
         // The overview first: the agent last looked at is where "back" goes (not resumed yet).
         if settings::get().start_on_overview && !agents.is_empty() {
-            *self.previous.borrow_mut() = agents.get(layout.focused).or(agents.first()).cloned();
+            let last = agents.get(layout.focused).or(agents.first()).cloned();
+            let pinned = layout.pinned.and_then(|p| agents.get(p)).cloned();
+            if let (Some(last), Some(pinned)) = (&last, pinned) {
+                if !Rc::ptr_eq(last, &pinned) {
+                    *self.pending_pin.borrow_mut() = Some((last.clone(), pinned));
+                }
+            }
+            *self.previous.borrow_mut() = last;
             self.refresh_sidebar();
             self.show_overview();
             return;
@@ -1175,6 +1189,14 @@ impl App {
                 input.grab_focus();
             }
         });
+        // The pair it was in when loom last closed: side by side again.
+        let pending = self.pending_pin.borrow().clone();
+        if let Some((beside, pinned)) = pending
+            && Rc::ptr_eq(&beside, agent)
+        {
+            self.pending_pin.borrow_mut().take();
+            self.pin(&pinned);
+        }
         self.refresh_sidebar();
         self.save();
     }
@@ -1210,6 +1232,8 @@ impl App {
 
     /// Shows `agent` beside the focused one (in place of any pinned before).
     fn pin(self: &Rc<Self>, agent: &Rc<Agent>) {
+        // A pair chosen now replaces the one from before.
+        self.pending_pin.borrow_mut().take();
         if self.is_pinned(agent) || self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
             return;
         }
@@ -1562,11 +1586,19 @@ impl App {
 
     /// The overview again, if shown, keeping the card that had the keyboard.
     fn refresh_overview(self: &Rc<Self>) {
-        if self.showing_overview() {
-            let focused = self.overview.focused_id();
-            self.fill_overview();
-            self.overview.focus_id(focused);
+        if !self.showing_overview() || self.overview_due.replace(true) {
+            return;
         }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_local_once(Duration::from_millis(400), move || {
+            let Some(app) = weak.upgrade() else { return };
+            app.overview_due.set(false);
+            if app.showing_overview() {
+                let focused = app.overview.focused_id();
+                app.fill_overview();
+                app.overview.focus_id(focused);
+            }
+        });
     }
 
     /// The schedules from the last run, and the clock that sends them. A run missed by more
@@ -1897,6 +1929,7 @@ impl App {
                 Event::Done => "done".to_owned(),
                 Event::Failed(why) => format!("failed: {why}"),
                 Event::Forked(_) => "forked".to_owned(),
+                Event::Unsent(n) => format!("{n} messages not sent"),
             });
         }
         self.bot.agent_event(agent, &event, looking);
@@ -1935,6 +1968,7 @@ impl App {
                 }
                 self.refresh_sidebar();
             }
+            Event::Unsent(_) => {}
             Event::Forked(saved) => {
                 let copy = self.add_agent(saved);
                 self.focus(&copy);
@@ -2041,7 +2075,9 @@ impl App {
         // On a project's page, the agent that had focus before it.
         let focused = self.focused.borrow().clone().or_else(|| self.previous.borrow().clone());
         let focused = focused.and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, &f))).unwrap_or(0);
-        let pinned = self.pinned.borrow().as_ref().and_then(|p| order.iter().position(|a| Rc::ptr_eq(a, p)));
+        // Not put back yet (opened on the overview): kept as it was.
+        let pinned = self.pinned.borrow().clone().or_else(|| self.pending_pin.borrow().as_ref().map(|(_, p)| p.clone()));
+        let pinned = pinned.and_then(|p| order.iter().position(|a| Rc::ptr_eq(a, &p)));
         state::save(
             &self.app_id,
             &state::Layout {
