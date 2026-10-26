@@ -24,6 +24,8 @@ button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible
 
 /* ---- sidebar ---------------------------------------------------------------------------- */
 .sidebar { background: @sidebar_bg_color; }
+/* The theme gives .sidebar a border of its own: none here (the colour is the edge). */
+window.loom box.sidebar { border: none; box-shadow: none; }
 .sidebar-top { padding: 10px 10px 6px 10px; }
 .brand { font-size: 1.15em; font-weight: 700; letter-spacing: -0.01em; }
 .brand-by { font-size: 0.8em; font-weight: 500; opacity: 0.6; margin-top: -1px; }
@@ -36,7 +38,7 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .lockup-by link:hover { color: @accent_color; }
 .about-body { padding: 28px 32px 24px; }
 /* As tall as the tray's bar beside it (4 + 26 + 4). */
-.sidebar-bottom { padding: 4px 6px; min-height: 26px; border-top: 1px solid @loom_line; }
+.sidebar-bottom { padding: 4px 6px; min-height: 26px; }
 .sidebar-bottom button:not(:hover):not(:checked) { background: none; box-shadow: none; }
 .sidebar-bottom button { border-radius: 8px; min-height: 26px; padding-top: 0; padding-bottom: 0; }
 .sidebar-bottom button.icon { min-width: 26px; min-height: 26px; padding: 0; }
@@ -321,7 +323,7 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 /* Room under the last message, so it never sits against the input. */
 .messages { padding-bottom: 28px; }
 /* The open file, beside the chat. */
-.editor-pane { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
+.editor-pane { background: @view_bg_color; }
 .reader { padding: 24px 28px 40px 28px; }
 .reader label { font-size: 1em; }
 .editor-title { padding: 10px 10px 8px 14px; border-bottom: 1px solid @loom_line; }
@@ -407,9 +409,14 @@ button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity
 .overview-card.compact { padding: 7px 12px; }
 /* Around the agent's view: the sidebars' colour; the view itself a rounded panel in it. */
 .middle { background: @sidebar_bg_color; }
-paned.island { border-radius: 12px; margin: 6px 6px 0 0; background: @view_bg_color; }
+/* The panels: rounded, in the sidebars' colour, with no lines between the parts around them. */
+paned.panels { margin: 6px 6px 0 0; }
+.island { border-radius: 12px; background: @view_bg_color; }
+window.loom .middle paned > separator, window.loom paned.split > separator { background-color: @sidebar_bg_color; }
+window.loom paned.panels > separator { min-width: 6px; background-color: transparent; }
 /* A toggle among the buttons looks like them, pressed or not. */
 button.prefs-button:checked { background: alpha(@window_fg_color, 0.12); color: @window_fg_color; }
 .sidebar-bottom button.icon label { font-size: 1.05em; }
 .file-picture { margin: 12px; }
 .file-other { padding: 24px; }
+window.loom button.toggle.prefs-button:checked, window.loom button.toggle.prefs-button:checked label { color: @window_fg_color; opacity: 1; }

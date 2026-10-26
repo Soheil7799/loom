@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
-use gtk::glib;
+use gtk::{gdk, gio, glib, prelude::*};
 use serde_json::{Value, json};
 
 use crate::agent::{Agent, Asking, Event, Status};
@@ -546,8 +546,13 @@ impl Bot {
     }
 
     fn message(self: &Rc<Self>, message: &Value) {
+        // A photo, or a file: fetched, then to the agent (a picture as one it sees).
+        if message.get("photo").is_some() || message.get("document").is_some() {
+            self.attachment(message);
+            return;
+        }
         let Some(text) = message["text"].as_str().map(str::trim) else {
-            self.say("Only text messages for now.", About::Nothing);
+            self.say("Text, photos and files for now (no voice, video or stickers).", About::Nothing);
             return;
         };
         let command = text.split_whitespace().next().unwrap_or("").split('@').next().unwrap_or("");
@@ -634,6 +639,74 @@ impl Bot {
             self.say(&format!("Now writing to {}.", agent.title()), About::Agent(agent.id));
         }
         self.typing(agent.id);
+    }
+
+    /// Who a message goes to: the agent whose message it replies to, else the one written to.
+    fn target_of(&self, message: &Value) -> Option<Rc<Agent>> {
+        let replied = message["reply_to_message"]["message_id"].as_i64();
+        let id = replied.and_then(|m| self.about.borrow().get(&m).copied()).or(self.talking_to.get());
+        id.and_then(|id| self.agent(id))
+    }
+
+    /// A photo or a file sent to the bot. A picture (a photo, or an image sent as a file) goes
+    /// with its caption as the agent's message, as if pasted in loom; any other file is saved
+    /// in the agent's folder (telegram-files/) and the agent is told where.
+    fn attachment(self: &Rc<Self>, message: &Value) {
+        let Some(agent) = self.target_of(message) else {
+            self.say("Pick the agent first (🧭 Agents), then send it again.", About::Nothing);
+            return;
+        };
+        let caption = message["caption"].as_str().unwrap_or("").trim().to_owned();
+        let (file, name, picture) = if let Some(sizes) = message["photo"].as_array() {
+            // The largest of the sizes Telegram keeps.
+            (sizes.last().cloned().unwrap_or_default(), "photo.jpg".to_owned(), true)
+        } else {
+            let document = message["document"].clone();
+            let name = document["file_name"].as_str().unwrap_or("file").to_owned();
+            let picture = document["mime_type"].as_str().is_some_and(|m| m.starts_with("image/"));
+            (document, name, picture)
+        };
+        let Some(file_id) = file["file_id"].as_str().map(str::to_owned) else { return };
+        // Bots can fetch 20 MB at most.
+        if file["file_size"].as_u64().is_some_and(|size| size > 20 * 1024 * 1024) {
+            self.say("That file is over 20 MB, more than a bot can fetch from Telegram.", About::Nothing);
+            return;
+        }
+        let Some((token, _)) = self.running.borrow().clone() else { return };
+        self.react(message);
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let fetched = gio::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
+            let Some(bot) = weak.upgrade() else { return };
+            let bytes = match fetched {
+                Ok(bytes) => bytes,
+                Err(why) => {
+                    bot.say(&format!("Could not fetch it from Telegram: {why}"), About::Agent(agent.id));
+                    return;
+                }
+            };
+            bot.talking_to.set(Some(agent.id));
+            if picture {
+                // As a pasted picture: PNG, which the agent sends Claude.
+                let png = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map(|t| t.save_to_png_bytes());
+                match png {
+                    Ok(png) => agent.submit_with(caption, vec![png]),
+                    Err(_) => bot.say("That picture could not be read.", About::Agent(agent.id)),
+                }
+            } else {
+                let dir = agent.cwd.join("telegram-files");
+                let target = crate::files::free_name(&dir.join(safe_name(&name)));
+                match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)) {
+                    Ok(()) => {
+                        let note = format!("I sent you a file from Telegram, saved at {}", target.display());
+                        let text = if caption.is_empty() { note } else { format!("{caption}\n\n({note})") };
+                        agent.submit_with(text, Vec::new());
+                    }
+                    Err(err) => bot.say(&format!("Could not save it in the agent's folder: {err}"), About::Agent(agent.id)),
+                }
+            }
+            bot.typing(agent.id);
+        });
     }
 
     /// 👍 on the message: it reached the agent.
@@ -962,6 +1035,26 @@ fn split_text(text: &str, markdown: bool) -> Vec<String> {
         parts.push(String::new());
     }
     parts
+}
+
+/// A file Telegram keeps (`file_id`), fetched whole.
+fn download(token: &str, file_id: &str) -> Result<Vec<u8>, String> {
+    let client = client(120);
+    let file = request(&client, token, "getFile", &json!({ "file_id": file_id })).map_err(|f| f.why)?;
+    let path = file["file_path"].as_str().ok_or("Telegram gave no path for it")?;
+    let url = format!("{}/file/bot{token}/{path}", api());
+    let mut response = client.get(&url).call().map_err(|e| e.to_string().replace(token, "…"))?;
+    if response.status().as_u16() != 200 {
+        return Err(format!("Telegram answered {}", response.status().as_u16()));
+    }
+    response.body_mut().with_config().limit(25 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string().replace(token, "…"))
+}
+
+/// A sent file's name, safe as a file name here (no folders, nothing hidden).
+fn safe_name(name: &str) -> String {
+    let name: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c }).collect();
+    let name = name.trim_start_matches('.').trim();
+    if name.is_empty() { "file".to_owned() } else { name.to_owned() }
 }
 
 fn escape(text: &str) -> String {
@@ -1295,6 +1388,14 @@ mod tests {
         let code = "y".repeat(PART - 80) + "\n";
         let parts = split_markdown(&format!("```sh\n{code}```\nafter\n"));
         assert!(parts.iter().all(|p| p.lines().any(|l| !l.trim().is_empty() && !l.starts_with("```"))));
+    }
+
+    #[test]
+    fn sent_file_names_stay_in_their_folder() {
+        assert_eq!(safe_name("../../.bashrc"), "_.._.bashrc");
+        assert_eq!(safe_name(".env"), "env");
+        assert_eq!(safe_name("report final.pdf"), "report final.pdf");
+        assert_eq!(safe_name(""), "file");
     }
 
     #[test]

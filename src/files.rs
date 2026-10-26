@@ -1514,7 +1514,7 @@ fn drop_into(into: impl Fn() -> Option<PathBuf> + 'static) -> gtk::DropTarget {
 }
 
 /// `wanted`, or "name (2).ext", "name (3).ext"… if it is taken.
-fn free_name(wanted: &Path) -> PathBuf {
+pub fn free_name(wanted: &Path) -> PathBuf {
     if !wanted.exists() {
         return wanted.to_owned();
     }

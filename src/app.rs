@@ -234,11 +234,16 @@ impl App {
             .shrink_end_child(false)
             .build();
         // The agent's view: a rounded panel, the sidebars and the tray around it in one colour.
-        reading.add_css_class("island");
-        // Its content clipped to the rounded corners (not on Broadway, the test display: its
-        // server aborts on that clip).
-        if std::env::var("GDK_BACKEND").as_deref() != Ok("broadway") {
-            reading.set_overflow(gtk::Overflow::Hidden);
+        // The agent's view and an open file: rounded panels side by side, the sidebars' colour
+        // around and between them (the gap between them is the handle that resizes them).
+        reading.add_css_class("panels");
+        for panel in [chats.upcast_ref::<gtk::Widget>(), files.editor_box.upcast_ref()] {
+            panel.add_css_class("island");
+            // Content clipped to the rounded corners (not on Broadway, the test display: its
+            // server aborts on that clip).
+            if std::env::var("GDK_BACKEND").as_deref() != Ok("broadway") {
+                panel.set_overflow(gtk::Overflow::Hidden);
+            }
         }
         // Opened: about 45% of the width for the file (kept as dragged after that).
         let (pane, placed) = (reading.clone(), Cell::new(false));
@@ -279,6 +284,7 @@ impl App {
             .shrink_end_child(false)
             .hexpand(true)
             .build();
+        split.add_css_class("split");
 
         let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         body.append(&sidebar);
