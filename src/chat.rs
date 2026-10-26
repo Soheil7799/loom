@@ -542,7 +542,8 @@ impl Chat {
             None
         }
         let Some(text) = find(self.list.upcast_ref()) else { return false };
-        self.list.clipboard().set_text(&text);
+        // Without the direction marks loom adds to mixed-direction lines.
+        self.list.clipboard().set_text(&text.replace(['\u{200E}', '\u{200F}'], ""));
         true
     }
 
@@ -1663,7 +1664,10 @@ impl Chat {
         let go = gtk::Button::with_label(button);
         go.add_css_class("suggested");
         go.set_valign(gtk::Align::Center);
-        go.connect_clicked(move |_| action());
+        go.connect_clicked(move |button| {
+            button.set_sensitive(false);
+            action();
+        });
         line.append(&label);
         line.append(&go);
         self.list.append(&line);
@@ -1722,6 +1726,17 @@ impl Chat {
         let group = card.group.borrow().upgrade();
         if let Some(group) = group {
             group.refresh();
+        }
+        // A task that ended takes its subagent off the strip; one sent to the background ends
+        // its call at once ("launched"), so it stays until the turn ends.
+        if matches!(update["status"].as_str(), Some("completed" | "failed"))
+            && self.crew.borrow().iter().any(|(parent, _, _)| parent == id)
+        {
+            let background = card.content.borrow().iter().any(|c| c.to_string().to_lowercase().contains("background"));
+            if !background {
+                self.crew.borrow_mut().retain(|(parent, _, _)| parent != id);
+                self.show_crew();
+            }
         }
         // Only live work: a conversation read back replays its subagents too.
         if self.working_since.get().is_some()
@@ -2444,7 +2459,7 @@ impl ToolGroup {
                 "web" => "Fetched",
                 "delete" => "Deleted",
                 "move" => "Moved",
-                "think" => "Delegated",
+                "think" => "Tasks",
                 _ => "Other",
             };
             match counts.iter_mut().find(|(v, _)| *v == verb) {
@@ -2845,6 +2860,10 @@ pub(crate) fn text_label(markup: &str) -> gtk::Label {
 /// own (Pango's default): in a block mixing Persian and English the lines zigzag between the
 /// left and right edges.
 pub(crate) fn one_direction(markup: &str) -> String {
+    // Only a block with right-to-left letters in it needs them.
+    if !markup.chars().any(is_rtl) {
+        return markup.to_owned();
+    }
     let Some(rtl) = first_strong_rtl(markup) else { return markup.to_owned() };
     let mark = if rtl { '\u{200F}' } else { '\u{200E}' };
     let mut out = String::with_capacity(markup.len() + 16);
@@ -2858,6 +2877,10 @@ pub(crate) fn one_direction(markup: &str) -> String {
     out
 }
 
+fn is_rtl(c: char) -> bool {
+    matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
+}
+
 /// Whether the first letter (outside markup tags and entities) is right-to-left; None: no letter.
 fn first_strong_rtl(markup: &str) -> Option<bool> {
     let mut in_tag = false;
@@ -2869,7 +2892,7 @@ fn first_strong_rtl(markup: &str) -> Option<bool> {
             '&' if !in_tag => in_entity = true,
             ';' if in_entity => in_entity = false,
             _ if in_tag || in_entity => {}
-            c if matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF) => return Some(true),
+            c if is_rtl(c) => return Some(true),
             c if c.is_alphabetic() => return Some(false),
             _ => {}
         }
@@ -2987,6 +3010,7 @@ mod tests {
         assert_eq!(super::one_direction("<b>which</b> is\nقیمت"), "\u{200E}<b>which</b> is\n\u{200E}قیمت");
         assert_eq!(super::one_direction("&laquo;قیمت&raquo; price"), "\u{200F}&laquo;قیمت&raquo; price");
         assert_eq!(super::one_direction("123"), "123");
+        assert_eq!(super::one_direction("cargo test\nnext"), "cargo test\nnext");
     }
 
     #[test]

@@ -161,6 +161,8 @@ pub struct Agent {
     /// A turn ended while someone looked elsewhere.
     pub unseen: Cell<bool>,
     pub last_active: Cell<Instant>,
+    /// When a turn last ended (or the agent was opened): how long it has been quiet.
+    pub last_turn: Cell<Instant>,
     pub focused: Cell<bool>,
     on_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, Event)>>>,
 }
@@ -204,6 +206,7 @@ impl Agent {
             planned: RefCell::default(),
             unseen: Cell::new(false),
             last_active: Cell::new(Instant::now()),
+            last_turn: Cell::new(Instant::now()),
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
@@ -657,7 +660,10 @@ impl Agent {
             text,
             "Retry",
             Rc::new(move || {
-                if let Some(agent) = weak.upgrade() {
+                // An old card clicked later must not restart an agent that runs again.
+                if let Some(agent) = weak.upgrade()
+                    && agent.status() == Status::Failed
+                {
                     agent.restart();
                 }
             }),
@@ -723,6 +729,7 @@ impl Agent {
         if done {
             self.chat.set_working(None);
             self.chat.turn_done(started.elapsed().as_secs());
+            self.last_turn.set(Instant::now());
             if !self.focused.get() {
                 self.unseen.set(true);
             }
@@ -1131,6 +1138,7 @@ impl Agent {
                     Err(err) => agent.chat.notice(&format!("Error: {}", message(&err)), "error"),
                 }
                 agent.chat.turn_done(started.elapsed().as_secs());
+                agent.last_turn.set(Instant::now());
                 if !agent.focused.get() {
                     agent.unseen.set(true);
                 }

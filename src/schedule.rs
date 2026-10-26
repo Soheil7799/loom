@@ -98,7 +98,7 @@ fn duration(text: &str) -> Result<i64, String> {
     if n == 0 {
         return Err("Longer than that, please".into());
     }
-    Ok(n * unit)
+    n.checked_mul(unit).filter(|s| *s <= 366 * 86400).ok_or_else(|| "At most a year, please".to_owned())
 }
 
 pub fn to_json(s: &Schedule) -> Value {
@@ -124,7 +124,7 @@ pub fn from_json(v: &Value) -> Option<Schedule> {
 
 /// The dialog that makes one: the prompt, when, and whether it goes on in this conversation.
 /// `done` gets (prompt, when, same conversation).
-pub fn ask(parent: &gtk::Window, agent: &str, done: impl Fn(String, String, bool) + 'static) {
+pub fn ask(parent: &gtk::Window, agent: &str, has_conversation: bool, done: impl Fn(String, String, bool) + 'static) {
     let window = gtk::Window::builder().title("Schedule a prompt").transient_for(parent).modal(true).default_width(520).resizable(false).build();
     window.add_css_class("schedule-dialog");
     window.add_css_class("loom");
@@ -149,7 +149,10 @@ pub fn ask(parent: &gtk::Window, agent: &str, done: impl Fn(String, String, bool
     next.add_css_class("small");
     next.add_css_class("dim");
     body.append(&next);
-    let same = gtk::CheckButton::builder().label("Continue this conversation (off: a new one each time)").active(true).build();
+    let same = gtk::CheckButton::builder().label("Continue this conversation (off: a new one each time)").active(has_conversation).sensitive(has_conversation).build();
+    if !has_conversation {
+        same.set_tooltip_text(Some("Nothing has been said here yet: each run starts a new conversation in this folder"));
+    }
     body.append(&same);
     let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     buttons.set_halign(gtk::Align::End);
@@ -247,6 +250,7 @@ mod tests {
         assert!(next_run("every 0m", &now).is_err());
         assert!(next_run("tomorrowish", &now).is_err());
         assert!(next_run("25:00", &now).is_err());
+        assert!(next_run("every 9999999999999999h", &now).is_err());
     }
 
     #[test]

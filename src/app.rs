@@ -606,17 +606,20 @@ impl App {
             }
             return glib::Propagation::Proceed;
         };
-        // A digit with a question open and nothing typed yet answers it, wherever focus is.
-        if let Some(n) = crate::chat::any_digit(c).filter(|n| *n >= 1)
+        let focus = GtkWindowExt::focus(&self.window);
+        let takes_text = focus.as_ref().is_some_and(|w| {
+            w.is::<gtk::Text>() || w.is::<gtk::TextView>() || w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some()
+        });
+        let in_input = focus.as_ref().is_some_and(|w| w == agent.chat.input.upcast_ref::<gtk::Widget>());
+        // A digit with a question open and nothing typed yet answers it: from the chat input or
+        // anything that takes no text (never from a field being typed in, like a plan comment).
+        if (in_input || !takes_text)
+            && let Some(n) = crate::chat::any_digit(c).filter(|n| *n >= 1)
             && agent.chat.input.buffer().char_count() == 0
             && agent.answer(0, n as usize - 1)
         {
             return glib::Propagation::Stop;
         }
-        let focus = GtkWindowExt::focus(&self.window);
-        let takes_text = focus.as_ref().is_some_and(|w| {
-            w.is::<gtk::Text>() || w.is::<gtk::TextView>() || w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some()
-        });
         if takes_text {
             return glib::Propagation::Proceed;
         }
@@ -1492,11 +1495,20 @@ impl App {
                 unseen: agent.unseen.get(),
                 waiting: agent.questions().into_iter().map(|(_, title, _)| title).collect(),
                 reply: agent.chat.last_reply(),
-                idle_for: agent.last_active.get().elapsed().as_secs(),
+                idle_for: agent.last_turn.get().elapsed().as_secs(),
                 scheduled: schedules.iter().filter(|s| s.session_id.is_some() && s.session_id == agent.session_id()).count(),
             })
             .collect();
         self.overview.fill(cards, &schedules);
+    }
+
+    /// The overview again, if shown, keeping the card that had the keyboard.
+    fn refresh_overview(self: &Rc<Self>) {
+        if self.showing_overview() {
+            let focused = self.overview.focused_id();
+            self.fill_overview();
+            self.overview.focus_id(focused);
+        }
     }
 
     /// The schedules from the last run, and the clock that sends them. A run missed by more
@@ -1534,6 +1546,9 @@ impl App {
                 crate::overview::Act::Pause => {
                     if let Some(s) = app.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
                         s.paused = !s.paused;
+                        if !s.paused {
+                            s.next = schedule::next_run(&s.when, &schedule::now()).ok().filter(|(_, repeats)| *repeats).map(|(t, _)| t).or(s.next);
+                        }
                     }
                 }
                 crate::overview::Act::Remove => app.schedules.borrow_mut().retain(|s| s.id != id),
@@ -1544,7 +1559,12 @@ impl App {
         let weak = Rc::downgrade(self);
         glib::timeout_add_seconds_local(20, move || {
             let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let now = schedule::now().to_unix();
+            let clock = schedule::now();
+            let now = clock.to_unix();
+            // Missed by over an hour (the laptop slept): skipped, the next one comes as usual.
+            for s in app.schedules.borrow_mut().iter_mut().filter(|s| !s.paused && s.next.is_some_and(|t| t < now - 3600)) {
+                s.next = schedule::next_run(&s.when, &clock).ok().filter(|(_, repeats)| *repeats).map(|(t, _)| t);
+            }
             let due: Vec<u64> = app.schedules.borrow().iter().filter(|s| !s.paused && s.next.is_some_and(|t| t <= now)).map(|s| s.id).collect();
             for id in due {
                 app.run_schedule(id, false);
@@ -1557,7 +1577,7 @@ impl App {
     pub(crate) fn schedule_for(self: &Rc<Self>, agent: &Rc<Agent>) {
         let weak = Rc::downgrade(self);
         let (cwd, session, title) = (agent.cwd.clone(), agent.session_id(), agent.title());
-        schedule::ask(self.window.upcast_ref(), &agent.title(), move |prompt, when, same| {
+        schedule::ask(self.window.upcast_ref(), &agent.title(), session.is_some(), move |prompt, when, same| {
             let Some(app) = weak.upgrade() else { return };
             let Ok((next, _)) = schedule::next_run(&when, &schedule::now()) else { return };
             let id = app.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
@@ -1583,7 +1603,19 @@ impl App {
     /// `by_hand`: Run now (the schedule keeps its next time).
     fn run_schedule(self: &Rc<Self>, id: u64, by_hand: bool) {
         let Some(schedule) = self.schedules.borrow().iter().find(|s| s.id == id).cloned() else { return };
-        let cwd = if schedule.cwd.is_dir() { schedule.cwd.clone() } else { glib::home_dir() };
+        if !schedule.cwd.is_dir() {
+            // Its folder is gone: nothing to run in. Paused, and said so.
+            if let Some(s) = self.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
+                s.paused = true;
+            }
+            let notification = gio::Notification::new("A scheduled prompt was paused");
+            notification.set_body(Some(&format!("Its folder no longer exists: {}", schedule.cwd.display())));
+            self.app.send_notification(Some(&format!("schedule-{id}")), &notification);
+            self.save();
+            self.refresh_overview();
+            return;
+        }
+        let cwd = schedule.cwd.clone();
         let agent = match &schedule.session_id {
             Some(session) => self.agent_with_session(session).unwrap_or_else(|| {
                 self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session.as_str()));
@@ -1607,9 +1639,7 @@ impl App {
         }
         self.refresh_sidebar();
         self.save();
-        if self.showing_overview() {
-            self.fill_overview();
-        }
+        self.refresh_overview();
     }
 
     /// Opens `project`'s page: nothing starts until a conversation is picked there.
@@ -1803,9 +1833,7 @@ impl App {
             Event::Changed => {
                 self.toast_settled(agent);
                 self.refresh_sidebar();
-                if self.showing_overview() {
-                    self.fill_overview();
-                }
+                self.refresh_overview();
                 self.refresh_inbox();
                 if agent.focused.get() {
                     self.files.set_repos(agent.repos());

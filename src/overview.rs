@@ -101,6 +101,23 @@ impl Overview {
         overview
     }
 
+    /// The agent whose card has the keyboard.
+    pub fn focused_id(&self) -> Option<u32> {
+        let root = self.cards.root()?;
+        let focus = gtk::prelude::GtkWindowExt::focus(root.downcast_ref::<gtk::Window>()?)?;
+        let child = focus.ancestor(gtk::FlowBoxChild::static_type()).and_downcast::<gtk::FlowBoxChild>()?;
+        self.ids.borrow().get(child.index() as usize).copied()
+    }
+
+    /// Gives the keyboard back to that agent's card (after a refill).
+    pub fn focus_id(&self, id: Option<u32>) {
+        let Some(id) = id else { return };
+        let index = self.ids.borrow().iter().position(|i| *i == id);
+        if let Some(child) = index.and_then(|i| self.cards.child_at_index(i as i32)) {
+            child.grab_focus();
+        }
+    }
+
     /// The first card takes the keyboard.
     pub fn grab_focus(&self) {
         if let Some(first) = self.cards.child_at_index(0) {
