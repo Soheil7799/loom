@@ -171,6 +171,8 @@ pub struct Agent {
     /// empty one stands for a `!command`'s output, which goes with them.
     waiting: RefCell<Vec<(String, Vec<glib::Bytes>)>>,
     shells: Cell<u64>,
+    /// The running `!command` was stopped by the user.
+    shell_stopped: Cell<bool>,
     /// The adapter can resume a session without replaying it.
     can_resume: Cell<bool>,
     /// Folders beyond `cwd` it may work in.
@@ -231,6 +233,7 @@ impl Agent {
             context: RefCell::default(),
             waiting: RefCell::default(),
             shells: Cell::new(0),
+            shell_stopped: Cell::new(false),
             shell_pid: Cell::new(None),
             can_resume: Cell::new(false),
             dirs: RefCell::new(saved.dirs.clone()),
@@ -1028,6 +1031,7 @@ impl Agent {
             }
         };
         self.shell_pid.set(Some(child.id() as i32));
+        self.shell_stopped.set(false);
         enum Out {
             Stdout(String),
             Stderr(String),
@@ -1122,6 +1126,10 @@ impl Agent {
                                 text.trim_end().to_owned()
                             }
                         };
+                        if agent.shell_stopped.take() {
+                            agent.chat.notice("Stopped: its output is not sent to Claude.", "dim");
+                            return;
+                        }
                         let stopped = if code.is_none() { "\n[stopped by the user]" } else { "" };
                         agent.context.borrow_mut().push(format!(
                             "<bash-input>{command}</bash-input>\n<bash-stdout>{}{stopped}</bash-stdout><bash-stderr>{}</bash-stderr>",
@@ -1150,6 +1158,8 @@ impl Agent {
     /// Esc while a `!command` runs: it stops (its whole process group).
     fn stop_shell(self: &Rc<Self>) -> bool {
         let Some(pid) = self.shell_pid.get() else { return false };
+        // Stopped (Esc, /clear): what it printed is not sent.
+        self.shell_stopped.set(true);
         // SAFETY: plain kill(2) on the group the command leads.
         unsafe { libc::kill(-pid, libc::SIGTERM) };
         // What ignores SIGTERM gets SIGKILL after 3 s: the whole group, children that outlived

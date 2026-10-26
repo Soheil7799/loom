@@ -272,7 +272,7 @@ fn telegram(s: &Settings) -> gtk::Box {
         line.set_label(text);
         // Linked by the code: the account shows here too.
         let id = settings::get().telegram_user;
-        if id != 0 && !user.has_focus() && user.text() != id.to_string() {
+        if id != 0 && (!user.has_focus() || user.text().is_empty()) && user.text() != id.to_string() {
             user.set_text(&id.to_string());
         }
         true

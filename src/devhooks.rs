@@ -222,6 +222,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 print_labels(&page);
             }
         }
+        // What Esc does: stops the turn, or a ! command.
+        "cancel" => app.focused_agent().ok_or("no agent")?.cancel(),
         // A view over the focused conversation (as a subagent's), and back.
         "aside" => app.focused_agent().ok_or("no agent")?.chat.show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
         "main" => {

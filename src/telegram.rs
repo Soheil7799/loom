@@ -38,8 +38,8 @@ enum In {
     Online(String),
     /// Telegram can't be reached, or refuses the token.
     Problem(String),
-    /// A message that could not be sent (the bot is still connected).
-    Unsent(String),
+    /// A message that could not be sent (the bot is still connected): why, and what it was about.
+    Unsent(String, About),
 }
 
 struct Call {
@@ -62,8 +62,6 @@ pub struct Bot {
     user: Cell<i64>,
     /// Linking an account: what to send the bot, shown only in the settings.
     code: RefCell<Option<String>>,
-    /// Wrong guesses at the code (a new one after too many).
-    guesses: Cell<u32>,
     /// Just linked: say so once connected.
     greet: Cell<bool>,
     /// "Connected as @bot." while it is.
@@ -127,7 +125,6 @@ impl Bot {
             token: RefCell::default(),
             user: Cell::new(0),
             code: RefCell::default(),
-            guesses: Cell::new(0),
             greet: Cell::new(false),
             online: RefCell::default(),
             talking_to: Cell::new(None),
@@ -163,12 +160,16 @@ impl Bot {
             self.about.borrow_mut().clear();
             self.talking_to.set(None);
         }
+        // Questions still on their way when stopped never get there: told again later.
+        self.told.borrow_mut().retain(|_, (message, _)| message.is_some());
+        // Another account is another chat: its message ids mean other messages.
         if user != self.user.get() {
             self.talking_to.set(None);
+            self.told.borrow_mut().clear();
+            self.about.borrow_mut().clear();
         }
         self.user.set(user);
         *self.code.borrow_mut() = (user == 0).then(new_code);
-        self.guesses.set(0);
         self.online.borrow_mut().take();
         set_state("Connecting…");
         let generation = self.generation.load(Ordering::SeqCst);
@@ -179,13 +180,17 @@ impl Bot {
         let (tx, key) = (to_main.clone(), token.clone());
         std::thread::spawn(move || poll(&key, &flag, generation, &offset, &tx));
         let flag = self.generation.clone();
+        let (weak, mine) = (Rc::downgrade(self), token.clone());
         std::thread::spawn(move || send(&token, &flag, generation, &to_send, &to_main));
-        let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             while let Ok(incoming) = from_threads.recv().await {
                 let Some(bot) = weak.upgrade() else { break };
-                if bot.generation.load(Ordering::SeqCst) != generation {
-                    break;
+                // Restarted meanwhile: what this bot already received is still handled (its
+                // offset is taken); another bot's, or a stopped one's, is not.
+                if bot.generation.load(Ordering::SeqCst) != generation
+                    && (bot.running.borrow().as_ref().map(|(t, _)| t) != Some(&mine) || !matches!(incoming, In::Update(_) | In::Sent(..)))
+                {
+                    continue;
                 }
                 bot.incoming(incoming);
             }
@@ -246,7 +251,11 @@ impl Bot {
                 self.online.borrow_mut().take();
                 set_state(&problem);
             }
-            In::Unsent(why) => {
+            In::Unsent(why, about) => {
+                // A question that never arrived can be told again (tapping its agent does).
+                if let About::Question(agent, serial) = about {
+                    self.told.borrow_mut().remove(&(agent, serial));
+                }
                 crate::log::debug!("telegram", "not sent: {why}");
                 let line = match self.online.borrow().as_deref() {
                     Some(name) => format!("{} A message could not be sent: {why}", self.connected_line(name)),
@@ -319,6 +328,7 @@ impl Bot {
 
     /// Setting up: the account that sends the code shown in the settings is the one allowed.
     fn link(&self, id: i64, text: &str) {
+        crate::log::debug!("telegram", "link attempt from {id}");
         let Some(code) = self.code.borrow().clone() else { return };
         // "/start <code>" (a t.me link) or the code alone.
         if text.split_whitespace().last() == Some(code.as_str()) {
@@ -327,15 +337,8 @@ impl Bot {
             settings::update(|s| s.telegram_user = id);
             return;
         }
-        // Too many wrong tries: another code (the settings show it).
-        self.guesses.set(self.guesses.get() + 1);
-        if self.guesses.get() >= 20 {
-            self.guesses.set(0);
-            *self.code.borrow_mut() = Some(new_code());
-            if let Some(name) = self.online.borrow().clone() {
-                set_state(&self.connected_line(&name));
-            }
-        }
+        // Anything else is ignored. (The code is never replaced on wrong tries: anyone could
+        // then keep it changing; at 8 characters it is not guessed.)
     }
 
     fn agent(&self, id: u32) -> Option<Rc<Agent>> {
@@ -688,12 +691,14 @@ struct Failure {
     unsent: bool,
     /// Another poll is still running (one being stopped): wait it out.
     conflict: bool,
+    /// Too many messages: Telegram says how many seconds to wait.
+    retry_after: Option<u64>,
 }
 
 /// One Bot API call: its result, or what went wrong.
 fn request(client: &ureq::Agent, token: &str, method: &str, body: &Value) -> Result<Value, Failure> {
     let url = format!("{}/bot{token}/{method}", api());
-    let failure = |why: String, unsent: bool| Failure { why: why.replace(token, "…"), fatal: false, unsent, conflict: false };
+    let failure = |why: String, unsent: bool| Failure { why: why.replace(token, "…"), fatal: false, unsent, conflict: false, retry_after: None };
     let mut response = client.post(&url).header("content-type", "application/json").send(body.to_string()).map_err(|e| {
         let unsent = matches!(e, ureq::Error::ConnectionFailed | ureq::Error::HostNotFound);
         failure(format!("Can't reach Telegram: {e}"), unsent)
@@ -705,7 +710,12 @@ fn request(client: &ureq::Agent, token: &str, method: &str, body: &Value) -> Res
         return Ok(value["result"].clone());
     }
     let why = value["description"].as_str().unwrap_or("refused");
-    Err(Failure { fatal: status == 401 || status == 404, conflict: status == 409, ..failure(format!("Telegram: {why}"), false) })
+    Err(Failure {
+        fatal: status == 401 || status == 404,
+        conflict: status == 409,
+        retry_after: value["parameters"]["retry_after"].as_u64().filter(|_| status == 429),
+        ..failure(format!("Telegram: {why}"), false)
+    })
 }
 
 /// Waits for updates. `next`: the update to ask for, shared with the poll before and after
@@ -805,6 +815,15 @@ fn send(token: &str, generation: &AtomicU64, mine: u64, calls: &async_channel::R
             std::thread::sleep(Duration::from_secs(2));
             result = request(&client, token, call.method, &call.body);
         }
+        // Too many at once (a long reply in many parts): as long as Telegram asks, then again.
+        for _ in 0..3 {
+            let Err(Failure { retry_after: Some(seconds), .. }) = &result else { break };
+            std::thread::sleep(Duration::from_secs((*seconds).clamp(1, 60)));
+            if generation.load(Ordering::SeqCst) != mine {
+                return;
+            }
+            result = request(&client, token, call.method, &call.body);
+        }
         match result {
             Ok(result) => {
                 if let Some(id) = result["message_id"].as_i64() {
@@ -814,7 +833,7 @@ fn send(token: &str, generation: &AtomicU64, mine: u64, calls: &async_channel::R
             // An edit that changes nothing, or of a message too old: not worth a word.
             Err(failure) if failure.why.contains("message is not modified") || failure.why.contains("message to edit not found") => {}
             Err(failure) => {
-                let _ = to_main.send_blocking(In::Unsent(failure.why));
+                let _ = to_main.send_blocking(In::Unsent(failure.why, call.about));
             }
         }
     }

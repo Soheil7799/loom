@@ -90,7 +90,10 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
         return;
     }
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
-    crate::log::debug!("settings", "changed: {}", render(&settings).replace(&settings.telegram_token, "…").replace('\n', " "));
+    crate::log::debug!("settings", "changed: {}", {
+        let text = render(&settings).replace('\n', " ");
+        if settings.telegram_token.is_empty() { text } else { text.replace(&settings.telegram_token, "…") }
+    });
     if let Some(file) = FILE.with(|f| f.borrow().clone()) {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);

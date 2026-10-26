@@ -27,18 +27,29 @@ pub fn on() -> bool {
 }
 
 pub fn set(on: bool) {
-    if ON.swap(on, Ordering::SeqCst) == on {
+    if self::on() == on {
         return;
     }
     if on {
+        ON.store(true, Ordering::SeqCst);
         write("loom", &format!("debug log on (loom {})", env!("CARGO_PKG_VERSION")));
     } else {
+        // Written while still on: the log shows where it stops.
         write("loom", "debug log off");
+        ON.store(false, Ordering::SeqCst);
         if let Ok(mut file) = FILE.lock() {
             file.take();
         }
-        ON.store(false, Ordering::SeqCst);
     }
+}
+
+/// At most what one entry keeps of `text` (cut before formatting a megabyte for nothing).
+pub fn cut(text: &str) -> &str {
+    let mut end = text.len().min(LONGEST);
+    while !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
 }
 
 /// `area`: what it is about ("acp 1234", "agent 3", "telegram"…).

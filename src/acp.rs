@@ -104,6 +104,7 @@ impl Conn {
             });
         }
         let mut child = command.spawn()?;
+        let pid = child.id();
         let stdout = child.stdout.take().expect("piped stdout");
         let (tx, rx) = async_channel::unbounded::<Option<Value>>();
         std::thread::spawn(move || {
@@ -111,6 +112,11 @@ impl Conn {
                 let Ok(line) = line else { break };
                 if line.iter().all(u8::is_ascii_whitespace) {
                     continue;
+                }
+                // Logged as read (here, off the main loop): only the part kept.
+                if crate::log::on() {
+                    let text = String::from_utf8_lossy(&line[..line.len().min(8000)]);
+                    crate::log::write(&format!("acp {pid}"), &format!("← {} [{} bytes]", crate::log::cut(&text), line.len()));
                 }
                 match serde_json::from_slice(&line) {
                     Ok(value) => {
@@ -124,7 +130,6 @@ impl Conn {
             let _ = tx.send_blocking(None);
         });
 
-        let pid = child.id();
         crate::log::debug!(format!("acp {pid}"), "started {} in {}", program.join(" "), cwd.display());
         let conn = Rc::new(Conn {
             stdin: RefCell::new(child.stdin.take()),
@@ -152,7 +157,6 @@ impl Conn {
     }
 
     fn dispatch(&self, mut value: Value, on_incoming: &dyn Fn(Incoming)) {
-        crate::log::debug!(format!("acp {}", self.pid), "← {value}");
         if let Some(method) = value.get("method").and_then(Value::as_str).map(str::to_owned) {
             let id = value.get("id").cloned();
             let params = value.get_mut("params").map(Value::take).unwrap_or(Value::Null);
@@ -197,9 +201,9 @@ impl Conn {
     }
 
     fn write(&self, value: &Value) {
-        crate::log::debug!(format!("acp {}", self.pid), "→ {value}");
         if let Some(stdin) = self.stdin.borrow_mut().as_mut() {
             let mut line = value.to_string();
+            crate::log::debug!(format!("acp {}", self.pid), "→ {} [{} bytes]", crate::log::cut(&line), line.len());
             line.push('\n');
             if stdin.write_all(line.as_bytes()).and_then(|()| stdin.flush()).is_err() {
                 eprintln!("loom: the agent is not reading");

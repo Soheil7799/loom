@@ -36,6 +36,8 @@ pub fn new(widget_for_colors: &impl IsA<gtk::Widget>) -> vte::Terminal {
         }
         glib::Propagation::Stop
     });
+    // Before VTE's own key handling (which would send ^C/^V to the program).
+    keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     term.add_controller(keys);
     term
 }
