@@ -138,6 +138,7 @@ enum Last {
 struct ToolGroup {
     root: gtk::Box,
     summary: gtk::Button,
+    summary_label: gtk::Label,
     cards_box: gtk::Box,
     cards: RefCell<Vec<Rc<ToolCard>>>,
     folded: Cell<bool>,
@@ -692,7 +693,8 @@ impl Chat {
     /// at the end: half a screen short, scrolling down doing nothing, until any scroll lays it
     /// out again. So the move waits for the start of the next frame, before its layout.
     fn follow(self: &Rc<Self>) {
-        if !self.stick.get() || self.follow_pending.replace(true) {
+        // Not shown, no frames: when it is shown again, its map follows.
+        if !self.stick.get() || !self.scroller.is_mapped() || self.follow_pending.replace(true) {
             return;
         }
         let weak = Rc::downgrade(self);
@@ -726,6 +728,16 @@ impl Chat {
         let stick = self.stick.clone();
         let latest = self.latest.clone();
         let seen = Rc::new(Cell::new((0.0f64, 0.0f64, 0.0f64)));
+        // The view now follows a frame later, so a reader's scroll can come in between: the
+        // grown height is noted at once, or that scroll would count as a size change and not
+        // let go. (A shrink is not: its clamp of the position must not count as the reader's.)
+        let grown = seen.clone();
+        adjustment.connect_upper_notify(move |adj| {
+            let (value, upper, page) = grown.get();
+            if adj.upper() > upper {
+                grown.set((value, adj.upper(), page));
+            }
+        });
         adjustment.connect_value_changed(move |adj| {
             let (value, upper, page) = (adj.value(), adj.upper(), adj.page_size());
             let (was, was_upper, was_page) = seen.replace((value, upper, page));
@@ -754,6 +766,13 @@ impl Chat {
         self.root.connect_map(move |_| {
             if let Some(chat) = weak.upgrade() {
                 chat.follow();
+            }
+        });
+        // A tick asked for just before it was hidden never comes: the next follow asks again.
+        let weak = Rc::downgrade(self);
+        self.root.connect_unmap(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.follow_pending.set(false);
             }
         });
 
@@ -2571,6 +2590,7 @@ impl ToolGroup {
         let group = Rc::new(ToolGroup {
             root,
             summary,
+            summary_label,
             cards_box,
             cards: RefCell::default(),
             folded: Cell::new(false),
@@ -2624,11 +2644,8 @@ impl ToolGroup {
         }
         let what = counts.iter().map(|(verb, n)| format!("{verb} {n}")).collect::<Vec<_>>().join(" · ");
         let last = shown.last().map(|c| c.title.label().to_string()).unwrap_or_default();
-        let last: String = last.chars().take(48).collect::<String>() + if last.chars().count() > 48 { "…" } else { "" };
-        if let Some(label) = self.summary.child().and_downcast::<gtk::Label>() {
-            label.set_label(&format!("{glyph}  {what}  ·  last: {last}  {arrow}"));
-        }
-        self.summary.set_tooltip_text(Some(&format!("{} tool calls", shown.len())));
+        self.summary_label.set_label(&format!("{glyph}  {what}  ·  last: {last}  {arrow}"));
+        self.summary.set_tooltip_text(Some(&format!("{} tool calls: {what}\nlast: {last}", shown.len())));
     }
 }
 
