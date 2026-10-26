@@ -194,6 +194,9 @@ impl App {
             .orientation(gtk::Orientation::Vertical)
             .start_child(&reading)
             .end_child(&dock_stack)
+            // Never smaller than they can be: else the window measures the chat for a height
+            // it cannot fit in (a GTK warning on every relayout, every second while working).
+            .shrink_start_child(false)
             .resize_end_child(false)
             .shrink_end_child(false)
             .vexpand(true)
@@ -209,6 +212,7 @@ impl App {
             .orientation(gtk::Orientation::Horizontal)
             .start_child(&middle)
             .end_child(&files.root)
+            .shrink_start_child(false)
             .resize_end_child(false)
             .shrink_end_child(false)
             .hexpand(true)

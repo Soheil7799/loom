@@ -25,6 +25,7 @@
 //! - `project:<folder>`: that folder's project page (new or past conversations)
 //! - `key:<letter>`: Ctrl+B then that key (shift for capitals)
 //! - `find`: Ctrl+P · `tree`: the files panel's project view
+//! - `squeezed`: widgets given less room than they measure, and every paned
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `quit`
 
@@ -209,6 +210,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 return Err("no popover open".into());
             }
         }
+        // Widgets given less room than they need (with their ancestors), and every paned.
+        "squeezed" => squeezed(app.window.upcast_ref(), 0),
         // The text in open popovers, for when they cannot be drawn.
         "poptext" => {
             let mut found = Vec::new();
@@ -262,6 +265,29 @@ fn measure(widget: &gtk::Widget, depth: usize, threshold: i32) {
             }
             child = w.next_sibling();
         }
+    }
+}
+
+fn squeezed(widget: &gtk::Widget, depth: usize) {
+    let (min_h, _, _, _) = widget.measure(gtk::Orientation::Vertical, -1);
+    let (min_w, _, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
+    let (w, h) = (widget.width(), widget.height());
+    let short = widget.is_visible() && (h < min_h || w < min_w);
+    if short || widget.is::<gtk::Paned>() {
+        let path: Vec<String> = std::iter::successors(Some(widget.clone()), |w| w.parent())
+            .map(|w| format!("{}{:?}", w.type_().name(), w.css_classes().iter().map(|c| c.to_string()).collect::<Vec<_>>()))
+            .collect();
+        println!("SQUEEZE {:p} {w}x{h} min {min_w}x{min_h} visible={} :: {}", widget.as_ptr(), widget.is_visible(), path.join(" < "));
+        if let Some(paned) = widget.downcast_ref::<gtk::Paned>() {
+            println!("   position {} start {:?} end {:?}", paned.position(),
+                paned.start_child().map(|c| (c.type_().name(), c.is_visible(), c.width(), c.height())),
+                paned.end_child().map(|c| (c.type_().name(), c.is_visible(), c.width(), c.height())));
+        }
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        squeezed(&c, depth + 1);
+        child = c.next_sibling();
     }
 }
 
