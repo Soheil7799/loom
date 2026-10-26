@@ -87,7 +87,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let (w, nav_list) = (window.clone(), list.clone());
-    keys.connect_key_pressed(move |_, key, _, modifiers| {
+    keys.connect_key_pressed(move |_, key, keycode, modifiers| {
         let current = nav_list.selected_row().map_or(0, |r| r.index());
         let go = |index: i32| {
             if let Some(row) = nav_list.row_at_index(index.clamp(0, PAGES.len() as i32 - 1)) {
@@ -96,7 +96,8 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
         };
         let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
-        let digit = key.to_unicode().and_then(|c| c.to_digit(10)).filter(|d| (1..=PAGES.len() as u32).contains(d));
+        // The number row's 1…5 by position (evdev 2…6, +8): any layout.
+        let digit = (10..10 + PAGES.len() as u32).contains(&keycode).then(|| keycode - 9);
         match key {
             gdk::Key::Escape => w.close(),
             gdk::Key::Page_Up if ctrl => go(current - 1),
@@ -296,8 +297,9 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let open = flat_button("Open the overview");
     let w = window.clone();
     open.connect_clicked(move |_| {
-        w.close();
+        // While still attached to the app (closed, it no longer reaches its actions).
         let _ = w.activate_action("app.show-overview", None);
+        w.close();
     });
     row(&schedules, "Prompts on a schedule", "Set from an agent's menu; listed and paused in the overview (Ctrl+Shift+A).", &open);
     content.append(&schedules);

@@ -30,7 +30,7 @@ pub fn snapshot(agents: &[AgentInfo], previous: Option<u64>) -> (String, u64) {
     let ours: Vec<u32> = below(me).into_iter().filter(|p| *p != me).collect();
     let window = pss(me);
     let mut lines = Vec::new();
-    let mut counted: Vec<u32> = Vec::new();
+    let mut counted: std::collections::HashSet<u32> = std::collections::HashSet::new();
     let mut agents_total = 0;
     let mut states: HashMap<&str, usize> = HashMap::new();
     for (id, name, state, pid) in agents {

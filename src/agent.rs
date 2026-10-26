@@ -208,6 +208,8 @@ pub struct Agent {
     pub last_turn: Cell<Instant>,
     /// How long the last turn took (seconds).
     pub last_took: Cell<u64>,
+    /// The last turn was stopped (Esc, Stop), not finished.
+    pub last_cancelled: Cell<bool>,
     pub focused: Cell<bool>,
     on_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, Event)>>>,
 }
@@ -256,6 +258,7 @@ impl Agent {
             last_active: Cell::new(Instant::now()),
             last_turn: Cell::new(Instant::now()),
             last_took: Cell::new(0),
+            last_cancelled: Cell::new(false),
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
@@ -825,6 +828,8 @@ impl Agent {
         }
         let Some(started) = self.autonomous.take() else { return };
         if done {
+            self.last_took.set(started.elapsed().as_secs());
+            self.last_cancelled.set(false);
             self.chat.set_working(None);
             self.chat.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
@@ -1307,6 +1312,7 @@ impl Agent {
                 agent.last_active.set(Instant::now());
                 match result {
                     Ok(result) => {
+                        agent.last_cancelled.set(result["stopReason"].as_str() == Some("cancelled"));
                         if result["stopReason"].as_str() == Some("cancelled") {
                             agent.chat.notice("Stopped.", "dim");
                         } else if let Some(reason) = result["stopReason"].as_str().filter(|r| *r != "end_turn") {
@@ -1333,6 +1339,9 @@ impl Agent {
         // A `!command` running stops too (Esc stops what is going on, whichever it is).
         self.stop_shell();
         if !self.turn.get() && self.autonomous.get().is_none() {
+            // Still starting with a message to send: it is not sent (back in the input).
+            let unsent: Vec<_> = self.queue.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()).collect();
+            self.chat.restore_unsent(unsent);
             return;
         }
         let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();

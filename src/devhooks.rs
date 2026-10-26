@@ -240,12 +240,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // The memory snapshot the debug log takes every 3 minutes, now.
         "memory" => {
-            let agents: Vec<crate::memory::AgentInfo> = app
-                .agents_listed()
-                .iter()
-                .map(|a| (a.id, format!("{} · {}", app.project_label(&a.project), a.title()), a.status().css().to_owned(), a.adapter_pid()))
-                .collect();
-            eprintln!("{}", crate::memory::snapshot(&agents, None).0);
+            eprintln!("{}", crate::memory::snapshot(&app.memory_agents(), None).0);
         }
         // What Esc does: stops the turn, or a ! command.
         "cancel" => app.focused_agent().ok_or("no agent")?.cancel(),

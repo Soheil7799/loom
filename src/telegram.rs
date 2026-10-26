@@ -85,8 +85,11 @@ pub struct Bot {
     answering: Cell<Option<(u32, u64)>>,
     /// The agents keyboard's buttons: their text → the agent.
     labels: RefCell<HashMap<String, u32>>,
-    /// The agent whose "typing…" shows (while it works on a message from here).
+    /// The agent whose "typing…" shows (while it works on a message from here), and its timer.
     typing: Cell<Option<u32>>,
+    typing_timer: RefCell<Option<glib::SourceId>>,
+    /// Stopped from here: its turn's end is not told again.
+    stopped_here: Cell<Option<u32>>,
 }
 
 /// The bot as the settings show it.
@@ -157,6 +160,8 @@ impl Bot {
             answering: Cell::new(None),
             labels: RefCell::default(),
             typing: Cell::new(None),
+            typing_timer: RefCell::default(),
+            stopped_here: Cell::new(None),
         })
     }
 
@@ -365,24 +370,35 @@ impl Bot {
 
     /// "typing…" while `agent` works on what was sent from here (Telegram shows it 5 s a time).
     fn typing(self: &Rc<Self>, agent: u32) {
-        if self.typing.replace(Some(agent)) == Some(agent) {
-            return;
-        }
+        // One timer at a time: a new message (or another agent) starts it over.
+        self.stop_typing();
+        self.typing.set(Some(agent));
         let action = |bot: &Bot| bot.call("sendChatAction", json!({ "chat_id": bot.user.get(), "action": "typing" }), About::Nothing);
         action(self);
         let (weak, started) = (Rc::downgrade(self), std::time::Instant::now());
-        glib::timeout_add_seconds_local(4, move || {
+        let timer = glib::timeout_add_seconds_local(4, move || {
             let Some(bot) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let busy = bot.agent(agent).is_some_and(|a| a.status() == Status::Working);
-            if !bot.on() || bot.typing.get() != Some(agent) || !busy || started.elapsed().as_secs() > 30 * 60 {
-                if bot.typing.get() == Some(agent) {
-                    bot.typing.set(None);
-                }
+            // Starting (resumed) and waiting on a question are still at it.
+            let busy = bot.agent(agent).is_some_and(|a| matches!(a.status(), Status::Working | Status::Starting | Status::Blocked));
+            if !bot.on() || !busy || started.elapsed().as_secs() > 30 * 60 {
+                bot.typing.set(None);
+                bot.typing_timer.borrow_mut().take();
                 return glib::ControlFlow::Break;
             }
-            action(&bot);
+            // Waiting on you: no "typing" then (it comes back once answered).
+            if bot.agent(agent).is_some_and(|a| a.status() != Status::Blocked) {
+                action(&bot);
+            }
             glib::ControlFlow::Continue
         });
+        *self.typing_timer.borrow_mut() = Some(timer);
+    }
+
+    fn stop_typing(&self) {
+        self.typing.set(None);
+        if let Some(timer) = self.typing_timer.take() {
+            timer.remove();
+        }
     }
 
     /// One message (cut short if it must), with buttons.
@@ -538,8 +554,15 @@ impl Bot {
             return;
         }
         let picked = self.labels.borrow().get(text).copied();
-        if let Some(agent) = picked.and_then(|id| self.agent(id)) {
-            self.pick(&agent);
+        if let Some(id) = picked {
+            match self.agent(id) {
+                Some(agent) => self.pick(&agent),
+                // Closed since the keyboard was sent: not a message for anyone.
+                None => {
+                    self.say("That agent is closed.", About::Nothing);
+                    self.agents_menu();
+                }
+            }
             return;
         }
         if text == STOP || text == LAST {
@@ -547,6 +570,7 @@ impl Bot {
                 None => self.agents_menu(),
                 Some(agent) if text == STOP => {
                     if agent.is_busy() {
+                        self.stopped_here.set(Some(agent.id));
                         agent.cancel();
                         self.say(&format!("⏹ Stopped {}.", agent.title()), About::Agent(agent.id));
                     } else {
@@ -718,7 +742,14 @@ impl Bot {
             }
             Event::Done if !looking => {
                 if self.typing.get() == Some(agent.id) {
-                    self.typing.set(None);
+                    self.stop_typing();
+                }
+                // Stopped: from here it was said already; from loom, said now.
+                if agent.last_cancelled.get() {
+                    if self.stopped_here.take() != Some(agent.id) {
+                        self.say(&format!("⏹ {} was stopped.", agent.title()), About::Agent(agent.id));
+                    }
+                    return;
                 }
                 let project = self.app.borrow().upgrade().map(|app| app.project_label(&agent.project)).unwrap_or_default();
                 let header = format!("✅ {project} · {} — done in {}", agent.title(), crate::chat::elapsed(agent.last_took.get()));
@@ -751,6 +782,7 @@ impl Bot {
 
     /// An agent closed: what was told about it goes.
     pub fn forget(&self, agent: u32) {
+        self.labels.borrow_mut().retain(|_, id| *id != agent);
         self.told.borrow_mut().retain(|(id, _), _| *id != agent);
         self.about.borrow_mut().retain(|_, id| *id != agent);
         if self.talking_to.get() == Some(agent) {
@@ -832,23 +864,74 @@ fn clip(text: &str, most: usize) -> String {
 
 /// A long text in parts that Telegram takes, cut at line ends where it can.
 fn split(text: &str) -> Vec<String> {
+    split_text(text, false)
+}
+
+/// Markdown in parts Telegram takes: a code block cut in two is closed at the end of one part
+/// and opened again at the start of the next, so each part is still code.
+fn split_markdown(text: &str) -> Vec<String> {
+    split_text(text, true)
+}
+
+fn split_text(text: &str, markdown: bool) -> Vec<String> {
+    // Room kept for a fence closed and opened again.
+    let most = if markdown { PART - 64 } else { PART };
     let mut parts = Vec::new();
     let mut part = String::new();
-    for line in text.split_inclusive('\n') {
-        if part.chars().count() + line.chars().count() > PART && !part.is_empty() {
-            parts.push(std::mem::take(&mut part));
+    let mut fence: Option<String> = None;
+    let close = |part: &mut String, fence: &Option<String>| {
+        if let Some(open) = fence {
+            if !part.ends_with('\n') {
+                part.push('\n');
+            }
+            part.push_str(&open.chars().take_while(|c| *c == '`' || *c == '~').collect::<String>());
+            part.push('\n');
         }
-        if line.chars().count() > PART {
+    };
+    for line in text.split_inclusive('\n') {
+        if part.chars().count() + line.chars().count() > most && !part.trim().is_empty() {
+            close(&mut part, &fence);
+            parts.push(std::mem::take(&mut part));
+            if let Some(open) = &fence {
+                part.push_str(open);
+                part.push('\n');
+            }
+        }
+        let trimmed = line.trim_start();
+        if markdown && (trimmed.starts_with("```") || trimmed.starts_with("~~~")) {
+            fence = if fence.is_some() { None } else { Some(line.trim_end().to_owned()) };
+        }
+        if line.chars().count() > most {
+            // One line too long for a part: cut, each piece code again if it was code.
+            if !part.trim().is_empty() {
+                close(&mut part, &fence);
+                parts.push(std::mem::take(&mut part));
+            }
+            part.clear();
             let chars: Vec<char> = line.chars().collect();
-            for chunk in chars.chunks(PART) {
-                parts.push(chunk.iter().collect());
+            for chunk in chars.chunks(most) {
+                let mut piece = String::new();
+                if let Some(open) = &fence {
+                    piece.push_str(open);
+                    piece.push('\n');
+                }
+                piece.extend(chunk);
+                close(&mut piece, &fence);
+                parts.push(piece);
+            }
+            if let Some(open) = &fence {
+                part.push_str(open);
+                part.push('\n');
             }
         } else {
             part.push_str(line);
         }
     }
-    if !part.trim().is_empty() || parts.is_empty() {
-        parts.push(part);
+    parts.push(part);
+    // Nothing but fences (a block cut right at its end): no message of its own.
+    parts.retain(|p| p.lines().any(|l| !l.trim().is_empty() && !(markdown && (l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~")))));
+    if parts.is_empty() {
+        parts.push(String::new());
     }
     parts
 }
@@ -955,44 +1038,6 @@ fn html(markdown: &str) -> String {
         }
     }
     out.trim_end().to_owned()
-}
-
-/// Markdown in parts Telegram takes: cut at line ends, and a code block cut in two is closed
-/// at the end of one part and opened again at the start of the next.
-fn split_markdown(text: &str) -> Vec<String> {
-    let mut parts = Vec::new();
-    let mut part = String::new();
-    let mut fence: Option<String> = None;
-    for line in text.split_inclusive('\n') {
-        if part.chars().count() + line.chars().count() > PART - 16 && !part.trim().is_empty() {
-            if fence.is_some() {
-                if !part.ends_with('\n') {
-                    part.push('\n');
-                }
-                part.push_str("```\n");
-            }
-            parts.push(std::mem::take(&mut part));
-            if let Some(open) = &fence {
-                part.push_str(open);
-                part.push('\n');
-            }
-        }
-        if line.trim_start().starts_with("```") {
-            fence = if fence.is_some() { None } else { Some(line.trim_end().to_owned()) };
-        }
-        if line.chars().count() > PART - 16 {
-            let chars: Vec<char> = line.chars().collect();
-            for chunk in chars.chunks(PART - 16) {
-                parts.push(chunk.iter().collect());
-            }
-        } else {
-            part.push_str(line);
-        }
-    }
-    if !part.trim().is_empty() || parts.is_empty() {
-        parts.push(part);
-    }
-    parts
 }
 
 // ---- the threads ---------------------------------------------------------------------------
@@ -1207,6 +1252,21 @@ mod tests {
         let parts = split_markdown(&format!("```sh\n{code}```\n"));
         assert!(parts.len() >= 2);
         assert!(parts.iter().all(|p| p.starts_with("```sh") && p.trim_end().ends_with("```")));
+    }
+
+    #[test]
+    fn a_huge_line_of_code_stays_code_in_every_part() {
+        let parts = split_markdown(&format!("```json\n{}\n```\n", "*_#".repeat(PART)));
+        assert!(parts.len() >= 3);
+        assert!(parts.iter().all(|p| p.starts_with("```json\n") && p.trim_end().ends_with("```")));
+    }
+
+    #[test]
+    fn no_part_is_only_fences() {
+        // The block's last line fills a part: its closing fence must not become a message.
+        let code = "y".repeat(PART - 80) + "\n";
+        let parts = split_markdown(&format!("```sh\n{code}```\nafter\n"));
+        assert!(parts.iter().all(|p| p.lines().any(|l| !l.trim().is_empty() && !l.starts_with("```"))));
     }
 
     #[test]

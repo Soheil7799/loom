@@ -465,11 +465,7 @@ impl App {
         glib::timeout_add_seconds_local(180, move || {
             let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
             if crate::log::on() {
-                let agents: Vec<crate::memory::AgentInfo> = app
-                    .agents_listed()
-                    .iter()
-                    .map(|a| (a.id, format!("{} · {}", app.project_label(&a.project), a.title()), a.status().css().to_owned(), a.adapter_pid()))
-                    .collect();
+                let agents = app.memory_agents();
                 let last = last.clone();
                 glib::spawn_future_local(async move {
                     let previous = last.get();
@@ -1067,6 +1063,14 @@ impl App {
             id, cwd, session_id: None, title: String::new(), prompt: prompt.to_owned(), when: "in 1m".into(),
             next: Some(schedule::now().to_unix()), paused: false, last_run: None,
         });
+    }
+
+    /// The agents as a memory snapshot needs them.
+    pub fn memory_agents(&self) -> Vec<crate::memory::AgentInfo> {
+        self.agents_listed()
+            .iter()
+            .map(|a| (a.id, format!("{} · {}", self.project_label(&a.project), a.title()), a.status().css().to_owned(), a.adapter_pid()))
+            .collect()
     }
 
     /// The open agents in sidebar order.
