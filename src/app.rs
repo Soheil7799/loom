@@ -2456,7 +2456,48 @@ impl App {
         let row = gtk::ListBoxRow::builder().child(&line).selectable(false).build();
         row.add_css_class("project-row");
         row.set_tooltip_text(Some(&project.path.to_string_lossy()));
+        // Dragged by its header onto another project's: it goes there (the order is kept).
+        let source = gtk::DragSource::builder().actions(gdk::DragAction::MOVE).build();
+        let dragged = project.path.to_string_lossy().into_owned();
+        source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&format!("loom-project:{dragged}").to_value())));
+        let header = row.clone();
+        source.connect_drag_begin(move |source, _| {
+            source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&header))), 12, 12);
+        });
+        row.add_controller(source);
+        let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+        let (weak, onto) = (Rc::downgrade(self), project.path.clone());
+        target.connect_drop(move |_, value, _, _| {
+            let Some(app) = weak.upgrade() else { return false };
+            let Some(from) = value.get::<String>().ok().and_then(|v| v.strip_prefix("loom-project:").map(PathBuf::from)) else { return false };
+            app.put_project(&from, &onto);
+            true
+        });
+        let shown = row.clone();
+        target.connect_enter(move |_, _, _| {
+            shown.add_css_class("drop-here");
+            gdk::DragAction::MOVE
+        });
+        let shown = row.clone();
+        target.connect_leave(move |_| shown.remove_css_class("drop-here"));
+        row.add_controller(target);
         row
+    }
+
+    /// Project `from` moved to where `onto` is (`onto` and those after it move down; moved
+    /// down the list, it goes after `onto`).
+    fn put_project(self: &Rc<Self>, from: &Path, onto: &Path) {
+        if from == onto {
+            return;
+        }
+        {
+            let mut projects = self.projects.borrow_mut();
+            let (Some(at), Some(to)) = (projects.iter().position(|p| p.path == from), projects.iter().position(|p| p.path == onto)) else { return };
+            let moved = projects.remove(at);
+            projects.insert(to, moved);
+        }
+        self.refresh_sidebar();
+        self.save();
     }
 
     fn refresh_inbox(self: &Rc<Self>) {

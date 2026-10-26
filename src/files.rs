@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::SystemTime;
 
-use gtk::{gio, glib, pango, prelude::*};
+use gtk::{gdk, gio, glib, pango, prelude::*};
 use sourceview::prelude::*;
 
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -130,6 +130,8 @@ impl Files {
 
         let tree = gtk::ListView::builder().factory(&tree_factory()).build();
         tree.add_css_class("tree");
+        // Dropped below the last row: into the project's own folder.
+        tree.add_controller(drop_into(|| Some(TREE_ROOT.with(|r| r.borrow().clone()))));
         let tree_scroller = gtk::ScrolledWindow::builder().child(&tree).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         let repo_pick = gtk::DropDown::from_strings(&[]);
         repo_pick.set_hexpand(true);
@@ -710,6 +712,7 @@ impl Files {
             return;
         }
         let root = gio::File::for_path(&*self.project.borrow());
+        TREE_ROOT.with(|r| *r.borrow_mut() = self.project.borrow().clone());
         let model = gtk::TreeListModel::new(folder(&root), false, false, |item| {
             let info = item.downcast_ref::<gio::FileInfo>()?;
             (info.file_type() == gio::FileType::Directory).then(|| file_of(info).map(|f| folder(&f)))?
@@ -1328,6 +1331,67 @@ fn folder(dir: &gio::File) -> gio::ListModel {
     gtk::SortListModel::new(Some(filtered), Some(sorter)).upcast()
 }
 
+thread_local! {
+    /// The folder the tree shows.
+    static TREE_ROOT: std::cell::RefCell<PathBuf> = std::cell::RefCell::default();
+}
+
+/// A tree row's file, and whether it is a folder.
+fn entry_of(item: &gtk::ListItem) -> Option<(gio::File, bool)> {
+    let info = item.item().and_downcast::<gtk::TreeListRow>()?.item().and_downcast::<gio::FileInfo>()?;
+    Some((file_of(&info)?, info.file_type() == gio::FileType::Directory))
+}
+
+/// Files dropped on the tree go into the folder `into` gives: moved if they come from the
+/// tree's own project, copied from anywhere else. A name already there gets a number.
+fn drop_into(into: impl Fn() -> Option<PathBuf> + 'static) -> gtk::DropTarget {
+    let target = gtk::DropTarget::new(gdk::FileList::static_type(), gdk::DragAction::COPY | gdk::DragAction::MOVE);
+    target.connect_drop(move |_, value, _, _| {
+        let (Ok(files), Some(dir)) = (value.get::<gdk::FileList>(), into()) else { return false };
+        let root = TREE_ROOT.with(|r| r.borrow().clone());
+        for file in files.files() {
+            let Some(path) = file.path() else { continue };
+            // Onto itself, or into a folder inside itself: nothing to do.
+            if path.parent() == Some(dir.as_path()) || dir.starts_with(&path) {
+                continue;
+            }
+            let Some(name) = path.file_name() else { continue };
+            let destination = free_name(&dir.join(name));
+            let moved = !root.as_os_str().is_empty() && path.starts_with(&root);
+            let result = if moved { std::fs::rename(&path, &destination) } else { copy_all(&path, &destination) };
+            if let Err(err) = result {
+                crate::log::write("files", &format!("could not {} {} to {}: {err}", if moved { "move" } else { "copy" }, path.display(), destination.display()));
+            }
+        }
+        true
+    });
+    target
+}
+
+/// `wanted`, or "name (2).ext", "name (3).ext"… if it is taken.
+fn free_name(wanted: &Path) -> PathBuf {
+    if !wanted.exists() {
+        return wanted.to_owned();
+    }
+    let stem = wanted.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = wanted.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    (2..1000).map(|n| wanted.with_file_name(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or_else(|| wanted.to_owned())
+}
+
+/// A file, or a folder with all it holds.
+fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
+    if from.is_dir() {
+        std::fs::create_dir_all(to)?;
+        for entry in std::fs::read_dir(from)? {
+            let entry = entry?;
+            copy_all(&entry.path(), &to.join(entry.file_name()))?;
+        }
+        Ok(())
+    } else {
+        std::fs::copy(from, to).map(|_| ())
+    }
+}
+
 /// The file a DirectoryList entry stands for.
 fn file_of(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_object("standard::file").and_downcast::<gio::File>()
@@ -1345,6 +1409,21 @@ fn tree_factory() -> gtk::SignalListItemFactory {
         line.append(&icon);
         line.append(&label);
         let expander = gtk::TreeExpander::builder().child(&line).indent_for_icon(true).build();
+        // Dragged out: the file itself (to the chat, as @path; to a file manager or editor).
+        let source = gtk::DragSource::builder().actions(gdk::DragAction::COPY | gdk::DragAction::MOVE).build();
+        let held = item.downgrade();
+        source.connect_prepare(move |_, _, _| {
+            let file = held.upgrade().and_then(|i| entry_of(&i)).map(|(file, _)| file)?;
+            Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&[file]).to_value()))
+        });
+        expander.add_controller(source);
+        // Dropped on: into that folder, or the folder of that file.
+        let held = item.downgrade();
+        expander.add_controller(drop_into(move || {
+            let (file, is_dir) = held.upgrade().and_then(|i| entry_of(&i))?;
+            let path = file.path()?;
+            if is_dir { Some(path) } else { path.parent().map(Path::to_owned) }
+        }));
         item.set_child(Some(&expander));
     });
     factory.connect_bind(|_, item| {
@@ -1471,5 +1550,28 @@ mod tests {
                 ("feature/x".to_owned(), "branch"),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod drop_tests {
+    use super::*;
+
+    #[test]
+    fn a_dropped_folder_is_copied_whole_and_names_never_clash() {
+        let base = std::env::temp_dir().join(format!("loom-drop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("src/inner")).unwrap();
+        std::fs::write(base.join("src/a.txt"), "a").unwrap();
+        std::fs::write(base.join("src/inner/b.txt"), "b").unwrap();
+        std::fs::create_dir_all(base.join("into")).unwrap();
+        copy_all(&base.join("src"), &free_name(&base.join("into/src"))).unwrap();
+        assert_eq!(std::fs::read_to_string(base.join("into/src/inner/b.txt")).unwrap(), "b");
+        // Again: a second copy beside the first, not over it.
+        let second = free_name(&base.join("into/src"));
+        assert_eq!(second, base.join("into/src (2)"));
+        std::fs::write(base.join("into/note.md"), "x").unwrap();
+        assert_eq!(free_name(&base.join("into/note.md")), base.join("into/note (2).md"));
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
