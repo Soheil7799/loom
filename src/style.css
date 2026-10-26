@@ -77,7 +77,7 @@ button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
 .dot { min-width: 9px; min-height: 9px; border-radius: 99px; background: alpha(@window_fg_color, 0.25); }
 .dot.working { background: @accent_color; animation: pulse 1.4s ease-in-out infinite; }
 .dot.starting { background: alpha(@accent_color, 0.45); }
-.dot.blocked { background: @loom_wait; box-shadow: 0 0 0 2px alpha(@loom_wait, 0.35); }
+.dot.blocked { background: @loom_wait; box-shadow: 0 0 0 2px alpha(@loom_wait, 0.35); border-radius: 2px; transform: rotate(45deg); }
 .dot.done { background: @loom_ok; }
 .dot.failed { background: @loom_err; }
 .dot.suspended { background: transparent; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.4); }
@@ -141,11 +141,12 @@ button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_c
 .composer:focus-within { border-color: alpha(@accent_color, 0.55); background: alpha(@window_fg_color, 0.06); }
 textview.input, textview.input text { background: transparent; }
 .placeholder { opacity: 0.55; }
+.placeholder.suggesting { opacity: 0.75; }
 .composer-bar { padding: 2px 8px 8px 8px; }
 .composer-bar menubutton.chip-picker > button, .composer-bar button.mode { min-height: 24px; padding: 0 10px; border-radius: 99px; font-size: 0.9em; background: alpha(@window_fg_color, 0.06); }
 .composer-bar menubutton.chip-picker > button:hover, .composer-bar button.mode:hover { background: alpha(@window_fg_color, 0.12); }
-.composer-bar button.mode.plan-mode { color: @accent_color; }
-.composer-bar button.mode.accept-mode { color: @loom_warn; }
+.composer-bar button.mode.plan-mode { color: @loom_ok; }
+.composer-bar button.mode.accept-mode { color: @loom_run; }
 .composer-bar button.mode.bypass-mode { color: @loom_err; box-shadow: inset 0 0 0 1px alpha(@loom_err, 0.6); }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
 button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
@@ -335,11 +336,11 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
 .overview-card { padding: 10px 14px 6px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.08); }
 .overview-card:hover { background: alpha(@window_fg_color, 0.07); }
-.overview-card.needs-you { border-color: alpha(@accent_color, 0.55); }
+.overview-card.needs-you { border-color: alpha(@loom_wait, 0.6); }
 .overview-card .card-title { font-weight: 600; }
 .overview-card .card-reply { opacity: 0.8; margin-top: 4px; }
-.overview-card .card-waiting { color: @accent_color; font-weight: 600; }
-.overview-card .accent { color: @accent_color; font-weight: 600; }
+.overview-card .card-waiting { color: @loom_wait; font-weight: 600; }
+.overview-card .accent { color: @loom_wait; font-weight: 600; }
 .schedule-row { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); }
 button.overview-button { min-width: 30px; min-height: 30px; padding: 0; border-radius: 8px; }
 button.overview-button image { -gtk-icon-size: 16px; opacity: 0.8; }
@@ -353,11 +354,11 @@ label.error { color: @loom_err; }
 
 /* Each kind of block its own look, so one ends visibly where the next begins:
    Claude's words on a rail, edits green-edged, commands on a darker card, reads quiet. */
-.msg-agent { padding: 2px 0 2px 14px; border-left: 2px solid alpha(@accent_color, 0.45); color: alpha(@window_fg_color, 0.94); }
-.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.05); border-left: 2px solid alpha(@loom_ok, 0.6); border-radius: 6px 8px 8px 4px; margin: 2px 0; }
-.tool-card.kind-execute { background: alpha(@window_fg_color, 0.05); border-left: 2px solid alpha(@loom_run, 0.6); border-radius: 6px 8px 8px 4px; margin: 2px 0; }
+.msg-agent { padding: 2px 0; color: alpha(@window_fg_color, 0.94); }
+.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.07); border-radius: 8px; margin: 2px 0; }
+.tool-card.kind-execute { background: alpha(@loom_run, 0.06); border-radius: 8px; margin: 2px 0; }
 .tool-card.kind-edit:hover, .tool-card.kind-delete:hover, .tool-card.kind-move:hover { background: alpha(@loom_ok, 0.08); }
-.tool-card.kind-execute:hover { background: alpha(@window_fg_color, 0.08); }
+.tool-card.kind-execute:hover { background: alpha(@loom_run, 0.1); }
 .tool-card.kind-edit .kind, .tool-card.kind-delete .kind, .tool-card.kind-move .kind { color: @loom_ok; opacity: 0.9; }
 .tool-card.kind-execute .kind { color: @loom_run; opacity: 0.9; }
 .tool-card.kind-read .tool-title, .tool-card.kind-search .tool-title, .tool-card.kind-fetch .tool-title { opacity: 0.7; }
@@ -375,7 +376,7 @@ entry.plan-comment { margin: 2px 32px 6px 0; }
 .crew-glyph.idle { color: @loom_ok; }
 .composer.shell-mode, .composer.shell-mode:focus-within { border-color: alpha(@loom_shell, 0.75); background: alpha(@loom_shell, 0.06); }
 .shell-badge { font-size: 0.8em; font-weight: 700; padding: 1px 8px; border-radius: 99px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
-.tool-card.kind-shell { background: alpha(@loom_shell, 0.05); border-left: 2px solid alpha(@loom_shell, 0.7); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
+.tool-card.kind-shell { background: alpha(@loom_shell, 0.07); border-radius: 8px; margin: 2px 0; }
 .tool-card.kind-shell .kind { color: @loom_shell; opacity: 0.9; }
 
 /* Messages waiting for the turn to end, over the input. */
@@ -389,3 +390,8 @@ button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity
 /* Where a dragged project would go: a line in the gap above or below a card. */
 .agents row.drop-before { box-shadow: 0 -6px 0 -1px @accent_color, 0 -3px 0 0 @sidebar_bg_color; }
 .agents row.drop-after { box-shadow: 0 6px 0 -1px @accent_color, 0 3px 0 0 @sidebar_bg_color; }
+/* Schedule… on a card only when it is pointed at or has the keyboard. */
+.overview-card .schedule-button { opacity: 0; }
+.overview-card:hover .schedule-button, flowboxchild:focus-within .schedule-button, .overview-card .schedule-button:focus-visible { opacity: 1; }
+.agent-row .dup { opacity: 0.45; }
+.sidebar-bottom button.icon label { font-weight: 700; font-size: 0.95em; }

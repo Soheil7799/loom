@@ -177,16 +177,14 @@ fn message(err: &Value) -> String {
     err["message"].as_str().unwrap_or("unknown error").to_owned()
 }
 
-/// "just now", "5 min ago", "3 h ago", "yesterday", "4 days ago", else the date.
+/// "just now", "5m ago", "3h ago", "yesterday", "4d ago", else the date.
 pub fn ago(iso: &str, now: &glib::DateTime) -> String {
     let Ok(then) = glib::DateTime::from_iso8601(iso, None) else { return String::new() };
     let seconds = now.difference(&then).as_seconds();
     match seconds {
-        ..60 => "just now".to_owned(),
-        60..3600 => format!("{} min ago", seconds / 60),
-        3600..86400 => format!("{} h ago", seconds / 3600),
+        ..86400 => crate::overview::ago(seconds.max(0) as u64),
         86400..172800 => "yesterday".to_owned(),
-        172800..604800 => format!("{} days ago", seconds / 86400),
+        172800..604800 => format!("{}d ago", seconds / 86400),
         _ => then.to_local().and_then(|t| t.format("%e %b %Y")).map(|s| s.trim().to_owned()).unwrap_or_default(),
     }
 }
@@ -526,10 +524,10 @@ mod tests {
     fn times_read_as_ago() {
         let now = glib::DateTime::from_iso8601("2026-10-25T12:00:00Z", None).unwrap();
         assert_eq!(ago("2026-10-25T11:59:30Z", &now), "just now");
-        assert_eq!(ago("2026-10-25T11:15:00Z", &now), "45 min ago");
-        assert_eq!(ago("2026-10-25T09:00:00Z", &now), "3 h ago");
+        assert_eq!(ago("2026-10-25T11:15:00Z", &now), "45m ago");
+        assert_eq!(ago("2026-10-25T09:00:00Z", &now), "3h ago");
         assert_eq!(ago("2026-10-24T09:00:00Z", &now), "yesterday");
-        assert_eq!(ago("2026-10-21T09:00:00Z", &now), "4 days ago");
+        assert_eq!(ago("2026-10-21T09:00:00Z", &now), "4d ago");
         assert_eq!(ago("nonsense", &now), "");
     }
 }

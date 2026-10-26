@@ -41,6 +41,8 @@ pub struct Overview {
     cards: gtk::FlowBox,
     ids: RefCell<Vec<u32>>,
     schedules: gtk::Box,
+    /// The schedules' column (hidden while there are none).
+    side: gtk::ScrolledWindow,
     pub on_open: Handler<u32>,
     pub on_schedule_for: Handler<u32>,
     pub on_schedule: Handler<(u64, Act)>,
@@ -92,6 +94,7 @@ impl Overview {
             cards,
             ids: RefCell::default(),
             schedules,
+            side: side_scroller.clone(),
             on_open: RefCell::default(),
             on_schedule_for: RefCell::default(),
             on_schedule: RefCell::default(),
@@ -161,6 +164,8 @@ impl Overview {
         while let Some(child) = self.schedules.first_child() {
             self.schedules.remove(&child);
         }
+        // None yet: no column for them (a card's Schedule… makes one).
+        self.side.set_visible(!schedules.is_empty());
         if schedules.is_empty() {
             let none = gtk::Label::builder()
                 .label("None yet. On a card, Schedule… sends that agent a prompt at a time you pick: every day at 9, every 2h, in 20m.")
@@ -218,6 +223,7 @@ impl Overview {
         let plan = gtk::Button::with_label("Schedule…");
         plan.add_css_class("flat");
         plan.add_css_class("small");
+        plan.add_css_class("schedule-button");
         plan.set_tooltip_text(Some("Send this agent a prompt at a time you pick"));
         let weak = Rc::downgrade(self);
         let id = card.id;
@@ -299,7 +305,8 @@ fn one_paragraph(text: &str) -> String {
     first.replace(['#', '*', '`'], "").split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn ago(seconds: u64) -> String {
+/// "just now", "5m ago", "3h ago", "2d ago": loom's one way of saying it.
+pub fn ago(seconds: u64) -> String {
     match seconds {
         s if s < 60 => "just now".to_owned(),
         s if s < 3600 => format!("{}m ago", s / 60),

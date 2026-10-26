@@ -151,6 +151,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
         .default_width(1080)
         .default_height(720)
         .build();
+    window.add_css_class("loom");
     window.add_css_class("cheatsheet");
 
     let sections = gtk::FlowBox::builder()

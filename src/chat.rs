@@ -1245,14 +1245,16 @@ impl Chat {
             Some(text) => {
                 let first = text.lines().next().unwrap_or("");
                 self.placeholder.set_markup(&format!(
-                    "{}  <span size=\"small\" alpha=\"60%\">→ fills it in</span>",
+                    "{}   <span size=\"small\" alpha=\"60%\">Tab fills it in</span>",
                     glib::markup_escape_text(first)
                 ));
                 self.placeholder.set_tooltip_text(Some(text));
+                self.placeholder.add_css_class("suggesting");
             }
             None => {
                 self.placeholder.set_label("Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images");
                 self.placeholder.set_tooltip_text(None);
+                self.placeholder.remove_css_class("suggesting");
             }
         }
         *self.suggestion.borrow_mut() = text;

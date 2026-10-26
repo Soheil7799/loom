@@ -168,7 +168,8 @@ impl App {
         settings_button.add_css_class("flat");
         settings_button.add_css_class("icon");
         settings_button.set_tooltip_text(Some("Settings (Ctrl+,)"));
-        let help_button = gtk::Button::builder().icon_name("input-keyboard-symbolic").tooltip_text("Keyboard shortcuts (Ctrl+/)").build();
+        // A "?": the icon themes draw keyboard shortcuts as a Mac command key.
+        let help_button = gtk::Button::builder().label("?").tooltip_text("Keyboard shortcuts (Ctrl+/)").build();
         help_button.update_property(&[gtk::accessible::Property::Label("Keyboard shortcuts")]);
         help_button.add_css_class("flat");
         help_button.add_css_class("icon");
@@ -987,7 +988,11 @@ impl App {
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
             act("About Loom", "", |a| crate::about::open(&a.window)),
         ];
-        for agent in self.agents_in_order() {
+        // Agents before commands: those waiting on you, then the last used.
+        let mut agents = self.agents_in_order();
+        agents.sort_by_key(|a| (a.status() != Status::Blocked, std::cmp::Reverse(a.used.get())));
+        let mut going: Vec<Choice> = Vec::new();
+        for agent in agents {
             let weak = weak.clone();
             let target = Rc::downgrade(&agent);
             let mut choice = Choice::new(format!("Go to {}", agent.title()), self.project_label(&agent.project), move || {
@@ -996,8 +1001,10 @@ impl App {
                 }
             });
             choice.dot = Some(agent.status().css());
-            choices.push(choice);
+            going.push(choice);
         }
+        going.append(&mut choices);
+        let mut choices = going;
         for saved in self.closed.borrow().iter() {
             let weak = weak.clone();
             let saved = saved.clone();
@@ -2378,8 +2385,10 @@ impl App {
                 continue;
             }
             let count = mine.len();
+            let alike = |agent: &Rc<Agent>| mine.iter().filter(|a| a.title() == agent.title()).count() > 1;
+            let alike: Vec<bool> = mine.iter().map(|a| alike(a)).collect();
             for (i, agent) in mine.into_iter().enumerate() {
-                let row = agent_row(agent);
+                let row = agent_row(agent, alike[i]);
                 if i + 1 == count {
                     row.add_css_class("last");
                     last = row.clone();
@@ -2717,7 +2726,7 @@ fn place_of(agent: &Rc<Agent>) -> String {
     }
 }
 
-fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
+fn agent_row(agent: &Rc<Agent>, alike: bool) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("dot");
@@ -2728,11 +2737,24 @@ fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
     names.set_hexpand(true);
     let title = gtk::Label::builder().label(agent.title()).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
     title.add_css_class("agent-title");
-    names.append(&title);
+    // Another of the same name in this project: when each was last used tells them apart.
+    if alike && agent.used.get() > 0 {
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        title.set_hexpand(false);
+        line.append(&title);
+        let when = gtk::Label::new(Some(&format!("· {}", crate::overview::ago(crate::state::now().saturating_sub(agent.used.get())))));
+        when.add_css_class("dup");
+        when.add_css_class("small");
+        line.append(&when);
+        names.append(&line);
+    } else {
+        names.append(&title);
+    }
     let state = match status {
         Status::Idle if agent.unseen.get() => "done".to_owned(),
         Status::Blocked => "needs you".to_owned(),
-        Status::Idle => String::new(),
+        // The resting states say nothing (most agents are in one): the dot is enough.
+        Status::Idle | Status::Suspended => String::new(),
         other => other.describe().to_owned(),
     };
     // Where it works: the repo it last touched (name when it isn't the project itself), its
