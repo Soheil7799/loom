@@ -1710,6 +1710,18 @@ impl Chat {
 
     /// The conversation as Markdown: who said what, and the tools used.
     /// What Claude said last (for the overview).
+    pub fn last_user(&self) -> Option<String> {
+        let messages = self.messages.borrow();
+        let last = messages.iter().rev().find(|m| m.kind == Kind::User)?;
+        let text = last.text.borrow().trim().to_owned();
+        (!text.is_empty()).then_some(text)
+    }
+
+    /// Whether nothing is typed (a guess shows only then).
+    pub fn input_empty(&self) -> bool {
+        self.input.buffer().char_count() == 0
+    }
+
     pub fn last_reply(&self) -> Option<String> {
         let messages = self.messages.borrow();
         let last = messages.iter().rev().find(|m| m.kind == Kind::Agent)?;

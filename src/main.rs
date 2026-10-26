@@ -27,6 +27,7 @@ mod schedule;
 mod scratch;
 mod settings;
 mod state;
+mod suggest;
 mod telegram;
 mod term;
 mod theme;

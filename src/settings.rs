@@ -28,6 +28,8 @@ pub struct Settings {
     pub scratch_autohide: bool,
     /// The sidebar puts agents that need you first (else in the order they started).
     pub sort_by_urgency: bool,
+    /// After a turn, guess the next message (Claude Haiku; a little usage each turn).
+    pub suggest_prompts: bool,
     /// The Telegram bot: off unless switched on, and obeys only `telegram_user`.
     pub telegram_enabled: bool,
     pub telegram_token: String,
@@ -51,6 +53,7 @@ impl Default for Settings {
             terminal_font: crate::term::FONT.to_owned(),
             scratch_autohide: false,
             sort_by_urgency: true,
+            suggest_prompts: true,
             telegram_enabled: false,
             telegram_token: String::new(),
             telegram_user: 0,
@@ -144,6 +147,7 @@ fn parse(text: &str) -> Settings {
         terminal_font: string("terminalFont", &d.terminal_font),
         scratch_autohide: flag("scratchAutohide", d.scratch_autohide),
         sort_by_urgency: flag("sortByUrgency", d.sort_by_urgency),
+        suggest_prompts: flag("suggestPrompts", d.suggest_prompts),
         telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
         telegram_token: string("telegramToken", &d.telegram_token),
         telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
@@ -164,6 +168,7 @@ fn render(s: &Settings) -> String {
         "terminalFont": s.terminal_font,
         "scratchAutohide": s.scratch_autohide,
         "sortByUrgency": s.sort_by_urgency,
+        "suggestPrompts": s.suggest_prompts,
         "telegramEnabled": s.telegram_enabled,
         "telegramToken": s.telegram_token,
         "telegramUser": s.telegram_user,

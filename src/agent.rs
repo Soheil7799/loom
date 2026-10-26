@@ -368,6 +368,23 @@ impl Agent {
         if title.is_empty() { "New agent".to_owned() } else { title.clone() }
     }
 
+    /// After a finished turn: what the user will likely write next, in the empty input (if
+    /// still empty and nothing new started meanwhile).
+    fn guess_next(self: &Rc<Self>) {
+        if !crate::settings::get().suggest_prompts || self.replaying.get() {
+            return;
+        }
+        let (Some(user), Some(reply)) = (self.chat.last_user(), self.chat.last_reply()) else { return };
+        let turn = self.last_turn.get();
+        let weak = Rc::downgrade(self);
+        crate::suggest::guess(user, reply, move |text| {
+            let Some(agent) = weak.upgrade() else { return };
+            if agent.last_turn.get() == turn && !agent.turn.get() && agent.chat.input_empty() {
+                agent.chat.set_suggestion(text);
+            }
+        });
+    }
+
     /// The adapter process, while it runs.
     pub fn adapter_pid(&self) -> Option<u32> {
         self.conn.borrow().as_ref().map(|c| c.pid())
@@ -837,6 +854,7 @@ impl Agent {
                 self.unseen.set(true);
             }
             self.emit(Event::Done);
+            self.guess_next();
         }
         self.refresh_status();
     }
@@ -1329,6 +1347,9 @@ impl Agent {
                 agent.refresh_status();
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.emit(Event::Done);
+                if !agent.last_cancelled.get() {
+                    agent.guess_next();
+                }
                 agent.send_next();
             },
         );

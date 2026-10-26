@@ -291,6 +291,12 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
 
     let chat = section("Conversation");
     row(&chat, "Show thinking", "Claude's reasoning, folded under each answer.", &switch(s.show_thinking, |s, on| s.show_thinking = on));
+    row(
+        &chat,
+        "Suggest your next message",
+        "After a turn, Claude Haiku guesses what you'll write next; → or Tab fills it in. A little usage each turn.",
+        &switch(s.suggest_prompts, |s, on| s.suggest_prompts = on),
+    );
     content.append(&chat);
 
     let schedules = section("Scheduled prompts");
