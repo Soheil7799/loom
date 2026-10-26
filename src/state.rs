@@ -18,11 +18,13 @@ pub struct Saved {
     pub draft: String,
     /// Folders beyond `cwd` it may work in (ACP additionalDirectories).
     pub dirs: Vec<PathBuf>,
+    /// When it was last used (opened, written to, a turn ended): Unix seconds, 0 unknown.
+    pub used: u64,
 }
 
 impl Saved {
     pub fn new(cwd: PathBuf) -> Saved {
-        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new() }
+        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new(), used: now() }
     }
 }
 
@@ -100,11 +102,28 @@ fn saved(a: &Value) -> Option<Saved> {
         named: a["named"].as_bool().unwrap_or(false),
         draft: a["draft"].as_str().unwrap_or("").to_owned(),
         dirs: a["dirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(PathBuf::from)).collect(),
+        used: a["used"].as_u64().unwrap_or(0),
+    })
+}
+
+/// Now, in Unix seconds.
+pub fn now() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+}
+
+/// When a conversation was last written, from Claude Code's own file of it (for agents saved
+/// before loom kept the time itself).
+pub fn session_written(session: &str) -> Option<u64> {
+    let projects = glib::home_dir().join(".claude/projects");
+    let name = format!("{session}.jsonl");
+    std::fs::read_dir(projects).ok()?.flatten().find_map(|dir| {
+        let modified = std::fs::metadata(dir.path().join(&name)).ok()?.modified().ok()?;
+        modified.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
     })
 }
 
 fn saved_json(a: &Saved) -> Value {
-    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>() })
+    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(), "used": a.used })
 }
 
 fn parse(text: &str) -> Layout {
@@ -171,7 +190,7 @@ mod tests {
     #[test]
     fn saved_layouts_read_back() {
         let agents = vec![
-            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()] },
+            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()], used: 1_700_000_000 },
             Saved::new("/tmp".into()),
         ];
         let layout = Layout {

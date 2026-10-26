@@ -1,5 +1,5 @@
-//! Every open agent on one page, most in need of you first: what each is doing, what it
-//! last said, what it waits for; and the prompts scheduled to be sent.
+//! Every open agent on one page, the last used first: what each is doing, what it last said,
+//! what it waits for; and, in a column on the right, the prompts scheduled to be sent.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -22,7 +22,8 @@ pub struct Card {
     /// The permissions or questions waiting.
     pub waiting: Vec<String>,
     pub reply: Option<String>,
-    pub idle_for: u64,
+    /// When it was last used (Unix seconds, 0 unknown).
+    pub used: u64,
     pub scheduled: usize,
 }
 
@@ -35,7 +36,7 @@ pub enum Act {
 type Handler<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 
 pub struct Overview {
-    pub root: gtk::ScrolledWindow,
+    pub root: gtk::Box,
     counts: gtk::Label,
     cards: gtk::FlowBox,
     ids: RefCell<Vec<u32>>,
@@ -57,9 +58,10 @@ impl Overview {
         page.append(&counts);
         let cards = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::None)
-            .homogeneous(true)
+            // Each card as tall as what it shows: rows of any height.
+            .homogeneous(false)
             .min_children_per_line(1)
-            .max_children_per_line(3)
+            .max_children_per_line(4)
             .column_spacing(12)
             .row_spacing(12)
             .activate_on_single_click(true)
@@ -69,15 +71,20 @@ impl Overview {
         cards.set_vexpand(false);
         page.set_valign(gtk::Align::Start);
         page.append(&cards);
+        let cards_scroller = gtk::ScrolledWindow::builder().child(&page).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).hexpand(true).build();
+        // The scheduled prompts: a column of their own on the right, like a sidebar.
+        let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        side.add_css_class("overview-side");
         let heading = gtk::Label::builder().label("SCHEDULED PROMPTS").xalign(0.0).build();
         heading.add_css_class("overview-heading");
-        page.append(&heading);
+        side.append(&heading);
         let schedules = gtk::Box::new(gtk::Orientation::Vertical, 6);
-        page.append(&schedules);
-        let column = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        column.append(&page);
-        column.set_layout_manager(Some(crate::column::ColumnLayout::new(1100)));
-        let root = gtk::ScrolledWindow::builder().child(&column).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        side.append(&schedules);
+        let side_scroller = gtk::ScrolledWindow::builder().child(&side).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).width_request(320).build();
+        side_scroller.add_css_class("overview-side-scroller");
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        root.append(&cards_scroller);
+        root.append(&side_scroller);
         root.add_css_class("chat");
         let overview = Rc::new(Overview {
             root,
@@ -126,7 +133,8 @@ impl Overview {
     }
 
     pub fn fill(self: &Rc<Self>, mut cards: Vec<Card>, schedules: &[Schedule]) {
-        cards.sort_by_key(|c| c.status.urgency(c.unseen));
+        // The last used first (never used: by name, last).
+        cards.sort_by(|a, b| b.used.cmp(&a.used).then_with(|| a.title.cmp(&b.title)));
         let count = |f: &dyn Fn(&Card) -> bool| cards.iter().filter(|c| f(c)).count();
         let parts = [
             (count(&|c| c.status == Status::Blocked), "need you"),
@@ -155,7 +163,7 @@ impl Overview {
         }
         if schedules.is_empty() {
             let none = gtk::Label::builder()
-                .label("None yet. On a card, Schedule… sends that agent a prompt at a time you pick (every day at 9, every 2h, in 20m).")
+                .label("None yet. On a card, Schedule… sends that agent a prompt at a time you pick: every day at 9, every 2h, in 20m.")
                 .xalign(0.0)
                 .wrap(true)
                 .build();
@@ -170,6 +178,8 @@ impl Overview {
     fn card(self: &Rc<Self>, card: &Card) -> gtk::Box {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.add_css_class("overview-card");
+        // As tall as what it shows (not as the tallest card of its row).
+        root.set_valign(gtk::Align::Start);
         if card.status == Status::Blocked {
             root.add_css_class("needs-you");
         }
@@ -182,7 +192,7 @@ impl Overview {
         title.add_css_class("card-title");
         let state = gtk::Label::new(Some(&match card.status {
             Status::Idle if card.unseen => "done".to_owned(),
-            Status::Idle => ago(card.idle_for),
+            Status::Idle | Status::Suspended if card.used > 0 => ago(crate::state::now().saturating_sub(card.used)),
             other => other.describe().to_owned(),
         }));
         state.add_css_class("small");
@@ -191,49 +201,20 @@ impl Overview {
         top.append(&title);
         top.append(&state);
         root.append(&top);
+        // Where it works, how many prompts wait for it, and Schedule…: one line.
         let place = [card.project.as_str(), card.place.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
-        let place = gtk::Label::builder().label(place).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        let place = gtk::Label::builder().label(place).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         place.add_css_class("dim");
         place.add_css_class("small");
-        root.append(&place);
-        for question in card.waiting.iter().take(2) {
-            let label = gtk::Label::builder().label(format!("Wants to: {question}")).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
-            label.add_css_class("card-waiting");
-            root.append(&label);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        line.append(&place);
+        if card.scheduled > 0 {
+            let scheduled = gtk::Label::new(Some(&format!("⏱ {}", card.scheduled)));
+            scheduled.add_css_class("dim");
+            scheduled.add_css_class("small");
+            scheduled.set_tooltip_text(Some("Prompts scheduled for it"));
+            line.append(&scheduled);
         }
-        let reply = card.reply.as_deref().map(one_paragraph).unwrap_or_default();
-        let text = gtk::Label::builder()
-            .label(match (reply.is_empty(), card.status) {
-                (false, _) => reply.as_str(),
-                (true, Status::Suspended) => "Not loaded yet: open it to pick the conversation up.",
-                (true, _) => "Nothing said yet.",
-            })
-            .xalign(0.0)
-            .yalign(0.0)
-            .wrap(true)
-            .wrap_mode(pango::WrapMode::WordChar)
-            .lines(3)
-            .ellipsize(pango::EllipsizeMode::End)
-            .width_chars(24)
-            .max_width_chars(36)
-            .build();
-        text.add_css_class("card-reply");
-        root.append(&text);
-        let room = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        room.set_vexpand(true);
-        root.append(&room);
-        let foot = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let scheduled = gtk::Label::builder()
-            .label(match card.scheduled {
-                0 => String::new(),
-                1 => "1 scheduled prompt".to_owned(),
-                n => format!("{n} scheduled prompts"),
-            })
-            .xalign(0.0)
-            .hexpand(true)
-            .build();
-        scheduled.add_css_class("dim");
-        scheduled.add_css_class("small");
         let plan = gtk::Button::with_label("Schedule…");
         plan.add_css_class("flat");
         plan.add_css_class("small");
@@ -246,9 +227,31 @@ impl Overview {
                 handler(id);
             }
         });
-        foot.append(&scheduled);
-        foot.append(&plan);
-        root.append(&foot);
+        line.append(&plan);
+        root.append(&line);
+        for question in card.waiting.iter().take(2) {
+            let label = gtk::Label::builder().label(format!("Wants to: {question}")).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+            label.add_css_class("card-waiting");
+            root.append(&label);
+        }
+        // What it said last (a suspended one has not been read in yet: nothing then).
+        let reply = card.reply.as_deref().map(one_paragraph).unwrap_or_default();
+        if reply.is_empty() {
+            return root;
+        }
+        let text = gtk::Label::builder()
+            .label(reply.as_str())
+            .xalign(0.0)
+            .yalign(0.0)
+            .wrap(true)
+            .wrap_mode(pango::WrapMode::WordChar)
+            .lines(2)
+            .ellipsize(pango::EllipsizeMode::End)
+            .width_chars(22)
+            .max_width_chars(32)
+            .build();
+        text.add_css_class("card-reply");
+        root.append(&text);
         root
     }
 

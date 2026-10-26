@@ -133,7 +133,8 @@ impl App {
             .build();
         inbox.add_css_class("inbox-button");
         inbox.add_css_class("flat");
-        let overview_button = gtk::Button::with_label("▦");
+        let overview_button = gtk::Button::from_icon_name("view-grid-symbolic");
+        overview_button.update_property(&[gtk::accessible::Property::Label("Overview")]);
         overview_button.add_css_class("flat");
         overview_button.add_css_class("overview-button");
         overview_button.set_tooltip_text(Some("Overview: every agent, and scheduled prompts (Ctrl+Shift+A)"));
@@ -1178,6 +1179,7 @@ impl App {
 
     pub fn focus(self: &Rc<Self>, agent: &Rc<Agent>) {
         crate::log::debug!("app", "focus agent {} ({})", agent.id, agent.title());
+        agent.mark_used();
         let old = self.focused.borrow().clone();
         if let Some(old) = old.filter(|old| !Rc::ptr_eq(old, agent)) {
             old.focused.set(false);
@@ -1600,7 +1602,7 @@ impl App {
                 unseen: agent.unseen.get(),
                 waiting: agent.questions().into_iter().map(|(_, title, _)| title).collect(),
                 reply: agent.chat.last_reply(),
-                idle_for: agent.last_turn.get().elapsed().as_secs(),
+                used: agent.used.get(),
                 scheduled: schedules.iter().filter(|s| s.session_id.is_some() && s.session_id == agent.session_id()).count(),
             })
             .collect();
@@ -1732,7 +1734,7 @@ impl App {
         let agent = match &schedule.session_id {
             Some(session) => self.agent_with_session(session).unwrap_or_else(|| {
                 self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session.as_str()));
-                self.add_agent(Saved { cwd, session_id: Some(session.clone()), title: schedule.title.clone(), named: false, draft: String::new(), dirs: Vec::new() })
+                self.add_agent(Saved { cwd, session_id: Some(session.clone()), title: schedule.title.clone(), named: false, draft: String::new(), used: crate::state::now(), dirs: Vec::new() })
             }),
             None => self.add_agent(Saved::new(cwd)),
         };
@@ -1788,7 +1790,7 @@ impl App {
         self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(past.session_id.as_str()));
         // A folder deleted since resumes in its project (or home): the adapter can't start in it.
         let cwd = [past.cwd.clone(), project_of(&past.cwd), glib::home_dir()].into_iter().find(|d| d.is_dir()).unwrap_or(past.cwd);
-        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false, draft: String::new(), dirs: Vec::new() };
+        let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false, draft: String::new(), used: crate::state::now(), dirs: Vec::new() };
         let agent = self.add_agent(saved);
         self.focus(&agent);
     }
@@ -2641,6 +2643,7 @@ fn agent_row(agent: &Rc<Agent>) -> gtk::ListBoxRow {
         let sub = gtk::Label::builder().label(sub).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         sub.add_css_class("dim");
         sub.add_css_class("small");
+        sub.add_css_class("agent-sub");
         names.append(&sub);
     }
     line.append(&dot);

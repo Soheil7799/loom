@@ -35,7 +35,7 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .lockup-by link { color: inherit; }
 .lockup-by link:hover { color: @accent_color; }
 .about-body { padding: 28px 32px 24px; }
-.sidebar-bottom { padding: 6px; border-top: 1px solid @loom_line; }
+.sidebar-bottom { padding: 4px 6px; min-height: 36px; border-top: 1px solid @loom_line; }
 .sidebar-bottom button:not(:hover):not(:checked) { background: none; box-shadow: none; }
 .sidebar-bottom button { border-radius: 8px; }
 .sidebar-bottom button.icon { min-width: 30px; min-height: 30px; padding: 0; }
@@ -45,11 +45,12 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .agents row.agent-row:hover:not(:selected) { background: alpha(@window_fg_color, 0.05); }
 .agents row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .agents row:selected .agent-title { font-weight: 600; }
-.agents row.project-row { margin: 14px 6px 2px 6px; padding: 2px 6px 2px 8px; }
+.agents row.project-row { margin: 10px 6px 2px 6px; padding: 10px 6px 2px 8px; border-top: 1px solid @loom_line; border-radius: 0; }
+.agents row.project-row:first-child { border-top: none; padding-top: 2px; margin-top: 8px; }
 .agents row.project-row:hover { background: alpha(@window_fg_color, 0.04); }
 .project-row button.arrow { opacity: 0.6; font-size: 0.8em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 6px; }
 .project-row button.arrow:hover { opacity: 1; }
-.project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.68; }
+.project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }
 .project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
 .project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
 .badge-wait { color: @loom_wait; font-size: 0.8em; font-weight: 700; }
@@ -146,7 +147,7 @@ button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_
 .option-heading { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
 
 /* ---- tray, files, scratch --------------------------------------------------------------- */
-.tray { padding: 4px 8px; min-height: 26px; border-top: 1px solid @loom_line; background: @sidebar_bg_color; }
+.tray { padding: 4px 8px; min-height: 36px; border-top: 1px solid @loom_line; background: @sidebar_bg_color; }
 .tray .hint { font-size: 0.8em; opacity: 0.6; margin-right: 6px; }
 .chip { padding: 2px 10px; min-height: 0; border-radius: 99px; font-size: 0.9em; }
 .dock { padding: 6px; background: @sidebar_bg_color; }
@@ -316,12 +317,14 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .crew row { padding: 3px 6px; border-radius: 6px; }
 .crew .crew-name { font-weight: 600; }
 .crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
-.overview { padding: 28px 28px 40px 28px; }
+.overview { padding: 24px 24px 32px 24px; }
+.overview-side { padding: 24px 16px; }
+.overview-side-scroller { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
 .overview-title { font-size: 1.6em; font-weight: 700; }
-.overview-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 18px; }
+.overview-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 8px; }
 .overview-cards flowboxchild { padding: 0; border-radius: 10px; }
 .overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
-.overview-card { padding: 14px 16px 10px 16px; min-height: 150px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.08); }
+.overview-card { padding: 10px 14px 6px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.08); }
 .overview-card:hover { background: alpha(@window_fg_color, 0.07); }
 .overview-card.needs-you { border-color: alpha(@accent_color, 0.55); }
 .overview-card .card-title { font-weight: 600; }
@@ -329,7 +332,9 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .overview-card .card-waiting { color: @accent_color; font-weight: 600; }
 .overview-card .accent { color: @accent_color; font-weight: 600; }
 .schedule-row { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); }
-button.overview-button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; }
+button.overview-button { min-width: 30px; min-height: 30px; padding: 0; border-radius: 8px; }
+button.overview-button image { -gtk-icon-size: 16px; opacity: 0.8; }
+.agent-sub { opacity: 0.5; }
 .schedule-body { padding: 18px 20px; }
 .schedule-prompt { background: alpha(@window_fg_color, 0.04); }
 label.error { color: @loom_err; }

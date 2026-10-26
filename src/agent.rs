@@ -33,18 +33,6 @@ pub enum Status {
 }
 
 impl Status {
-    /// How much an agent in this state needs the user: 0 most. `unseen`: it finished a turn
-    /// nobody has looked at yet.
-    pub fn urgency(self, unseen: bool) -> u8 {
-        match self {
-            Status::Blocked => 0,
-            Status::Failed => 1,
-            Status::Working => 2,
-            Status::Idle if unseen => 3,
-            _ => 4,
-        }
-    }
-
     pub fn css(self) -> &'static str {
         match self {
             Status::Suspended => "suspended",
@@ -210,6 +198,8 @@ pub struct Agent {
     pub last_turn: Cell<Instant>,
     /// How long the last turn took (seconds).
     pub last_took: Cell<u64>,
+    /// When it was last used (Unix seconds): the overview's order.
+    pub used: Cell<u64>,
     /// The last turn was stopped (Esc, Stop), not finished.
     pub last_cancelled: Cell<bool>,
     /// The last turn ended on an error (what it said).
@@ -223,6 +213,8 @@ pub struct Agent {
 impl Agent {
     pub fn new(id: u32, saved: Saved, tray: Rc<Tray>) -> Rc<Agent> {
         let draft = saved.draft.clone();
+        // Saved before loom kept it: when its conversation was last written.
+        let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
         let agent = Rc::new(Agent {
             id,
             project: crate::app::project_of(&saved.cwd),
@@ -264,6 +256,7 @@ impl Agent {
             last_active: Cell::new(Instant::now()),
             last_turn: Cell::new(Instant::now()),
             last_took: Cell::new(0),
+            used: Cell::new(used),
             last_cancelled: Cell::new(false),
             last_error: RefCell::default(),
             adapter_suggests: Cell::new(false),
@@ -428,7 +421,13 @@ impl Agent {
             named: self.named.get(),
             draft: self.chat.draft(),
             dirs: self.dirs.borrow().clone(),
+            used: self.used.get(),
         }
+    }
+
+    /// Used now (opened, written to, a turn ended).
+    pub fn mark_used(&self) {
+        self.used.set(crate::state::now());
     }
 
     /// Names the agent by hand (empty: back to the agent's own titles).
@@ -1010,6 +1009,7 @@ impl Agent {
     /// A message, with images attached (PNG).
     pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
         self.last_active.set(Instant::now());
+        self.mark_used();
         // /clear: a fresh conversation in this place (the old one stays in the history).
         if images.is_empty() && text.trim() == "/clear" {
             self.clear_conversation();
@@ -1372,6 +1372,7 @@ impl Agent {
                 }
                 agent.refresh_status();
                 agent.last_took.set(started.elapsed().as_secs());
+                agent.mark_used();
                 agent.emit(Event::Done);
                 if !agent.last_cancelled.get() && agent.last_error.borrow().is_none() {
                     agent.guess_next();
