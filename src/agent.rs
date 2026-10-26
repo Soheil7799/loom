@@ -94,6 +94,23 @@ struct RepoCache {
     read_at: Option<Instant>,
 }
 
+/// A subagent with a session of its own (Claude Code's Agent/Task), which the adapter reports
+/// apart from the main conversation: its state, and its conversation to read.
+pub struct Sub {
+    pub id: String,
+    pub title: RefCell<String>,
+    /// "running", "requires_action", "idle" (None: not said yet).
+    state: RefCell<Option<String>>,
+    started: Instant,
+    ended: Cell<Option<Instant>>,
+    at: Cell<Instant>,
+    step: RefCell<String>,
+    pub chat: Rc<Chat>,
+    /// Its launch in the main conversation (a card there), and what it was asked.
+    card: RefCell<Option<String>>,
+    asked: RefCell<String>,
+}
+
 struct Pending {
     serial: u64,
     rpc: Value,
@@ -147,6 +164,8 @@ pub struct Agent {
     modes: RefCell<Vec<String>>,
     mode: RefCell<String>,
     pending: RefCell<Vec<Pending>>,
+    /// Subagents met in this conversation (live and replayed).
+    subs: RefCell<Vec<Rc<Sub>>>,
     asked: Cell<u64>,
     files: RefCell<Vec<(PathBuf, Mark)>>,
     /// The git repos it has read or changed files in, latest first.
@@ -198,6 +217,7 @@ impl Agent {
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
             pending: RefCell::default(),
+            subs: RefCell::default(),
             asked: Cell::new(0),
             files: RefCell::default(),
             repos: RefCell::default(),
@@ -210,6 +230,22 @@ impl Agent {
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
+        // The subagents strip: a row opens that subagent's conversation; Stop stops it alone.
+        let weak = Rc::downgrade(&agent);
+        *agent.chat.on_crew_open.borrow_mut() = Some(Rc::new(move |key: String| {
+            let Some(agent) = weak.upgrade() else { return };
+            if !agent.open_sub(&key) {
+                agent.chat.go_to_tool(&key);
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
+        *agent.chat.on_crew_stop.borrow_mut() = Some(Rc::new(move |key: String| {
+            if let Some(agent) = weak.upgrade()
+                && let Some(conn) = agent.conn.borrow().clone()
+            {
+                conn.notify("session/cancel", json!({ "sessionId": key }));
+            }
+        }));
         let weak = Rc::downgrade(&agent);
         *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images)| {
             if let Some(agent) = weak.upgrade() {
@@ -487,7 +523,9 @@ impl Agent {
                 // Retries, warnings and compaction come as their own updates, not as text.
                 "session": { "notices": {}, "compaction": {} },
                 // Claude Code's questions (AskUserQuestion) and MCP servers' come as forms.
-                "elicitation": { "form": {}, "url": {} }
+                "elicitation": { "form": {}, "url": {} },
+                // Each subagent as a session of its own: its state, its conversation, its stop.
+                "subagents": {}
             },
             "clientInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") }
         });
@@ -1361,7 +1399,12 @@ impl Agent {
                 agent.choose(index, &id);
             }
         });
-        let card = self.chat.permission(&format!("Allow {title}?"), detail.as_deref(), is_plan, &options, choose);
+        let asker = params["sessionId"].as_str().and_then(|id| self.subs.borrow().iter().find(|s| s.id == id).map(|s| s.title.borrow().clone()));
+        let question = match &asker {
+            Some(sub) => format!("Allow {title}? (asked by the subagent {sub})"),
+            None => format!("Allow {title}?"),
+        };
+        let card = self.chat.permission(&question, detail.as_deref(), is_plan, &options, choose);
         self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), form: None, url: None });
         self.refresh_status();
         self.emit(Event::Asked(title));
@@ -1383,7 +1426,7 @@ impl Agent {
                 }
             }
             Incoming::Call { id, method, params } => match (method.as_str(), id) {
-                ("session/update", _) => self.update(&params["update"]),
+                ("session/update", _) => self.route(&params),
                 ("session/request_permission", Some(id)) => self.ask(id, &params),
                 ("elicitation/create", Some(id)) => self.elicit(id, &params),
                 (_, Some(id)) => {
@@ -1393,6 +1436,173 @@ impl Agent {
                 }
                 _ => {}
             },
+        }
+    }
+
+    /// A session update: the main conversation's, or one of its subagents'.
+    fn route(self: &Rc<Self>, params: &Value) {
+        let own = self.session_id();
+        match params["sessionId"].as_str() {
+            Some(id) if own.as_deref().is_some_and(|own| own != id) => self.sub_update(id, &params["update"]),
+            _ => self.update(&params["update"]),
+        }
+    }
+
+    /// The subagent with session `id` (made the first time it is heard of).
+    fn sub(self: &Rc<Self>, id: &str) -> Rc<Sub> {
+        if let Some(sub) = self.subs.borrow().iter().find(|s| s.id == id) {
+            return sub.clone();
+        }
+        let chat = Chat::viewer();
+        chat.set_show_thinking(crate::settings::get().show_thinking);
+        let sub = Rc::new(Sub {
+            id: id.to_owned(),
+            title: RefCell::new("Subagent".to_owned()),
+            state: RefCell::default(),
+            started: Instant::now(),
+            ended: Cell::new(None),
+            at: Cell::new(Instant::now()),
+            step: RefCell::default(),
+            chat,
+            card: RefCell::default(),
+            asked: RefCell::default(),
+        });
+        self.subs.borrow_mut().push(sub.clone());
+        sub
+    }
+
+    /// Shows subagent `id`'s conversation in place of the main one; false if no such one.
+    fn open_sub(self: &Rc<Self>, id: &str) -> bool {
+        let Some(sub) = self.subs.borrow().iter().find(|s| s.id == id).cloned() else { return false };
+        let state = match sub.state.borrow().as_deref() {
+            Some("requires_action") => " · waiting for your answer",
+            Some("idle") => " · finished",
+            Some(_) => " · working",
+            None => "",
+        };
+        self.chat.show_aside(sub.chat.root.upcast_ref(), &format!("Subagent · {}{state}", sub.title.borrow()));
+        true
+    }
+
+    /// The strip's row for `sub` (while a turn runs: a replay shows none).
+    fn show_sub(&self, sub: &Sub) {
+        if !self.turn.get() {
+            return;
+        }
+        self.chat.crew_set(crate::chat::Crew {
+            key: sub.id.clone(),
+            name: sub.title.borrow().clone(),
+            step: sub.step.borrow().clone(),
+            at: sub.at.get(),
+            started: sub.started,
+            state: sub.state.borrow().clone(),
+            ended: sub.ended.get(),
+            guessed: false,
+        });
+    }
+
+    /// Its launch card in the main conversation: what it was asked, and its answer when back.
+    fn sub_card(&self, sub: &Sub, answer: Option<&str>) {
+        let Some(card) = sub.card.borrow().clone() else { return };
+        let status = match (sub.state.borrow().as_deref(), sub.ended.get()) {
+            (_, Some(_)) => "completed",
+            _ => "in_progress",
+        };
+        let mut text = format!("**Asked:** {}", sub.asked.borrow());
+        if let Some(answer) = answer {
+            text.push_str(&format!("\n\n**Answer:** {answer}"));
+        }
+        let mut update = json!({ "toolCallId": card, "status": status });
+        if answer.is_some() || status == "in_progress" {
+            update["content"] = json!([{ "type": "content", "content": { "type": "text", "text": text } }]);
+        }
+        self.chat.tool(&update);
+    }
+
+    /// `subagent_update` on the main session: a subagent announced, or its state changed.
+    fn subagent_update(self: &Rc<Self>, update: &Value) {
+        let Some(id) = update["sessionId"].as_str() else { return };
+        let sub = self.sub(id);
+        if let Some(title) = update["description"].as_str().or(update["title"].as_str()).filter(|t| !t.is_empty()) {
+            *sub.title.borrow_mut() = title.to_owned();
+        }
+        if let Some(state) = update["state"]["state"].as_str() {
+            *sub.state.borrow_mut() = Some(state.to_owned());
+            if state == "idle" {
+                sub.ended.set(Some(Instant::now()));
+                let ended = match (update["state"]["error"].as_str(), update["state"]["stopReason"].as_str()) {
+                    (Some(error), _) => format!("failed: {error}"),
+                    (None, Some("cancelled")) => "stopped".to_owned(),
+                    _ => "done".to_owned(),
+                };
+                *sub.step.borrow_mut() = ended;
+            } else {
+                sub.ended.set(None);
+            }
+            sub.at.set(Instant::now());
+            self.sub_card(&sub, None);
+        }
+        self.show_sub(&sub);
+        self.emit(Event::Changed);
+    }
+
+    /// `session_message` on the main session: a prompt sent to a subagent (its launch), or a
+    /// subagent's answer coming back.
+    fn session_message(self: &Rc<Self>, update: &Value) {
+        let own = self.session_id();
+        let text: String = update["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
+        let (from, to) = (update["senderSessionId"].as_str(), update["recipientSessionId"].as_str());
+        if let Some(to) = to.filter(|to| own.as_deref() != Some(*to)) {
+            let sub = self.sub(to);
+            let id = update["messageId"].as_str().unwrap_or(to).to_owned();
+            *sub.asked.borrow_mut() = text.clone();
+            let first = sub.card.borrow().is_none();
+            *sub.card.borrow_mut() = Some(id.clone());
+            self.chat.tool(&json!({
+                "toolCallId": id, "title": format!("Subagent · {}", sub.title.borrow()), "kind": "think", "status": "in_progress",
+                "content": [{ "type": "content", "content": { "type": "text", "text": format!("**Asked:** {text}") } }]
+            }));
+            if first {
+                let weak = Rc::downgrade(self);
+                let key = sub.id.clone();
+                self.chat.tool_button(&id, "open", "Read this subagent's conversation", Rc::new(move || {
+                    if let Some(agent) = weak.upgrade() {
+                        agent.open_sub(&key);
+                    }
+                }));
+            }
+        } else if let Some(from) = from {
+            let sub = self.sub(from);
+            self.sub_card(&sub, Some(&text));
+        }
+    }
+
+    /// An update of subagent `id`'s own session: into its conversation.
+    fn sub_update(self: &Rc<Self>, id: &str, update: &Value) {
+        let sub = self.sub(id);
+        let text = update["content"]["text"].as_str().unwrap_or("");
+        match update["sessionUpdate"].as_str().unwrap_or("") {
+            "agent_message_chunk" => sub.chat.agent_text_with(text, update["messageId"].as_str()),
+            "agent_thought_chunk" => sub.chat.thought(text),
+            "tool_call" | "tool_call_update" => {
+                sub.chat.tool(update);
+                if let Some(title) = update["title"].as_str() {
+                    *sub.step.borrow_mut() = crate::chat::tool_title(title);
+                }
+                sub.at.set(Instant::now());
+                self.show_sub(&sub);
+            }
+            "plan" => sub.chat.set_plan(&update["entries"]),
+            "session_message" => {
+                let text: String = update["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
+                // What it was asked comes in; what it hands back goes out, as its own words.
+                if update["recipientSessionId"].as_str() == Some(id) {
+                    sub.chat.user(&text);
+                } else {
+                    sub.chat.agent_text_with(&text, update["messageId"].as_str());
+                }
+            }
+            _ => {}
         }
     }
 
@@ -1428,6 +1638,8 @@ impl Agent {
                 self.tool(update);
             }
             "plan" => self.chat.set_plan(&update["entries"]),
+            "subagent_update" => self.subagent_update(update),
+            "session_message" => self.session_message(update),
             "available_commands_update" => {
                 let commands = update["availableCommands"]
                     .as_array()

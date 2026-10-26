@@ -104,6 +104,12 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let options = [("go".to_owned(), "Yes, start".to_owned(), "allow_once".to_owned()), ("keep".to_owned(), "No, keep planning".to_owned(), "reject_once".to_owned())];
             chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
         }
+        // Presses the last button labelled <label> (the newest card's).
+        "click" => {
+            let mut found = Vec::new();
+            collect(app.window.upcast_ref(), &|w| w.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l == argument), &mut found);
+            found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
+        }
         "plancomment" => {
             let entry = find(app.window.upcast_ref(), &|w| w.has_css_class("plan-comment")).and_downcast::<gtk::Entry>().ok_or("no comment field")?;
             entry.set_text(argument);
@@ -211,6 +217,17 @@ fn print_labels(widget: &gtk::Widget) {
     let mut child = widget.first_child();
     while let Some(w) = child {
         print_labels(&w);
+        child = w.next_sibling();
+    }
+}
+
+fn collect(widget: &gtk::Widget, test: &dyn Fn(&gtk::Widget) -> bool, found: &mut Vec<gtk::Widget>) {
+    if test(widget) {
+        found.push(widget.clone());
+    }
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        collect(&w, test, found);
         child = w.next_sibling();
     }
 }

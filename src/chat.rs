@@ -77,9 +77,19 @@ pub struct Chat {
     last: RefCell<Last>,
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
     /// Subagents at work this turn: their task's tool call, what they last did, when.
-    crew: RefCell<Vec<(String, String, Instant)>>,
+    crew: RefCell<Vec<Crew>>,
     crew_list: gtk::ListBox,
     crew_revealer: gtk::Revealer,
+    /// A row of the strip clicked: its key (a subagent session, or a task's tool call).
+    pub on_crew_open: Callback<String>,
+    /// Stop pressed on a running subagent's row.
+    pub on_crew_stop: Callback<String>,
+    /// The main conversation, or one subagent's ("aside").
+    views: gtk::Stack,
+    aside: gtk::Box,
+    aside_title: gtk::Label,
+    pub header: gtk::Box,
+    input_column: gtk::Box,
     /// Where the next tool call goes, until something else is said.
     group: RefCell<Option<Rc<ToolGroup>>>,
     stick: Rc<Cell<bool>>,
@@ -295,7 +305,26 @@ impl Chat {
         let scroll_area = gtk::Overlay::builder().child(&scroller).vexpand(true).build();
         scroll_area.add_overlay(&find_bar);
         scroll_area.add_overlay(&latest);
-        root.append(&scroll_area);
+        // The main conversation, or (aside) a subagent's, read-only, with the way back.
+        let views = gtk::Stack::builder().vexpand(true).build();
+        views.add_named(&scroll_area, Some("main"));
+        let aside = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        aside.add_css_class("aside");
+        let aside_bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        aside_bar.add_css_class("aside-bar");
+        let back = gtk::Button::with_label("← Main conversation");
+        back.add_css_class("flat");
+        back.add_css_class("small");
+        back.set_tooltip_text(Some("Back to the main conversation (Esc)"));
+        let aside_title = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        aside_title.add_css_class("aside-title");
+        aside_bar.append(&back);
+        aside_bar.append(&aside_title);
+        aside.append(&aside_bar);
+        views.add_named(&aside, Some("aside"));
+        let v = views.clone();
+        back.connect_clicked(move |_| v.set_visible_child_name("main"));
+        root.append(&views);
 
         let plan = gtk::Box::new(gtk::Orientation::Vertical, 2);
         plan.add_css_class("plan");
@@ -435,6 +464,13 @@ impl Chat {
             crew: RefCell::default(),
             crew_list,
             crew_revealer,
+            on_crew_open: RefCell::default(),
+            on_crew_stop: RefCell::default(),
+            views: views.clone(),
+            aside: aside.clone(),
+            aside_title,
+            header: header.clone(),
+            input_column: input_column.clone(),
             stick: Rc::new(Cell::new(true)),
             follow_pending: Cell::new(false),
             commands: RefCell::default(),
@@ -684,6 +720,37 @@ impl Chat {
             }
             latest.set_visible(!stick.get() && !at_bottom && upper > page * 1.2);
         });
+        // Scrolling down at what looks like the end: if the conversation is longer than the
+        // scroller was told (its height not re-read), make it read it again and go on down.
+        // Each time this happens it is noted in ~/.local/state/loom/scroll.log.
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak = Rc::downgrade(self);
+        scroll.connect_scroll(move |_, _, dy| {
+            let Some(chat) = weak.upgrade() else { return glib::Propagation::Proceed };
+            let adj = chat.scroller.vadjustment();
+            if dy > 0.0 && adj.value() >= adj.upper() - adj.page_size() - 2.0 {
+                let Some(clamp) = chat.list.parent() else { return glib::Propagation::Proceed };
+                let needed = f64::from(clamp.measure(gtk::Orientation::Vertical, clamp.width()).1);
+                if needed > adj.upper() + 1.0 {
+                    let line = format!("{} upper={:.0} needed={needed:.0} value={:.0} page={:.0}\n", glib::DateTime::now_local().ok().and_then(|t| t.format_iso8601().ok()).unwrap_or_default(), adj.upper(), adj.value(), adj.page_size());
+                    let path = crate::state::dir().join("scroll.log");
+                    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                        use std::io::Write;
+                        let _ = file.write_all(line.as_bytes());
+                    }
+                    clamp.queue_resize();
+                    if let Some(viewport) = clamp.parent() {
+                        viewport.queue_allocate();
+                    }
+                    chat.stick.set(true);
+                    chat.follow();
+                }
+            }
+            glib::Propagation::Proceed
+        });
+        self.scroller.add_controller(scroll);
+
         // Following: now, and once more after the layout settles (a size can change twice in
         // one frame, the second time after this ran).
         let weak = Rc::downgrade(self);
@@ -716,9 +783,12 @@ impl Chat {
         let weak = Rc::downgrade(self);
         self.crew_list.connect_row_activated(move |_, row| {
             let Some(chat) = weak.upgrade() else { return };
-            let id = chat.crew.borrow().get(row.index() as usize).map(|(id, _, _)| id.clone());
-            if let Some(id) = id {
-                chat.go_to_tool(&id);
+            let key = chat.crew.borrow().get(row.index() as usize).map(|c| c.key.clone());
+            let Some(key) = key else { return };
+            let open = chat.on_crew_open.borrow().clone();
+            match open {
+                Some(open) => open(key),
+                None => chat.go_to_tool(&key),
             }
         });
         // The strip's "4s ago" kept current.
@@ -857,6 +927,8 @@ impl Chat {
             }
             gdk::Key::ISO_Left_Tab => self.call(&self.on_cycle_mode, ()),
             gdk::Key::Escape if completing => self.completion.popdown(),
+            // Esc on a subagent's conversation goes back to the main one first.
+            gdk::Key::Escape if self.show_main() => {}
             gdk::Key::Escape => self.call(&self.on_cancel, ()),
             _ => return glib::Propagation::Proceed,
         }
@@ -1730,11 +1802,11 @@ impl Chat {
         // A task that ended takes its subagent off the strip; one sent to the background ends
         // its call at once ("launched"), so it stays until the turn ends.
         if matches!(update["status"].as_str(), Some("completed" | "failed"))
-            && self.crew.borrow().iter().any(|(parent, _, _)| parent == id)
+            && self.crew.borrow().iter().any(|c| c.key == id)
         {
             let background = card.content.borrow().iter().any(|c| c.to_string().to_lowercase().contains("background"));
             if !background {
-                self.crew.borrow_mut().retain(|(parent, _, _)| parent != id);
+                self.crew.borrow_mut().retain(|c| c.key != id);
                 self.show_crew();
             }
         }
@@ -1746,55 +1818,144 @@ impl Chat {
         }
     }
 
-    /// A subagent did something (`step`: its tool call's title, when it has one).
+    /// A subagent did something (`step`: its tool call's title, when it has one). Only for
+    /// subagents reported inside the main conversation (no sessions of their own).
     fn crew_step(&self, parent: &str, step: Option<String>) {
         {
+            let name = self.tools.borrow().get(parent).map(|c| c.title.label().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| "Subagent".into());
             let mut crew = self.crew.borrow_mut();
-            match crew.iter_mut().find(|(id, _, _)| id == parent) {
+            match crew.iter_mut().find(|c| c.key == parent) {
                 Some(entry) => {
                     if let Some(step) = step {
-                        entry.1 = step;
+                        entry.step = step;
                     }
-                    entry.2 = Instant::now();
+                    entry.at = Instant::now();
                 }
-                None => crew.push((parent.to_owned(), step.unwrap_or_default(), Instant::now())),
+                None => crew.push(Crew { key: parent.to_owned(), name, step: step.unwrap_or_default(), at: Instant::now(), started: Instant::now(), state: Some("running".into()), ended: None, guessed: true }),
             }
         }
         self.show_crew();
     }
 
-    /// The subagents strip: "◌ Convert batch 1 · Edit Foo.tsx · 4s ago".
+    /// A subagent with a session of its own, as it now stands.
+    pub fn crew_set(&self, entry: Crew) {
+        {
+            let mut crew = self.crew.borrow_mut();
+            match crew.iter_mut().find(|c| c.key == entry.key) {
+                Some(old) => *old = entry,
+                None => crew.push(entry),
+            }
+        }
+        self.show_crew();
+    }
+
+    /// The subagents strip, like the terminal's agent list: "◌ code-review · Read app.rs ·
+    /// 6m 05s", what each is doing and for how long; Stop on a running one.
     fn show_crew(&self) {
         while let Some(row) = self.crew_list.row_at_index(0) {
             self.crew_list.remove(&row);
         }
         let crew = self.crew.borrow();
-        for (id, step, at) in crew.iter() {
-            let name = self.tools.borrow().get(id).map(|c| c.title.label().to_string()).filter(|t| !t.is_empty()).unwrap_or_else(|| "Subagent".into());
-            let quiet = at.elapsed().as_secs();
+        for entry in crew.iter() {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let glyph = if quiet < 90 { gtk::Spinner::builder().spinning(true).build().upcast::<gtk::Widget>() } else { gtk::Label::new(Some("○")).upcast() };
+            let quiet = entry.at.elapsed().as_secs();
+            let state = entry.state.as_deref().unwrap_or("running");
+            // Reported states are known; a guessed one goes quiet after 90s without a step.
+            let running = state == "running" && (!entry.guessed || quiet < 90);
+            let glyph: gtk::Widget = match state {
+                _ if running => gtk::Spinner::builder().spinning(true).build().upcast(),
+                "requires_action" => gtk::Label::new(Some("⚑")).upcast(),
+                "idle" if entry.ended.is_some() => gtk::Label::new(Some("✓")).upcast(),
+                _ => gtk::Label::new(Some("○")).upcast(),
+            };
             glyph.add_css_class("crew-glyph");
-            let who = gtk::Label::builder().label(&name).xalign(0.0).ellipsize(pango::EllipsizeMode::End).max_width_chars(36).build();
+            glyph.add_css_class(state);
+            let who = gtk::Label::builder().label(&entry.name).xalign(0.0).ellipsize(pango::EllipsizeMode::End).max_width_chars(36).build();
             who.add_css_class("crew-name");
-            let what = gtk::Label::builder().label(step.as_str()).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+            let doing = match state {
+                "requires_action" => "waiting for your answer".to_owned(),
+                "idle" => entry.step.clone(),
+                _ => entry.step.clone(),
+            };
+            let what = gtk::Label::builder().label(doing).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
             what.add_css_class("dim");
-            let when = gtk::Label::new(Some(&if quiet < 5 { "now".to_owned() } else { format!("{} ago", elapsed(quiet)) }));
+            let time = if entry.guessed {
+                if quiet < 5 { "now".to_owned() } else { format!("{} ago", elapsed(quiet)) }
+            } else {
+                let until = entry.ended.unwrap_or_else(Instant::now);
+                elapsed(until.duration_since(entry.started).as_secs())
+            };
+            let when = gtk::Label::new(Some(&time));
             when.add_css_class("dim");
             when.add_css_class("small");
             line.append(&glyph);
             line.append(&who);
             line.append(&what);
             line.append(&when);
+            if !entry.guessed && entry.ended.is_none() {
+                let stop = gtk::Button::with_label("Stop");
+                stop.add_css_class("flat");
+                stop.add_css_class("small");
+                stop.set_tooltip_text(Some("Stop this subagent (the main conversation goes on)"));
+                let key = entry.key.clone();
+                let handler = self.on_crew_stop.borrow().clone();
+                stop.connect_clicked(move |button| {
+                    button.set_sensitive(false);
+                    if let Some(handler) = &handler {
+                        handler(key.clone());
+                    }
+                });
+                line.append(&stop);
+            }
             let row = gtk::ListBoxRow::builder().child(&line).build();
-            row.set_tooltip_text(Some("Go to this subagent's work"));
+            row.set_tooltip_text(Some(if entry.guessed { "Go to this subagent's work" } else { "Open this subagent's conversation" }));
             self.crew_list.append(&row);
         }
         self.crew_revealer.set_reveal_child(!crew.is_empty());
     }
 
+    /// Shows `view` (a subagent's conversation) in place of the main one, titled `title`.
+    pub fn show_aside(&self, view: &gtk::Widget, title: &str) {
+        if let Some(old) = self.aside.first_child().and_then(|bar| bar.next_sibling()) {
+            self.aside.remove(&old);
+        }
+        if let Some(parent) = view.parent().and_downcast::<gtk::Box>() {
+            parent.remove(view);
+        }
+        view.set_vexpand(true);
+        self.aside.append(view);
+        self.aside_title.set_label(title);
+        self.views.set_visible_child_name("aside");
+    }
+
+    /// Back to the main conversation; true if a subagent's was shown.
+    pub fn show_main(&self) -> bool {
+        let aside = self.views.visible_child_name().as_deref() == Some("aside");
+        self.views.set_visible_child_name("main");
+        aside
+    }
+
+    /// A read-only conversation (a subagent's): no header, no input.
+    pub fn viewer() -> Rc<Chat> {
+        let chat = Chat::new();
+        chat.header.set_visible(false);
+        chat.input_column.set_visible(false);
+        chat
+    }
+
+    /// Puts a button on a tool card (beside "open", "output").
+    pub fn tool_button(&self, id: &str, label: &str, tip: &str, action: Rc<dyn Fn()>) {
+        let Some(card) = self.tools.borrow().get(id).cloned() else { return };
+        let button = gtk::Button::with_label(label);
+        button.add_css_class("flat");
+        button.add_css_class("small");
+        button.set_tooltip_text(Some(tip));
+        button.connect_clicked(move |_| action());
+        card.actions.append(&button);
+    }
+
     /// Opens a tool call (its group unfolded) and scrolls to it.
-    fn go_to_tool(self: &Rc<Self>, id: &str) {
+    pub fn go_to_tool(self: &Rc<Self>, id: &str) {
         let Some(card) = self.tools.borrow().get(id).cloned() else { return };
         self.open_tool(id);
         let weak = Rc::downgrade(self);
@@ -2725,9 +2886,26 @@ impl ToolCard {
 }
 
 /// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
+/// A row of the subagents strip.
+pub struct Crew {
+    /// The subagent's session id, or (reported inside the main conversation) its task's tool call.
+    pub key: String,
+    pub name: String,
+    /// What it did last.
+    pub step: String,
+    /// When it last did something.
+    pub at: Instant,
+    pub started: Instant,
+    /// "running", "requires_action", "idle".
+    pub state: Option<String>,
+    pub ended: Option<Instant>,
+    /// No session of its own: its state is a guess from its steps.
+    pub guessed: bool,
+}
+
 /// One line: a multi-line command (a heredoc) shows its first line and "…"; the rest
 /// would spill over the card around it.
-fn tool_title(title: &str) -> String {
+pub(crate) fn tool_title(title: &str) -> String {
     let title = title.replace('`', "");
     let title = match title.trim().split_once('\n') {
         Some((first, _)) => format!("{} …", first.trim_end()),
@@ -2856,15 +3034,16 @@ pub(crate) fn text_label(markup: &str) -> gtk::Label {
     label
 }
 
-/// Every line of a block in the direction of its first letter. Left alone, each line takes its
-/// own (Pango's default): in a block mixing Persian and English the lines zigzag between the
-/// left and right edges.
+/// Every line of a block in one direction: right-to-left when most of its letters are (a
+/// Persian message), else left-to-right like the input (an English reply quoting a Persian
+/// word). Left alone, each line takes the direction of its own first letter (Pango's default)
+/// and a mixed block zigzags between the edges.
 pub(crate) fn one_direction(markup: &str) -> String {
     // Only a block with right-to-left letters in it needs them.
     if !markup.chars().any(is_rtl) {
         return markup.to_owned();
     }
-    let Some(rtl) = first_strong_rtl(markup) else { return markup.to_owned() };
+    let Some(rtl) = mostly_rtl(markup) else { return markup.to_owned() };
     let mark = if rtl { '\u{200F}' } else { '\u{200E}' };
     let mut out = String::with_capacity(markup.len() + 16);
     out.push(mark);
@@ -2881,10 +3060,10 @@ fn is_rtl(c: char) -> bool {
     matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
 }
 
-/// Whether the first letter (outside markup tags and entities) is right-to-left; None: no letter.
-fn first_strong_rtl(markup: &str) -> Option<bool> {
-    let mut in_tag = false;
-    let mut in_entity = false;
+/// Whether most letters (outside markup tags and entities) are right-to-left; None: no letter.
+fn mostly_rtl(markup: &str) -> Option<bool> {
+    let (mut in_tag, mut in_entity) = (false, false);
+    let (mut rtl, mut ltr) = (0usize, 0usize);
     for c in markup.chars() {
         match c {
             '<' => in_tag = true,
@@ -2892,12 +3071,12 @@ fn first_strong_rtl(markup: &str) -> Option<bool> {
             '&' if !in_tag => in_entity = true,
             ';' if in_entity => in_entity = false,
             _ if in_tag || in_entity => {}
-            c if is_rtl(c) => return Some(true),
-            c if c.is_alphabetic() => return Some(false),
+            c if is_rtl(c) => rtl += 1,
+            c if c.is_alphabetic() => ltr += 1,
             _ => {}
         }
     }
-    None
+    (rtl + ltr > 0).then_some(rtl > ltr)
 }
 
 /// A code block: monospace, selectable, with a copy button in its corner.
@@ -3008,7 +3187,9 @@ mod tests {
     #[test]
     fn a_block_keeps_one_direction() {
         assert_eq!(super::one_direction("<b>which</b> is\nقیمت"), "\u{200E}<b>which</b> is\n\u{200E}قیمت");
-        assert_eq!(super::one_direction("&laquo;قیمت&raquo; price"), "\u{200F}&laquo;قیمت&raquo; price");
+        // An English reply quoting Persian stays left-to-right; Persian stays right-to-left.
+        assert_eq!(super::one_direction("&laquo;قیمت&raquo; is the price of it"), "\u{200E}&laquo;قیمت&raquo; is the price of it");
+        assert_eq!(super::one_direction("قیمت اخرین خرید for"), "\u{200F}قیمت اخرین خرید for");
         assert_eq!(super::one_direction("123"), "123");
         assert_eq!(super::one_direction("cargo test\nnext"), "cargo test\nnext");
     }

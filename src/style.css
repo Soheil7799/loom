@@ -325,3 +325,7 @@ label.error { color: @loom_err; }
 .plan-part button.plan-comment-button { opacity: 0.3; min-height: 22px; min-width: 26px; padding: 0 4px; border-radius: 6px; }
 .plan-part:hover button.plan-comment-button, .plan-part button.plan-comment-button:focus { opacity: 0.8; }
 entry.plan-comment { margin: 2px 32px 6px 0; }
+.aside-bar { padding: 8px 20px; border-bottom: 1px solid @loom_line; }
+.aside-title { font-weight: 600; }
+.crew-glyph.requires_action { color: @loom_wait; }
+.crew-glyph.idle { color: @loom_ok; }
