@@ -678,24 +678,33 @@ impl Chat {
         )
     }
 
-    /// To the end if following (now, and again once the layout has settled).
-    fn follow(self: &Rc<Self>) {
-        if !self.stick.get() {
-            return;
-        }
+    /// Moves the view by `dy` as a reader would (for tests).
+    pub fn scroll_by_for_tests(&self, dy: f64) {
         let adj = self.scroller.vadjustment();
-        adj.set_value(adj.upper() - adj.page_size());
-        if self.follow_pending.replace(true) {
+        adj.set_value((adj.value() + dy).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+    }
+
+    /// To the end if following (now, and again once the layout has settled).
+    ///
+    /// Never at once: the conversation's new height is told in the middle of laying the
+    /// window out, and a move made then is not laid out (GTK drops a re-layout asked for
+    /// during one). The view would stay drawn where it was while the scroller believes it is
+    /// at the end: half a screen short, scrolling down doing nothing, until any scroll lays it
+    /// out again. So the move waits for the start of the next frame, before its layout.
+    fn follow(self: &Rc<Self>) {
+        if !self.stick.get() || self.follow_pending.replace(true) {
             return;
         }
         let weak = Rc::downgrade(self);
-        glib::idle_add_local_once(move || {
-            let Some(chat) = weak.upgrade() else { return };
-            chat.follow_pending.set(false);
-            if chat.stick.get() {
-                let adj = chat.scroller.vadjustment();
-                adj.set_value(adj.upper() - adj.page_size());
+        self.scroller.add_tick_callback(move |_, _| {
+            if let Some(chat) = weak.upgrade() {
+                chat.follow_pending.set(false);
+                if chat.stick.get() {
+                    let adj = chat.scroller.vadjustment();
+                    adj.set_value(adj.upper() - adj.page_size());
+                }
             }
+            glib::ControlFlow::Break
         });
     }
 
@@ -729,47 +738,6 @@ impl Chat {
             }
             latest.set_visible(!stick.get() && !at_bottom && upper > page * 1.2);
         });
-        // Scrolling down at what looks like the end: if the conversation is longer than the
-        // scroller was told (its height not re-read), make it read it again and go on down.
-        // Each time this happens it is noted in ~/.local/state/loom/scroll.log.
-        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
-        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
-        let weak = Rc::downgrade(self);
-        // At most twice a second (measuring a long conversation is a full layout pass), and
-        // logged at most once a minute.
-        let (checked, logged) = (Cell::new(None::<Instant>), Cell::new(None::<Instant>));
-        scroll.connect_scroll(move |_, _, dy| {
-            let Some(chat) = weak.upgrade() else { return glib::Propagation::Proceed };
-            let adj = chat.scroller.vadjustment();
-            if dy > 0.0
-                && adj.value() >= adj.upper() - adj.page_size() - 2.0
-                && checked.get().is_none_or(|t| t.elapsed() > Duration::from_millis(500))
-            {
-                checked.set(Some(Instant::now()));
-                let Some(clamp) = chat.list.parent() else { return glib::Propagation::Proceed };
-                let needed = f64::from(clamp.measure(gtk::Orientation::Vertical, clamp.width()).1);
-                if needed > adj.upper() + 1.0 {
-                    let line = format!("{} upper={:.0} needed={needed:.0} value={:.0} page={:.0}\n", glib::DateTime::now_local().ok().and_then(|t| t.format_iso8601().ok()).unwrap_or_default(), adj.upper(), adj.value(), adj.page_size());
-                    let path = crate::state::dir().join("scroll.log");
-                    if logged.get().is_none_or(|t| t.elapsed() > Duration::from_secs(60))
-                        && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path)
-                    {
-                        use std::io::Write;
-                        let _ = file.write_all(line.as_bytes());
-                        logged.set(Some(Instant::now()));
-                    }
-                    clamp.queue_resize();
-                    if let Some(viewport) = clamp.parent() {
-                        viewport.queue_allocate();
-                    }
-                    chat.stick.set(true);
-                    chat.follow();
-                }
-            }
-            glib::Propagation::Proceed
-        });
-        self.scroller.add_controller(scroll);
-
         // Following: now, and once more after the layout settles (a size can change twice in
         // one frame, the second time after this ran).
         let weak = Rc::downgrade(self);
@@ -2591,7 +2559,9 @@ impl ToolGroup {
     fn new() -> Rc<ToolGroup> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("tool-group");
-        let summary = gtk::Button::builder().visible(false).halign(gtk::Align::Start).build();
+        // Its label gives way ("…") rather than hold the chat wide.
+        let summary_label = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        let summary = gtk::Button::builder().child(&summary_label).visible(false).halign(gtk::Align::Fill).build();
         summary.add_css_class("flat");
         summary.add_css_class("tool-toggle");
         summary.add_css_class("tool-summary");
@@ -2655,7 +2625,9 @@ impl ToolGroup {
         let what = counts.iter().map(|(verb, n)| format!("{verb} {n}")).collect::<Vec<_>>().join(" · ");
         let last = shown.last().map(|c| c.title.label().to_string()).unwrap_or_default();
         let last: String = last.chars().take(48).collect::<String>() + if last.chars().count() > 48 { "…" } else { "" };
-        self.summary.set_label(&format!("{glyph}  {what}  ·  last: {last}  {arrow}"));
+        if let Some(label) = self.summary.child().and_downcast::<gtk::Label>() {
+            label.set_label(&format!("{glyph}  {what}  ·  last: {last}  {arrow}"));
+        }
         self.summary.set_tooltip_text(Some(&format!("{} tool calls", shown.len())));
     }
 }

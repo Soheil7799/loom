@@ -7,6 +7,9 @@ use gtk::glib;
 use gtk::prelude::*;
 use gtk::subclass::prelude::*;
 
+/// The most width a column asks for, whatever is inside.
+const MIN_WIDTH: i32 = 320;
+
 mod imp {
     use super::*;
 
@@ -34,6 +37,12 @@ mod imp {
             // Height is asked for a width: the child gets no more than the column's.
             let for_size = if orientation == gtk::Orientation::Vertical && for_size > 0 { for_size.min(self.max.get()) } else { for_size };
             let (min, natural, _, _) = child.measure(orientation, for_size);
+            // However wide one line inside wants to be, the column asks for little: given less
+            // than it measured, that line is clipped at its end, rather than the whole column
+            // pushed out of view.
+            if orientation == gtk::Orientation::Horizontal {
+                return (min.min(MIN_WIDTH), natural, -1, -1);
+            }
             // A scroller gives its child the least height it asks for. Content laid out taller
             // than that (a wrapped line, a picture) would hang past the end, out of reach: so
             // the height asked is the whole of it.

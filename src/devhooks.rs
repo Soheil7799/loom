@@ -122,6 +122,62 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             eprintln!("BUTTON {}", button.label().unwrap_or_default());
             button.emit_clicked();
         }
+        // Scrolls the chat by <px> as a reader would (negative: up).
+        "scrollby" => app.focused_agent().ok_or("no agent")?.chat.scroll_by_for_tests(argument.parse().map_err(|_| "scrollby:<px>")?),
+        // Labels whose text is taller than the room they were given (drawn past their end).
+        "overflow" => {
+            let list = app.focused_agent().ok_or("no agent")?.chat.messages();
+            let mut found = Vec::new();
+            collect(list.upcast_ref(), &|w| w.is::<gtk::Label>(), &mut found);
+            let mut n = 0;
+            for w in found {
+                let label = w.downcast_ref::<gtk::Label>().unwrap();
+                if !label.is_drawable() {
+                    continue;
+                }
+                let (_, text_h) = label.layout().pixel_size();
+                let (min_h, nat_h, _, _) = label.measure(gtk::Orientation::Vertical, label.width());
+                if text_h > label.height() + 1 {
+                    n += 1;
+                    if n <= 12 {
+                        let text: String = label.text().chars().take(50).collect();
+                        eprintln!("OVER w={} h={} text_h={text_h} min={min_h} nat={nat_h} lines={} classes={:?} {text:?}", label.width(), label.height(), label.layout().line_count(), label.css_classes());
+                    }
+                }
+            }
+            eprintln!("OVER total {n}");
+        }
+        // The last items of the conversation: where each sits and how tall it is.
+        "tail" => {
+            let list = app.focused_agent().ok_or("no agent")?.chat.messages();
+            let mut items = Vec::new();
+            let mut child = list.last_child();
+            while let Some(w) = child {
+                if items.len() >= 8 {
+                    break;
+                }
+                child = w.prev_sibling();
+                items.push(w);
+            }
+            for w in items.iter().rev() {
+                let y = w.compute_point(&list, &gtk::graphene::Point::new(0.0, 0.0)).map_or(-1.0, |p| p.y());
+                let (_, nat, _, _) = w.measure(gtk::Orientation::Vertical, w.width());
+                eprintln!("TAIL y={y:.0} h={} nat={nat} visible={} {} {:?}", w.height(), w.get_visible(), w.type_().name(), w.css_classes());
+            }
+            eprintln!("TAIL list_h={}", list.height());
+            let mut labels = Vec::new();
+            if let Some(last) = list.last_child() {
+                collect(&last, &|w| w.is::<gtk::Label>(), &mut labels);
+            }
+            for w in labels.iter().rev().take(3) {
+                let label = w.downcast_ref::<gtk::Label>().unwrap();
+                let y = label.compute_point(&list, &gtk::graphene::Point::new(0.0, 0.0)).map_or(-1.0, |p| p.y());
+                let text = label.text();
+                let tail: String = text.chars().rev().take(80).collect::<String>().chars().rev().collect();
+                eprintln!("LAST y={y:.0} h={} {:?}", label.height(), tail);
+            }
+        }
+        "maximize" => app.window.maximize(),
         "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
         "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,

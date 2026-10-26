@@ -1940,6 +1940,10 @@ impl App {
     }
 
     fn notify(&self, agent: &Agent, body: &str) {
+        // A test instance (driven by LOOM_CONTROL) keeps quiet on the desktop.
+        if std::env::var_os("LOOM_CONTROL").is_some() {
+            return;
+        }
         let notification = gio::Notification::new(&agent.title());
         notification.set_body(Some(body));
         notification.set_default_action_and_target_value("app.focus-agent", Some(&agent.id.to_variant()));
