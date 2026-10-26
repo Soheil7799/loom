@@ -261,6 +261,8 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
         "One waiting for your answer moves to the top of its project until answered.",
         &switch(s.sort_by_urgency, |s, on| s.sort_by_urgency = on),
     );
+    let start = dropdown(&[(true, "The overview"), (false, "The last agent")], s.start_on_overview, |_| String::new(), |s, on| s.start_on_overview = on);
+    row(&behaviour, "When loom starts", "The overview shows every agent at a glance and resumes none until you open it.", &start);
     row(&behaviour, "Confirm quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
     row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
     let idle = dropdown(IDLE, s.idle_minutes, |m| format!("After {m} min"), |s, m| s.idle_minutes = m);

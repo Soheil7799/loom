@@ -1021,6 +1021,13 @@ impl App {
             self.add_agent(saved);
         }
         let agents = self.agents_in_order();
+        // The overview first: the agent last looked at is where "back" goes (not resumed yet).
+        if settings::get().start_on_overview && !agents.is_empty() {
+            *self.previous.borrow_mut() = agents.get(layout.focused).or(agents.first()).cloned();
+            self.refresh_sidebar();
+            self.show_overview();
+            return;
+        }
         if let Some(agent) = agents.get(layout.focused).or(agents.first()) {
             self.focus(agent);
             if let Some(pinned) = layout.pinned.and_then(|p| agents.get(p)).filter(|p| !Rc::ptr_eq(p, agent)) {

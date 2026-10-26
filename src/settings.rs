@@ -30,6 +30,8 @@ pub struct Settings {
     pub sort_by_urgency: bool,
     /// After a turn, guess the next message (Claude Haiku; a little usage each turn).
     pub suggest_prompts: bool,
+    /// Launched, loom shows the overview (no agent resumed until one is opened).
+    pub start_on_overview: bool,
     /// The Telegram bot: off unless switched on, and obeys only `telegram_user`.
     pub telegram_enabled: bool,
     pub telegram_token: String,
@@ -54,6 +56,7 @@ impl Default for Settings {
             scratch_autohide: false,
             sort_by_urgency: true,
             suggest_prompts: true,
+            start_on_overview: true,
             telegram_enabled: false,
             telegram_token: String::new(),
             telegram_user: 0,
@@ -148,6 +151,7 @@ fn parse(text: &str) -> Settings {
         scratch_autohide: flag("scratchAutohide", d.scratch_autohide),
         sort_by_urgency: flag("sortByUrgency", d.sort_by_urgency),
         suggest_prompts: flag("suggestPrompts", d.suggest_prompts),
+        start_on_overview: flag("startOnOverview", d.start_on_overview),
         telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
         telegram_token: string("telegramToken", &d.telegram_token),
         telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
@@ -169,6 +173,7 @@ fn render(s: &Settings) -> String {
         "scratchAutohide": s.scratch_autohide,
         "sortByUrgency": s.sort_by_urgency,
         "suggestPrompts": s.suggest_prompts,
+        "startOnOverview": s.start_on_overview,
         "telegramEnabled": s.telegram_enabled,
         "telegramToken": s.telegram_token,
         "telegramUser": s.telegram_user,
