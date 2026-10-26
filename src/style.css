@@ -41,13 +41,20 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .sidebar-bottom button.icon { min-width: 30px; min-height: 30px; padding: 0; }
 .agents { background: transparent; }
 .agents row { border-radius: 8px; margin: 1px 6px; padding: 6px 10px; }
-.agents row.agent-row { margin: 1px 6px 1px 14px; padding: 6px 10px; }
-.agents row.agent-row:hover:not(:selected) { background: alpha(@window_fg_color, 0.05); }
+/* A project is a card: its header row on top, its agent rows inside, the last one closing it. */
+.agents row.project-row, .agents row.agent-row { background: alpha(@window_fg_color, 0.035); border: 1px solid alpha(@window_fg_color, 0.07); }
+.agents row.agent-row { margin: 0 8px; padding: 1px 4px; border-top: none; border-bottom: none; border-radius: 0; }
+.agents row.agent-row.last { border-bottom: 1px solid alpha(@window_fg_color, 0.07); border-radius: 0 0 10px 10px; padding-bottom: 5px; }
+/* The agent's own highlight, rounded, inside the card. */
+.agents row.agent-row > box { padding: 5px 8px; border-radius: 8px; }
+.agents row.agent-row:hover:not(:selected) > box { background: alpha(@window_fg_color, 0.05); }
+.agents row.agent-row:selected { background: alpha(@window_fg_color, 0.035); }
+.agents row.agent-row:selected > box { background: alpha(@accent_color, 0.14); }
 .agents row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .agents row:selected .agent-title { font-weight: 600; }
-.agents row.project-row { margin: 10px 6px 2px 6px; padding: 10px 6px 2px 8px; border-top: 1px solid @loom_line; border-radius: 0; }
-.agents row.project-row:first-child { border-top: none; padding-top: 2px; margin-top: 8px; }
-.agents row.project-row:hover { background: alpha(@window_fg_color, 0.04); }
+.agents row.project-row { margin: 10px 8px 0 8px; padding: 6px 6px 4px 8px; border-bottom: none; border-radius: 10px 10px 0 0; }
+.agents row.project-row.alone { border-bottom: 1px solid alpha(@window_fg_color, 0.07); border-radius: 10px; padding-bottom: 6px; }
+.agents row.project-row:hover { background: alpha(@window_fg_color, 0.06); }
 .project-row button.arrow { opacity: 0.6; font-size: 0.8em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 6px; }
 .project-row button.arrow:hover { opacity: 1; }
 .project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }

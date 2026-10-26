@@ -2359,13 +2359,23 @@ impl App {
         let agents = self.agents_in_order();
         for project in &projects {
             let mine: Vec<&Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).collect();
-            self.list.append(&self.project_row(project, &mine));
+            // Each project a card: its header on top, its agents inside, the last one closing it
+            // (closed, or with none, the header is the whole card).
+            let header = self.project_row(project, &mine);
+            if project.collapsed || mine.is_empty() {
+                header.add_css_class("alone");
+            }
+            self.list.append(&header);
             rows.push(Row::Project(project.path.clone()));
             if project.collapsed {
                 continue;
             }
-            for agent in mine {
+            let count = mine.len();
+            for (i, agent) in mine.into_iter().enumerate() {
                 let row = agent_row(agent);
+                if i + 1 == count {
+                    row.add_css_class("last");
+                }
                 self.list.append(&row);
                 if focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
                     self.list.select_row(Some(&row));
