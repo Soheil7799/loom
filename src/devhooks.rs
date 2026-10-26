@@ -91,6 +91,22 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 }));
             }
         }
+        // A subagent left running in the background after the turn (a reported one).
+        "fakebg" => {
+            let chat = app.focused_agent().ok_or("no agent")?.chat.clone();
+            chat.set_working(None);
+            let now = std::time::Instant::now();
+            chat.crew_set(crate::chat::Crew {
+                key: "bg1".into(),
+                name: "research".into(),
+                step: "Reading the docs".into(),
+                at: now,
+                started: now,
+                state: Some("running".into()),
+                ended: None,
+                guessed: false,
+            });
+        }
         "overview" => app.show_overview(),
         // A schedule due now: a new conversation in <dir> that runs `!echo scheduled-ok`.
         "schedtest" => app.add_schedule_for_tests(PathBuf::from(argument), "!echo scheduled-ok"),

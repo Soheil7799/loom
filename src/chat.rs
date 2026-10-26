@@ -1931,9 +1931,32 @@ impl Chat {
         self.show_crew();
     }
 
+    /// Between turns, while subagents Claude left running work on: "✻ Waiting for 2
+    /// background agents to finish", where "Working…" was (as Claude Code says it).
+    fn background_note(&self) {
+        if self.working_since.get().is_some() {
+            return;
+        }
+        let running = self
+            .crew
+            .borrow()
+            .iter()
+            .filter(|c| c.ended.is_none() && c.state.as_deref().unwrap_or("running") == "running" && (!c.guessed || c.at.elapsed().as_secs() < 90))
+            .count();
+        if running == 0 {
+            self.working.set_label("");
+            self.working.set_tooltip_text(None);
+        } else {
+            let plural = if running == 1 { "agent" } else { "agents" };
+            self.working.set_markup(&format!("✻ Waiting for <b>{running}</b> background {plural} to finish"));
+            self.working.set_tooltip_text(Some("Claude goes on when they are done; the strip above shows each."));
+        }
+    }
+
     /// The subagents strip, like the terminal's agent list: "◌ code-review · Read app.rs ·
     /// 6m 05s", what each is doing and for how long; Stop on a running one.
     fn show_crew(&self) {
+        self.background_note();
         while let Some(row) = self.crew_list.row_at_index(0) {
             self.crew_list.remove(&row);
         }
