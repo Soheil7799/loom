@@ -411,3 +411,5 @@ paned.island { border-radius: 12px; margin: 6px 6px 0 0; background: @view_bg_co
 /* A toggle among the buttons looks like them, pressed or not. */
 button.prefs-button:checked { background: alpha(@window_fg_color, 0.12); color: @window_fg_color; }
 .sidebar-bottom button.icon label { font-size: 1.05em; }
+.file-picture { margin: 12px; }
+.file-other { padding: 24px; }

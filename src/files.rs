@@ -24,6 +24,13 @@ pub struct Files {
     pub editor_box: gtk::Box,
     /// Markdown read as rendered (Read), or as text (Edit).
     editor_stack: gtk::Stack,
+    /// A picture, shown as itself.
+    picture: gtk::Picture,
+    /// Anything else not text: what it is, and the app that opens it.
+    other_label: gtk::Label,
+    other_open: gtk::Button,
+    /// The open file is shown, not edited (a picture, a PDF…): nothing to save.
+    view_only: Cell<bool>,
     reader: gtk::Box,
     read_toggle: gtk::ToggleButton,
     name: gtk::Label,
@@ -255,6 +262,22 @@ impl Files {
         let editor_stack = gtk::Stack::new();
         editor_stack.add_named(&view_scroller, Some("edit"));
         editor_stack.add_named(&reader_scroller, Some("read"));
+        // Not text: a picture as itself; anything else said plainly, with the app that opens it.
+        let picture = gtk::Picture::builder().content_fit(gtk::ContentFit::Contain).can_shrink(true).build();
+        picture.add_css_class("file-picture");
+        editor_stack.add_named(&picture, Some("picture"));
+        let other = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        other.set_valign(gtk::Align::Center);
+        other.set_halign(gtk::Align::Center);
+        other.add_css_class("file-other");
+        let other_label = gtk::Label::builder().wrap(true).justify(gtk::Justification::Center).max_width_chars(40).build();
+        other_label.add_css_class("dim");
+        let other_open = gtk::Button::with_label("Open");
+        other_open.add_css_class("prefs-button");
+        other_open.set_halign(gtk::Align::Center);
+        other.append(&other_label);
+        other.append(&other_open);
+        editor_stack.add_named(&other, Some("other"));
 
         editor_box.set_size_request(-1, 200);
         editor_box.append(&editor_header);
@@ -315,6 +338,10 @@ impl Files {
             committing: Cell::new(false),
             repo_bar: pick_line.clone(),
             editor_stack,
+            picture,
+            other_label,
+            other_open: other_open.clone(),
+            view_only: Cell::new(false),
             reader,
             read_toggle,
         });
@@ -486,12 +513,13 @@ impl Files {
             unsaved.set_visible(buffer.is_modified());
         });
         // Open: in the app the system opens this kind of file with.
-        let weak = Rc::downgrade(&files);
-        open_app.connect_clicked(move |button| {
-            let Some(path) = weak.upgrade().and_then(|f| f.open.borrow().clone()) else { return };
-            let window = button.root().and_downcast::<gtk::Window>();
-            gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(window.as_ref(), None::<&gio::Cancellable>, |_| {});
-        });
+        for button in [open_app.clone(), other_open.clone()] {
+            let weak = Rc::downgrade(&files);
+            button.connect_clicked(move |button| {
+                let Some(files) = weak.upgrade() else { return };
+                files.open_in_app(button);
+            });
+        }
         // The path: a click copies it (and says so for a moment).
         let copy = gtk::GestureClick::new();
         let shown = path_label.clone();
@@ -616,17 +644,18 @@ impl Files {
 
     /// Reads `path` into the editor; false if it could not be read as text.
     fn load(&self, path: &Path) -> bool {
-        let text = match std::fs::read(path).map(String::from_utf8) {
-            Ok(Ok(text)) => text,
-            Ok(Err(_)) => {
-                self.notice(&format!("{} is not UTF-8 text; open it elsewhere.", path.display()));
-                return false;
-            }
+        let text = match std::fs::read(path) {
+            Ok(bytes) => match String::from_utf8(bytes) {
+                Ok(text) => text,
+                Err(err) => return self.show_other(path, &err.into_bytes()),
+            },
+            // Can't be read (gone, no permission): said, and nothing else changes.
             Err(err) => {
                 self.notice(&format!("Could not open {}: {err}", path.display()));
                 return false;
             }
         };
+        self.view_only.set(false);
         let languages = sourceview::LanguageManager::default();
         let file_name = path.file_name().map(|n| n.to_string_lossy().into_owned());
         let language = languages.guess_language(file_name.as_deref(), None).or_else(|| {
@@ -663,6 +692,58 @@ impl Files {
         true
     }
 
+    /// A file that is not text: a picture shown as itself, anything else said plainly with
+    /// the app that opens it. Its name and path in the header; nothing to edit or save.
+    fn show_other(&self, path: &Path, bytes: &[u8]) -> bool {
+        if self.buffer.is_modified() && !self.save_quietly() {
+            return false;
+        }
+        let (kind, _) = gio::content_type_guess(Some(path), &bytes[..bytes.len().min(4096)]);
+        if kind.starts_with("image/") {
+            self.picture.set_filename(Some(path));
+            self.editor_stack.set_visible_child_name("picture");
+        } else {
+            let what = gio::content_type_get_description(&kind);
+            let app = gio::AppInfo::default_for_type(&kind, false);
+            self.other_label.set_label(&format!("Loom can't show this file ({what})."));
+            match &app {
+                Some(app) => {
+                    self.other_open.set_label(&format!("Open in {}", app.display_name()));
+                    self.other_open.set_sensitive(true);
+                }
+                None => {
+                    self.other_open.set_label("No app opens this kind of file");
+                    self.other_open.set_sensitive(false);
+                }
+            }
+            self.editor_stack.set_visible_child_name("other");
+        }
+        self.name.set_label(&path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()));
+        self.path_label.set_label(&path.to_string_lossy());
+        self.file_icon.set_from_gicon(&file_icon(path, false));
+        self.notice("");
+        self.view_only.set(true);
+        self.read_toggle.set_visible(false);
+        self.buffer.set_modified(false);
+        *self.open.borrow_mut() = Some(path.to_owned());
+        self.opened_at.set(modified_time(path));
+        self.remember(path);
+        self.editor_box.set_visible(true);
+        true
+    }
+
+    /// The open file in the app the system opens its kind with.
+    fn open_in_app(&self, button: &gtk::Button) {
+        let Some(path) = self.open.borrow().clone() else { return };
+        let window = button.root().and_downcast::<gtk::Window>();
+        let files = self.me.borrow().clone();
+        gtk::FileLauncher::new(Some(&gio::File::for_path(&path))).launch(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+            if let (Err(err), Some(files)) = (result, files.upgrade()) {
+                files.notice(&format!("Could not open it: {err}"));
+            }
+        });
+    }
+
     /// Light or dark scheme to suit the window.
     fn apply_scheme(&self) {
         let schemes = sourceview::StyleSchemeManager::default();
@@ -686,6 +767,10 @@ impl Files {
     }
 
     fn write(&self, explicit: bool) -> bool {
+        // A picture or the like is shown, not edited: never written over with text.
+        if self.view_only.get() {
+            return true;
+        }
         let Some(path) = self.open.borrow().clone() else { return true };
         let on_disk = modified_time(&path);
         if on_disk != self.opened_at.get() && !(explicit && on_disk.is_some() && self.warned.get() == on_disk) {
@@ -732,6 +817,9 @@ impl Files {
 
     /// The agent may have rewritten the open file: show its new text unless edits are pending.
     pub fn reload_if_changed(&self) {
+        if self.view_only.get() {
+            return;
+        }
         let Some(path) = self.open.borrow().clone() else { return };
         if self.buffer.is_modified() || modified_time(&path) == self.opened_at.get() {
             return;
