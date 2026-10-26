@@ -24,7 +24,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
         open.present();
         return;
     }
-    let window = gtk::Window::builder().title("About loom").transient_for(parent).resizable(false).default_width(360).build();
+    let window = gtk::Window::builder().title("About Loom").transient_for(parent).resizable(false).default_width(360).build();
     window.add_css_class("loom");
     window.add_css_class("about");
 
@@ -34,7 +34,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     mark.set_halign(gtk::Align::Center);
     mark.set_margin_bottom(14);
     body.append(&mark);
-    let name = gtk::Label::new(Some("loom"));
+    let name = gtk::Label::new(Some("Loom"));
     name.add_css_class("welcome-title");
     body.append(&name);
     let by = byline();

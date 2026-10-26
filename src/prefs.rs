@@ -76,7 +76,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     // The versions, and About behind them.
     let foot_label = gtk::Label::builder().label(format!("loom {} · adapter {version}", env!("CARGO_PKG_VERSION"))).xalign(0.0).build();
     foot_label.add_css_class("mono");
-    let foot = gtk::Button::builder().child(&foot_label).tooltip_text("About loom").build();
+    let foot = gtk::Button::builder().child(&foot_label).tooltip_text("About Loom").build();
     foot.add_css_class("flat");
     foot.add_css_class("prefs-nav-foot");
     let about_parent = window.clone();

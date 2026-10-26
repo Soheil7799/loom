@@ -103,24 +103,26 @@ impl App {
         sidebar.set_hexpand(false);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         top.add_css_class("sidebar-top");
-        // The lockup: mark, name and who made it, on one baseline; it opens About.
-        let lockup = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // The lockup: the mark, and beside it the name over who made it; across the row up to
+        // the buttons. It opens About.
+        let lockup = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         lockup.set_valign(gtk::Align::Center);
-        let mark = crate::logo::mark(20);
-        let words = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let name = gtk::Label::builder().label("loom").valign(gtk::Align::BaselineFill).build();
+        let mark = crate::logo::mark(32);
+        let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        words.set_valign(gtk::Align::Center);
+        let name = gtk::Label::builder().label("Loom").xalign(0.0).build();
         name.add_css_class("brand");
-        let by = gtk::Label::builder().label("by shirvani.dev").valign(gtk::Align::BaselineFill).build();
+        let by = gtk::Label::builder().label("by shirvani.dev").xalign(0.0).build();
         by.add_css_class("brand-by");
         words.append(&name);
         words.append(&by);
         lockup.append(&mark);
         lockup.append(&words);
-        let brand = gtk::Button::builder().child(&lockup).tooltip_text("About loom").build();
-        brand.update_property(&[gtk::accessible::Property::Label("About loom")]);
+        let brand = gtk::Button::builder().child(&lockup).tooltip_text("About Loom").hexpand(true).focus_on_click(false).build();
+        brand.update_property(&[gtk::accessible::Property::Label("About Loom")]);
         brand.add_css_class("flat");
         brand.add_css_class("brand-button");
-        let spacer = gtk::Box::builder().hexpand(true).build();
+        let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         let inbox_list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         inbox_list.add_css_class("inbox");
         let inbox = gtk::MenuButton::builder()
@@ -979,7 +981,7 @@ impl App {
             }),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
-            act("About loom", "", |a| crate::about::open(&a.window)),
+            act("About Loom", "", |a| crate::about::open(&a.window)),
         ];
         for agent in self.agents_in_order() {
             let weak = weak.clone();
@@ -2527,7 +2529,7 @@ impl App {
         mark.set_margin_bottom(4);
         middle.append(&mark);
         let lockup = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        let title = gtk::Label::new(Some("loom"));
+        let title = gtk::Label::new(Some("Loom"));
         title.add_css_class("welcome-title");
         lockup.append(&title);
         lockup.append(&crate::about::byline());
