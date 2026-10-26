@@ -13,6 +13,8 @@ async-channel = "2"
 serde_json = { version = "1", features = ["preserve_order"] }
 pulldown-cmark = { version = "0.13", default-features = false }
 libc = "0.2"
+# The Telegram bot (HTTPS via rustls).
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 
 [profile.release]
 opt-level = 3

@@ -80,6 +80,8 @@ pub struct App {
     /// The toast is a question (it goes once answered).
     toast_question: Cell<bool>,
     toast_timeout: RefCell<Option<glib::SourceId>>,
+    /// The Telegram bot (off unless switched on).
+    bot: Rc<crate::telegram::Bot>,
 }
 
 impl App {
@@ -310,6 +312,7 @@ impl App {
             rename_entry,
             renaming: RefCell::default(),
             quitting: Cell::new(false),
+            bot: crate::telegram::Bot::new(),
             prefix: Cell::new(false),
             prefix_hint,
             prefix_timeout: RefCell::default(),
@@ -452,8 +455,11 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 app.apply_settings(s);
                 app.refresh_sidebar();
+                app.bot.apply(s);
             }
         });
+        self.bot.attach(self);
+        self.bot.apply(&settings::get());
     }
 
     /// Opens the control socket the agents' MCP servers talk to.
@@ -1027,6 +1033,11 @@ impl App {
         });
     }
 
+    /// The open agents in sidebar order.
+    pub fn agents_listed(&self) -> Vec<Rc<Agent>> {
+        self.agents_in_order()
+    }
+
     /// The open agents in sidebar order (for the test hooks).
     pub fn agents_for_tests(&self) -> Vec<Rc<Agent>> {
         self.agents_in_order()
@@ -1421,7 +1432,7 @@ impl App {
     }
 
     /// The project's name: given by hand, else its folder's.
-    fn project_label(&self, path: &Path) -> String {
+    pub fn project_label(&self, path: &Path) -> String {
         let projects = self.projects.borrow();
         let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());
         named.map_or_else(|| project_name(path), str::to_owned)
@@ -1748,6 +1759,7 @@ impl App {
         if self.toast_agent.borrow().upgrade().is_some_and(|a| Rc::ptr_eq(&a, agent)) {
             self.hide_toast();
         }
+        self.bot.forget(agent.id);
         agent.stop();
         // Remembered to reopen (a conversation that never started has nothing to reopen).
         let saved = agent.saved();
@@ -1833,6 +1845,7 @@ impl App {
 
     fn agent_event(self: &Rc<Self>, agent: &Rc<Agent>, event: Event) {
         let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(agent));
+        self.bot.agent_event(agent, &event, looking);
         match event {
             Event::Changed => {
                 self.toast_settled(agent);

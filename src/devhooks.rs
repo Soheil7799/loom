@@ -26,6 +26,7 @@
 //! - `key:<letter>`: Ctrl+B then that key (shift for capitals)
 //! - `find`: Ctrl+P · `tree`: the files panel's project view
 //! - `squeezed`: widgets given less room than they measure, and every paned
+//! - `page:<name>`: shows that page of a stack in any open window (settings…)
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `quit`
 
@@ -208,6 +209,17 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             }
             if found.is_empty() {
                 return Err("no popover open".into());
+            }
+        }
+        // In any open window (settings…): the stack page named <name> shown.
+        "page" => {
+            let mut found = Vec::new();
+            for window in gtk::Window::list_toplevels() {
+                collect(&window, &|w| w.downcast_ref::<gtk::Stack>().is_some_and(|s| s.child_by_name(argument).is_some()), &mut found);
+            }
+            found.first().and_then(|w| w.downcast_ref::<gtk::Stack>()).ok_or("no such page")?.set_visible_child_name(argument);
+            if let Some(page) = found.first().and_then(|w| w.downcast_ref::<gtk::Stack>()).and_then(|s| s.visible_child()) {
+                print_labels(&page);
             }
         }
         // Widgets given less room than they need (with their ancestors), and every paned.
