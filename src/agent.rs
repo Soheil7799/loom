@@ -478,7 +478,9 @@ impl Agent {
     }
 
     fn set_status(self: &Rc<Self>, status: Status) {
-        if self.status.replace(status) != status {
+        let before = self.status.replace(status);
+        if before != status {
+            crate::log::debug!(format!("agent {}", self.id), "{before:?} → {status:?} ({})", self.title());
             self.refresh_header();
             self.emit(Event::Changed);
         }
@@ -526,6 +528,7 @@ impl Agent {
         if self.conn.borrow().is_some() {
             return;
         }
+        crate::log::debug!(format!("agent {}", self.id), "start in {} (session {:?})", self.cwd.display(), self.session_id());
         let weak = Rc::downgrade(self);
         let conn = match Conn::spawn(&self.cwd, move |incoming| {
             if let Some(agent) = weak.upgrade() {
@@ -751,6 +754,7 @@ impl Agent {
     }
 
     fn fail(self: &Rc<Self>, text: &str) {
+        crate::log::debug!(format!("agent {}", self.id), "failed: {text}");
         self.end_autonomous(false);
         self.offer_retry(text);
         if let Some(conn) = self.conn.borrow_mut().take() {
@@ -927,6 +931,7 @@ impl Agent {
 
     /// Stops the process, busy or not.
     pub fn stop(self: &Rc<Self>) {
+        crate::log::debug!(format!("agent {}", self.id), "stop");
         if let Some(conn) = self.conn.borrow_mut().take() {
             conn.stop();
         }
@@ -964,6 +969,7 @@ impl Agent {
         // Claude is working: it waits for the turn to end, as in Claude Code (Ctrl+Enter sends
         // it in now).
         if self.turn.get() && self.ready.get() {
+            crate::log::debug!(format!("agent {}", self.id), "queued for the turn's end: {} chars, {} images", text.len(), images.len());
             self.waiting.borrow_mut().push((text, images));
             self.show_waiting();
             return;
@@ -1103,6 +1109,7 @@ impl Agent {
                         stderr.push_str(&text);
                     }
                     Out::Done(code) => {
+                        crate::log::debug!(format!("agent {}", agent.id), "! {command} ended: {code:?}, {} + {} bytes", stdout.len(), stderr.len());
                         agent.shell_pid.set(None);
                         agent.chat.tool_exit(&id, code.map(i64::from));
                         let status = if code == Some(0) { "completed" } else { "failed" };
@@ -1185,6 +1192,7 @@ impl Agent {
         let params = json!({ "sessionId": session, "prompt": prompt, "_meta": { "steering": { "idleBehavior": "promptRequired" } } });
         conn.request("_session/steering", params, move |result| {
             let Some(agent) = weak.upgrade() else { return };
+            crate::log::debug!(format!("agent {}", agent.id), "steer: {result:?}");
             match result {
                 Ok(answer) if answer["outcome"].as_str() == Some("promptRequired") => {
                     agent.queue.borrow_mut().push_back((text, images));
@@ -1224,6 +1232,7 @@ impl Agent {
 
     /// Ctrl+Enter: what waits goes into the running turn now (or as the next prompt).
     fn send_waiting_now(self: &Rc<Self>) {
+        crate::log::debug!(format!("agent {}", self.id), "send now (Ctrl+Enter): {} waiting", self.waiting.borrow().len());
         let Some((text, images)) = self.take_waiting() else { return };
         // Nothing to say (a command output already went with an earlier message).
         if text.is_empty() && images.is_empty() && self.context.borrow().is_empty() {
@@ -1255,6 +1264,7 @@ impl Agent {
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
+        crate::log::debug!(format!("agent {}", self.id), "turn starts: {} chars, {} images, {} command outputs", text.len(), images.len(), self.context.borrow().len());
         let started = Instant::now();
         self.chat.set_working(Some(started));
         self.refresh_status();
@@ -1266,6 +1276,10 @@ impl Agent {
             json!({ "sessionId": session, "prompt": prompt }),
             move |result| {
                 let Some(agent) = weak.upgrade() else { return };
+                crate::log::debug!(format!("agent {}", agent.id), "turn ends after {:.1}s: {}", started.elapsed().as_secs_f64(), match &result {
+                    Ok(result) => result["stopReason"].as_str().unwrap_or("?").to_owned(),
+                    Err(err) => format!("error {err}"),
+                });
                 agent.turn.set(false);
                 agent.chat.set_working(None);
                 // The process died with the turn: fail() has said so already.
@@ -1296,6 +1310,7 @@ impl Agent {
     }
 
     pub fn cancel(self: &Rc<Self>) {
+        crate::log::debug!(format!("agent {}", self.id), "cancel (turn: {}, queued: {}, waiting: {})", self.turn.get(), self.queue.borrow().len(), self.waiting.borrow().len());
         // A `!command` running stops too (Esc stops what is going on, whichever it is).
         self.stop_shell();
         if !self.turn.get() && self.autonomous.get().is_none() {

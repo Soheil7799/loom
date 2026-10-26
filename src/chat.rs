@@ -104,6 +104,9 @@ pub struct Chat {
     stick: Rc<Cell<bool>>,
     /// A follow is due once the layout settles.
     follow_pending: Cell<bool>,
+    /// Where the main conversation was read when a subagent's was shown over it: (scroll
+    /// position, following the end).
+    main_place: Cell<Option<(f64, bool)>>,
     commands: RefCell<Vec<(String, String)>>,
     completion: gtk::Popover,
     completion_list: gtk::ListBox,
@@ -496,6 +499,7 @@ impl Chat {
             input_column: input_column.clone(),
             stick: Rc::new(Cell::new(true)),
             follow_pending: Cell::new(false),
+            main_place: Cell::new(None),
             commands: RefCell::default(),
             completion,
             completion_list,
@@ -1999,13 +2003,42 @@ impl Chat {
         view.set_vexpand(true);
         self.aside.append(view);
         self.aside_title.set_label(title);
+        // Hidden, the conversation loses its place (its scroller shrinks): noted to go back to.
+        if self.views.visible_child_name().as_deref() != Some("aside") {
+            self.main_place.set(Some((self.scroller.vadjustment().value(), self.stick.get())));
+            crate::log::debug!("chat", "subagent view over the main one; its place {:?}", self.main_place.get());
+        }
         self.views.set_visible_child_name("aside");
     }
 
     /// Back to the main conversation; true if a subagent's was shown.
-    pub fn show_main(&self) -> bool {
+    pub fn show_main(self: &Rc<Self>) -> bool {
         let aside = self.views.visible_child_name().as_deref() == Some("aside");
         self.views.set_visible_child_name("main");
+        // Back where it was read: at the end it follows again, else the same place, once laid
+        // out (a position set before that is clamped to the shrunk view).
+        let place = self.main_place.take();
+        crate::log::debug!("chat", "back to the main conversation: place {place:?}");
+        if let Some((value, stick)) = place {
+            self.stick.set(stick);
+            if stick {
+                self.follow();
+            } else {
+                let (weak, frames) = (Rc::downgrade(self), Cell::new(0));
+                self.scroller.add_tick_callback(move |_, _| {
+                    let Some(chat) = weak.upgrade() else { return glib::ControlFlow::Break };
+                    let adj = chat.scroller.vadjustment();
+                    // Not as tall as before yet: a frame later (a few at most).
+                    frames.set(frames.get() + 1);
+                    if adj.upper() - adj.page_size() < value && frames.get() < 10 {
+                        return glib::ControlFlow::Continue;
+                    }
+                    adj.set_value(value);
+                    chat.stick.set(false);
+                    glib::ControlFlow::Break
+                });
+            }
+        }
         aside
     }
 
@@ -2921,6 +2954,10 @@ impl ToolCard {
                 }
                 _ => self.glyph.set_label("○"),
             }
+            // An open card says it is done (its "still running" goes).
+            if self.revealer.reveals_child() {
+                self.render_detail();
+            }
         }
         if let Some(path) = update["locations"].as_array().and_then(|l| l.first()).and_then(|l| l["path"].as_str())
             && !self.has_open.replace(true)
@@ -2996,7 +3033,9 @@ impl ToolCard {
             }
         }
         if self.detail.first_child().is_none() {
-            let none = text_label("Nothing to show.");
+            // Still at it (a wait on a job, a long fetch): not "nothing" yet.
+            let running = matches!(self.status.borrow().as_str(), "pending" | "in_progress");
+            let none = text_label(if running { "Still running; what it returns shows here." } else { "It returned nothing to show." });
             none.add_css_class("dim");
             self.detail.append(&none);
         }

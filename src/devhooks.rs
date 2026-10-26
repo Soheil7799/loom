@@ -222,6 +222,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 print_labels(&page);
             }
         }
+        // A view over the focused conversation (as a subagent's), and back.
+        "aside" => app.focused_agent().ok_or("no agent")?.chat.show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
+        "main" => {
+            app.focused_agent().ok_or("no agent")?.chat.show_main();
+        }
         // Widgets given less room than they need (with their ancestors), and every paned.
         "squeezed" => squeezed(app.window.upcast_ref(), 0),
         // The text in open popovers, for when they cannot be drawn.

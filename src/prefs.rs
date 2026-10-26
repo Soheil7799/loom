@@ -142,6 +142,22 @@ fn general(s: &Settings) -> gtk::Box {
         &switch(s.sort_by_urgency, |s, on| s.sort_by_urgency = on),
     );
     content.append(&behaviour);
+
+    let trouble = section("Troubleshooting");
+    row(
+        &trouble,
+        "Debug log",
+        "Writes what loom does, in detail (messages to and from Claude, states, scrolling, the Telegram bot), to ~/.local/state/loom/debug.log. Turn it on when something misbehaves; it holds parts of your conversations, and stays on this computer.",
+        &switch(s.debug_log, |s, on| s.debug_log = on),
+    );
+    let open = gtk::Button::with_label("Show the log");
+    open.connect_clicked(|button| {
+        let file = gtk::gio::File::for_path(crate::log::path());
+        let window = button.root().and_downcast::<gtk::Window>();
+        gtk::FileLauncher::new(Some(&file)).open_containing_folder(window.as_ref(), None::<&gtk::gio::Cancellable>, |_| {});
+    });
+    row(&trouble, "Log file", "Opens its folder (debug.log, and debug.log.1 before it).", &open);
+    content.append(&trouble);
     content
 }
 

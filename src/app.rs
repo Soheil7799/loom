@@ -472,6 +472,7 @@ impl App {
     }
 
     fn apply_settings(&self, s: &settings::Settings) {
+        crate::log::set(s.debug_log);
         self.scale_css.load_from_string(&format!(
             ".messages, .plan, textview.input {{ font-size: {}em; }}",
             (s.text_scale * 100.0).round() / 100.0
@@ -1096,6 +1097,7 @@ impl App {
     }
 
     pub fn focus(self: &Rc<Self>, agent: &Rc<Agent>) {
+        crate::log::debug!("app", "focus agent {} ({})", agent.id, agent.title());
         let old = self.focused.borrow().clone();
         if let Some(old) = old.filter(|old| !Rc::ptr_eq(old, agent)) {
             old.focused.set(false);
@@ -1843,6 +1845,17 @@ impl App {
 
     fn agent_event(self: &Rc<Self>, agent: &Rc<Agent>, event: Event) {
         let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(agent));
+        if !matches!(event, Event::Changed) {
+            crate::log::debug!(format!("agent {}", agent.id), "event {} (looking: {looking})", match &event {
+                Event::Changed => "changed".to_owned(),
+                Event::Session => "session".to_owned(),
+                Event::Files => "files".to_owned(),
+                Event::Asked(title) => format!("asked: {title}"),
+                Event::Done => "done".to_owned(),
+                Event::Failed(why) => format!("failed: {why}"),
+                Event::Forked(_) => "forked".to_owned(),
+            });
+        }
         self.bot.agent_event(agent, &event, looking);
         match event {
             Event::Changed => {

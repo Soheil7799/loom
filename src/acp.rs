@@ -30,6 +30,8 @@ pub struct Conn {
     child: RefCell<Option<Child>>,
     next_id: Cell<u64>,
     pending: RefCell<HashMap<u64, Reply>>,
+    /// The adapter's process id (to tell agents apart in the debug log).
+    pid: u32,
 }
 
 /// The adapter command: `LOOM_AGENT`, else the settings' (both split on spaces), else the
@@ -122,11 +124,14 @@ impl Conn {
             let _ = tx.send_blocking(None);
         });
 
+        let pid = child.id();
+        crate::log::debug!(format!("acp {pid}"), "started {} in {}", program.join(" "), cwd.display());
         let conn = Rc::new(Conn {
             stdin: RefCell::new(child.stdin.take()),
             child: RefCell::new(Some(child)),
             next_id: Cell::new(0),
             pending: RefCell::new(HashMap::new()),
+            pid,
         });
         let weak = Rc::downgrade(&conn);
         glib::spawn_future_local(async move {
@@ -135,6 +140,7 @@ impl Conn {
                 match message {
                     Some(value) => conn.dispatch(value, &on_incoming),
                     None => {
+                        crate::log::debug!(format!("acp {}", conn.pid), "the agent process ended");
                         on_incoming(Incoming::Exited);
                         conn.fail_pending();
                         break;
@@ -146,6 +152,7 @@ impl Conn {
     }
 
     fn dispatch(&self, mut value: Value, on_incoming: &dyn Fn(Incoming)) {
+        crate::log::debug!(format!("acp {}", self.pid), "← {value}");
         if let Some(method) = value.get("method").and_then(Value::as_str).map(str::to_owned) {
             let id = value.get("id").cloned();
             let params = value.get_mut("params").map(Value::take).unwrap_or(Value::Null);
@@ -190,6 +197,7 @@ impl Conn {
     }
 
     fn write(&self, value: &Value) {
+        crate::log::debug!(format!("acp {}", self.pid), "→ {value}");
         if let Some(stdin) = self.stdin.borrow_mut().as_mut() {
             let mut line = value.to_string();
             line.push('\n');

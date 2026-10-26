@@ -197,6 +197,7 @@ impl Bot {
     }
 
     fn call(&self, method: &'static str, body: Value, about: About) {
+        crate::log::debug!("telegram", "→ {method}"); 
         if let Some(calls) = self.calls.borrow().as_ref() {
             let _ = calls.send_blocking(Call { method, body, about });
         }
@@ -241,10 +242,12 @@ impl Bot {
                 }
             }
             In::Problem(problem) => {
+                crate::log::debug!("telegram", "problem: {problem}");
                 self.online.borrow_mut().take();
                 set_state(&problem);
             }
             In::Unsent(why) => {
+                crate::log::debug!("telegram", "not sent: {why}");
                 let line = match self.online.borrow().as_deref() {
                     Some(name) => format!("{} A message could not be sent: {why}", self.connected_line(name)),
                     None => why,
@@ -287,6 +290,7 @@ impl Bot {
     /// Only the allowed account's private messages and button presses count; anyone else's
     /// are dropped. Before an account is linked, only the code from the settings links one.
     fn update(self: &Rc<Self>, update: &Value) {
+        crate::log::debug!("telegram", "← update {} (from {})", update["update_id"], update.pointer("/message/from/id").or_else(|| update.pointer("/callback_query/from/id")).unwrap_or(&Value::Null));
         let (from, item) = if let Some(query) = update.get("callback_query") {
             (&query["from"], query)
         } else if let Some(message) = update.get("message") {

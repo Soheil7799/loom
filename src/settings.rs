@@ -33,6 +33,8 @@ pub struct Settings {
     pub telegram_token: String,
     /// The one Telegram account the bot answers (0: none yet).
     pub telegram_user: i64,
+    /// Everything loom does, written to the debug log.
+    pub debug_log: bool,
 }
 
 impl Default for Settings {
@@ -52,6 +54,7 @@ impl Default for Settings {
             telegram_enabled: false,
             telegram_token: String::new(),
             telegram_user: 0,
+            debug_log: false,
         }
     }
 }
@@ -87,6 +90,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
         return;
     }
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
+    crate::log::debug!("settings", "changed: {}", render(&settings).replace(&settings.telegram_token, "…").replace('\n', " "));
     if let Some(file) = FILE.with(|f| f.borrow().clone()) {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -140,6 +144,7 @@ fn parse(text: &str) -> Settings {
         telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
         telegram_token: string("telegramToken", &d.telegram_token),
         telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
+        debug_log: flag("debugLog", d.debug_log),
     }
 }
 
@@ -159,6 +164,7 @@ fn render(s: &Settings) -> String {
         "telegramEnabled": s.telegram_enabled,
         "telegramToken": s.telegram_token,
         "telegramUser": s.telegram_user,
+        "debugLog": s.debug_log,
     }))
     .unwrap_or_default()
 }
