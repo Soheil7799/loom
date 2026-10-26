@@ -28,6 +28,11 @@ pub struct Settings {
     pub scratch_autohide: bool,
     /// The sidebar puts agents that need you first (else in the order they started).
     pub sort_by_urgency: bool,
+    /// The Telegram bot: off unless switched on, and obeys only `telegram_user`.
+    pub telegram_enabled: bool,
+    pub telegram_token: String,
+    /// The one Telegram account the bot answers (0: none yet).
+    pub telegram_user: i64,
 }
 
 impl Default for Settings {
@@ -44,6 +49,9 @@ impl Default for Settings {
             terminal_font: crate::term::FONT.to_owned(),
             scratch_autohide: false,
             sort_by_urgency: true,
+            telegram_enabled: false,
+            telegram_token: String::new(),
+            telegram_user: 0,
         }
     }
 }
@@ -84,7 +92,21 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
             let _ = std::fs::create_dir_all(dir);
         }
         let temporary = file.with_extension("json.tmp");
-        if std::fs::write(&temporary, render(&settings)).is_ok() {
+        // It may hold the bot token: readable by its owner only.
+        // A left-over one could be readable by others: made anew.
+        let _ = std::fs::remove_file(&temporary);
+        let written = {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&temporary)
+                .and_then(|mut f| f.write_all(render(&settings).as_bytes()))
+        };
+        if written.is_ok() {
             let _ = std::fs::rename(&temporary, &file);
         }
     }
@@ -115,6 +137,9 @@ fn parse(text: &str) -> Settings {
         terminal_font: string("terminalFont", &d.terminal_font),
         scratch_autohide: flag("scratchAutohide", d.scratch_autohide),
         sort_by_urgency: flag("sortByUrgency", d.sort_by_urgency),
+        telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
+        telegram_token: string("telegramToken", &d.telegram_token),
+        telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
     }
 }
 
@@ -131,6 +156,9 @@ fn render(s: &Settings) -> String {
         "terminalFont": s.terminal_font,
         "scratchAutohide": s.scratch_autohide,
         "sortByUrgency": s.sort_by_urgency,
+        "telegramEnabled": s.telegram_enabled,
+        "telegramToken": s.telegram_token,
+        "telegramUser": s.telegram_user,
     }))
     .unwrap_or_default()
 }
@@ -141,7 +169,16 @@ mod tests {
 
     #[test]
     fn settings_read_back() {
-        let s = Settings { idle_minutes: 3, notify_done: false, adapter: "x y".into(), text_scale: 1.2, ..Settings::default() };
+        let s = Settings {
+            idle_minutes: 3,
+            notify_done: false,
+            adapter: "x y".into(),
+            text_scale: 1.2,
+            telegram_enabled: true,
+            telegram_token: "1:abc".into(),
+            telegram_user: 42,
+            ..Settings::default()
+        };
         assert_eq!(parse(&render(&s)), s);
     }
 

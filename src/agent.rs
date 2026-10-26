@@ -85,6 +85,23 @@ pub enum Event {
     Forked(Saved),
 }
 
+/// An open question, as told outside the window.
+pub struct Asking {
+    pub title: String,
+    pub detail: Option<String>,
+    /// A permission's options: (name, kind).
+    pub options: Vec<(String, String)>,
+    /// A form's choices: (question, option names, several allowed, which are picked).
+    pub fields: Vec<(String, Vec<String>, bool, Vec<bool>)>,
+    pub is_form: bool,
+    /// A form with one text field: an answer of one's own can be written.
+    pub writable: bool,
+    /// A form as filled in so far ("→ Colour: Blue · Other: …").
+    pub summary: String,
+    /// A form with nothing filled in yet.
+    pub blank: bool,
+}
+
 /// The latest repo's status as last read (None: git could not), and when.
 #[derive(Clone)]
 struct RepoCache {
@@ -117,6 +134,8 @@ struct Pending {
     options: Vec<(String, String, String)>,
     card: PermissionCard,
     title: String,
+    /// What it is about: the command, file, URL or plan.
+    detail: Option<String>,
     /// A question form rather than a permission (answered with its content).
     form: Option<Rc<crate::chat::FormCard>>,
     /// A step in the browser rather than a permission (answered accept/decline).
@@ -1352,6 +1371,59 @@ impl Agent {
         true
     }
 
+    /// Question `serial` as told elsewhere (the Telegram bot), if still open.
+    pub fn asking(&self, serial: u64) -> Option<Asking> {
+        let pending = self.pending.borrow();
+        let question = pending.iter().find(|q| q.serial == serial)?;
+        Some(Asking {
+            title: question.title.clone(),
+            detail: question.detail.clone(),
+            options: question.options.iter().map(|(_, name, kind)| (name.clone(), kind.clone())).collect(),
+            fields: question.form.as_ref().map(|f| f.choices()).unwrap_or_default(),
+            is_form: question.form.is_some(),
+            writable: question.form.as_ref().is_some_and(|f| f.writable()),
+            summary: question.form.as_ref().map(|f| f.summary()).unwrap_or_default(),
+            blank: question.form.as_ref().is_some_and(|f| f.content().is_ok_and(|c| c.as_object().is_none_or(|o| o.is_empty()))),
+        })
+    }
+
+    /// The open questions' serials, oldest first.
+    pub fn open_questions(&self) -> Vec<u64> {
+        self.pending.borrow().iter().map(|q| q.serial).collect()
+    }
+
+    /// In form `serial`: option `option` of choice `field` picked (or toggled).
+    pub fn pick_in_form(&self, serial: u64, field: usize, option: usize) -> bool {
+        let pending = self.pending.borrow();
+        pending.iter().find(|q| q.serial == serial).and_then(|q| q.form.as_ref()).is_some_and(|f| f.pick_in(field, option))
+    }
+
+    /// In form `serial`: `text` written in its first text field (an "Other" answer).
+    pub fn write_in_form(&self, serial: u64, text: &str) -> bool {
+        let pending = self.pending.borrow();
+        pending.iter().find(|q| q.serial == serial).and_then(|q| q.form.as_ref()).is_some_and(|f| f.write(text))
+    }
+
+    /// Skips form `serial` (Claude goes on without an answer).
+    pub fn skip_form(self: &Rc<Self>, serial: u64) -> Result<(), String> {
+        if !self.is_form(serial) {
+            return Err("Already answered.".to_owned());
+        }
+        self.reply_form(serial, None);
+        Ok(())
+    }
+
+    /// Sends form `serial` as filled in; else what it still lacks.
+    pub fn send_form_serial(self: &Rc<Self>, serial: u64) -> Result<(), String> {
+        let content = {
+            let pending = self.pending.borrow();
+            let form = pending.iter().find(|q| q.serial == serial).and_then(|q| q.form.clone()).ok_or("Already answered.")?;
+            form.content()?
+        };
+        self.reply_form(serial, Some(content));
+        Ok(())
+    }
+
     /// Whether question `serial` is a form (answered in the chat, not from the inbox).
     pub fn is_form(&self, serial: u64) -> bool {
         self.pending.borrow().iter().any(|q| q.serial == serial && q.form.is_some())
@@ -1403,7 +1475,7 @@ impl Agent {
                 }
             });
             let card = self.chat.permission(&message, Some(&url), false, &options, choose);
-            self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: message.clone(), form: None, url: Some(url) });
+            self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: message.clone(), detail: Some(url.clone()), form: None, url: Some(url) });
             self.refresh_status();
             self.emit(Event::Asked(message));
             return;
@@ -1426,7 +1498,7 @@ impl Agent {
         });
         let form = self.chat.form(&message, &params["requestedSchema"], answer);
         let card = form.card.clone();
-        self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), form: Some(form), url: None });
+        self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), detail: None, form: Some(form), url: None });
         self.refresh_status();
         self.emit(Event::Asked(message));
     }
@@ -1497,7 +1569,7 @@ impl Agent {
             None => format!("Allow {title}?"),
         };
         let card = self.chat.permission(&question, detail.as_deref(), is_plan, &options, choose);
-        self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), form: None, url: None });
+        self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), detail, form: None, url: None });
         self.refresh_status();
         self.emit(Event::Asked(title));
     }

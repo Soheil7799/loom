@@ -2454,6 +2454,48 @@ impl FormCard {
         if parts.is_empty() { "→ (nothing picked)".to_owned() } else { format!("→ {}", parts.join(" · ")) }
     }
 
+    /// Its choices: (question, option names, several allowed, which are picked).
+    pub fn choices(&self) -> Vec<(String, Vec<String>, bool, Vec<bool>)> {
+        self.fields
+            .iter()
+            .filter_map(|f| match f {
+                Field::Choice { title, multi, buttons, .. } => Some((
+                    title.clone(),
+                    buttons.iter().map(|(_, _, name)| name.clone()).collect(),
+                    *multi,
+                    buttons.iter().map(|(b, _, _)| b.is_active()).collect(),
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Option `option` of choice `field` (counted among the choices): picked, or toggled in a
+    /// multiple choice.
+    pub fn pick_in(&self, field: usize, option: usize) -> bool {
+        let Some(Field::Choice { buttons, multi, .. }) = self.fields.iter().filter(|f| matches!(f, Field::Choice { .. })).nth(field) else {
+            return false;
+        };
+        let Some((button, _, _)) = buttons.get(option) else { return false };
+        button.set_active(if *multi { !button.is_active() } else { true });
+        true
+    }
+
+    /// One text field (more, and a written answer could not say which it is for).
+    pub fn writable(&self) -> bool {
+        self.fields.iter().filter(|f| matches!(f, Field::Text { .. })).count() == 1
+    }
+
+    /// `text` in its text field (false unless it has exactly one).
+    pub fn write(&self, text: &str) -> bool {
+        if !self.writable() {
+            return false;
+        }
+        let Some(Field::Text { entry, .. }) = self.fields.iter().find(|f| matches!(f, Field::Text { .. })) else { return false };
+        entry.set_text(text);
+        true
+    }
+
     /// Option `n` (from 0) of the first question with options: picked (a multiple choice:
     /// toggled). Focus stays where it is, so the next digit picks again.
     pub fn pick(&self, n: usize) -> bool {

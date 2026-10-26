@@ -1,4 +1,4 @@
-//! The settings window (Ctrl+,): General, Agents, Appearance, Keyboard, About.
+//! The settings window (Ctrl+,): General, Agents, Telegram, Appearance, Keyboard, About.
 
 use gtk::{glib, pango, prelude::*};
 
@@ -31,6 +31,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(120).hexpand(true).build();
     stack.add_titled(&page("General", &general(&s)), Some("general"), "General");
     stack.add_titled(&page("Agents", &agents(&s)), Some("agents"), "Agents");
+    stack.add_titled(&page("Telegram", &telegram(&s)), Some("telegram"), "Telegram");
     stack.add_titled(&page("Appearance", &appearance(&s)), Some("appearance"), "Appearance");
     stack.add_titled(&page("Keyboard", &keyboard()), Some("keyboard"), "Keyboard");
     stack.add_titled(&page("", &about()), Some("about"), "About");
@@ -179,6 +180,88 @@ fn agents(s: &Settings) -> gtk::Box {
     version.add_css_class("dim");
     row(&program, "Installed adapter", "claude-agent-acp, in ~/.local/share/loom/adapter (./install.sh updates it).", &version);
     content.append(&program);
+    content
+}
+
+/// An entry whose text is saved when done with (Enter, or focus leaving it), not on every key:
+/// each save restarts the bot.
+fn on_done(entry: &(impl IsA<gtk::Editable> + IsA<gtk::Widget>), save: impl Fn(String) + 'static) {
+    let save = std::rc::Rc::new(save);
+    let (s, e) = (save.clone(), entry.clone().upcast::<gtk::Editable>());
+    if let Some(entry) = entry.dynamic_cast_ref::<gtk::Entry>() {
+        entry.connect_activate(move |_| s(e.text().trim().to_owned()));
+    } else if let Some(entry) = entry.dynamic_cast_ref::<gtk::PasswordEntry>() {
+        entry.connect_activate(move |_| s(e.text().trim().to_owned()));
+    }
+    let focus = gtk::EventControllerFocus::new();
+    let e = entry.clone().upcast::<gtk::Editable>();
+    focus.connect_leave(move |_| save(e.text().trim().to_owned()));
+    entry.add_controller(focus);
+}
+
+fn telegram(s: &Settings) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 18);
+
+    let intro = gtk::Label::builder()
+        .label(
+            "Your agents in a Telegram chat: their finished replies and questions come to your phone, and you can answer or \
+             write to them from there. It talks to Telegram itself (nothing listens on this computer), obeys only your \
+             account, and keeps \u{201c}Always allow\u{201d} for loom. Messages pass through Telegram's servers.",
+        )
+        .xalign(0.0)
+        .wrap(true)
+        .max_width_chars(70)
+        .build();
+    intro.add_css_class("dim");
+    content.append(&intro);
+
+    let bot = section("Bot");
+    row(&bot, "Use the Telegram bot", "Off until you switch it on.", &switch(s.telegram_enabled, |s, on| s.telegram_enabled = on));
+    let token = gtk::PasswordEntry::builder().text(&s.telegram_token).show_peek_icon(true).placeholder_text("123456:ABC…").width_chars(30).build();
+    token.add_css_class("mono");
+    on_done(&token, |text| settings::update(|s| s.telegram_token = text));
+    row(&bot, "Bot token", "Make a bot with @BotFather in Telegram (/newbot) and paste the token it gives.", &token);
+    let user = gtk::Entry::builder()
+        .text(if s.telegram_user == 0 { String::new() } else { s.telegram_user.to_string() })
+        .placeholder_text("your user ID")
+        .input_purpose(gtk::InputPurpose::Digits)
+        .width_chars(16)
+        .build();
+    user.add_css_class("mono");
+    let entry = user.clone();
+    on_done(&user, move |text| {
+        let id = text.parse::<i64>().unwrap_or(0);
+        if id == 0 && !text.is_empty() {
+            entry.add_css_class("error");
+            return;
+        }
+        entry.remove_css_class("error");
+        settings::update(|s| s.telegram_user = id);
+    });
+    row(
+        &bot,
+        "Your Telegram user ID",
+        "Only this account is obeyed; anyone else writing to the bot is ignored. Left empty, the status below shows a code: send it to the bot and your account is linked.",
+        &user,
+    );
+    content.append(&bot);
+
+    let state = section("Status");
+    let line = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(48).selectable(true).build();
+    line.add_css_class("dim");
+    row(&state, "Connection", "", &line);
+    let (weak, weak_user) = (line.downgrade(), user.downgrade());
+    crate::telegram::watch(move |text| {
+        let (Some(line), Some(user)) = (weak.upgrade(), weak_user.upgrade()) else { return false };
+        line.set_label(text);
+        // Linked by the code: the account shows here too.
+        let id = settings::get().telegram_user;
+        if id != 0 && !user.has_focus() && user.text() != id.to_string() {
+            user.set_text(&id.to_string());
+        }
+        true
+    });
+    content.append(&state);
     content
 }
 
