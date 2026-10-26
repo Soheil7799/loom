@@ -39,6 +39,12 @@ pub struct Settings {
     pub telegram_user: i64,
     /// Everything loom does, written to the debug log.
     pub debug_log: bool,
+    /// Speech to text: on, the endpoint (OpenAI-style), its key, model and language.
+    pub stt_enabled: bool,
+    pub stt_url: String,
+    pub stt_key: String,
+    pub stt_model: String,
+    pub stt_language: String,
 }
 
 impl Default for Settings {
@@ -61,6 +67,11 @@ impl Default for Settings {
             telegram_token: String::new(),
             telegram_user: 0,
             debug_log: false,
+            stt_enabled: false,
+            stt_url: String::new(),
+            stt_key: String::new(),
+            stt_model: String::new(),
+            stt_language: String::new(),
         }
     }
 }
@@ -98,7 +109,8 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
     crate::log::debug!("settings", "changed: {}", {
         let text = render(&settings).replace('\n', " ");
-        if settings.telegram_token.is_empty() { text } else { text.replace(&settings.telegram_token, "…") }
+        let text = if settings.telegram_token.is_empty() { text } else { text.replace(&settings.telegram_token, "…") };
+        if settings.stt_key.is_empty() { text } else { text.replace(&settings.stt_key, "…") }
     });
     if let Some(file) = FILE.with(|f| f.borrow().clone()) {
         if let Some(dir) = file.parent() {
@@ -156,6 +168,11 @@ fn parse(text: &str) -> Settings {
         telegram_token: string("telegramToken", &d.telegram_token),
         telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
         debug_log: flag("debugLog", d.debug_log),
+        stt_enabled: flag("sttEnabled", d.stt_enabled),
+        stt_url: string("sttUrl", &d.stt_url),
+        stt_key: string("sttKey", &d.stt_key),
+        stt_model: string("sttModel", &d.stt_model),
+        stt_language: string("sttLanguage", &d.stt_language),
     }
 }
 
@@ -178,6 +195,11 @@ fn render(s: &Settings) -> String {
         "telegramToken": s.telegram_token,
         "telegramUser": s.telegram_user,
         "debugLog": s.debug_log,
+        "sttEnabled": s.stt_enabled,
+        "sttUrl": s.stt_url,
+        "sttKey": s.stt_key,
+        "sttModel": s.stt_model,
+        "sttLanguage": s.stt_language,
     }))
     .unwrap_or_default()
 }

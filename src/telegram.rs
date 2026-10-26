@@ -551,8 +551,12 @@ impl Bot {
             self.attachment(message);
             return;
         }
+        if message.get("voice").is_some() || message.get("audio").is_some() {
+            self.voice(message);
+            return;
+        }
         let Some(text) = message["text"].as_str().map(str::trim) else {
-            self.say("Text, photos and files for now (no voice, video or stickers).", About::Nothing);
+            self.say("Text, photos, files and voice for now (no video or stickers).", About::Nothing);
             return;
         };
         let command = text.split_whitespace().next().unwrap_or("").split('@').next().unwrap_or("");
@@ -706,6 +710,55 @@ impl Bot {
                 }
             }
             bot.typing(agent.id);
+        });
+    }
+
+    /// A voice message: written down by the speech-to-text service set in loom, shown back
+    /// ("Heard: …"), and sent to the agent as text.
+    fn voice(self: &Rc<Self>, message: &Value) {
+        if !crate::stt::configured() {
+            self.say("Voice messages need speech to text: set it up in loom, Settings → Advanced.", About::Nothing);
+            return;
+        }
+        let Some(agent) = self.target_of(message) else {
+            self.say("Pick the agent first (🧭 Agents), then send it again.", About::Nothing);
+            return;
+        };
+        let file = if message.get("voice").is_some() { message["voice"].clone() } else { message["audio"].clone() };
+        let Some(file_id) = file["file_id"].as_str().map(str::to_owned) else { return };
+        if file["file_size"].as_u64().is_some_and(|size| size > 20 * 1024 * 1024) {
+            self.say("That recording is over 20 MB, more than a bot can fetch from Telegram.", About::Nothing);
+            return;
+        }
+        let mime = file["mime_type"].as_str().unwrap_or("audio/ogg").to_owned();
+        let name = file["file_name"].as_str().map(str::to_owned).unwrap_or_else(|| "voice.ogg".to_owned());
+        let Some((token, _)) = self.running.borrow().clone() else { return };
+        self.react(message);
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let fetched = gio::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
+            let Some(bot) = weak.upgrade() else { return };
+            let audio = match fetched {
+                Ok(audio) => audio,
+                Err(why) => {
+                    bot.say(&format!("Could not fetch it from Telegram: {why}"), About::Agent(agent.id));
+                    return;
+                }
+            };
+            let weak = Rc::downgrade(&bot);
+            crate::stt::transcribe(audio, &name, &mime, move |result| {
+                let Some(bot) = weak.upgrade() else { return };
+                match result {
+                    Ok(text) if text.is_empty() => bot.say("Heard nothing in it.", About::Agent(agent.id)),
+                    Ok(text) => {
+                        bot.say(&format!("🎙 Heard: {text}"), About::Agent(agent.id));
+                        bot.talking_to.set(Some(agent.id));
+                        agent.submit_with(text, Vec::new());
+                        bot.typing(agent.id);
+                    }
+                    Err(why) => bot.say(&format!("Speech to text failed: {why}"), About::Agent(agent.id)),
+                }
+            });
         });
     }
 

@@ -63,6 +63,9 @@ pub struct Chat {
     /// fills it in).
     suggestion: RefCell<Option<String>>,
     send: gtk::Button,
+    /// Speech to text: a click records, another transcribes into the input.
+    mic: gtk::Button,
+    recording: RefCell<Option<crate::stt::Recording>>,
     working: gtk::Label,
     /// The input box, and its "Shell mode" badge (text starting with !).
     composer: gtk::Box,
@@ -395,6 +398,12 @@ impl Chat {
         attach.update_property(&[gtk::accessible::Property::Label("Mention a file")]);
         let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).width_chars(4).build();
         working.add_css_class("working");
+        let mic = gtk::Button::from_icon_name("audio-input-microphone-symbolic");
+        mic.add_css_class("flat");
+        mic.add_css_class("mic");
+        mic.set_tooltip_text(Some("Speak: click to record, click again to write it here"));
+        mic.update_property(&[gtk::accessible::Property::Label("Speak")]);
+        mic.set_visible(crate::stt::configured());
         let send = gtk::Button::with_label("↑");
         send.add_css_class("send");
         send.set_tooltip_text(Some("Send (Enter)"));
@@ -417,6 +426,7 @@ impl Chat {
         shell_badge.set_tooltip_text(Some("Runs here, as you typed it. What it prints goes to Claude when it ends."));
         toolbar.append(&shell_badge);
         toolbar.append(&working);
+        toolbar.append(&mic);
         toolbar.append(&send);
 
         let attach_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -471,6 +481,8 @@ impl Chat {
             placeholder,
             suggestion: RefCell::default(),
             send: send.clone(),
+            mic: mic.clone(),
+            recording: RefCell::default(),
             working,
             composer: composer.clone(),
             shell_badge,
@@ -873,6 +885,13 @@ impl Chat {
         self.input.add_controller(drop);
 
         let weak = Rc::downgrade(self);
+        self.mic.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.toggle_recording();
+            }
+        });
+
+        let weak = Rc::downgrade(self);
         self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
                 chat.placeholder.set_visible(buffer.char_count() == 0);
@@ -1236,6 +1255,56 @@ impl Chat {
         self.stick.set(true);
         self.set_suggestion(None);
         self.call(&self.on_submit, (text, images));
+    }
+
+    /// The microphone shown or not (speech to text set up or not).
+    pub fn set_mic_visible(&self, shown: bool) {
+        self.mic.set_visible(shown);
+    }
+
+    /// The microphone: recording starts; clicked again, what was said is written into the
+    /// input (not sent: read it, then send).
+    fn toggle_recording(self: &Rc<Self>) {
+        let running = self.recording.borrow_mut().take();
+        match running {
+            None => match crate::stt::record() {
+                Ok(recording) => {
+                    *self.recording.borrow_mut() = Some(recording);
+                    self.mic.add_css_class("recording");
+                    self.mic.set_tooltip_text(Some("Recording: click to stop and write it here"));
+                }
+                Err(why) => self.notice(&format!("Can't record: {why}"), "error"),
+            },
+            Some(recording) => {
+                self.mic.remove_css_class("recording");
+                self.mic.add_css_class("busy");
+                self.mic.set_sensitive(false);
+                self.mic.set_tooltip_text(Some("Writing down what you said…"));
+                let audio = recording.finish();
+                let weak = Rc::downgrade(self);
+                let done = move |result: Result<String, String>| {
+                    let Some(chat) = weak.upgrade() else { return };
+                    chat.mic.remove_css_class("busy");
+                    chat.mic.set_sensitive(true);
+                    chat.mic.set_tooltip_text(Some("Speak: click to record, click again to write it here"));
+                    match result {
+                        Ok(text) if text.is_empty() => chat.notice("Heard nothing.", "dim"),
+                        Ok(text) => {
+                            let buffer = chat.input.buffer();
+                            let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+                            let joiner = if typed.is_empty() || typed.ends_with(char::is_whitespace) { "" } else { " " };
+                            buffer.insert(&mut buffer.end_iter(), &format!("{joiner}{text}"));
+                            chat.input.grab_focus();
+                        }
+                        Err(why) => chat.notice(&format!("Speech to text: {why}"), "error"),
+                    }
+                };
+                match audio {
+                    Ok(audio) => crate::stt::transcribe(audio, "voice.wav", "audio/wav", done),
+                    Err(why) => done(Err(why)),
+                }
+            }
+        }
     }
 
     /// The next prompt Claude Code predicts (None: none, the hint again).

@@ -28,6 +28,7 @@ mod schedule;
 mod scratch;
 mod settings;
 mod state;
+mod stt;
 mod suggest;
 mod telegram;
 mod term;

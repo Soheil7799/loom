@@ -589,8 +589,10 @@ impl App {
             ".messages, .plan, textview.input {{ font-size: {}em; }}",
             (s.text_scale * 100.0).round() / 100.0
         ));
+        let mic = crate::stt::configured();
         for agent in self.agents.borrow().iter() {
             agent.set_show_thinking(s.show_thinking);
+            agent.chat.set_mic_visible(mic);
         }
         crate::theme::refont(&s.terminal_font);
     }

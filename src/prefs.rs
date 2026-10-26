@@ -522,6 +522,48 @@ fn advanced(s: &Settings) -> gtk::Box {
     );
     content.append(&program);
 
+    // Speech to text: the user's own service (Groq, OpenAI…) or a Whisper server of their own.
+    let voice = section("Speech to text");
+    row(&voice, "Use speech to text", "The microphone in the message box, and voice messages sent to the Telegram bot.", &switch(s.stt_enabled, |s, on| s.stt_enabled = on));
+    let url = gtk::Entry::builder().text(&s.stt_url).placeholder_text("https://api.groq.com/openai/v1  ·  http://127.0.0.1:8000/v1").build();
+    url.add_css_class("mono");
+    on_done(&url, |text| settings::update(|s| s.stt_url = text));
+    row_stacked(&voice, "Address", "An OpenAI-style transcription API: Groq, OpenAI, or a Whisper server of your own (speaches, LocalAI, whisper.cpp).", &url);
+    let key = gtk::PasswordEntry::builder().text(&s.stt_key).show_peek_icon(true).placeholder_text("Empty for a local server").build();
+    key.add_css_class("mono");
+    on_done(&key, |text| settings::update(|s| s.stt_key = text));
+    row_stacked(&voice, "API key", "", &key);
+    let model = gtk::Entry::builder().text(&s.stt_model).placeholder_text("whisper-large-v3-turbo").width_chars(22).build();
+    model.add_css_class("mono");
+    on_done(&model, |text| settings::update(|s| s.stt_model = text));
+    row(&voice, "Model", "As the service names it (Groq: whisper-large-v3-turbo; OpenAI: whisper-1).", &model);
+    let language = gtk::Entry::builder().text(&s.stt_language).placeholder_text("auto").width_chars(8).build();
+    on_done(&language, |text| settings::update(|s| s.stt_language = text));
+    row(&voice, "Language", "Empty: found from the speech. Or a code: fa, en, it…", &language);
+    let test = flat_button("Test");
+    let result = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(40).build();
+    result.add_css_class("dim");
+    result.add_css_class("small");
+    let shown = result.clone();
+    test.connect_clicked(move |button| {
+        // The fields just typed in count: saved first (they save on leaving them).
+        button.grab_focus();
+        shown.set_label("Sending a second of silence…");
+        let shown = shown.clone();
+        crate::stt::transcribe(crate::stt::silence(), "test.wav", "audio/wav", move |result| {
+            shown.set_label(&match result {
+                Ok(_) => "It works.".to_owned(),
+                Err(why) => format!("It doesn't: {why}"),
+            });
+        });
+    });
+    let test_line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    test_line.append(&result);
+    test_line.append(&test);
+    row(&voice, "Check it", "Sends a second of silence to the address.", &test_line);
+    caption(&voice, "What you record goes to the address above, and nowhere else.");
+    content.append(&voice);
+
     let trouble = section("Troubleshooting");
     let open = flat_button("Open folder");
     open.set_visible(s.debug_log);
