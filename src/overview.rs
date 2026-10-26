@@ -1,5 +1,6 @@
-//! Every open agent on one page, the last used first: what each is doing, what it last said,
-//! what it waits for; and, in a column on the right, the prompts scheduled to be sent.
+//! Every open agent on one page, by what it asks of you: needs you, working, done but not
+//! seen, then the quiet ones (smaller); each group the last used first. And, in a column on
+//! the right, the prompts scheduled to be sent.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -38,8 +39,10 @@ type Handler<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 pub struct Overview {
     pub root: gtk::Box,
     counts: gtk::Label,
-    cards: gtk::FlowBox,
-    ids: RefCell<Vec<u32>>,
+    /// The groups (a heading and its cards each).
+    groups: gtk::Box,
+    /// Each group's cards and the agents they stand for, in order.
+    flows: RefCell<Vec<(gtk::FlowBox, Vec<u32>)>>,
     schedules: gtk::Box,
     /// The schedules' column (hidden while there are none).
     side: gtk::ScrolledWindow,
@@ -58,21 +61,9 @@ impl Overview {
         counts.add_css_class("dim");
         page.append(&title);
         page.append(&counts);
-        let cards = gtk::FlowBox::builder()
-            .selection_mode(gtk::SelectionMode::None)
-            // Each card as tall as what it shows: rows of any height.
-            .homogeneous(false)
-            .min_children_per_line(1)
-            .max_children_per_line(4)
-            .column_spacing(12)
-            .row_spacing(12)
-            .activate_on_single_click(true)
-            .build();
-        cards.add_css_class("overview-cards");
-        // A card's spacer keeps its foot at the bottom; it must not stretch the rows too.
-        cards.set_vexpand(false);
+        let groups = gtk::Box::new(gtk::Orientation::Vertical, 18);
         page.set_valign(gtk::Align::Start);
-        page.append(&cards);
+        page.append(&groups);
         let cards_scroller = gtk::ScrolledWindow::builder().child(&page).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).hexpand(true).build();
         // The scheduled prompts: a column of their own on the right, like a sidebar.
         let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -91,48 +82,83 @@ impl Overview {
         let overview = Rc::new(Overview {
             root,
             counts,
-            cards,
-            ids: RefCell::default(),
+            groups,
+            flows: RefCell::default(),
             schedules,
             side: side_scroller.clone(),
             on_open: RefCell::default(),
             on_schedule_for: RefCell::default(),
             on_schedule: RefCell::default(),
         });
-        let weak = Rc::downgrade(&overview);
-        overview.cards.connect_child_activated(move |_, child| {
-            let Some(overview) = weak.upgrade() else { return };
-            let id = overview.ids.borrow().get(child.index() as usize).copied();
-            let handler = overview.on_open.borrow().clone();
-            if let (Some(id), Some(handler)) = (id, handler) {
-                handler(id);
-            }
-        });
         overview
     }
 
     /// The agent whose card has the keyboard.
     pub fn focused_id(&self) -> Option<u32> {
-        let root = self.cards.root()?;
+        let root = self.groups.root()?;
         let focus = gtk::prelude::GtkWindowExt::focus(root.downcast_ref::<gtk::Window>()?)?;
         let child = focus.ancestor(gtk::FlowBoxChild::static_type()).and_downcast::<gtk::FlowBoxChild>()?;
-        self.ids.borrow().get(child.index() as usize).copied()
+        let flow = child.parent().and_downcast::<gtk::FlowBox>()?;
+        let flows = self.flows.borrow();
+        let (_, ids) = flows.iter().find(|(f, _)| *f == flow)?;
+        ids.get(child.index() as usize).copied()
     }
 
     /// Gives the keyboard back to that agent's card (after a refill).
     pub fn focus_id(&self, id: Option<u32>) {
         let Some(id) = id else { return };
-        let index = self.ids.borrow().iter().position(|i| *i == id);
-        if let Some(child) = index.and_then(|i| self.cards.child_at_index(i as i32)) {
-            child.grab_focus();
+        for (flow, ids) in self.flows.borrow().iter() {
+            if let Some(child) = ids.iter().position(|i| *i == id).and_then(|i| flow.child_at_index(i as i32)) {
+                child.grab_focus();
+                return;
+            }
         }
     }
 
     /// The first card takes the keyboard.
     pub fn grab_focus(&self) {
-        if let Some(first) = self.cards.child_at_index(0) {
+        if let Some(first) = self.flows.borrow().first().and_then(|(flow, _)| flow.child_at_index(0)) {
             first.grab_focus();
         }
+    }
+
+    /// A group: its heading over its cards (compact: one line each).
+    fn group(self: &Rc<Self>, heading: &str, cards: &[&Card], compact: bool) {
+        if cards.is_empty() {
+            return;
+        }
+        let section = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let label = gtk::Label::builder().label(format!("{heading}  {}", cards.len())).xalign(0.0).build();
+        label.add_css_class("overview-heading");
+        section.append(&label);
+        let flow = gtk::FlowBox::builder()
+            .selection_mode(gtk::SelectionMode::None)
+            // Each card as tall as what it shows: rows of any height.
+            .homogeneous(false)
+            .min_children_per_line(1)
+            .max_children_per_line(if compact { 5 } else { 4 })
+            .column_spacing(10)
+            .row_spacing(if compact { 6 } else { 10 })
+            .activate_on_single_click(true)
+            .build();
+        flow.add_css_class("overview-cards");
+        flow.set_vexpand(false);
+        for card in cards {
+            flow.insert(&self.card(card, compact), -1);
+        }
+        let ids: Vec<u32> = cards.iter().map(|c| c.id).collect();
+        let weak = Rc::downgrade(self);
+        let mine = ids.clone();
+        flow.connect_child_activated(move |_, child| {
+            let Some(overview) = weak.upgrade() else { return };
+            let handler = overview.on_open.borrow().clone();
+            if let (Some(id), Some(handler)) = (mine.get(child.index() as usize).copied(), handler) {
+                handler(id);
+            }
+        });
+        section.append(&flow);
+        self.groups.append(&section);
+        self.flows.borrow_mut().push((flow, ids));
     }
 
     pub fn fill(self: &Rc<Self>, mut cards: Vec<Card>, schedules: &[Schedule]) {
@@ -153,13 +179,18 @@ impl Overview {
         } else {
             summary.join(" · ")
         });
-        while let Some(child) = self.cards.child_at_index(0) {
-            self.cards.remove(&child);
+        while let Some(child) = self.groups.first_child() {
+            self.groups.remove(&child);
         }
-        *self.ids.borrow_mut() = cards.iter().map(|c| c.id).collect();
-        for card in &cards {
-            self.cards.insert(&self.card(card), -1);
-        }
+        self.flows.borrow_mut().clear();
+        let needs = |c: &&Card| matches!(c.status, Status::Blocked | Status::Failed);
+        let working = |c: &&Card| matches!(c.status, Status::Working | Status::Starting);
+        let unseen = |c: &&Card| c.status == Status::Idle && c.unseen;
+        let pick = |f: &dyn Fn(&&Card) -> bool| cards.iter().filter(|c| f(c)).collect::<Vec<_>>();
+        self.group("NEEDS YOU", &pick(&needs), false);
+        self.group("WORKING", &pick(&working), false);
+        self.group("DONE, NOT SEEN", &pick(&unseen), false);
+        self.group("QUIET", &pick(&|c| !needs(c) && !working(c) && !unseen(c)), true);
 
         while let Some(child) = self.schedules.first_child() {
             self.schedules.remove(&child);
@@ -180,9 +211,12 @@ impl Overview {
         }
     }
 
-    fn card(self: &Rc<Self>, card: &Card) -> gtk::Box {
+    fn card(self: &Rc<Self>, card: &Card, compact: bool) -> gtk::Box {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.add_css_class("overview-card");
+        if compact {
+            root.add_css_class("compact");
+        }
         // As tall as what it shows (not as the tallest card of its row).
         root.set_valign(gtk::Align::Start);
         if card.status == Status::Blocked {
@@ -204,8 +238,17 @@ impl Overview {
         state.add_css_class(if card.status == Status::Blocked { "accent" } else { "dim" });
         top.append(&dot);
         top.append(&title);
+        if compact {
+            let project = gtk::Label::new(Some(&card.project));
+            project.add_css_class("dim");
+            project.add_css_class("small");
+            top.append(&project);
+        }
         top.append(&state);
         root.append(&top);
+        if compact {
+            return root;
+        }
         // Where it works, how many prompts wait for it, and Schedule…: one line.
         let place = [card.project.as_str(), card.place.as_str()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
         let place = gtk::Label::builder().label(place).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();

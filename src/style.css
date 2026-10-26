@@ -23,7 +23,7 @@ button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible
 }
 
 /* ---- sidebar ---------------------------------------------------------------------------- */
-.sidebar { background: @sidebar_bg_color; border-right: 1px solid @loom_line; }
+.sidebar { background: @sidebar_bg_color; }
 .sidebar-top { padding: 10px 10px 6px 10px; }
 .brand { font-size: 1.15em; font-weight: 700; letter-spacing: -0.01em; }
 .brand-by { font-size: 0.8em; font-weight: 500; opacity: 0.6; margin-top: -1px; }
@@ -68,6 +68,9 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .sidebar-empty { padding: 18px 18px; }
 .agent-title { font-weight: 500; }
 .inbox-button { color: @loom_wait; font-weight: 700; }
+button.inbox-banner, menubutton.inbox-banner > button { margin: 2px 10px 4px 10px; padding: 6px 12px; border-radius: 10px; background: alpha(@loom_wait, 0.14); }
+menubutton.inbox-banner > button:hover { background: alpha(@loom_wait, 0.22); }
+menubutton.inbox-banner label { color: @loom_wait; font-weight: 600; }
 .inbox { padding: 6px; }
 .inbox-agent { font-weight: 700; }
 .menu { padding: 4px; }
@@ -157,13 +160,16 @@ button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_
 .option-heading { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
 
 /* ---- tray, files, scratch --------------------------------------------------------------- */
-.tray { padding: 4px 8px; min-height: 26px; border-top: 1px solid @loom_line; background: @sidebar_bg_color; }
+.tray { padding: 4px 8px; min-height: 26px; background: @sidebar_bg_color; }
 .tray .hint { font-size: 0.8em; opacity: 0.6; margin-right: 6px; }
 .chip { padding: 2px 10px; min-height: 0; border-radius: 99px; font-size: 0.9em; }
+/* Tray jobs: pills with a fill (like the composer's chips). */
+.tray button.chip { background: alpha(@window_fg_color, 0.06); border-radius: 8px; }
+.tray button.chip:hover { background: alpha(@window_fg_color, 0.12); }
 .dock { padding: 6px; background: @sidebar_bg_color; }
 .docked, .peek-frame { padding: 4px; }
 button.small { padding: 0 8px; min-height: 22px; font-size: 0.9em; }
-.files { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
+.files { background: @sidebar_bg_color; }
 .panel-header { padding: 10px 12px 6px 12px; }
 /* Tabs as one segmented control: a soft track, the chosen one raised. */
 .segmented { background: alpha(@window_fg_color, 0.06); border-radius: 10px; padding: 2px; }
@@ -318,8 +324,11 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .editor-pane { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
 .reader { padding: 24px 28px 40px 28px; }
 .reader label { font-size: 1em; }
-.editor-title { padding: 12px 14px 0 14px; font-weight: 600; }
-.editor-title label { font-family: inherit; }
+.editor-title { padding: 10px 10px 8px 14px; border-bottom: 1px solid @loom_line; }
+.editor-name { font-weight: 600; }
+.editor-path { font-size: 0.8em; opacity: 0.45; }
+.editor-path:hover { opacity: 0.8; }
+button.editor-close { min-width: 26px; min-height: 26px; padding: 0; border-radius: 8px; }
 .usage-button { padding: 2px 8px; min-height: 0; border-radius: 8px; }
 .usage-pop { padding: 10px 12px; min-width: 340px; }
 .usage-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 6px; }
@@ -395,3 +404,9 @@ button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity
 .overview-card:hover .schedule-button, flowboxchild:focus-within .schedule-button, .overview-card .schedule-button:focus-visible { opacity: 1; }
 .agent-row .dup { opacity: 0.45; }
 .sidebar-bottom button.icon label { font-weight: 700; font-size: 0.95em; }
+.overview-card.compact { padding: 7px 12px; }
+/* Around the agent's view: the sidebars' colour; the view itself a rounded panel in it. */
+.middle { background: @sidebar_bg_color; }
+paned.island { border-radius: 12px; margin: 6px 6px 0 0; background: @view_bg_color; }
+/* A toggle among the buttons looks like them, pressed or not. */
+button.prefs-button:checked { background: alpha(@window_fg_color, 0.12); color: @window_fg_color; }

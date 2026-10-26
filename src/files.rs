@@ -27,6 +27,9 @@ pub struct Files {
     reader: gtk::Box,
     read_toggle: gtk::ToggleButton,
     name: gtk::Label,
+    /// The open file's full path, under its name (a click copies it).
+    path_label: gtk::Label,
+    file_icon: gtk::Image,
     dirty: gtk::Label,
     view: sourceview::View,
     buffer: sourceview::Buffer,
@@ -175,35 +178,61 @@ impl Files {
         let editor_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
         editor_box.set_visible(false);
         editor_box.set_vexpand(true);
+        // The header, one line: the file (its name over its path) and what can be done with it.
         let editor_header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        editor_header.add_css_class("panel-header");
-        let name = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
-        name.add_css_class("mono");
+        editor_header.add_css_class("editor-title");
+        let file_icon = gtk::Image::new();
+        file_icon.add_css_class("file-icon");
+        file_icon.set_valign(gtk::Align::Center);
+        // Never squeezed out by the buttons: about ten characters at least.
+        let name = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).width_chars(10).build();
+        name.add_css_class("editor-name");
+        let path_label = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Start).build();
+        path_label.add_css_class("editor-path");
+        path_label.set_tooltip_text(Some("Click to copy the path"));
         let dirty = gtk::Label::new(Some("●"));
         dirty.add_css_class("dirty");
         dirty.set_visible(false);
         dirty.set_tooltip_text(Some("Unsaved (Ctrl+S)"));
-        let save = gtk::Button::with_label("Save");
-        save.add_css_class("flat");
-        let close = gtk::Button::with_label("Close");
+        let name_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        name_line.append(&name);
+        name_line.append(&dirty);
+        let names = gtk::Box::new(gtk::Orientation::Vertical, 1);
+        names.set_hexpand(true);
+        names.set_valign(gtk::Align::Center);
+        names.append(&name_line);
+        names.append(&path_label);
+        let button = |label: &str, tip: &str| {
+            let button = gtk::Button::with_label(label);
+            button.add_css_class("prefs-button");
+            button.set_valign(gtk::Align::Center);
+            button.set_tooltip_text(Some(tip));
+            button
+        };
+        let save = button("Save", "Save the changes (Ctrl+S)");
+        save.set_visible(false);
+        let open_app = button("Open", "Open it in the app your system opens it with");
+        // nevis: Ctrl+Shift+O or the palette (a button too many for a pane this narrow).
+        let in_nevis = button("nevis", "Open in nevis, with Live Preview (Ctrl+Shift+O)");
+        in_nevis.set_visible(false);
+        let ask = button("Ask Claude", "Mention this file (or the selected lines) in the chat");
+        let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("flat");
-        let in_nevis = gtk::Button::with_label("nevis");
-        in_nevis.add_css_class("flat");
-        in_nevis.set_tooltip_text(Some("Open in nevis, with Live Preview (Ctrl+Shift+O)"));
-        in_nevis.set_visible(glib::find_program_in_path("nevis").is_some());
+        close.add_css_class("editor-close");
+        close.set_valign(gtk::Align::Center);
+        close.set_tooltip_text(Some("Close the file"));
         let find = gtk::SearchEntry::builder().placeholder_text("Find").width_chars(14).visible(false).build();
-        editor_header.append(&find);
-        let ask = gtk::Button::with_label("Ask Claude");
-        ask.add_css_class("flat");
-        ask.set_tooltip_text(Some("Mention this file (or the selected lines) in the chat"));
         let read_toggle = gtk::ToggleButton::builder().label("Read").tooltip_text("Markdown as it reads, or as text to edit").visible(false).build();
-        read_toggle.add_css_class("flat");
-        read_toggle.remove_css_class("text-button");
-        read_toggle.remove_css_class("toggle");
+        read_toggle.add_css_class("prefs-button");
+        read_toggle.set_valign(gtk::Align::Center);
+        editor_header.append(&file_icon);
+        editor_header.append(&names);
+        editor_header.append(&find);
+        editor_header.append(&save);
         editor_header.append(&read_toggle);
         editor_header.append(&ask);
+        editor_header.append(&open_app);
         editor_header.append(&in_nevis);
-        editor_header.append(&save);
         editor_header.append(&close);
         let buffer = sourceview::Buffer::new(None);
         buffer.set_highlight_syntax(true);
@@ -228,12 +257,6 @@ impl Files {
         editor_stack.add_named(&reader_scroller, Some("read"));
 
         editor_box.set_size_request(-1, 200);
-        // The file's name on a line of its own (the buttons would squeeze it), the actions under it.
-        let title_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        title_line.add_css_class("editor-title");
-        title_line.append(&name);
-        title_line.append(&dirty);
-        editor_box.append(&title_line);
         editor_box.append(&editor_header);
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tabs.add_css_class("editor-tabs");
@@ -254,6 +277,8 @@ impl Files {
             empty,
             editor_box,
             name,
+            path_label: path_label.clone(),
+            file_icon,
             dirty,
             view,
             buffer,
@@ -455,8 +480,34 @@ impl Files {
                 files.close();
             }
         });
-        let dirty = files.dirty.clone();
-        files.buffer.connect_modified_changed(move |buffer| dirty.set_visible(buffer.is_modified()));
+        let (dirty, unsaved) = (files.dirty.clone(), save.clone());
+        files.buffer.connect_modified_changed(move |buffer| {
+            dirty.set_visible(buffer.is_modified());
+            unsaved.set_visible(buffer.is_modified());
+        });
+        // Open: in the app the system opens this kind of file with.
+        let weak = Rc::downgrade(&files);
+        open_app.connect_clicked(move |button| {
+            let Some(path) = weak.upgrade().and_then(|f| f.open.borrow().clone()) else { return };
+            let window = button.root().and_downcast::<gtk::Window>();
+            gtk::FileLauncher::new(Some(&gio::File::for_path(path))).launch(window.as_ref(), None::<&gio::Cancellable>, |_| {});
+        });
+        // The path: a click copies it (and says so for a moment).
+        let copy = gtk::GestureClick::new();
+        let shown = path_label.clone();
+        copy.connect_released(move |gesture, _, _, _| {
+            let full = shown.label().to_string();
+            if full.is_empty() || full == "Copied" {
+                return;
+            }
+            if let Some(widget) = gesture.widget() {
+                widget.clipboard().set_text(&full);
+            }
+            shown.set_label("Copied");
+            let back = shown.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || back.set_label(&full));
+        });
+        path_label.add_controller(copy);
 
         let keys = gtk::EventControllerKey::new();
         let weak = Rc::downgrade(&files);
@@ -589,9 +640,10 @@ impl Files {
         self.buffer.end_irreversible_action();
         self.buffer.set_modified(false);
         self.buffer.place_cursor(&self.buffer.start_iter());
-        // The name; where it is, on hover (the pane is narrow beside the chat).
+        // The name, and under it where it is (a click copies that).
         self.name.set_label(&path.file_name().map_or_else(|| path.to_string_lossy(), |n| n.to_string_lossy()));
-        self.name.set_tooltip_text(Some(&path.to_string_lossy()));
+        self.path_label.set_label(&path.to_string_lossy());
+        self.file_icon.set_from_gicon(&file_icon(path, false));
         self.notice("");
         self.warned.set(None);
         let same_file = self.open.borrow().as_deref() == Some(path);

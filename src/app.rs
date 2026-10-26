@@ -142,9 +142,12 @@ impl App {
         overview_button.set_tooltip_text(Some("Overview: every agent, and scheduled prompts (Ctrl+Shift+A)"));
         top.append(&brand);
         top.append(&spacer);
-        top.append(&inbox);
+        // Waiting for you: a band under the lockup (shown only then); it opens the questions.
         top.append(&overview_button);
         sidebar.append(&top);
+        inbox.set_hexpand(true);
+        inbox.add_css_class("inbox-banner");
+        sidebar.append(&inbox);
         brand.connect_clicked(|button| {
             if let Some(window) = button.root().and_downcast::<gtk::Window>() {
                 crate::about::open(&window);
@@ -212,6 +215,13 @@ impl App {
             .shrink_start_child(false)
             .shrink_end_child(false)
             .build();
+        // The agent's view: a rounded panel, the sidebars and the tray around it in one colour.
+        reading.add_css_class("island");
+        // Its content clipped to the rounded corners (not on Broadway, the test display: its
+        // server aborts on that clip).
+        if std::env::var("GDK_BACKEND").as_deref() != Ok("broadway") {
+            reading.set_overflow(gtk::Overflow::Hidden);
+        }
         // Opened: about 45% of the width for the file (kept as dragged after that).
         let (pane, placed) = (reading.clone(), Cell::new(false));
         files.editor_box.connect_visible_notify(move |editor| {
@@ -235,6 +245,7 @@ impl App {
             .vexpand(true)
             .build();
         let middle = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        middle.add_css_class("middle");
         middle.append(&work);
         middle.append(&bar_stack);
 
@@ -2355,6 +2366,9 @@ impl App {
             (None, Some(project)) => format!("{} · loom", self.project_label(&project)),
             _ => "loom".to_owned(),
         };
+        // Agents waiting for you, first: the window list and task switcher show it.
+        let waiting = self.agents.borrow().iter().filter(|a| a.status() == Status::Blocked).count();
+        let title = if waiting > 0 { format!("({waiting}) needs you · {title}") } else { title };
         self.window.set_title(Some(&title));
     }
 
@@ -2566,7 +2580,7 @@ impl App {
     fn refresh_inbox(self: &Rc<Self>) {
         let agents = self.agents.borrow().clone();
         let count: usize = agents.iter().map(|a| a.questions().len()).sum();
-        self.inbox.set_label(&format!("⚑ {count}"));
+        self.inbox.set_label(&format!("⚑  {count} waiting for you  ·  Ctrl+I"));
         self.inbox.set_visible(count > 0);
         if count == 0 {
             self.inbox.popdown();
