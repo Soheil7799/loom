@@ -162,10 +162,25 @@ impl App {
         sidebar.append(&list_scroller);
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         bottom.add_css_class("sidebar-bottom");
-        let new_button = gtk::Button::with_label("+  New project");
-        new_button.add_css_class("flat");
-        new_button.set_hexpand(true);
-        new_button.set_tooltip_text(Some("Start an agent in another folder (Ctrl+Shift+N)"));
+        // Small buttons, each with its key in the tooltip: new project, the scratch terminal and
+        // a command in the tray on the left; settings and the shortcuts on the right.
+        let small = |label: &str, tip: &str, name: &str| {
+            let button = gtk::Button::builder().label(label).tooltip_text(tip).build();
+            button.update_property(&[gtk::accessible::Property::Label(name)]);
+            button.add_css_class("flat");
+            button.add_css_class("icon");
+            button
+        };
+        let new_button = small("", "New project: an agent in another folder (Ctrl+Shift+N)", "New project");
+        new_button.set_icon_name("list-add-symbolic");
+        let scratch_button = gtk::Button::from_icon_name("utilities-terminal-symbolic");
+        scratch_button.update_property(&[gtk::accessible::Property::Label("Scratch terminal")]);
+        scratch_button.add_css_class("flat");
+        scratch_button.add_css_class("icon");
+        scratch_button.set_tooltip_text(Some("Scratch terminal (Ctrl+`)"));
+        let run_button = small("", "Run a command in the tray (Ctrl+J)", "Run a command");
+        run_button.set_icon_name("media-playback-start-symbolic");
+        let spacer = gtk::Box::builder().hexpand(true).build();
         let settings_button = gtk::Button::from_icon_name("emblem-system-symbolic");
         settings_button.update_property(&[gtk::accessible::Property::Label("Settings")]);
         settings_button.add_css_class("flat");
@@ -177,6 +192,9 @@ impl App {
         help_button.add_css_class("flat");
         help_button.add_css_class("icon");
         bottom.append(&new_button);
+        bottom.append(&scratch_button);
+        bottom.append(&run_button);
+        bottom.append(&spacer);
         bottom.append(&settings_button);
         bottom.append(&help_button);
         sidebar.append(&bottom);
@@ -389,6 +407,18 @@ impl App {
         overview_button.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
                 app.show_overview();
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        scratch_button.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.toggle_scratch();
+            }
+        });
+        let weak = Rc::downgrade(&this);
+        run_button.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.ask_command();
             }
         });
         let weak = Rc::downgrade(&this);

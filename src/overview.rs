@@ -44,8 +44,6 @@ pub struct Overview {
     /// Each group's cards and the agents they stand for, in order.
     flows: RefCell<Vec<(gtk::FlowBox, Vec<u32>)>>,
     schedules: gtk::Box,
-    /// The schedules' column (hidden while there are none).
-    side: gtk::ScrolledWindow,
     pub on_open: Handler<u32>,
     pub on_schedule_for: Handler<u32>,
     pub on_schedule: Handler<(u64, Act)>,
@@ -85,7 +83,6 @@ impl Overview {
             groups,
             flows: RefCell::default(),
             schedules,
-            side: side_scroller.clone(),
             on_open: RefCell::default(),
             on_schedule_for: RefCell::default(),
             on_schedule: RefCell::default(),
@@ -195,8 +192,6 @@ impl Overview {
         while let Some(child) = self.schedules.first_child() {
             self.schedules.remove(&child);
         }
-        // None yet: no column for them (a card's Schedule… makes one).
-        self.side.set_visible(!schedules.is_empty());
         if schedules.is_empty() {
             let none = gtk::Label::builder()
                 .label("None yet. On a card, Schedule… sends that agent a prompt at a time you pick: every day at 9, every 2h, in 20m.")
