@@ -238,52 +238,29 @@ fn telegram(s: &Settings) -> gtk::Box {
         entry.remove_css_class("error");
         settings::update(|s| s.telegram_user = id);
     });
-    row(&bot, "Your Telegram user ID", "Only this account is obeyed; anyone else writing to the bot is ignored.", &user);
+    row(
+        &bot,
+        "Your Telegram user ID",
+        "Only this account is obeyed; anyone else writing to the bot is ignored. Left empty, the status below shows a code: send it to the bot and your account is linked.",
+        &user,
+    );
     content.append(&bot);
 
     let state = section("Status");
     let line = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(48).selectable(true).build();
     line.add_css_class("dim");
     row(&state, "Connection", "", &line);
-    // Setting up: whoever writes to the bot shows here, to be let in by hand.
-    let found = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let found_label = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(40).selectable(true).build();
-    found_label.add_css_class("mono");
-    let use_it = gtk::Button::with_label("Use this ID");
-    found.append(&found_label);
-    found.append(&use_it);
-    found.set_visible(false);
-    row(&state, "Wrote to the bot", "Not allowed in. If it's you, use its ID.", &found);
-    if let Some(found_row) = found.parent() {
-        found_row.set_visible(false);
-        let (row_widget, entry) = (found_row.clone(), user.clone());
-        let picked = std::rc::Rc::new(std::cell::Cell::new(0i64));
-        let p = picked.clone();
-        use_it.connect_clicked(move |_| {
-            let id = p.get();
-            if id != 0 {
-                entry.set_text(&id.to_string());
-                settings::update(|s| s.telegram_user = id);
-            }
-        });
-        let (weak_line, weak_label, weak_row) = (line.downgrade(), found_label.downgrade(), row_widget.downgrade());
-        crate::telegram::watch(move |text, stranger| {
-            let (Some(line), Some(label), Some(found_row)) = (weak_line.upgrade(), weak_label.upgrade(), weak_row.upgrade()) else {
-                return false;
-            };
-            line.set_label(text);
-            match stranger {
-                Some((id, name)) => {
-                    label.set_label(&format!("{id} {name}"));
-                    picked.set(*id);
-                    found_row.set_visible(true);
-                    found.set_visible(true);
-                }
-                None => found_row.set_visible(false),
-            }
-            true
-        });
-    }
+    let (weak, weak_user) = (line.downgrade(), user.downgrade());
+    crate::telegram::watch(move |text| {
+        let (Some(line), Some(user)) = (weak.upgrade(), weak_user.upgrade()) else { return false };
+        line.set_label(text);
+        // Linked by the code: the account shows here too.
+        let id = settings::get().telegram_user;
+        if id != 0 && !user.has_focus() && user.text() != id.to_string() {
+            user.set_text(&id.to_string());
+        }
+        true
+    });
     content.append(&state);
     content
 }

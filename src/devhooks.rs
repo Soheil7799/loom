@@ -95,7 +95,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // A schedule due now: a new conversation in <dir> that runs `!echo scheduled-ok`.
         "schedtest" => app.add_schedule_for_tests(PathBuf::from(argument), "!echo scheduled-ok"),
         "schedule" => {
-            let agent = app.agents_for_tests().into_iter().next().ok_or("no agent")?;
+            let agent = app.agents_listed().into_iter().next().ok_or("no agent")?;
             app.schedule_for(&agent);
         }
         // A plan to review: "fakeplan", then "plancomment:<text>" (on its first part) and

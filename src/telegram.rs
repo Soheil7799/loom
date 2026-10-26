@@ -9,15 +9,15 @@ use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
 use gtk::glib;
 use serde_json::{Value, json};
 
-use crate::agent::{Agent, Event, Status};
+use crate::agent::{Agent, Asking, Event, Status};
 use crate::app::App;
-use crate::settings::Settings;
+use crate::settings::{self, Settings};
 
 /// Telegram takes 4096 characters a message; a long reply goes in parts of this many.
 const PART: usize = 3500;
@@ -52,10 +52,20 @@ pub struct Bot {
     app: RefCell<Weak<App>>,
     /// Bumped to stop the running threads (a new token, switched off).
     generation: Arc<AtomicU64>,
+    /// The next update to ask for, kept across restarts with the same token (0: not known).
+    offset: Arc<AtomicI64>,
     calls: RefCell<Option<async_channel::Sender<Call>>>,
     /// What it was started with: (token, allowed account).
     running: RefCell<Option<(String, i64)>>,
+    /// The token the bookkeeping below is about.
+    token: RefCell<String>,
     user: Cell<i64>,
+    /// Linking an account: what to send the bot, shown only in the settings.
+    code: RefCell<Option<String>>,
+    /// Wrong guesses at the code (a new one after too many).
+    guesses: Cell<u32>,
+    /// Just linked: say so once connected.
+    greet: Cell<bool>,
     /// "Connected as @bot." while it is.
     online: RefCell<Option<String>>,
     /// Who plain messages go to.
@@ -64,38 +74,27 @@ pub struct Bot {
     about: RefCell<HashMap<i64, u32>>,
     /// Questions told: (agent, serial) → their message (None while it is being sent) and text.
     told: RefCell<HashMap<(u32, u64), (Option<i64>, String)>>,
+    /// The question being answered from here (not "answered in loom").
+    answering: Cell<Option<(u32, u64)>>,
 }
 
 thread_local! {
-    /// The bot's state in a line, and the last account that wrote to it but isn't allowed.
-    static STATE: RefCell<(String, Option<(i64, String)>)> = RefCell::new(("Off.".to_owned(), None));
-    static WATCHERS: RefCell<Vec<Box<dyn Fn(&str, Option<&(i64, String)>) -> bool>>> = RefCell::new(Vec::new());
+    /// The bot's state in a line, for the settings page.
+    static STATE: RefCell<String> = RefCell::new("Off.".to_owned());
+    static WATCHERS: RefCell<Vec<Box<dyn Fn(&str) -> bool>>> = RefCell::new(Vec::new());
 }
 
 /// Calls `f` with the bot's state now and on every change, while it returns true.
-pub fn watch(f: impl Fn(&str, Option<&(i64, String)>) -> bool + 'static) {
-    let keep = STATE.with(|s| {
-        let s = s.borrow();
-        f(&s.0, s.1.as_ref())
-    });
-    if keep {
+pub fn watch(f: impl Fn(&str) -> bool + 'static) {
+    if STATE.with(|s| f(&s.borrow())) {
         WATCHERS.with(|w| w.borrow_mut().push(Box::new(f)));
     }
 }
 
-fn set_state(line: Option<&str>, stranger: Option<(i64, String)>) {
-    let (line, stranger) = STATE.with(|s| {
-        let mut s = s.borrow_mut();
-        if let Some(line) = line {
-            s.0 = line.to_owned();
-        }
-        if stranger.is_some() {
-            s.1 = stranger;
-        }
-        (s.0.clone(), s.1.clone())
-    });
+fn set_state(line: &str) {
+    STATE.with(|s| *s.borrow_mut() = line.to_owned());
     let watchers = WATCHERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
-    let kept: Vec<_> = watchers.into_iter().filter(|f| f(&line, stranger.as_ref())).collect();
+    let kept: Vec<_> = watchers.into_iter().filter(|f| f(line)).collect();
     WATCHERS.with(|w| {
         let mut w = w.borrow_mut();
         let added = std::mem::take(&mut *w);
@@ -104,18 +103,37 @@ fn set_state(line: Option<&str>, stranger: Option<(i64, String)>) {
     });
 }
 
+/// A code nobody can guess, to link the account that sends it.
+fn new_code() -> String {
+    use std::io::Read;
+    let mut bytes = [0u8; 8];
+    let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
+    if random.is_err() {
+        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()) ^ u128::from(std::process::id());
+        bytes = (seed as u64).to_le_bytes();
+    }
+    const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    bytes.iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
+}
+
 impl Bot {
     pub fn new() -> Rc<Bot> {
         Rc::new(Bot {
             app: RefCell::new(Weak::new()),
             generation: Arc::new(AtomicU64::new(0)),
+            offset: Arc::new(AtomicI64::new(0)),
             calls: RefCell::default(),
             running: RefCell::default(),
+            token: RefCell::default(),
             user: Cell::new(0),
+            code: RefCell::default(),
+            guesses: Cell::new(0),
+            greet: Cell::new(false),
             online: RefCell::default(),
             talking_to: Cell::new(None),
             about: RefCell::default(),
             told: RefCell::default(),
+            answering: Cell::new(None),
         })
     }
 
@@ -132,24 +150,34 @@ impl Bot {
         }
         self.generation.fetch_add(1, Ordering::SeqCst);
         self.calls.borrow_mut().take();
-        self.told.borrow_mut().clear();
-        self.about.borrow_mut().clear();
-        self.talking_to.set(None);
         *self.running.borrow_mut() = wanted.clone();
         let Some((token, user)) = wanted else {
-            set_state(Some(if s.telegram_enabled { "Needs the bot's token." } else { "Off." }), None);
+            set_state(if s.telegram_enabled { "Needs the bot's token." } else { "Off." });
             return;
         };
+        // Another bot: what was told was told by the old one.
+        if *self.token.borrow() != token {
+            *self.token.borrow_mut() = token.clone();
+            self.offset.store(0, Ordering::SeqCst);
+            self.told.borrow_mut().clear();
+            self.about.borrow_mut().clear();
+            self.talking_to.set(None);
+        }
+        if user != self.user.get() {
+            self.talking_to.set(None);
+        }
         self.user.set(user);
+        *self.code.borrow_mut() = (user == 0).then(new_code);
+        self.guesses.set(0);
         self.online.borrow_mut().take();
-        set_state(Some("Connecting…"), None);
+        set_state("Connecting…");
         let generation = self.generation.load(Ordering::SeqCst);
         let (to_main, from_threads) = async_channel::unbounded::<In>();
         let (calls, to_send) = async_channel::unbounded::<Call>();
         *self.calls.borrow_mut() = Some(calls);
-        let flag = self.generation.clone();
+        let (flag, offset) = (self.generation.clone(), self.offset.clone());
         let (tx, key) = (to_main.clone(), token.clone());
-        std::thread::spawn(move || poll(&key, &flag, generation, &tx));
+        std::thread::spawn(move || poll(&key, &flag, generation, &offset, &tx));
         let flag = self.generation.clone();
         std::thread::spawn(move || send(&token, &flag, generation, &to_send, &to_main));
         let weak = Rc::downgrade(self);
@@ -174,16 +202,19 @@ impl Bot {
         }
     }
 
-    fn say(&self, text: &str, keyboard: Option<Value>, about: About) {
-        let parts = split(text);
-        let last = parts.len().saturating_sub(1);
-        for (i, part) in parts.into_iter().enumerate() {
-            let mut body = json!({ "chat_id": self.user.get(), "text": part, "link_preview_options": { "is_disabled": true } });
-            if i == last && let Some(keyboard) = &keyboard {
-                body["reply_markup"] = json!({ "inline_keyboard": keyboard });
-            }
-            self.call("sendMessage", body, about);
+    fn say(&self, text: &str, about: About) {
+        for part in split(text) {
+            self.call("sendMessage", json!({ "chat_id": self.user.get(), "text": part, "link_preview_options": { "is_disabled": true } }), about);
         }
+    }
+
+    /// One message (cut short if it must), with buttons.
+    fn ask(&self, text: &str, keyboard: Value, about: About) {
+        let body = json!({
+            "chat_id": self.user.get(), "text": clip(text, PART), "link_preview_options": { "is_disabled": true },
+            "reply_markup": { "inline_keyboard": keyboard },
+        });
+        self.call("sendMessage", body, about);
     }
 
     fn edit(&self, message: i64, text: &str, keyboard: Option<Value>) {
@@ -192,27 +223,33 @@ impl Bot {
         self.call("editMessageText", body, About::Nothing);
     }
 
+    fn connected_line(&self, name: &str) -> String {
+        match self.code.borrow().as_deref() {
+            Some(code) => format!("Connected as @{name}. To link your Telegram account, send the bot this code: {code}"),
+            None => format!("Connected as @{name}."),
+        }
+    }
+
     fn incoming(self: &Rc<Self>, incoming: In) {
         match incoming {
             In::Online(name) => {
-                let line = if self.user.get() == 0 {
-                    format!("Connected as @{name}. Needs your Telegram user ID: write anything to the bot and it shows here.")
-                } else {
-                    format!("Connected as @{name}.")
-                };
-                set_state(Some(&line), None);
-                *self.online.borrow_mut() = Some(line);
+                let line = self.connected_line(&name);
+                set_state(&line);
+                *self.online.borrow_mut() = Some(name);
+                if self.greet.take() && self.user.get() != 0 {
+                    self.say("Linked. loom now answers only this account. /agents lists your agents.", About::Nothing);
+                }
             }
             In::Problem(problem) => {
                 self.online.borrow_mut().take();
-                set_state(Some(&problem), None);
+                set_state(&problem);
             }
             In::Unsent(why) => {
                 let line = match self.online.borrow().as_deref() {
-                    Some(online) => format!("{online} A message could not be sent: {why}"),
+                    Some(name) => format!("{} A message could not be sent: {why}", self.connected_line(name)),
                     None => why,
                 };
-                set_state(Some(&line), None);
+                set_state(&line);
             }
             In::Sent(about, message) => match about {
                 About::Nothing => {}
@@ -238,14 +275,17 @@ impl Bot {
 
     fn remember(&self, message: i64, agent: u32) {
         let mut about = self.about.borrow_mut();
-        if about.len() > 2000 {
-            about.clear();
+        // The oldest go first (message ids grow).
+        if about.len() > 2000
+            && let Some(cut) = about.keys().copied().min().map(|oldest| oldest + 500)
+        {
+            about.retain(|id, _| *id > cut);
         }
         about.insert(message, agent);
     }
 
     /// Only the allowed account's private messages and button presses count; anyone else's
-    /// are dropped (their ID noted for the settings page, nothing more).
+    /// are dropped. Before an account is linked, only the code from the settings links one.
     fn update(self: &Rc<Self>, update: &Value) {
         let (from, item) = if let Some(query) = update.get("callback_query") {
             (&query["from"], query)
@@ -256,11 +296,14 @@ impl Bot {
         };
         let id = from["id"].as_i64().unwrap_or(0);
         let private = item.get("data").is_some() || item["chat"]["type"].as_str() == Some("private");
-        if id == 0 || id != self.user.get() || !private {
-            if id != 0 && id != self.user.get() {
-                let name = from["username"].as_str().map(|u| format!("@{u}")).or_else(|| from["first_name"].as_str().map(str::to_owned)).unwrap_or_default();
-                set_state(None, Some((id, name)));
-            }
+        if id == 0 || !private {
+            return;
+        }
+        if self.user.get() == 0 {
+            self.link(id, item["text"].as_str().unwrap_or(""));
+            return;
+        }
+        if id != self.user.get() {
             return;
         }
         if item.get("data").is_some() {
@@ -270,13 +313,34 @@ impl Bot {
         }
     }
 
+    /// Setting up: the account that sends the code shown in the settings is the one allowed.
+    fn link(&self, id: i64, text: &str) {
+        let Some(code) = self.code.borrow().clone() else { return };
+        // "/start <code>" (a t.me link) or the code alone.
+        if text.split_whitespace().last() == Some(code.as_str()) {
+            self.code.borrow_mut().take();
+            self.greet.set(true);
+            settings::update(|s| s.telegram_user = id);
+            return;
+        }
+        // Too many wrong tries: another code (the settings show it).
+        self.guesses.set(self.guesses.get() + 1);
+        if self.guesses.get() >= 20 {
+            self.guesses.set(0);
+            *self.code.borrow_mut() = Some(new_code());
+            if let Some(name) = self.online.borrow().clone() {
+                set_state(&self.connected_line(&name));
+            }
+        }
+    }
+
     fn agent(&self, id: u32) -> Option<Rc<Agent>> {
         self.app.borrow().upgrade()?.agents_listed().into_iter().find(|a| a.id == id)
     }
 
     fn message(self: &Rc<Self>, message: &Value) {
         let Some(text) = message["text"].as_str().map(str::trim) else {
-            self.say("Only text messages for now.", None, About::Nothing);
+            self.say("Only text messages for now.", About::Nothing);
             return;
         };
         let command = text.split_whitespace().next().unwrap_or("").split('@').next().unwrap_or("");
@@ -285,31 +349,32 @@ impl Bot {
             return;
         }
         if command == "/help" {
-            self.say(HELP, None, About::Nothing);
+            self.say(HELP, About::Nothing);
             return;
         }
         let replied = message["reply_to_message"]["message_id"].as_i64();
-        let target = replied.and_then(|m| self.about.borrow().get(&m).copied()).or(self.talking_to.get());
+        // A reply to a question: that question, of that agent.
+        let question = replied.and_then(|m| self.told.borrow().iter().find(|(_, (told, _))| *told == Some(m)).map(|(key, _)| *key));
+        if let Some((id, serial)) = question
+            && let Some(agent) = self.agent(id)
+            && agent.asking(serial).is_some_and(|a| a.is_form)
+        {
+            if agent.write_in_form(serial, text) {
+                self.react(message);
+                self.say("Written in. Press Send on the question to answer.", About::Nothing);
+            } else {
+                self.say("This question takes no answer of your own here: pick an option (or answer it in loom).", About::Nothing);
+            }
+            return;
+        }
+        let target = question.map(|(id, _)| id).or_else(|| replied.and_then(|m| self.about.borrow().get(&m).copied())).or(self.talking_to.get());
         let Some(agent) = target.and_then(|id| self.agent(id)) else {
             self.list();
             return;
         };
-        // A reply to a question form: the text is its "Other" answer.
-        let form = replied.and_then(|m| {
-            self.told.borrow().iter().find(|(_, (told, _))| *told == Some(m)).map(|((_, serial), _)| *serial)
-        });
-        if let Some(serial) = form.filter(|s| agent.asking(*s).is_some_and(|a| a.is_form)) {
-            if agent.write_in_form(serial, text) {
-                self.react(message);
-                self.say("Written in. Press Send on the question to answer.", None, About::Nothing);
-            } else {
-                self.say("That question has no place for your own words: pick an option.", None, About::Nothing);
-            }
-            return;
-        }
         // A shell command would run here unasked: only from the window.
         if text.starts_with('!') {
-            self.say("! commands run only from loom itself.", None, About::Nothing);
+            self.say("! commands run only from loom itself.", About::Nothing);
             return;
         }
         self.talking_to.set(Some(agent.id));
@@ -332,7 +397,7 @@ impl Bot {
         let Some(app) = self.app.borrow().upgrade() else { return };
         let agents = app.agents_listed();
         if agents.is_empty() {
-            self.say("No agents open in loom.", None, About::Nothing);
+            self.say("No agents open in loom.", About::Nothing);
             return;
         }
         let mut lines = vec!["Your agents (tap one to talk to it):".to_owned()];
@@ -343,7 +408,19 @@ impl Bot {
             let current = if self.talking_to.get() == Some(agent.id) { " ←" } else { "" };
             keyboard.push(json!([{ "text": format!("{mark} {}{current}", clip(&agent.title(), 40)), "callback_data": format!("a:{}", agent.id) }]));
         }
-        self.say(&lines.join("\n"), Some(Value::Array(keyboard)), About::Nothing);
+        self.ask(&lines.join("\n"), Value::Array(keyboard), About::Nothing);
+    }
+
+    /// Answers a question from here: `answer` runs with "answered in loom" held off for it.
+    /// True if it was answered (it is then no longer told).
+    fn answer_here(&self, agent: &Agent, serial: u64, answer: impl FnOnce() -> bool) -> bool {
+        self.answering.set(Some((agent.id, serial)));
+        let answered = answer();
+        self.answering.set(None);
+        if answered {
+            self.told.borrow_mut().remove(&(agent.id, serial));
+        }
+        answered
     }
 
     fn pressed(self: &Rc<Self>, query: &Value) {
@@ -352,84 +429,77 @@ impl Bot {
         let parts: Vec<&str> = data.split(':').collect();
         let number = |i: usize| parts.get(i).and_then(|p| p.parse::<u64>().ok());
         let agent = number(1).and_then(|id| self.agent(id as u32));
+        let serial = number(2).unwrap_or(0);
         let mut answer = String::new();
-        match (parts.first().copied(), agent) {
+        // The question's message, answered: its buttons go.
+        let done = |agent: &Agent, answered: &str, asking: &Asking| {
+            if let Some(message) = message {
+                self.edit(message, &format!("{}\n\n{answered}", question_text(&agent.title(), asking)), None);
+            }
+        };
+        match (parts.first().copied(), &agent) {
             (_, None) => answer = "That agent is closed.".to_owned(),
             (Some("a"), Some(agent)) => {
                 self.talking_to.set(Some(agent.id));
-                let (mark, state) = describe(&agent);
+                let (mark, state) = describe(agent);
                 let mut text = format!("{mark} Talking to {} ({state}). Your messages go to it.", agent.title());
                 if let Some(last) = agent.chat.last_reply() {
                     text.push_str(&format!("\n\nLast reply:\n{last}"));
                 }
-                self.say(&text, None, About::Agent(agent.id));
+                self.say(&text, About::Agent(agent.id));
+                // Questions not told yet (those told keep their message).
                 for serial in agent.open_questions() {
-                    self.told.borrow_mut().remove(&(agent.id, serial));
-                    self.tell(&agent, serial);
+                    self.tell(agent, serial);
                 }
             }
             (Some("q"), Some(agent)) => {
-                let (serial, option) = (number(2).unwrap_or(0), number(3).unwrap_or(0) as usize);
+                let option = number(3).unwrap_or(0) as usize;
                 let asking = agent.asking(serial);
-                let picked = asking.as_ref().and_then(|a| a.options.get(option)).map(|(name, kind)| (name.clone(), kind.clone()));
+                let picked = asking.as_ref().and_then(|a| a.options.get(option)).cloned();
                 match (asking, picked) {
                     (Some(asking), Some((name, kind))) if kind != "allow_always" => {
-                        // Forgotten first: answering it says "changed", which would edit it as answered in loom.
-                        self.told.borrow_mut().remove(&(agent.id, serial));
-                        agent.answer_serial(serial, option);
-                        if let Some(message) = message {
-                            self.edit(message, &format!("{}\n\n→ {name}", question_text(&agent, &asking)), None);
+                        if self.answer_here(agent, serial, || agent.answer_serial(serial, option)) {
+                            done(agent, &format!("→ {name}"), &asking);
+                            answer = name;
+                        } else {
+                            answer = "Already answered.".to_owned();
                         }
-                        answer = name;
                     }
                     (None, _) => answer = "Already answered.".to_owned(),
                     _ => answer = "Not from Telegram.".to_owned(),
                 }
             }
             (Some("f"), Some(agent)) => {
-                let serial = number(2).unwrap_or(0);
                 let (field, option) = (number(3).unwrap_or(0) as usize, number(4).unwrap_or(0) as usize);
                 if !agent.pick_in_form(serial, field, option) {
                     answer = "Already answered.".to_owned();
                 } else if let Some(asking) = agent.asking(serial) {
                     // One question, one answer: no need for Send.
                     let one = asking.fields.len() == 1 && !asking.fields[0].2;
-                    // Forgotten before it is answered (see "q"), and told again if it can't be.
-                    let told = if one { self.told.borrow_mut().remove(&(agent.id, serial)) } else { None };
-                    if one && agent.send_form_serial(serial).is_ok() {
-                        if let Some(message) = message {
-                            self.edit(message, &format!("{}\n\n{}", question_text(&agent, &asking), picked(&asking)), None);
-                        }
+                    if one && self.answer_here(agent, serial, || agent.send_form_serial(serial).is_ok()) {
+                        done(agent, &asking.summary, &asking);
+                    } else if let Some(message) = message {
+                        self.edit(message, &question_text(&agent.title(), &asking), Some(keyboard(agent, serial, &asking)));
+                    }
+                }
+            }
+            (Some(what @ ("s" | "k")), Some(agent)) => match agent.asking(serial) {
+                // Sent empty from a phone is a slip more often than meant: Skip says that.
+                Some(asking) if what == "s" && asking.blank => answer = "Pick an answer first, or Skip.".to_owned(),
+                Some(asking) => {
+                    let mut problem = None;
+                    let answered = self.answer_here(agent, serial, || {
+                        let result = if what == "s" { agent.send_form_serial(serial) } else { agent.skip_form(serial) };
+                        result.map_err(|p| problem = Some(p)).is_ok()
+                    });
+                    if answered {
+                        done(agent, if what == "s" { &asking.summary } else { "→ Skipped" }, &asking);
                     } else {
-                        if let Some(told) = told {
-                            self.told.borrow_mut().insert((agent.id, serial), told);
-                        }
-                        if let Some(message) = message {
-                            self.edit(message, &question_text(&agent, &asking), Some(keyboard(&agent, serial, &asking)));
-                        }
+                        answer = problem.unwrap_or_default();
                     }
                 }
-            }
-            (Some(what @ ("s" | "k")), Some(agent)) => {
-                let serial = number(2).unwrap_or(0);
-                let asking = agent.asking(serial);
-                self.told.borrow_mut().remove(&(agent.id, serial));
-                let result = if what == "s" { agent.send_form_serial(serial) } else { agent.skip_form(serial) };
-                match (result, asking) {
-                    (Ok(()), Some(asking)) => {
-                        if let Some(message) = message {
-                            let done = if what == "s" { picked(&asking) } else { "→ Skipped".to_owned() };
-                            self.edit(message, &format!("{}\n\n{done}", question_text(&agent, &asking)), None);
-                        }
-                    }
-                    (Err(problem), Some(asking)) => {
-                        // Still open: it stays told.
-                        self.told.borrow_mut().insert((agent.id, serial), (message, question_text(&agent, &asking)));
-                        answer = problem;
-                    }
-                    _ => answer = "Already answered.".to_owned(),
-                }
-            }
+                None => answer = "Already answered.".to_owned(),
+            },
             _ => {}
         }
         let mut body = json!({ "callback_query_id": query["id"] });
@@ -445,9 +515,9 @@ impl Bot {
             return;
         }
         let Some(asking) = agent.asking(serial) else { return };
-        let text = question_text(agent, &asking);
+        let text = question_text(&agent.title(), &asking);
         self.told.borrow_mut().insert((agent.id, serial), (None, text.clone()));
-        self.say(&text, Some(keyboard(agent, serial, &asking)), About::Question(agent.id, serial));
+        self.ask(&text, keyboard(agent, serial, &asking), About::Question(agent.id, serial));
     }
 
     /// What happened to an agent, from the app. `looking`: the user has it in front of them
@@ -464,17 +534,18 @@ impl Bot {
             }
             Event::Done if !looking => {
                 let reply = agent.chat.last_reply().unwrap_or_else(|| "(no reply text)".to_owned());
-                self.say(&format!("✅ {} finished\n\n{reply}", agent.title()), None, About::Agent(agent.id));
+                self.say(&format!("✅ {} finished\n\n{reply}", agent.title()), About::Agent(agent.id));
             }
-            Event::Failed(why) if !looking => self.say(&format!("⚠️ {} stopped: {why}", agent.title()), None, About::Agent(agent.id)),
+            Event::Failed(why) if !looking => self.say(&format!("⚠️ {} stopped: {why}", agent.title()), About::Agent(agent.id)),
             Event::Changed => {
                 // Questions answered in loom: their buttons go.
                 let open = agent.open_questions();
+                let here = self.answering.get();
                 let gone: Vec<(u64, i64, String)> = self
                     .told
                     .borrow()
                     .iter()
-                    .filter(|((id, serial), _)| *id == agent.id && !open.contains(serial))
+                    .filter(|(key, _)| key.0 == agent.id && !open.contains(&key.1) && Some(**key) != here)
                     // Still on its way (no message yet): the edit happens when it is sent.
                     .filter_map(|((_, serial), (message, text))| Some((*serial, (*message)?, text.clone())))
                     .collect();
@@ -513,25 +584,8 @@ fn describe(agent: &Agent) -> (&'static str, &'static str) {
     }
 }
 
-/// "→ Colour: Blue", for a form once sent.
-fn picked(asking: &crate::agent::Asking) -> String {
-    let parts: Vec<String> = asking
-        .fields
-        .iter()
-        .filter_map(|(question, options, _, picked)| {
-            let chosen: Vec<&str> = options.iter().zip(picked).filter(|(_, p)| **p).map(|(o, _)| o.as_str()).collect();
-            (!chosen.is_empty()).then(|| format!("{question}: {}", chosen.join(", ")))
-        })
-        .collect();
-    if parts.is_empty() { "→ Sent".to_owned() } else { format!("→ {}", parts.join(" · ")) }
-}
-
-fn question_text(agent: &Agent, asking: &crate::agent::Asking) -> String {
-    let mut text = if asking.is_form {
-        format!("❓ {} asks:\n{}", agent.title(), asking.title)
-    } else {
-        format!("🟠 {} wants to: {}", agent.title(), asking.title)
-    };
+fn question_text(agent: &str, asking: &Asking) -> String {
+    let mut text = if asking.is_form { format!("❓ {agent} asks:\n{}", asking.title) } else { format!("🟠 {agent} wants to: {}", asking.title) };
     if let Some(detail) = asking.detail.as_deref().filter(|d| !d.trim().is_empty() && d.trim() != asking.title.trim()) {
         text.push_str(&format!("\n\n{}", clip(detail.trim(), 2500)));
     }
@@ -545,7 +599,7 @@ fn question_text(agent: &Agent, asking: &crate::agent::Asking) -> String {
     text
 }
 
-fn keyboard(agent: &Agent, serial: u64, asking: &crate::agent::Asking) -> Value {
+fn keyboard(agent: &Agent, serial: u64, asking: &Asking) -> Value {
     let id = agent.id;
     let mut rows = Vec::new();
     if asking.is_form {
@@ -621,50 +675,65 @@ fn client(timeout: u64) -> ureq::Agent {
     ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(timeout))).http_status_as_error(false).build().into()
 }
 
-/// One Bot API call: its result, or what went wrong (never with the token in it).
-fn request(client: &ureq::Agent, token: &str, method: &str, body: &Value) -> Result<Value, (String, bool)> {
-    let url = format!("{}/bot{token}/{method}", api());
-    let hide = |e: String| e.replace(token, "…");
-    let mut response = client
-        .post(&url)
-        .header("content-type", "application/json")
-        .send(body.to_string())
-        .map_err(|e| (format!("Can't reach Telegram: {}", hide(e.to_string())), false))?;
-    let status = response.status().as_u16();
-    let text = response.body_mut().read_to_string().map_err(|e| (hide(e.to_string()), false))?;
-    let value: Value = serde_json::from_str(&text).map_err(|_| (format!("Telegram answered {status}."), false))?;
-    if value["ok"].as_bool() == Some(true) {
-        Ok(value["result"].clone())
-    } else {
-        let why = value["description"].as_str().unwrap_or("refused").to_owned();
-        // A wrong token never gets better by asking again.
-        Err((format!("Telegram: {why}"), status == 401 || status == 404))
-    }
+/// Why a call failed (never with the token in it).
+struct Failure {
+    why: String,
+    /// A wrong token: asking again won't help.
+    fatal: bool,
+    /// Not delivered for sure (no connection made): safe to send again.
+    unsent: bool,
+    /// Another poll is still running (one being stopped): wait it out.
+    conflict: bool,
 }
 
-fn poll(token: &str, generation: &AtomicU64, mine: u64, to_main: &async_channel::Sender<In>) {
+/// One Bot API call: its result, or what went wrong.
+fn request(client: &ureq::Agent, token: &str, method: &str, body: &Value) -> Result<Value, Failure> {
+    let url = format!("{}/bot{token}/{method}", api());
+    let failure = |why: String, unsent: bool| Failure { why: why.replace(token, "…"), fatal: false, unsent, conflict: false };
+    let mut response = client.post(&url).header("content-type", "application/json").send(body.to_string()).map_err(|e| {
+        let unsent = matches!(e, ureq::Error::ConnectionFailed | ureq::Error::HostNotFound);
+        failure(format!("Can't reach Telegram: {e}"), unsent)
+    })?;
+    let status = response.status().as_u16();
+    let text = response.body_mut().read_to_string().map_err(|e| failure(format!("Can't reach Telegram: {e}"), false))?;
+    let value: Value = serde_json::from_str(&text).map_err(|_| failure(format!("Telegram answered {status}."), false))?;
+    if value["ok"].as_bool() == Some(true) {
+        return Ok(value["result"].clone());
+    }
+    let why = value["description"].as_str().unwrap_or("refused");
+    Err(Failure { fatal: status == 401 || status == 404, conflict: status == 409, ..failure(format!("Telegram: {why}"), false) })
+}
+
+/// Waits for updates. `next`: the update to ask for, shared with the poll before and after
+/// this one (a restart neither skips nor repeats any).
+fn poll(token: &str, generation: &AtomicU64, mine: u64, next: &AtomicI64, to_main: &async_channel::Sender<In>) {
     let live = || generation.load(Ordering::SeqCst) == mine;
     let client = client(40);
     let mut offset: Option<i64> = None;
     let (mut name, mut down) = (String::new(), false);
     while live() {
-        // First who it is, and past what was sent while loom was closed: an old answer or
-        // message is not acted on hours later.
         if offset.is_none() {
             let me = request(&client, token, "getMe", &json!({})).and_then(|me| {
+                let known = next.load(Ordering::SeqCst);
+                if known > 0 {
+                    return Ok((me, known));
+                }
+                // The first start: past what was sent while loom was closed, so an old answer
+                // or message is not acted on hours later.
                 let last = request(&client, token, "getUpdates", &json!({ "offset": -1, "timeout": 0 }))?;
-                let next = last.as_array().and_then(|u| u.last()).and_then(|u| u["update_id"].as_i64()).map_or(0, |id| id + 1);
-                Ok((me, next))
+                let first = last.as_array().and_then(|u| u.last()).and_then(|u| u["update_id"].as_i64()).map_or(0, |id| id + 1);
+                Ok((me, first))
             });
             match me {
-                Ok((me, next)) => {
-                    offset = Some(next);
+                Ok((me, first)) => {
+                    offset = Some(first);
                     name = me["username"].as_str().unwrap_or("bot").to_owned();
                     let _ = to_main.send_blocking(In::Online(name.clone()));
                 }
-                Err((why, fatal)) => {
-                    let _ = to_main.send_blocking(In::Problem(why));
-                    if fatal {
+                Err(failure) if failure.conflict => pause(&live, 3),
+                Err(failure) => {
+                    let _ = to_main.send_blocking(In::Problem(failure.why));
+                    if failure.fatal {
                         return;
                     }
                     pause(&live, 15);
@@ -675,21 +744,28 @@ fn poll(token: &str, generation: &AtomicU64, mine: u64, to_main: &async_channel:
         let body = json!({ "offset": offset, "timeout": 25, "allowed_updates": ["message", "callback_query"] });
         match request(&client, token, "getUpdates", &body) {
             Ok(updates) => {
+                // Stopped meanwhile: these are left for the poll after this one.
+                if !live() {
+                    return;
+                }
                 if std::mem::take(&mut down) {
                     let _ = to_main.send_blocking(In::Online(name.clone()));
                 }
                 for update in updates.as_array().into_iter().flatten() {
                     if let Some(id) = update["update_id"].as_i64() {
                         offset = Some(id + 1);
+                        next.store(id + 1, Ordering::SeqCst);
                     }
-                    if !live() || to_main.send_blocking(In::Update(update.clone())).is_err() {
+                    if to_main.send_blocking(In::Update(update.clone())).is_err() {
                         return;
                     }
                 }
             }
-            Err((why, fatal)) => {
-                let _ = to_main.send_blocking(In::Problem(why));
-                if fatal {
+            // The poll before this one, not stopped yet: it gives up within seconds.
+            Err(failure) if failure.conflict => pause(&live, 3),
+            Err(failure) => {
+                let _ = to_main.send_blocking(In::Problem(failure.why));
+                if failure.fatal {
                     return;
                 }
                 pause(&live, 10);
@@ -715,10 +791,12 @@ fn send(token: &str, generation: &AtomicU64, mine: u64, calls: &async_channel::R
         if generation.load(Ordering::SeqCst) != mine {
             return;
         }
-        // A dropped connection gets one more try; Telegram saying no does not.
+        // One more try when it surely did not arrive, or when twice does no harm (all but a
+        // new message); Telegram saying no is final.
         let mut result = request(&client, token, call.method, &call.body);
-        if let Err((why, _)) = &result
-            && why.starts_with("Can't reach")
+        if let Err(failure) = &result
+            && failure.why.starts_with("Can't reach")
+            && (failure.unsent || call.method != "sendMessage")
         {
             std::thread::sleep(Duration::from_secs(2));
             result = request(&client, token, call.method, &call.body);
@@ -730,9 +808,9 @@ fn send(token: &str, generation: &AtomicU64, mine: u64, calls: &async_channel::R
                 }
             }
             // An edit that changes nothing, or of a message too old: not worth a word.
-            Err((why, _)) if why.contains("message is not modified") || why.contains("message to edit not found") => {}
-            Err((why, _)) => {
-                let _ = to_main.send_blocking(In::Unsent(why));
+            Err(failure) if failure.why.contains("message is not modified") || failure.why.contains("message to edit not found") => {}
+            Err(failure) => {
+                let _ = to_main.send_blocking(In::Unsent(failure.why));
             }
         }
     }

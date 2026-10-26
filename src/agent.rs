@@ -94,8 +94,12 @@ pub struct Asking {
     /// A form's choices: (question, option names, several allowed, which are picked).
     pub fields: Vec<(String, Vec<String>, bool, Vec<bool>)>,
     pub is_form: bool,
-    /// A form with a text field: an answer can be written.
+    /// A form with one text field: an answer of one's own can be written.
     pub writable: bool,
+    /// A form as filled in so far ("→ Colour: Blue · Other: …").
+    pub summary: String,
+    /// A form with nothing filled in yet.
+    pub blank: bool,
 }
 
 /// The latest repo's status as last read (None: git could not), and when.
@@ -1288,6 +1292,8 @@ impl Agent {
             fields: question.form.as_ref().map(|f| f.choices()).unwrap_or_default(),
             is_form: question.form.is_some(),
             writable: question.form.as_ref().is_some_and(|f| f.writable()),
+            summary: question.form.as_ref().map(|f| f.summary()).unwrap_or_default(),
+            blank: question.form.as_ref().is_some_and(|f| f.content().is_ok_and(|c| c.as_object().is_none_or(|o| o.is_empty()))),
         })
     }
 

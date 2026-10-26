@@ -93,6 +93,8 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
         }
         let temporary = file.with_extension("json.tmp");
         // It may hold the bot token: readable by its owner only.
+        // A left-over one could be readable by others: made anew.
+        let _ = std::fs::remove_file(&temporary);
         let written = {
             use std::io::Write;
             use std::os::unix::fs::OpenOptionsExt;

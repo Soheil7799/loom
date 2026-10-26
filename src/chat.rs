@@ -2418,12 +2418,16 @@ impl FormCard {
         true
     }
 
+    /// One text field (more, and a written answer could not say which it is for).
     pub fn writable(&self) -> bool {
-        self.fields.iter().any(|f| matches!(f, Field::Text { .. }))
+        self.fields.iter().filter(|f| matches!(f, Field::Text { .. })).count() == 1
     }
 
-    /// `text` in the first text field (false if it has none).
+    /// `text` in its text field (false unless it has exactly one).
     pub fn write(&self, text: &str) -> bool {
+        if !self.writable() {
+            return false;
+        }
         let Some(Field::Text { entry, .. }) = self.fields.iter().find(|f| matches!(f, Field::Text { .. })) else { return false };
         entry.set_text(text);
         true

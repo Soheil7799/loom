@@ -1038,11 +1038,6 @@ impl App {
         self.agents_in_order()
     }
 
-    /// The open agents in sidebar order (for the test hooks).
-    pub fn agents_for_tests(&self) -> Vec<Rc<Agent>> {
-        self.agents_in_order()
-    }
-
     fn agent_by_id(&self, id: u32) -> Option<Rc<Agent>> {
         self.agents.borrow().iter().find(|a| a.id == id).cloned()
     }
