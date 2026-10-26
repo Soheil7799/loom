@@ -65,6 +65,7 @@ impl Overview {
         let cards_scroller = gtk::ScrolledWindow::builder().child(&page).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).hexpand(true).build();
         // The scheduled prompts: a column of their own on the right, like a sidebar.
         let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        side.set_vexpand(true);
         side.add_css_class("overview-side");
         let heading = gtk::Label::builder().label("SCHEDULED PROMPTS").xalign(0.0).build();
         heading.add_css_class("overview-heading");

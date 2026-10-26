@@ -85,6 +85,8 @@ pub struct App {
     pending_pin: RefCell<Option<(Rc<Agent>, Rc<Agent>)>>,
     /// An overview refresh is due (several changes at once make one).
     overview_due: Cell<bool>,
+    /// The files panel was open when the overview was shown (it opens again with an agent).
+    files_hidden_for_overview: Cell<bool>,
     /// Each project's first and last sidebar rows (where a drop line shows).
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// The Telegram bot (off unless switched on).
@@ -392,6 +394,7 @@ impl App {
             toast_timeout: RefCell::default(),
             pending_pin: RefCell::default(),
             overview_due: Cell::new(false),
+            files_hidden_for_overview: Cell::new(false),
             project_edges: RefCell::default(),
         });
         this.wire_toast(&toast_go, &toast_close);
@@ -1237,6 +1240,9 @@ impl App {
     pub fn focus(self: &Rc<Self>, agent: &Rc<Agent>) {
         crate::log::debug!("app", "focus agent {} ({})", agent.id, agent.title());
         agent.mark_used();
+        if self.files_hidden_for_overview.take() {
+            self.files.root.set_visible(true);
+        }
         let old = self.focused.borrow().clone();
         if let Some(old) = old.filter(|old| !Rc::ptr_eq(old, agent)) {
             old.focused.set(false);
@@ -1639,6 +1645,11 @@ impl App {
             *self.previous.borrow_mut() = Some(old);
         }
         self.chat_stack.set_visible_child_name("overview");
+        // The files panel is an agent's: closed here, back as it was when an agent is opened.
+        if self.files.root.is_visible() {
+            self.files_hidden_for_overview.set(true);
+            self.files.root.set_visible(false);
+        }
         self.fill_overview();
         self.mark_active();
         self.refresh_sidebar();

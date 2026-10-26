@@ -339,8 +339,9 @@ button.editor-close { min-width: 26px; min-height: 26px; padding: 0; border-radi
 .crew .crew-name { font-weight: 600; }
 .crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
 .overview { padding: 24px 24px 32px 24px; }
-.overview-side { padding: 24px 16px; }
-.overview-side-scroller { background: @sidebar_bg_color; border-left: 1px solid @loom_line; }
+/* The schedules: a soft card in the overview (as the sidebar's projects), no edge line. */
+.overview-side { margin: 16px 16px 16px 0; padding: 18px 16px; border-radius: 12px; background: alpha(@window_fg_color, 0.05); }
+.overview-side-scroller { background: none; border: none; }
 .overview-title { font-size: 1.6em; font-weight: 700; }
 .overview-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 8px; }
 .overview-cards flowboxchild { padding: 0; border-radius: 10px; }
