@@ -6,6 +6,7 @@
 @define-color loom_warn #ffcc66;
 @define-color loom_err #f28779;
 @define-color loom_run #73b8ff;
+@define-color loom_shell #c39bff;
 @define-color loom_line alpha(@window_fg_color, 0.07);
 
 window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
@@ -329,3 +330,7 @@ entry.plan-comment { margin: 2px 32px 6px 0; }
 .aside-title { font-weight: 600; }
 .crew-glyph.requires_action { color: @loom_wait; }
 .crew-glyph.idle { color: @loom_ok; }
+.composer.shell-mode, .composer.shell-mode:focus-within { border-color: alpha(@loom_shell, 0.75); background: alpha(@loom_shell, 0.06); }
+.shell-badge { font-size: 0.8em; font-weight: 700; padding: 1px 8px; border-radius: 99px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
+.tool-card.kind-shell { background: alpha(@loom_shell, 0.05); border-left: 2px solid alpha(@loom_shell, 0.7); border-radius: 4px 8px 8px 4px; margin: 2px 0; }
+.tool-card.kind-shell .kind { color: @loom_shell; opacity: 0.9; }

@@ -61,6 +61,9 @@ pub struct Chat {
     placeholder: gtk::Label,
     send: gtk::Button,
     working: gtk::Label,
+    /// The input box, and its "Shell mode" badge (text starting with !).
+    composer: gtk::Box,
+    shell_badge: gtk::Label,
     working_since: Cell<Option<std::time::Instant>>,
     latest: gtk::Button,
     /// The agent's folder, and its files once listed (for @ mentions).
@@ -396,6 +399,10 @@ impl Chat {
             .build();
         toolbar.append(&attach);
         toolbar.append(&pickers_scroller);
+        let shell_badge = gtk::Label::builder().label("Shell mode").visible(false).valign(gtk::Align::Center).build();
+        shell_badge.add_css_class("shell-badge");
+        shell_badge.set_tooltip_text(Some("Runs here, as you typed it. Claude sees what it printed with your next message, as in Claude Code."));
+        toolbar.append(&shell_badge);
         toolbar.append(&working);
         toolbar.append(&send);
 
@@ -447,6 +454,8 @@ impl Chat {
             placeholder,
             send: send.clone(),
             working,
+            composer: composer.clone(),
+            shell_badge,
             working_since: Cell::new(None),
             latest: latest.clone(),
             cwd: RefCell::default(),
@@ -850,6 +859,14 @@ impl Chat {
             if let Some(chat) = weak.upgrade() {
                 chat.placeholder.set_visible(buffer.char_count() == 0);
                 chat.update_completion();
+                // "!" first: shell mode, as in Claude Code (a purple box that says so).
+                let shell = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).trim_start().starts_with('!');
+                chat.shell_badge.set_visible(shell);
+                if shell {
+                    chat.composer.add_css_class("shell-mode");
+                } else {
+                    chat.composer.remove_css_class("shell-mode");
+                }
             }
         });
         let weak = Rc::downgrade(self);

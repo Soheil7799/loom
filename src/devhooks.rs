@@ -110,6 +110,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             collect(app.window.upcast_ref(), &|w| w.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l == argument), &mut found);
             found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
         }
+        "type" => app.focused_agent().ok_or("no agent")?.chat.input.buffer().set_text(argument),
         "plancomment" => {
             let entry = find(app.window.upcast_ref(), &|w| w.has_css_class("plan-comment")).and_downcast::<gtk::Entry>().ok_or("no comment field")?;
             entry.set_text(argument);

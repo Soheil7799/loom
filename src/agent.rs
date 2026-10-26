@@ -941,7 +941,7 @@ impl Agent {
         self.shells.set(n);
         let id = format!("shell-{n}");
         self.chat.tool(&json!({
-            "toolCallId": id, "title": format!("! {command}"), "kind": "execute",
+            "toolCallId": id, "title": command, "kind": "shell",
             "status": "in_progress", "content": [{ "type": "terminal" }]
         }));
         self.chat.open_tool(&id);
@@ -1070,7 +1070,7 @@ impl Agent {
                             clip(&stdout),
                             clip(&stderr)
                         ));
-                        agent.chat.notice("Claude sees this with your next message.", "dim");
+                        agent.chat.notice("Not sent on its own: Claude sees this output with your next message (as in Claude Code).", "dim");
                         return;
                     }
                 }
