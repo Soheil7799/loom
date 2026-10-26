@@ -109,6 +109,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "overview" => app.show_overview(),
         "about" => crate::about::open(&app.window),
+        // The line a project dragged over project <n> (from 1) shows: dropline:<n>:before|after.
+        "dropline" => {
+            let (n, side) = argument.split_once(':').ok_or("dropline:<n>:before|after")?;
+            app.drop_line_for_tests(n.parse::<usize>().map_err(|_| "a number")?.saturating_sub(1), side == "before");
+        }
         // A schedule due now: a new conversation in <dir> that runs `!echo scheduled-ok`.
         "schedtest" => app.add_schedule_for_tests(PathBuf::from(argument), "!echo scheduled-ok"),
         "schedule" => {

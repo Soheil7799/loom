@@ -85,6 +85,8 @@ pub struct App {
     pending_pin: RefCell<Option<(Rc<Agent>, Rc<Agent>)>>,
     /// An overview refresh is due (several changes at once make one).
     overview_due: Cell<bool>,
+    /// Each project's first and last sidebar rows (where a drop line shows).
+    project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// The Telegram bot (off unless switched on).
     bot: Rc<crate::telegram::Bot>,
 }
@@ -354,6 +356,7 @@ impl App {
             toast_timeout: RefCell::default(),
             pending_pin: RefCell::default(),
             overview_due: Cell::new(false),
+            project_edges: RefCell::default(),
         });
         this.wire_toast(&toast_go, &toast_close);
         this.wire_history();
@@ -2354,6 +2357,7 @@ impl App {
             self.list.remove(&row);
         }
         let mut rows = Vec::new();
+        let mut edges = HashMap::new();
         let focused = self.focused.borrow().clone();
         let projects = self.projects_in_order();
         let agents = self.agents_in_order();
@@ -2365,9 +2369,12 @@ impl App {
             if project.collapsed || mine.is_empty() {
                 header.add_css_class("alone");
             }
+            self.project_drop_zone(&header, &project.path, true);
             self.list.append(&header);
             rows.push(Row::Project(project.path.clone()));
+            let mut last = header.clone();
             if project.collapsed {
+                edges.insert(project.path.clone(), (header, last));
                 continue;
             }
             let count = mine.len();
@@ -2375,14 +2382,18 @@ impl App {
                 let row = agent_row(agent);
                 if i + 1 == count {
                     row.add_css_class("last");
+                    last = row.clone();
                 }
+                self.project_drop_zone(&row, &project.path, false);
                 self.list.append(&row);
                 if focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
                     self.list.select_row(Some(&row));
                 }
                 rows.push(Row::Agent(agent.clone()));
             }
+            edges.insert(project.path.clone(), (header, last));
         }
+        *self.project_edges.borrow_mut() = edges;
         if projects.is_empty() {
             let hint = gtk::Label::builder()
                 .label("No projects yet.\nCtrl+Shift+N starts an agent in a folder.")
@@ -2465,36 +2476,79 @@ impl App {
             source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&header))), 12, 12);
         });
         row.add_controller(source);
-        let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
-        let (weak, onto) = (Rc::downgrade(self), project.path.clone());
-        target.connect_drop(move |_, value, _, _| {
-            let Some(app) = weak.upgrade() else { return false };
-            let Some(from) = value.get::<String>().ok().and_then(|v| v.strip_prefix("loom-project:").map(PathBuf::from)) else { return false };
-            app.put_project(&from, &onto);
-            true
-        });
-        let shown = row.clone();
-        target.connect_enter(move |_, _, _| {
-            shown.add_css_class("drop-here");
-            gdk::DragAction::MOVE
-        });
-        let shown = row.clone();
-        target.connect_leave(move |_| shown.remove_css_class("drop-here"));
-        row.add_controller(target);
         row
     }
 
-    /// Project `from` moved to where `onto` is (`onto` and those after it move down; moved
-    /// down the list, it goes after `onto`).
-    fn put_project(self: &Rc<Self>, from: &Path, onto: &Path) {
+    /// A row of project `path` takes a dragged project: over the top half of its header, it
+    /// goes before this project; anywhere lower in it, after. A line shows where.
+    fn project_drop_zone(self: &Rc<Self>, row: &gtk::ListBoxRow, path: &Path, header: bool) {
+        let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+        let before = |row: &gtk::ListBoxRow, y: f64, header: bool| header && y < f64::from(row.height()) / 2.0;
+        let (weak, onto, zone) = (Rc::downgrade(self), path.to_owned(), row.clone());
+        target.connect_motion(move |_, _, y| {
+            if let Some(app) = weak.upgrade() {
+                app.show_drop_line(&onto, before(&zone, y, header));
+            }
+            gdk::DragAction::MOVE
+        });
+        let weak = Rc::downgrade(self);
+        target.connect_leave(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.clear_drop_line();
+            }
+        });
+        let (weak, onto, zone) = (Rc::downgrade(self), path.to_owned(), row.clone());
+        target.connect_drop(move |_, value, _, y| {
+            let Some(app) = weak.upgrade() else { return false };
+            app.clear_drop_line();
+            let Some(from) = value.get::<String>().ok().and_then(|v| v.strip_prefix("loom-project:").map(PathBuf::from)) else { return false };
+            app.put_project(&from, &onto, before(&zone, y, header));
+            true
+        });
+        row.add_controller(target);
+    }
+
+    /// The line where a dragged project would go: above project `path`'s card, or below it.
+    fn show_drop_line(&self, path: &Path, before: bool) {
+        self.clear_drop_line();
+        let edges = self.project_edges.borrow().get(path).cloned();
+        if let Some((first, last)) = edges {
+            if before {
+                first.add_css_class("drop-before");
+            } else {
+                last.add_css_class("drop-after");
+            }
+        }
+    }
+
+    pub fn drop_line_for_tests(&self, index: usize, before: bool) {
+        let path = self.projects_in_order().get(index).map(|p| p.path.clone());
+        if let Some(path) = path {
+            self.show_drop_line(&path, before);
+        }
+    }
+
+    fn clear_drop_line(&self) {
+        for (first, last) in self.project_edges.borrow().values() {
+            first.remove_css_class("drop-before");
+            last.remove_css_class("drop-after");
+        }
+    }
+
+    /// Project `from` moved just before or after project `onto`.
+    fn put_project(self: &Rc<Self>, from: &Path, onto: &Path, before: bool) {
         if from == onto {
             return;
         }
         {
             let mut projects = self.projects.borrow_mut();
-            let (Some(at), Some(to)) = (projects.iter().position(|p| p.path == from), projects.iter().position(|p| p.path == onto)) else { return };
+            let Some(at) = projects.iter().position(|p| p.path == from) else { return };
             let moved = projects.remove(at);
-            projects.insert(to, moved);
+            let Some(to) = projects.iter().position(|p| p.path == onto) else {
+                projects.insert(at, moved);
+                return;
+            };
+            projects.insert(if before { to } else { to + 1 }, moved);
         }
         self.refresh_sidebar();
         self.save();
