@@ -735,18 +735,28 @@ impl Chat {
         let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
         scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
         let weak = Rc::downgrade(self);
+        // At most twice a second (measuring a long conversation is a full layout pass), and
+        // logged at most once a minute.
+        let (checked, logged) = (Cell::new(None::<Instant>), Cell::new(None::<Instant>));
         scroll.connect_scroll(move |_, _, dy| {
             let Some(chat) = weak.upgrade() else { return glib::Propagation::Proceed };
             let adj = chat.scroller.vadjustment();
-            if dy > 0.0 && adj.value() >= adj.upper() - adj.page_size() - 2.0 {
+            if dy > 0.0
+                && adj.value() >= adj.upper() - adj.page_size() - 2.0
+                && checked.get().is_none_or(|t| t.elapsed() > Duration::from_millis(500))
+            {
+                checked.set(Some(Instant::now()));
                 let Some(clamp) = chat.list.parent() else { return glib::Propagation::Proceed };
                 let needed = f64::from(clamp.measure(gtk::Orientation::Vertical, clamp.width()).1);
                 if needed > adj.upper() + 1.0 {
                     let line = format!("{} upper={:.0} needed={needed:.0} value={:.0} page={:.0}\n", glib::DateTime::now_local().ok().and_then(|t| t.format_iso8601().ok()).unwrap_or_default(), adj.upper(), adj.value(), adj.page_size());
                     let path = crate::state::dir().join("scroll.log");
-                    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+                    if logged.get().is_none_or(|t| t.elapsed() > Duration::from_secs(60))
+                        && let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open(path)
+                    {
                         use std::io::Write;
                         let _ = file.write_all(line.as_bytes());
+                        logged.set(Some(Instant::now()));
                     }
                     clamp.queue_resize();
                     if let Some(viewport) = clamp.parent() {
@@ -1482,7 +1492,7 @@ impl Chat {
         } else {
             self.send.remove_css_class("stop");
             self.working.set_label("");
-            self.crew.borrow_mut().clear();
+            self.crew.borrow_mut().retain(|c| !c.guessed && c.ended.is_none());
             self.show_crew();
         }
         if since.is_some() && was.is_none() {
@@ -1508,7 +1518,7 @@ impl Chat {
 
     /// A quiet line under a finished turn: how long it took.
     pub fn turn_done(&self, seconds: u64) {
-        self.crew.borrow_mut().clear();
+        self.crew.borrow_mut().retain(|c| !c.guessed && c.ended.is_none());
         self.show_crew();
         self.group.take();
         *self.last.borrow_mut() = Last::None;
@@ -1846,6 +1856,7 @@ impl Chat {
                     if let Some(step) = step {
                         entry.step = step;
                     }
+                    entry.name = name;
                     entry.at = Instant::now();
                 }
                 None => crew.push(Crew { key: parent.to_owned(), name, step: step.unwrap_or_default(), at: Instant::now(), started: Instant::now(), state: Some("running".into()), ended: None, guessed: true }),
@@ -1889,11 +1900,7 @@ impl Chat {
             glyph.add_css_class(state);
             let who = gtk::Label::builder().label(&entry.name).xalign(0.0).ellipsize(pango::EllipsizeMode::End).max_width_chars(36).build();
             who.add_css_class("crew-name");
-            let doing = match state {
-                "requires_action" => "waiting for your answer".to_owned(),
-                "idle" => entry.step.clone(),
-                _ => entry.step.clone(),
-            };
+            let doing = if state == "requires_action" { "waiting for your answer".to_owned() } else { entry.step.clone() };
             let what = gtk::Label::builder().label(doing).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
             what.add_css_class("dim");
             let time = if entry.guessed {
@@ -2902,7 +2909,6 @@ impl ToolCard {
     }
 }
 
-/// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
 /// A row of the subagents strip.
 pub struct Crew {
     /// The subagent's session id, or (reported inside the main conversation) its task's tool call.
@@ -2920,6 +2926,7 @@ pub struct Crew {
     pub guessed: bool,
 }
 
+/// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
 /// One line: a multi-line command (a heredoc) shows its first line and "…"; the rest
 /// would spill over the card around it.
 pub(crate) fn tool_title(title: &str) -> String {
@@ -3077,20 +3084,41 @@ fn is_rtl(c: char) -> bool {
     matches!(c as u32, 0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF)
 }
 
-/// Whether most letters (outside markup tags and entities) are right-to-left; None: no letter.
+/// Whether most letters are right-to-left; None: no letter. Only words count: not markup,
+/// not inline code, and not paths, URLs or identifiers (a Persian sentence naming a file is
+/// still Persian).
 fn mostly_rtl(markup: &str) -> Option<bool> {
-    let (mut in_tag, mut in_entity) = (false, false);
+    // The text outside tags, without what code tags (<tt>, monospace spans) hold.
+    let mut text = String::new();
+    let mut open: Vec<bool> = Vec::new();
+    let mut rest = markup;
+    while let Some(start) = rest.find('<') {
+        if !open.contains(&true) {
+            text.push_str(&rest[..start]);
+        }
+        let Some(end) = rest[start..].find('>') else { break };
+        let tag = &rest[start + 1..start + end];
+        if tag.starts_with('/') {
+            open.pop();
+        } else if !tag.ends_with('/') {
+            open.push(tag.starts_with("tt") || tag.contains("font_family"));
+        }
+        rest = &rest[start + end + 1..];
+    }
+    if !open.contains(&true) {
+        text.push_str(rest);
+    }
     let (mut rtl, mut ltr) = (0usize, 0usize);
-    for c in markup.chars() {
-        match c {
-            '<' => in_tag = true,
-            '>' if in_tag => in_tag = false,
-            '&' if !in_tag => in_entity = true,
-            ';' if in_entity => in_entity = false,
-            _ if in_tag || in_entity => {}
-            c if is_rtl(c) => rtl += 1,
-            c if c.is_alphabetic() => ltr += 1,
-            _ => {}
+    for word in text.split_whitespace() {
+        if word.contains(['/', '\\', '_', '=', '@']) || word.contains("::") || word.contains("&amp;") {
+            continue;
+        }
+        for c in word.chars().filter(|c| c.is_alphabetic()) {
+            if is_rtl(c) {
+                rtl += 1;
+            } else {
+                ltr += 1;
+            }
         }
     }
     (rtl + ltr > 0).then_some(rtl > ltr)
@@ -3207,6 +3235,9 @@ mod tests {
         // An English reply quoting Persian stays left-to-right; Persian stays right-to-left.
         assert_eq!(super::one_direction("&laquo;قیمت&raquo; is the price of it"), "\u{200E}&laquo;قیمت&raquo; is the price of it");
         assert_eq!(super::one_direction("قیمت اخرین خرید for"), "\u{200F}قیمت اخرین خرید for");
+        // A path in a Persian sentence does not make it English.
+        assert!(super::one_direction("این فایل را ببین: /home/soheil/Projects/loom/src/chat.rs").starts_with('\u{200F}'));
+        assert!(super::one_direction("فایل <tt>src/app.rs</tt> و <tt>chat.rs</tt> را ببین").starts_with('\u{200F}'));
         assert_eq!(super::one_direction("123"), "123");
         assert_eq!(super::one_direction("cargo test\nnext"), "cargo test\nnext");
     }

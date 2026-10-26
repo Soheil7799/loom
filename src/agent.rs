@@ -106,9 +106,9 @@ pub struct Sub {
     at: Cell<Instant>,
     step: RefCell<String>,
     pub chat: Rc<Chat>,
-    /// Its launch in the main conversation (a card there), and what it was asked.
-    card: RefCell<Option<String>>,
-    asked: RefCell<String>,
+    /// Its launches in the main conversation (cards there): each card, what it asked, and
+    /// whether its answer came back.
+    cards: RefCell<Vec<(String, String, bool)>>,
 }
 
 struct Pending {
@@ -576,6 +576,7 @@ impl Agent {
         if let Some(session) = session {
             // The conversation comes back as updates; start from an empty view.
             self.chat.clear();
+            self.forget_subs();
             self.files.borrow_mut().clear();
             self.replaying.set(true);
             let mut params = self.session_params();
@@ -822,6 +823,7 @@ impl Agent {
             self.title.borrow_mut().clear();
         }
         self.chat.clear();
+        self.forget_subs();
         self.chat.set_plan(&Value::Null);
         self.emit(Event::Session);
         self.start();
@@ -1464,11 +1466,18 @@ impl Agent {
             at: Cell::new(Instant::now()),
             step: RefCell::default(),
             chat,
-            card: RefCell::default(),
-            asked: RefCell::default(),
+            cards: RefCell::default(),
         });
         self.subs.borrow_mut().push(sub.clone());
         sub
+    }
+
+    /// Thinking shown or hidden, in its subagents' conversations too.
+    pub fn set_show_thinking(&self, show: bool) {
+        self.chat.set_show_thinking(show);
+        for sub in self.subs.borrow().iter() {
+            sub.chat.set_show_thinking(show);
+        }
     }
 
     /// Shows subagent `id`'s conversation in place of the main one; false if no such one.
@@ -1484,9 +1493,10 @@ impl Agent {
         true
     }
 
-    /// The strip's row for `sub` (while a turn runs: a replay shows none).
+    /// The strip's row for `sub`: live, while the turn runs or the subagent does (a replay
+    /// shows none).
     fn show_sub(&self, sub: &Sub) {
-        if !self.turn.get() {
+        if self.replaying.get() || !(self.turn.get() || sub.ended.get().is_none()) {
             return;
         }
         self.chat.crew_set(crate::chat::Crew {
@@ -1501,22 +1511,32 @@ impl Agent {
         });
     }
 
-    /// Its launch card in the main conversation: what it was asked, and its answer when back.
+    /// Its launch cards in the main conversation: an answer goes to the oldest one waiting for
+    /// it; once the subagent has ended, none is left spinning.
     fn sub_card(&self, sub: &Sub, answer: Option<&str>) {
-        let Some(card) = sub.card.borrow().clone() else { return };
-        let status = match (sub.state.borrow().as_deref(), sub.ended.get()) {
-            (_, Some(_)) => "completed",
-            _ => "in_progress",
-        };
-        let mut text = format!("**Asked:** {}", sub.asked.borrow());
-        if let Some(answer) = answer {
-            text.push_str(&format!("\n\n**Answer:** {answer}"));
+        let ended = sub.ended.get().is_some();
+        let mut cards = sub.cards.borrow_mut();
+        if let Some(answer) = answer
+            && let Some(card) = cards.iter_mut().find(|c| !c.2)
+        {
+            card.2 = true;
+            let text = format!("**Asked:** {}\n\n**Answer:** {answer}", card.1);
+            self.chat.tool(&json!({
+                "toolCallId": card.0, "status": "completed",
+                "content": [{ "type": "content", "content": { "type": "text", "text": text } }]
+            }));
         }
-        let mut update = json!({ "toolCallId": card, "status": status });
-        if answer.is_some() || status == "in_progress" {
-            update["content"] = json!([{ "type": "content", "content": { "type": "text", "text": text } }]);
+        if ended {
+            for card in cards.iter() {
+                self.chat.tool(&json!({ "toolCallId": card.0, "status": "completed" }));
+            }
         }
-        self.chat.tool(&update);
+    }
+
+    /// No subagents (the conversation is read back, or cleared): their views go too.
+    fn forget_subs(&self) {
+        self.subs.borrow_mut().clear();
+        self.chat.show_main();
     }
 
     /// `subagent_update` on the main session: a subagent announced, or its state changed.
@@ -1554,15 +1574,18 @@ impl Agent {
         let (from, to) = (update["senderSessionId"].as_str(), update["recipientSessionId"].as_str());
         if let Some(to) = to.filter(|to| own.as_deref() != Some(*to)) {
             let sub = self.sub(to);
-            let id = update["messageId"].as_str().unwrap_or(to).to_owned();
-            *sub.asked.borrow_mut() = text.clone();
-            let first = sub.card.borrow().is_none();
-            *sub.card.borrow_mut() = Some(id.clone());
+            // Its own id, never the subagent's (that keys its row in the strip).
+            let n = sub.cards.borrow().len();
+            let id = update["messageId"].as_str().map_or_else(|| format!("{to}:launch-{n}"), str::to_owned);
+            let known = sub.cards.borrow().iter().any(|c| c.0 == id);
+            if !known {
+                sub.cards.borrow_mut().push((id.clone(), text.clone(), false));
+            }
             self.chat.tool(&json!({
                 "toolCallId": id, "title": format!("Subagent · {}", sub.title.borrow()), "kind": "think", "status": "in_progress",
                 "content": [{ "type": "content", "content": { "type": "text", "text": format!("**Asked:** {text}") } }]
             }));
-            if first {
+            if !known {
                 let weak = Rc::downgrade(self);
                 let key = sub.id.clone();
                 self.chat.tool_button(&id, "open", "Read this subagent's conversation", Rc::new(move || {

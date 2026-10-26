@@ -467,7 +467,7 @@ impl App {
             (s.text_scale * 100.0).round() / 100.0
         ));
         for agent in self.agents.borrow().iter() {
-            agent.chat.set_show_thinking(s.show_thinking);
+            agent.set_show_thinking(s.show_thinking);
         }
         crate::theme::refont(&s.terminal_font);
     }
