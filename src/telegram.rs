@@ -46,7 +46,16 @@ struct Call {
     method: &'static str,
     body: Value,
     about: About,
+    /// Formatted text's plain version, sent instead if Telegram can't read the formatting.
+    plain: Option<String>,
 }
+
+// The menu under the chat (a keyboard of Telegram's: each button sends its text).
+const AGENTS: &str = "🧭 Agents";
+const NEEDS: &str = "🟠 Needs me";
+const STOP: &str = "⏹ Stop";
+const LAST: &str = "📄 Last reply";
+const BACK: &str = "⬅ Back";
 
 pub struct Bot {
     app: RefCell<Weak<App>>,
@@ -74,6 +83,10 @@ pub struct Bot {
     told: RefCell<HashMap<(u32, u64), (Option<i64>, String)>>,
     /// The question being answered from here (not "answered in loom").
     answering: Cell<Option<(u32, u64)>>,
+    /// The agents keyboard's buttons: their text → the agent.
+    labels: RefCell<HashMap<String, u32>>,
+    /// The agent whose "typing…" shows (while it works on a message from here).
+    typing: Cell<Option<u32>>,
 }
 
 thread_local! {
@@ -131,6 +144,8 @@ impl Bot {
             about: RefCell::default(),
             told: RefCell::default(),
             answering: Cell::new(None),
+            labels: RefCell::default(),
+            typing: Cell::new(None),
         })
     }
 
@@ -202,16 +217,161 @@ impl Bot {
     }
 
     fn call(&self, method: &'static str, body: Value, about: About) {
-        crate::log::debug!("telegram", "→ {method}"); 
+        self.call_with(method, body, about, None);
+    }
+
+    fn call_with(&self, method: &'static str, body: Value, about: About, plain: Option<String>) {
+        crate::log::debug!("telegram", "→ {method}");
         if let Some(calls) = self.calls.borrow().as_ref() {
-            let _ = calls.send_blocking(Call { method, body, about });
+            let _ = calls.send_blocking(Call { method, body, about, plain });
         }
     }
 
+    /// A plain message, with the menu under it (its counts kept current).
     fn say(&self, text: &str, about: About) {
-        for part in split(text) {
-            self.call("sendMessage", json!({ "chat_id": self.user.get(), "text": part, "link_preview_options": { "is_disabled": true } }), about);
+        let parts = split(text);
+        let last = parts.len().saturating_sub(1);
+        for (i, part) in parts.into_iter().enumerate() {
+            let mut body = json!({ "chat_id": self.user.get(), "text": part, "link_preview_options": { "is_disabled": true } });
+            if i == last {
+                body["reply_markup"] = self.menu();
+            }
+            self.call("sendMessage", body, about);
         }
+    }
+
+    /// `header` (plain), then Claude's Markdown `text` formatted as Telegram shows it: bold,
+    /// code, lists… (plain if Telegram can't read it).
+    fn say_markdown(&self, header: &str, text: &str, about: About) {
+        let parts = split_markdown(text);
+        let last = parts.len().saturating_sub(1);
+        for (i, part) in parts.into_iter().enumerate() {
+            let (formatted, plain) = if i == 0 && !header.is_empty() {
+                (format!("{}\n\n{}", escape(header), html(&part)), format!("{header}\n\n{part}"))
+            } else {
+                (html(&part), part)
+            };
+            let mut body = json!({ "chat_id": self.user.get(), "text": formatted, "parse_mode": "HTML", "link_preview_options": { "is_disabled": true } });
+            if i == last {
+                body["reply_markup"] = self.menu();
+            }
+            self.call_with("sendMessage", body, about, Some(plain));
+        }
+    }
+
+    /// The menu: agents, what needs you (how many), and for the agent written to: stop it,
+    /// its last reply. The input says who a message goes to.
+    fn menu(&self) -> Value {
+        let waiting: usize = self.app.borrow().upgrade().map_or(0, |app| app.agents_listed().iter().map(|a| a.open_questions().len()).sum());
+        let needs = if waiting > 0 { format!("{NEEDS} ({waiting})") } else { NEEDS.to_owned() };
+        let to = match self.talking_to.get().and_then(|id| self.agent(id)) {
+            Some(agent) => format!("To {}", agent.title()),
+            None => format!("Pick an agent: {AGENTS}"),
+        };
+        json!({
+            "keyboard": [[{ "text": AGENTS }, { "text": needs }], [{ "text": STOP }, { "text": LAST }]],
+            "resize_keyboard": true,
+            "is_persistent": true,
+            "input_field_placeholder": clip(&to, 64),
+        })
+    }
+
+    /// The agents as the keyboard (state, project, name), and Back.
+    fn agents_menu(&self) {
+        let Some(app) = self.app.borrow().upgrade() else { return };
+        let agents = app.agents_listed();
+        if agents.is_empty() {
+            self.say("No agents open in loom.", About::Nothing);
+            return;
+        }
+        let mut labels = self.labels.borrow_mut();
+        labels.clear();
+        let mut rows = Vec::new();
+        let mut lines = vec!["Tap an agent to talk to it:".to_owned()];
+        for agent in &agents {
+            let (mark, state) = describe(agent);
+            let project = app.project_label(&agent.project);
+            let mut label = clip(&format!("{mark} {project} · {}", agent.title()), 60);
+            // Two alike (same project and name): told apart.
+            if labels.contains_key(&label) {
+                label = format!("{label} ({})", agent.id);
+            }
+            labels.insert(label.clone(), agent.id);
+            rows.push(json!([{ "text": label }]));
+            let current = if self.talking_to.get() == Some(agent.id) { "  ← writing to" } else { "" };
+            lines.push(format!("{mark} {project} · {} — {state}{current}", agent.title()));
+        }
+        drop(labels);
+        rows.push(json!([{ "text": BACK }]));
+        let body = json!({
+            "chat_id": self.user.get(), "text": lines.join("\n"),
+            "reply_markup": { "keyboard": rows, "resize_keyboard": true, "is_persistent": true, "input_field_placeholder": "Pick an agent" },
+        });
+        self.call("sendMessage", body, About::Nothing);
+    }
+
+    /// Messages now go to `agent`: who it is, what it said last, what it asks.
+    fn pick(&self, agent: &Rc<Agent>) {
+        self.talking_to.set(Some(agent.id));
+        let (mark, state) = describe(agent);
+        let project = self.app.borrow().upgrade().map(|app| app.project_label(&agent.project)).unwrap_or_default();
+        let header = format!("{mark} {project} · {} — {state}. Your messages go to it.", agent.title());
+        match agent.chat.last_reply() {
+            Some(last) => self.say_markdown(&format!("{header}\n\nIts last reply:"), &last, About::Agent(agent.id)),
+            None => self.say(&header, About::Agent(agent.id)),
+        }
+        // Questions not told yet (those told keep their message).
+        for serial in agent.open_questions() {
+            self.tell(agent, serial);
+        }
+    }
+
+    /// Every open question: those already told pointed at again, the rest told.
+    fn needs_me(&self) {
+        let Some(app) = self.app.borrow().upgrade() else { return };
+        let mut any = false;
+        for agent in app.agents_listed() {
+            for serial in agent.open_questions() {
+                any = true;
+                let told = self.told.borrow().get(&(agent.id, serial)).and_then(|(message, _)| *message);
+                match told {
+                    Some(message) => {
+                        let body = json!({
+                            "chat_id": self.user.get(), "text": format!("🟠 {} is still waiting for this.", agent.title()),
+                            "reply_parameters": { "message_id": message, "allow_sending_without_reply": true },
+                            "reply_markup": self.menu(),
+                        });
+                        self.call("sendMessage", body, About::Agent(agent.id));
+                    }
+                    None => self.tell(&agent, serial),
+                }
+            }
+        }
+        if !any {
+            self.say("Nothing needs you right now.", About::Nothing);
+        }
+    }
+
+    /// "typing…" while `agent` works on what was sent from here (Telegram shows it 5 s a time).
+    fn typing(self: &Rc<Self>, agent: u32) {
+        if self.typing.replace(Some(agent)) == Some(agent) {
+            return;
+        }
+        let action = |bot: &Bot| bot.call("sendChatAction", json!({ "chat_id": bot.user.get(), "action": "typing" }), About::Nothing);
+        action(self);
+        let (weak, started) = (Rc::downgrade(self), std::time::Instant::now());
+        glib::timeout_add_seconds_local(4, move || {
+            let Some(bot) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let busy = bot.agent(agent).is_some_and(|a| a.status() == Status::Working);
+            if !bot.on() || bot.typing.get() != Some(agent) || !busy || started.elapsed().as_secs() > 30 * 60 {
+                if bot.typing.get() == Some(agent) {
+                    bot.typing.set(None);
+                }
+                return glib::ControlFlow::Break;
+            }
+            action(&bot);
+            glib::ControlFlow::Continue
+        });
     }
 
     /// One message (cut short if it must), with buttons.
@@ -241,9 +401,11 @@ impl Bot {
             In::Online(name) => {
                 let line = self.connected_line(&name);
                 set_state(&line);
+                // The menu under the chat replaces slash commands.
+                self.call("deleteMyCommands", json!({}), About::Nothing);
                 *self.online.borrow_mut() = Some(name);
                 if self.greet.take() && self.user.get() != 0 {
-                    self.say("Linked. loom now answers only this account. /agents lists your agents.", About::Nothing);
+                    self.say(&format!("Linked: loom now answers only this account. {AGENTS} below lists your agents."), About::Nothing);
                 }
             }
             In::Problem(problem) => {
@@ -351,12 +513,44 @@ impl Bot {
             return;
         };
         let command = text.split_whitespace().next().unwrap_or("").split('@').next().unwrap_or("");
-        if matches!(command, "/start" | "/agents" | "/list") {
-            self.list();
+        // The menu's buttons (and the commands of before, still understood).
+        if text == AGENTS || matches!(command, "/start" | "/agents" | "/list") {
+            self.agents_menu();
+            return;
+        }
+        if text == BACK {
+            self.say(HELP, About::Nothing);
             return;
         }
         if command == "/help" {
             self.say(HELP, About::Nothing);
+            return;
+        }
+        if text.starts_with(NEEDS) {
+            self.needs_me();
+            return;
+        }
+        let picked = self.labels.borrow().get(text).copied();
+        if let Some(agent) = picked.and_then(|id| self.agent(id)) {
+            self.pick(&agent);
+            return;
+        }
+        if text == STOP || text == LAST {
+            match self.talking_to.get().and_then(|id| self.agent(id)) {
+                None => self.agents_menu(),
+                Some(agent) if text == STOP => {
+                    if agent.is_busy() {
+                        agent.cancel();
+                        self.say(&format!("⏹ Stopped {}.", agent.title()), About::Agent(agent.id));
+                    } else {
+                        self.say(&format!("{} isn't working.", agent.title()), About::Agent(agent.id));
+                    }
+                }
+                Some(agent) => match agent.chat.last_reply() {
+                    Some(last) => self.say_markdown(&format!("📄 {}:", agent.title()), &last, About::Agent(agent.id)),
+                    None => self.say(&format!("{} hasn't replied yet.", agent.title()), About::Agent(agent.id)),
+                },
+            }
             return;
         }
         let replied = message["reply_to_message"]["message_id"].as_i64();
@@ -376,7 +570,7 @@ impl Bot {
         }
         let target = question.map(|(id, _)| id).or_else(|| replied.and_then(|m| self.about.borrow().get(&m).copied())).or(self.talking_to.get());
         let Some(agent) = target.and_then(|id| self.agent(id)) else {
-            self.list();
+            self.agents_menu();
             return;
         };
         // A shell command would run here unasked: only from the window.
@@ -384,9 +578,14 @@ impl Bot {
             self.say("! commands run only from loom itself.", About::Nothing);
             return;
         }
-        self.talking_to.set(Some(agent.id));
+        let new = self.talking_to.replace(Some(agent.id)) != Some(agent.id);
         agent.submit_with(text.to_owned(), Vec::new());
         self.react(message);
+        // Written to another agent by replying: the menu says so (who the input goes to).
+        if new {
+            self.say(&format!("Now writing to {}.", agent.title()), About::Agent(agent.id));
+        }
+        self.typing(agent.id);
     }
 
     /// 👍 on the message: it reached the agent.
@@ -398,24 +597,6 @@ impl Bot {
                 About::Nothing,
             );
         }
-    }
-
-    fn list(&self) {
-        let Some(app) = self.app.borrow().upgrade() else { return };
-        let agents = app.agents_listed();
-        if agents.is_empty() {
-            self.say("No agents open in loom.", About::Nothing);
-            return;
-        }
-        let mut lines = vec!["Your agents (tap one to talk to it):".to_owned()];
-        let mut keyboard = Vec::new();
-        for agent in &agents {
-            let (mark, state) = describe(agent);
-            lines.push(format!("{mark} {} · {} · {state}", agent.title(), app.project_label(&agent.project)));
-            let current = if self.talking_to.get() == Some(agent.id) { " ←" } else { "" };
-            keyboard.push(json!([{ "text": format!("{mark} {}{current}", clip(&agent.title(), 40)), "callback_data": format!("a:{}", agent.id) }]));
-        }
-        self.ask(&lines.join("\n"), Value::Array(keyboard), About::Nothing);
     }
 
     /// Answers a question from here: `answer` runs with "answered in loom" held off for it.
@@ -446,19 +627,8 @@ impl Bot {
         };
         match (parts.first().copied(), &agent) {
             (_, None) => answer = "That agent is closed.".to_owned(),
-            (Some("a"), Some(agent)) => {
-                self.talking_to.set(Some(agent.id));
-                let (mark, state) = describe(agent);
-                let mut text = format!("{mark} Talking to {} ({state}). Your messages go to it.", agent.title());
-                if let Some(last) = agent.chat.last_reply() {
-                    text.push_str(&format!("\n\nLast reply:\n{last}"));
-                }
-                self.say(&text, About::Agent(agent.id));
-                // Questions not told yet (those told keep their message).
-                for serial in agent.open_questions() {
-                    self.tell(agent, serial);
-                }
-            }
+            // A button of the old inline list.
+            (Some("a"), Some(agent)) => self.pick(agent),
             (Some("q"), Some(agent)) => {
                 let option = number(3).unwrap_or(0) as usize;
                 let asking = agent.asking(serial);
@@ -540,8 +710,15 @@ impl Bot {
                 }
             }
             Event::Done if !looking => {
-                let reply = agent.chat.last_reply().unwrap_or_else(|| "(no reply text)".to_owned());
-                self.say(&format!("✅ {} finished\n\n{reply}", agent.title()), About::Agent(agent.id));
+                if self.typing.get() == Some(agent.id) {
+                    self.typing.set(None);
+                }
+                let project = self.app.borrow().upgrade().map(|app| app.project_label(&agent.project)).unwrap_or_default();
+                let header = format!("✅ {project} · {} — done in {}", agent.title(), crate::chat::elapsed(agent.last_took.get()));
+                match agent.chat.last_reply() {
+                    Some(reply) => self.say_markdown(&header, &reply, About::Agent(agent.id)),
+                    None => self.say(&header, About::Agent(agent.id)),
+                }
             }
             Event::Failed(why) if !looking => self.say(&format!("⚠️ {} stopped: {why}", agent.title()), About::Agent(agent.id)),
             Event::Changed => {
@@ -575,9 +752,10 @@ impl Bot {
     }
 }
 
-const HELP: &str = "/agents: your agents; tap one to talk to it.\n\
-Write a message: it goes to the agent you picked, or to the one whose message you reply to.\n\
-Questions and permission requests come with buttons. \"Always allow\" is only offered in loom.";
+const HELP: &str = "🧭 Agents: pick the agent you write to. A reply to one of its messages goes to it too.\n\
+🟠 Needs me: every question waiting for you.\n\
+⏹ Stop and 📄 Last reply: for the agent you write to.\n\
+Questions and permission requests come with buttons; \"Always allow\" is only offered in loom.";
 
 fn describe(agent: &Agent) -> (&'static str, &'static str) {
     match agent.status() {
@@ -656,6 +834,148 @@ fn split(text: &str) -> Vec<String> {
         if line.chars().count() > PART {
             let chars: Vec<char> = line.chars().collect();
             for chunk in chars.chunks(PART) {
+                parts.push(chunk.iter().collect());
+            }
+        } else {
+            part.push_str(line);
+        }
+    }
+    if !part.trim().is_empty() || parts.is_empty() {
+        parts.push(part);
+    }
+    parts
+}
+
+fn escape(text: &str) -> String {
+    text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+}
+
+/// Claude's Markdown as the HTML Telegram takes (b, i, s, code, pre, a, blockquote): lists
+/// as bullets, tables as rows of cells.
+fn html(markdown: &str) -> String {
+    use pulldown_cmark::{CodeBlockKind, Event as Md, Options, Parser, Tag, TagEnd};
+    let mut out = String::new();
+    let mut lists: Vec<Option<u64>> = Vec::new();
+    let mut code_language = false;
+    let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
+    for event in Parser::new_ext(markdown, options) {
+        match event {
+            Md::Start(tag) => match tag {
+                Tag::Strong | Tag::Heading { .. } => out.push_str("<b>"),
+                Tag::Emphasis => out.push_str("<i>"),
+                Tag::Strikethrough => out.push_str("<s>"),
+                Tag::BlockQuote(_) => out.push_str("<blockquote>"),
+                Tag::CodeBlock(kind) => {
+                    let language = match &kind {
+                        CodeBlockKind::Fenced(info) => info.split_whitespace().next().unwrap_or("").to_owned(),
+                        CodeBlockKind::Indented => String::new(),
+                    };
+                    code_language = !language.is_empty();
+                    if code_language {
+                        out.push_str(&format!("<pre><code class=\"language-{}\">", escape(&language)));
+                    } else {
+                        out.push_str("<pre>");
+                    }
+                }
+                Tag::List(start) => {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    lists.push(start);
+                }
+                Tag::Item => {
+                    if !out.is_empty() && !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(&"   ".repeat(lists.len().saturating_sub(1)));
+                    match lists.last_mut() {
+                        Some(Some(n)) => {
+                            out.push_str(&format!("{n}. "));
+                            *n += 1;
+                        }
+                        _ => out.push_str("• "),
+                    }
+                }
+                Tag::Link { dest_url, .. } => out.push_str(&format!("<a href=\"{}\">", escape(&dest_url).replace('"', "&quot;"))),
+                _ => {}
+            },
+            Md::End(tag) => match tag {
+                TagEnd::Strong => out.push_str("</b>"),
+                TagEnd::Heading(_) => out.push_str("</b>\n\n"),
+                TagEnd::Emphasis => out.push_str("</i>"),
+                TagEnd::Strikethrough => out.push_str("</s>"),
+                TagEnd::Paragraph => out.push_str(if lists.is_empty() { "\n\n" } else { "\n" }),
+                TagEnd::BlockQuote(_) => {
+                    let trimmed = out.trim_end().len();
+                    out.truncate(trimmed);
+                    out.push_str("</blockquote>\n\n");
+                }
+                TagEnd::CodeBlock => {
+                    if out.ends_with('\n') {
+                        out.pop();
+                    }
+                    out.push_str(if code_language { "</code></pre>\n\n" } else { "</pre>\n\n" });
+                }
+                TagEnd::List(_) => {
+                    lists.pop();
+                    if lists.is_empty() {
+                        out.push('\n');
+                    }
+                }
+                TagEnd::Item => {
+                    if !out.ends_with('\n') {
+                        out.push('\n');
+                    }
+                }
+                TagEnd::Link => out.push_str("</a>"),
+                TagEnd::TableCell => out.push_str(" │ "),
+                TagEnd::TableHead | TagEnd::TableRow => {
+                    if out.ends_with(" │ ") {
+                        out.truncate(out.len() - " │ ".len());
+                    }
+                    out.push('\n');
+                }
+                TagEnd::Table => out.push('\n'),
+                _ => {}
+            },
+            Md::Text(text) => out.push_str(&escape(&text)),
+            Md::Code(code) => out.push_str(&format!("<code>{}</code>", escape(&code))),
+            Md::SoftBreak | Md::HardBreak => out.push('\n'),
+            Md::Rule => out.push_str("———\n\n"),
+            Md::TaskListMarker(done) => out.push_str(if done { "☑ " } else { "☐ " }),
+            Md::Html(text) | Md::InlineHtml(text) => out.push_str(&escape(&text)),
+            _ => {}
+        }
+    }
+    out.trim_end().to_owned()
+}
+
+/// Markdown in parts Telegram takes: cut at line ends, and a code block cut in two is closed
+/// at the end of one part and opened again at the start of the next.
+fn split_markdown(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut part = String::new();
+    let mut fence: Option<String> = None;
+    for line in text.split_inclusive('\n') {
+        if part.chars().count() + line.chars().count() > PART - 16 && !part.trim().is_empty() {
+            if fence.is_some() {
+                if !part.ends_with('\n') {
+                    part.push('\n');
+                }
+                part.push_str("```\n");
+            }
+            parts.push(std::mem::take(&mut part));
+            if let Some(open) = &fence {
+                part.push_str(open);
+                part.push('\n');
+            }
+        }
+        if line.trim_start().starts_with("```") {
+            fence = if fence.is_some() { None } else { Some(line.trim_end().to_owned()) };
+        }
+        if line.chars().count() > PART - 16 {
+            let chars: Vec<char> = line.chars().collect();
+            for chunk in chars.chunks(PART - 16) {
                 parts.push(chunk.iter().collect());
             }
         } else {
@@ -824,6 +1144,16 @@ fn send(token: &str, generation: &AtomicU64, mine: u64, calls: &async_channel::R
             }
             result = request(&client, token, call.method, &call.body);
         }
+        if let (Err(failure), Some(plain)) = (&result, &call.plain)
+            && failure.why.contains("can't parse entities")
+        {
+            let mut body = call.body.clone();
+            body["text"] = Value::String(plain.clone());
+            if let Some(body) = body.as_object_mut() {
+                body.remove("parse_mode");
+            }
+            result = request(&client, token, call.method, &body);
+        }
         match result {
             Ok(result) => {
                 if let Some(id) = result["message_id"].as_i64() {
@@ -851,6 +1181,25 @@ mod tests {
         assert!(parts.iter().all(|p| p.chars().count() <= PART));
         assert!(parts.iter().all(|p| p.ends_with('\n')));
         assert_eq!(parts.concat(), line.repeat(8));
+    }
+
+    #[test]
+    fn markdown_becomes_telegram_html() {
+        let out = html("# Title\n\nSome **bold**, `a<b>` and [link](https://x.y/?a=1&b=2).\n\n- one\n- two\n\n```rust\nfn main() {}\n```");
+        assert!(out.starts_with("<b>Title</b>"));
+        assert!(out.contains("<b>bold</b>"));
+        assert!(out.contains("<code>a&lt;b&gt;</code>"));
+        assert!(out.contains("<a href=\"https://x.y/?a=1&amp;b=2\">link</a>"));
+        assert!(out.contains("• one\n• two"));
+        assert!(out.ends_with("<pre><code class=\"language-rust\">fn main() {}</code></pre>"));
+    }
+
+    #[test]
+    fn a_code_block_cut_in_two_stays_code() {
+        let code = "x\n".repeat(PART);
+        let parts = split_markdown(&format!("```sh\n{code}```\n"));
+        assert!(parts.len() >= 2);
+        assert!(parts.iter().all(|p| p.starts_with("```sh") && p.trim_end().ends_with("```")));
     }
 
     #[test]

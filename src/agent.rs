@@ -206,6 +206,8 @@ pub struct Agent {
     pub last_active: Cell<Instant>,
     /// When a turn last ended (or the agent was opened): how long it has been quiet.
     pub last_turn: Cell<Instant>,
+    /// How long the last turn took (seconds).
+    pub last_took: Cell<u64>,
     pub focused: Cell<bool>,
     on_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, Event)>>>,
 }
@@ -253,6 +255,7 @@ impl Agent {
             unseen: Cell::new(false),
             last_active: Cell::new(Instant::now()),
             last_turn: Cell::new(Instant::now()),
+            last_took: Cell::new(0),
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
@@ -1313,6 +1316,7 @@ impl Agent {
                     agent.unseen.set(true);
                 }
                 agent.refresh_status();
+                agent.last_took.set(started.elapsed().as_secs());
                 agent.emit(Event::Done);
                 agent.send_next();
             },

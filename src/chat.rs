@@ -3078,7 +3078,7 @@ pub(crate) fn tool_title(title: &str) -> String {
 }
 
 /// "42s", "3m 05s", "1h 02m".
-fn elapsed(seconds: u64) -> String {
+pub fn elapsed(seconds: u64) -> String {
     match seconds {
         s if s < 60 => format!("{s}s"),
         s if s < 3600 => format!("{}m {:02}s", s / 60, s % 60),
