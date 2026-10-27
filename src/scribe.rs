@@ -31,7 +31,7 @@ You get the topics (name: what it covers) and an excerpt. Return the topics for 
 
 Worth keeping too: a word, phrase or grammar point the user is learning (even when it came as a question to the agent), a change to their own computer's setup.
 
-Not worth keeping: questions without an answer, examples and hypotheticals, programming work in a project (code, its bugs and errors, even once fixed: that is the project's history, not the user's life), the agent's suggestions the user did not confirm, small talk, facts about other people that don't concern the user.
+Not worth keeping: questions without an answer, examples and hypotheticals, the code itself and its bugs and errors (even once fixed: that is the project's history; but a decision, a milestone or a plan for one of the user's projects is worth keeping, under Work), the agent's suggestions the user did not confirm, small talk, facts about other people that don't concern the user.
 
 Most excerpts touch no topic: then return an empty list. Never assume the user's gender. For each topic you return, give `about`: 3 to 8 words that would find the related notes.";
 
@@ -46,9 +46,11 @@ Rules:
 - `replace`: `old` is one whole line exactly as it is in the note, `new` the line that takes its place. To correct a value; if the topic says history matters, add a line instead.
 - `create`: a new note, `path` inside the topic's folder ending in .md, `text` its whole content, starting with frontmatter (date: YYYY-MM-DD and tags). Only when no note fits.
 - `property`: sets `key` to `value` in a note's frontmatter.
+- The CONVERSATION line says which of the user's projects this is: a project's note is named after that project (its folder's name, or the name the user gives it). Your own working directory is not the user's: never name anything after it.
 - `path` is always the note's path in the vault, as given (\"Finances/Overview.md\").
 - Each change has a short `reason`: what the user said that it records. Write it without pronouns for the user (never he or she): \"Phone plan rises to 15 EUR from November, as stated\".
 - If the excerpt has nothing for this topic after all, return no changes.
+- When the user doesn't say when something happened, date it TODAY (when it was said); don't ask.
 - A date with no year is the next such date after TODAY (for something to come) or the last one before it (for something that happened): write it in full, don't ask.
 - If something that matters is unclear (no currency, gross or net) return a question instead of guessing, with 2 to 4 short options. Keep questions rare.";
 
@@ -305,7 +307,18 @@ fn chunks(entries: &[Entry]) -> Vec<&[Entry]> {
 }
 
 fn excerpt(chunk: &[Entry]) -> String {
-    chunk
+    // Which conversation, and which of the user's projects it is in: what notes are named
+    // after (not the folder Scribe itself runs in).
+    let last = chunk.last();
+    let project = last.map(|e| e.cwd.trim_end_matches('/').rsplit('/').next().unwrap_or("").to_owned()).unwrap_or_default();
+    let title = last.map(|e| e.title.clone()).unwrap_or_default();
+    let head = match (title.is_empty(), project.is_empty()) {
+        (false, false) => format!("CONVERSATION: \"{title}\", in the user's project folder \"{project}\"\n\n"),
+        (false, true) => format!("CONVERSATION: \"{title}\"\n\n"),
+        (true, false) => format!("CONVERSATION: in the user's project folder \"{project}\"\n\n"),
+        (true, true) => String::new(),
+    };
+    let body = chunk
         .iter()
         .map(|e| {
             let who = if e.role == "user" { "USER" } else { "AGENT" };
@@ -319,7 +332,8 @@ fn excerpt(chunk: &[Entry]) -> String {
             format!("{who}: {text}")
         })
         .collect::<Vec<_>>()
-        .join("\n\n")
+        .join("\n\n");
+    format!("{head}{body}")
 }
 
 fn route(topics: &[Topic], excerpt: &str) -> Result<Vec<(String, String)>, String> {
@@ -411,7 +425,8 @@ pub fn prompts() -> [(&'static str, &'static str); 2] {
 /// One call to Claude (`claude -p`), its answer as the schema's JSON.
 fn ask(system: &str, input: &str, schema: &Value, model: &str) -> Result<Value, String> {
     use std::io::Write;
-    let dir = crate::state::dir().join("scribe");
+    // An empty folder of its own: nothing in it to be taken for the user's project.
+    let dir = std::env::temp_dir().join(format!("loom-notes-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
     let model = if model.trim().is_empty() { "haiku" } else { model.trim() };
     let mut child = Command::new("timeout")
@@ -602,6 +617,9 @@ pub fn eval(cases: &Path) -> i32 {
         eprintln!("Cannot read {}", cases.display());
         return 2;
     };
+    // Its own journal (the record of what is done), gone afterwards.
+    let scratch = std::env::temp_dir().join(format!("loom-eval-journal-{}", std::process::id()));
+    crate::journal::use_dir(scratch.clone());
     let cases: Vec<Value> = text.lines().filter(|l| !l.trim().is_empty()).filter_map(|l| serde_json::from_str(l).ok()).collect();
     let results: Vec<(String, bool, String, Vec<String>, Vec<String>)> = std::thread::scope(|scope| {
         let handles: Vec<_> = cases
@@ -626,6 +644,7 @@ pub fn eval(cases: &Path) -> i32 {
         100.0 * ratio(routed_right, routed_found),
         100.0 * ratio(routed_right, routed_expected)
     );
+    let _ = std::fs::remove_dir_all(&scratch);
     i32::from(passed != results.len())
 }
 
@@ -653,8 +672,8 @@ fn eval_case(case: &Value, n: usize) -> (String, bool, String, Vec<String>, Vec<
             at: 0,
             role: turn[0].as_str().unwrap_or("user").to_owned(),
             text: turn[1].as_str().unwrap_or("").to_owned(),
-            title: name.clone(),
-            cwd: String::new(),
+            title: case["title"].as_str().unwrap_or(&name).to_owned(),
+            cwd: case["project"].as_str().map(|p| format!("/home/me/Projects/{p}")).unwrap_or_default(),
         })
         .collect();
     let report = check(&vault, &format!("eval-{n}"), &entries, 20);
@@ -689,8 +708,14 @@ fn eval_case(case: &Value, n: usize) -> (String, bool, String, Vec<String>, Vec<
         })
         .map(|w| format!("{} ∋ {}", w["note"].as_str().unwrap_or(""), w["contains"].as_str().unwrap_or("")))
         .collect();
-    let ok = missing.is_empty();
-    (name, ok, if ok { String::new() } else { format!("missing {} (proposed: {})", missing.join(", "), describe()) }, expected, found)
+    let misnamed = expect["path_has"].as_str().filter(|want| !proposals.iter().any(|p| p.change.note().to_lowercase().contains(&want.to_lowercase())));
+    let ok = missing.is_empty() && misnamed.is_none();
+    let why = match misnamed {
+        _ if !missing.is_empty() => format!("missing {} (proposed: {})", missing.join(", "), describe()),
+        Some(want) => format!("no note named for \"{want}\" (proposed: {})", describe()),
+        None => String::new(),
+    };
+    (name, ok, why, expected, found)
 }
 
 #[cfg(test)]

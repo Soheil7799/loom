@@ -32,6 +32,11 @@ pub struct Entry {
     pub cwd: String,
 }
 
+/// A folder of its own (the eval: a temporary one, never the user's journal).
+pub fn use_dir(path: PathBuf) {
+    let _ = DIR.set(path);
+}
+
 /// The folder for `app_id` (a test instance keeps its own), set once at start.
 pub fn init(app_id: &str) {
     let name = crate::state::suffix(app_id).map_or("journal".to_owned(), |s| format!("journal-{s}"));
