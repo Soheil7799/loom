@@ -20,11 +20,13 @@ pub struct Saved {
     pub dirs: Vec<PathBuf>,
     /// When it was last used (opened, written to, a turn ended): Unix seconds, 0 unknown.
     pub used: u64,
+    /// Kept awake: never suspended for being idle.
+    pub awake: bool,
 }
 
 impl Saved {
     pub fn new(cwd: PathBuf) -> Saved {
-        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new(), used: now() }
+        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new(), used: now(), awake: false }
     }
 }
 
@@ -103,6 +105,7 @@ fn saved(a: &Value) -> Option<Saved> {
         draft: a["draft"].as_str().unwrap_or("").to_owned(),
         dirs: a["dirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(PathBuf::from)).collect(),
         used: a["used"].as_u64().unwrap_or(0),
+        awake: a["awake"].as_bool().unwrap_or(false),
     })
 }
 
@@ -123,7 +126,7 @@ pub fn session_written(session: &str) -> Option<u64> {
 }
 
 fn saved_json(a: &Saved) -> Value {
-    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(), "used": a.used })
+    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(), "used": a.used, "awake": a.awake })
 }
 
 fn parse(text: &str) -> Layout {
@@ -190,7 +193,7 @@ mod tests {
     #[test]
     fn saved_layouts_read_back() {
         let agents = vec![
-            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()], used: 1_700_000_000 },
+            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()], used: 1_700_000_000, awake: true },
             Saved::new("/tmp".into()),
         ];
         let layout = Layout {

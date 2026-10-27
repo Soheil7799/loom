@@ -427,3 +427,18 @@ window.loom button.toggle.prefs-button:checked, window.loom button.toggle.prefs-
 button.mic.recording { color: @loom_err; background: alpha(@loom_err, 0.15); }
 button.mic.busy { opacity: 0.5; }
 separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg_color, 0.15); }
+/* The Running list: flat rows above the project cards, numbered for Ctrl+1…9. */
+.agents row.heading-row { margin: 10px 8px 2px 10px; padding: 2px 6px; }
+.agents row.heading-row:hover { background: none; }
+button.heading-button { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; opacity: 0.6; }
+button.heading-button:hover { opacity: 1; }
+.agents row.running-row { margin: 0 10px; padding: 4px 8px; border-radius: 8px; }
+.agents row.running-row:hover { background: alpha(@window_fg_color, 0.05); }
+.agents row.running-row.current { background: alpha(@accent_color, 0.14); }
+.running-number { font-size: 0.8em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
+.running-project { font-size: 0.8em; opacity: 0.5; }
+button.awake { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; opacity: 0.25; }
+.running-row:hover button.awake { opacity: 0.6; }
+button.awake.on { opacity: 1; background: alpha(@loom_warn, 0.15); }
+/* Suspended agents in the cards: dimmer (running ones stand out). */
+.agent-title.resting { opacity: 0.6; }

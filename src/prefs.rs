@@ -268,6 +268,18 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
     );
     let start = dropdown(&[(true, "The overview"), (false, "The last agent")], s.start_on_overview, |_| String::new(), |s, on| s.start_on_overview = on);
     row(&behaviour, "When loom starts", "The overview shows every agent at a glance and resumes none until you open it.", &start);
+    row(
+        &behaviour,
+        "Running agents above the projects",
+        "A list of the agents running now (each also stays in its project). Ctrl+1…9 go by it; drag to reorder; ☕ keeps one awake.",
+        &switch(s.show_running, |s, on| s.show_running = on),
+    );
+    row(
+        &behaviour,
+        "Ctrl+Tab cycles running agents only",
+        "Suspended ones are skipped, so passing one doesn't wake it.",
+        &switch(s.cycle_running, |s, on| s.cycle_running = on),
+    );
     row(&behaviour, "Confirm quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
     row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
     let idle = dropdown(IDLE, s.idle_minutes, |m| format!("After {m} min"), |s, m| s.idle_minutes = m);

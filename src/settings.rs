@@ -32,6 +32,10 @@ pub struct Settings {
     pub suggest_prompts: bool,
     /// Launched, loom shows the overview (no agent resumed until one is opened).
     pub start_on_overview: bool,
+    /// The running agents listed above the projects (Ctrl+1…9 then go by that list).
+    pub show_running: bool,
+    /// Ctrl+Tab cycles the running agents only (none is woken by passing it).
+    pub cycle_running: bool,
     /// The Telegram bot: off unless switched on, and obeys only `telegram_user`.
     pub telegram_enabled: bool,
     pub telegram_token: String,
@@ -63,6 +67,8 @@ impl Default for Settings {
             sort_by_urgency: true,
             suggest_prompts: true,
             start_on_overview: true,
+            show_running: true,
+            cycle_running: true,
             telegram_enabled: false,
             telegram_token: String::new(),
             telegram_user: 0,
@@ -164,6 +170,8 @@ fn parse(text: &str) -> Settings {
         sort_by_urgency: flag("sortByUrgency", d.sort_by_urgency),
         suggest_prompts: flag("suggestPrompts", d.suggest_prompts),
         start_on_overview: flag("startOnOverview", d.start_on_overview),
+        show_running: flag("showRunning", d.show_running),
+        cycle_running: flag("cycleRunning", d.cycle_running),
         telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
         telegram_token: string("telegramToken", &d.telegram_token),
         telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
@@ -191,6 +199,8 @@ fn render(s: &Settings) -> String {
         "sortByUrgency": s.sort_by_urgency,
         "suggestPrompts": s.suggest_prompts,
         "startOnOverview": s.start_on_overview,
+        "showRunning": s.show_running,
+        "cycleRunning": s.cycle_running,
         "telegramEnabled": s.telegram_enabled,
         "telegramToken": s.telegram_token,
         "telegramUser": s.telegram_user,

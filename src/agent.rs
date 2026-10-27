@@ -200,6 +200,8 @@ pub struct Agent {
     pub last_took: Cell<u64>,
     /// When it was last used (Unix seconds): the overview's order.
     pub used: Cell<u64>,
+    /// Kept awake (the ☕ in the Running list): never suspended for being idle.
+    pub awake: Cell<bool>,
     /// The last turn was stopped (Esc, Stop), not finished.
     pub last_cancelled: Cell<bool>,
     /// The last turn ended on an error (what it said).
@@ -257,6 +259,7 @@ impl Agent {
             last_turn: Cell::new(Instant::now()),
             last_took: Cell::new(0),
             used: Cell::new(used),
+            awake: Cell::new(saved.awake),
             last_cancelled: Cell::new(false),
             last_error: RefCell::default(),
             adapter_suggests: Cell::new(false),
@@ -422,6 +425,7 @@ impl Agent {
             draft: self.chat.draft(),
             dirs: self.dirs.borrow().clone(),
             used: self.used.get(),
+            awake: self.awake.get(),
         }
     }
 
