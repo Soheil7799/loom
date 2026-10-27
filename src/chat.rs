@@ -3700,7 +3700,7 @@ mod tests {
         assert_eq!(super::one_direction("&laquo;قیمت&raquo; is the price of it"), "\u{200E}&laquo;قیمت&raquo; is the price of it");
         assert_eq!(super::one_direction("قیمت اخرین خرید for"), "\u{200F}قیمت اخرین خرید for");
         // A path in a Persian sentence does not make it English.
-        assert!(super::one_direction("این فایل را ببین: /home/soheil/Projects/loom/src/chat.rs").starts_with('\u{200F}'));
+        assert!(super::one_direction("این فایل را ببین: /home/me/notes/todo.md").starts_with('\u{200F}'));
         assert!(super::one_direction("فایل <tt>src/app.rs</tt> و <tt>chat.rs</tt> را ببین").starts_with('\u{200F}'));
         assert_eq!(super::one_direction("123"), "123");
         assert_eq!(super::one_direction("cargo test\nnext"), "cargo test\nnext");

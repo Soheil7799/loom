@@ -1,0 +1,54 @@
+# A GitHub release for each version tag. To make one:
+#   ./release.sh 0.2.0                # sets the version, commits it and tags v0.2.0
+#   git push origin main v0.2.0       # then this builds the release and publishes it
+# The release gets loom-<version>-x86_64-linux.tar.gz (built on Ubuntu 24.04 so it runs there
+# and on newer systems, with install.sh, its data and the licence) and its SHA-256 sum.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check the tag is Cargo.toml version
+        run: |
+          version=$(sed -n "s/^version = \"\(.*\)\"/\1/p" Cargo.toml | head -n 1)
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::$GITHUB_REF_NAME is not Cargo.toml version ($version): tag with ./release.sh"
+            exit 1
+          fi
+
+      - name: Install GTK 4, GtkSourceView 5 and VTE
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev
+
+      - name: Test and build
+        run: |
+          rustup update stable --no-self-update
+          cargo test --release --locked
+          cargo build --release --locked
+
+      - name: Package
+        run: |
+          name="loom-${GITHUB_REF_NAME#v}-x86_64-linux"
+          mkdir -p "$name/bin"
+          cp target/release/loom "$name/bin/"
+          cp -r data "$name/"
+          cp install.sh README.md LICENSE "$name/"
+          tar -czf "$name.tar.gz" "$name"
+          sha256sum "$name.tar.gz" > "$name.tar.gz.sha256"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: gh release create "$GITHUB_REF_NAME" loom-*-x86_64-linux.tar.gz* --title "loom ${GITHUB_REF_NAME#v}" --generate-notes

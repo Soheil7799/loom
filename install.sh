@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install loom for the current user (building it first): ~/.local/bin/loom, its desktop
-# entry and icon, the ACP adapter it drives (npm, into ~/.local/share/loom/adapter), and the
+# Install loom for the current user: ~/.local/bin/loom (from a release, its bin/loom; from
+# a checkout, built first), its desktop entry and icon, the ACP adapter it drives (npm, into ~/.local/share/loom/adapter), and the
 # `loom` skill that teaches Claude Code its tools (~/.claude/skills/loom).
 # LOOM_SKILL=0 skips the skill.
 set -euo pipefail
@@ -14,9 +14,14 @@ skills="$HOME/.claude/skills/loom"
 # The adapter version loom was tested against.
 acp_version="${LOOM_ACP_VERSION:-0.95.0}"
 
-# Capped parallelism: an all-core build overheats this laptop.
-cargo build --release -j "${JOBS:-6}"
-install -Dm755 target/release/loom "$bindir/loom"
+if [[ -x bin/loom ]]; then
+    binary=bin/loom
+else
+    # Capped parallelism: an all-core build overheats some laptops.
+    cargo build --release -j "${JOBS:-6}"
+    binary=target/release/loom
+fi
+install -Dm755 "$binary" "$bindir/loom"
 install -Dm644 data/dev.shirvani.Loom.svg "$icons/dev.shirvani.Loom.svg"
 mkdir -p "$apps" "$adapter"
 sed "s|@BINDIR@|$bindir|" data/dev.shirvani.Loom.desktop.in > "$apps/dev.shirvani.Loom.desktop"
