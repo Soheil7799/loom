@@ -536,8 +536,8 @@ fn advanced(s: &Settings) -> gtk::Box {
     let model = gtk::Entry::builder().text(&s.stt_model).placeholder_text("whisper-large-v3-turbo").width_chars(22).build();
     model.add_css_class("mono");
     on_done(&model, |text| settings::update(|s| s.stt_model = text));
-    row(&voice, "Model", "As the service names it (Groq: whisper-large-v3-turbo; OpenAI: whisper-1).", &model);
-    let language = gtk::Entry::builder().text(&s.stt_language).placeholder_text("auto").width_chars(8).build();
+    row(&voice, "Model", "Needed: as the service names it (Groq: whisper-large-v3-turbo; OpenAI: whisper-1).", &model);
+    let language = gtk::Entry::builder().text(&s.stt_language).placeholder_text("fa, en…").width_chars(8).build();
     on_done(&language, |text| settings::update(|s| s.stt_language = text));
     row(&voice, "Language", "Empty: found from the speech. Or a code: fa, en, it…", &language);
     let test = flat_button("Test");

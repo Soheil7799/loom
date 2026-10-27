@@ -3,9 +3,11 @@
 //! whisper.cpp's server) answer. Loom bundles no model: the user's choice of service, or their
 //! own server. Used by the composer's microphone and for Telegram voice messages.
 
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
-use std::time::Duration;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 use gtk::{gio, glib};
 use serde_json::Value;
@@ -49,11 +51,16 @@ fn request(url: &str, key: &str, model: &str, language: &str, audio: &[u8], name
     let mut field = |name: &str, value: &str| {
         body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
     };
-    field("model", if model.is_empty() { "whisper-1" } else { model });
+    if model.is_empty() {
+        return Err("no model set (Settings → Advanced → Speech to text)".to_owned());
+    }
+    field("model", model);
     field("response_format", "json");
     if !language.is_empty() {
         field("language", language);
     }
+    // A name with quotes or line breaks would break the form.
+    let name: String = name.chars().map(|c| if c == '"' || c == '\\' || c.is_control() { '_' } else { c }).collect();
     body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"file\"; filename=\"{name}\"\r\nContent-Type: {mime}\r\n\r\n").as_bytes());
     body.extend_from_slice(audio);
     body.extend_from_slice(format!("\r\n--{boundary}--\r\n").as_bytes());
@@ -102,12 +109,22 @@ pub struct Recording {
     path: PathBuf,
 }
 
-/// Starts recording from the default microphone (PipeWire, else ALSA): 16 kHz mono WAV.
+/// Recordings made so far (each to a file of its own).
+static TAKES: AtomicU32 = AtomicU32::new(0);
+
+/// Starts recording from the default microphone (PipeWire, else ALSA): 16 kHz mono WAV, to
+/// a file of its own. The recorder dies with loom.
 pub fn record() -> Result<Recording, String> {
-    let dir = crate::state::dir();
+    let dir = crate::state::dir().join("voice");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let path = dir.join("voice.wav");
-    let _ = std::fs::remove_file(&path);
+    // What a loom that ended mid-recording left behind (another process's): gone.
+    let me = format!("{}-", std::process::id());
+    for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
+        if !entry.file_name().to_string_lossy().starts_with(&me) {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+    let path = dir.join(format!("{me}{}.wav", TAKES.fetch_add(1, Ordering::SeqCst)));
     let file = path.to_string_lossy().into_owned();
     let tries: [(&str, Vec<&str>); 2] = [
         ("pw-record", vec!["--rate", "16000", "--channels", "1", "--format", "s16", &file]),
@@ -117,7 +134,16 @@ pub fn record() -> Result<Recording, String> {
         if glib::find_program_in_path(program).is_none() {
             continue;
         }
-        let child = Command::new(program).args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+        let mut command = Command::new(program);
+        command.args(&args).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+        // SAFETY: prctl only, between fork and exec: loom gone, the recorder goes too.
+        unsafe {
+            command.pre_exec(|| {
+                libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+                Ok(())
+            });
+        }
+        let child = command.spawn();
         if let Ok(child) = child {
             return Ok(Recording { child, path });
         }
@@ -126,11 +152,21 @@ pub fn record() -> Result<Recording, String> {
 }
 
 impl Recording {
-    /// Stops it and gives the WAV (the recorder writes its header when told to stop).
+    /// Stops it and gives the WAV (the recorder writes its header when told to stop). Blocks
+    /// up to 3 s: run off the main loop.
     pub fn finish(mut self) -> Result<Vec<u8>, String> {
-        // SAFETY: plain kill(2) on the recorder this started.
+        // SAFETY: plain kill(2) on our own child, not yet waited for (its pid is not reused).
         unsafe { libc::kill(self.child.id() as i32, libc::SIGINT) };
-        let _ = self.child.wait();
+        let until = Instant::now() + Duration::from_secs(3);
+        while matches!(self.child.try_wait(), Ok(None)) {
+            if Instant::now() > until {
+                // Stuck (a device gone): stopped hard; what was written may still read.
+                let _ = self.child.kill();
+                let _ = self.child.wait();
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         let audio = std::fs::read(&self.path).map_err(|e| format!("the recording could not be read: {e}"))?;
         let _ = std::fs::remove_file(&self.path);
         if audio.len() <= 44 {
@@ -147,6 +183,8 @@ impl Drop for Recording {
             let _ = self.child.kill();
             let _ = self.child.wait();
         }
+        // Not kept: what was said goes nowhere unless sent.
+        let _ = std::fs::remove_file(&self.path);
     }
 }
 

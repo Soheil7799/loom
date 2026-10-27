@@ -1260,6 +1260,10 @@ impl Chat {
     /// The microphone shown or not (speech to text set up or not).
     pub fn set_mic_visible(&self, shown: bool) {
         self.mic.set_visible(shown);
+        // Switched off while recording: the recording stops (and is thrown away).
+        if !shown && self.recording.borrow_mut().take().is_some() {
+            self.mic.remove_css_class("recording");
+        }
     }
 
     /// The microphone: recording starts; clicked again, what was said is written into the
@@ -1280,7 +1284,7 @@ impl Chat {
                 self.mic.add_css_class("busy");
                 self.mic.set_sensitive(false);
                 self.mic.set_tooltip_text(Some("Writing down what you said…"));
-                let audio = recording.finish();
+                let audio = move || recording.finish();
                 let weak = Rc::downgrade(self);
                 let done = move |result: Result<String, String>| {
                     let Some(chat) = weak.upgrade() else { return };
@@ -1299,10 +1303,14 @@ impl Chat {
                         Err(why) => chat.notice(&format!("Speech to text: {why}"), "error"),
                     }
                 };
-                match audio {
-                    Ok(audio) => crate::stt::transcribe(audio, "voice.wav", "audio/wav", done),
-                    Err(why) => done(Err(why)),
-                }
+                // Stopping waits on the recorder: not on the main loop.
+                glib::spawn_future_local(async move {
+                    let audio = gio::spawn_blocking(move || audio()).await.unwrap_or_else(|_| Err("the recorder did not stop".to_owned()));
+                    match audio {
+                        Ok(audio) => crate::stt::transcribe(audio, "voice.wav", "audio/wav", done),
+                        Err(why) => done(Err(why)),
+                    }
+                });
             }
         }
     }

@@ -610,6 +610,13 @@ impl Bot {
             }
             return;
         }
+        self.deliver(message, text, false);
+    }
+
+    /// Text for an agent (typed, or heard in a voice message): a reply to one of its question
+    /// forms fills the form in; else it is the agent's next message. Never a shell command;
+    /// heard, never a slash command either (a mishearing must not clear a conversation).
+    fn deliver(self: &Rc<Self>, message: &Value, text: &str, heard: bool) {
         let replied = message["reply_to_message"]["message_id"].as_i64();
         // A reply to a question: that question, of that agent.
         let question = replied.and_then(|m| self.told.borrow().iter().find(|(_, (told, _))| *told == Some(m)).map(|(key, _)| *key));
@@ -633,6 +640,10 @@ impl Bot {
         // A shell command would run here unasked: only from the window.
         if text.starts_with('!') {
             self.say("! commands run only from loom itself.", About::Nothing);
+            return;
+        }
+        if heard && text.starts_with('/') {
+            self.say("That sounded like a command: voice doesn't run commands. Type it if you meant it.", About::Nothing);
             return;
         }
         let new = self.talking_to.replace(Some(agent.id)) != Some(agent.id);
@@ -670,25 +681,7 @@ impl Bot {
             let picture = document["mime_type"].as_str().is_some_and(|m| m.starts_with("image/"));
             (document, name, picture)
         };
-        let Some(file_id) = file["file_id"].as_str().map(str::to_owned) else { return };
-        // Bots can fetch 20 MB at most.
-        if file["file_size"].as_u64().is_some_and(|size| size > 20 * 1024 * 1024) {
-            self.say("That file is over 20 MB, more than a bot can fetch from Telegram.", About::Nothing);
-            return;
-        }
-        let Some((token, _)) = self.running.borrow().clone() else { return };
-        self.react(message);
-        let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let fetched = gio::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
-            let Some(bot) = weak.upgrade() else { return };
-            let bytes = match fetched {
-                Ok(bytes) => bytes,
-                Err(why) => {
-                    bot.say(&format!("Could not fetch it from Telegram: {why}"), About::Agent(agent.id));
-                    return;
-                }
-            };
+        self.fetch(message, &file, move |bot, bytes| {
             bot.talking_to.set(Some(agent.id));
             if picture {
                 // As a pasted picture: PNG, which the agent sends Claude.
@@ -713,6 +706,28 @@ impl Bot {
         });
     }
 
+    /// A file Telegram keeps for `message` (`file`: its photo size, document, voice…): fetched
+    /// in the background, then `then` with its bytes. Over Telegram's 20 MB for bots, or
+    /// failing, it is said instead.
+    fn fetch(self: &Rc<Self>, message: &Value, file: &Value, then: impl FnOnce(&Rc<Bot>, Vec<u8>) + 'static) {
+        let Some(file_id) = file["file_id"].as_str().map(str::to_owned) else { return };
+        if file["file_size"].as_u64().is_some_and(|size| size > 20 * 1024 * 1024) {
+            self.say("That is over 20 MB, more than a bot can fetch from Telegram.", About::Nothing);
+            return;
+        }
+        let Some((token, _)) = self.running.borrow().clone() else { return };
+        self.react(message);
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let fetched = gio::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
+            let Some(bot) = weak.upgrade() else { return };
+            match fetched {
+                Ok(bytes) => then(&bot, bytes),
+                Err(why) => bot.say(&format!("Could not fetch it from Telegram: {why}"), About::Nothing),
+            }
+        });
+    }
+
     /// A voice message: written down by the speech-to-text service set in loom, shown back
     /// ("Heard: …"), and sent to the agent as text.
     fn voice(self: &Rc<Self>, message: &Value) {
@@ -720,43 +735,29 @@ impl Bot {
             self.say("Voice messages need speech to text: set it up in loom, Settings → Advanced.", About::Nothing);
             return;
         }
-        let Some(agent) = self.target_of(message) else {
+        if self.target_of(message).is_none() {
             self.say("Pick the agent first (🧭 Agents), then send it again.", About::Nothing);
             return;
-        };
-        let file = if message.get("voice").is_some() { message["voice"].clone() } else { message["audio"].clone() };
-        let Some(file_id) = file["file_id"].as_str().map(str::to_owned) else { return };
-        if file["file_size"].as_u64().is_some_and(|size| size > 20 * 1024 * 1024) {
-            self.say("That recording is over 20 MB, more than a bot can fetch from Telegram.", About::Nothing);
-            return;
         }
+        let file = if message.get("voice").is_some() { message["voice"].clone() } else { message["audio"].clone() };
         let mime = file["mime_type"].as_str().unwrap_or("audio/ogg").to_owned();
-        let name = file["file_name"].as_str().map(str::to_owned).unwrap_or_else(|| "voice.ogg".to_owned());
-        let Some((token, _)) = self.running.borrow().clone() else { return };
-        self.react(message);
-        let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let fetched = gio::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
-            let Some(bot) = weak.upgrade() else { return };
-            let audio = match fetched {
-                Ok(audio) => audio,
-                Err(why) => {
-                    bot.say(&format!("Could not fetch it from Telegram: {why}"), About::Agent(agent.id));
-                    return;
-                }
-            };
-            let weak = Rc::downgrade(&bot);
+        // The services tell the format from the name's extension.
+        let name = file["file_name"].as_str().map(str::to_owned).unwrap_or_else(|| format!("voice.{}", audio_extension(&mime)));
+        let caption = message["caption"].as_str().unwrap_or("").trim().to_owned();
+        // The agent is found again when it is heard (a reply to a question may fill it in).
+        let message = message.clone();
+        self.fetch(&message.clone(), &file, move |bot, audio| {
+            let weak = Rc::downgrade(bot);
             crate::stt::transcribe(audio, &name, &mime, move |result| {
                 let Some(bot) = weak.upgrade() else { return };
                 match result {
-                    Ok(text) if text.is_empty() => bot.say("Heard nothing in it.", About::Agent(agent.id)),
+                    Ok(text) if text.is_empty() => bot.say("Heard nothing in it.", About::Nothing),
                     Ok(text) => {
-                        bot.say(&format!("🎙 Heard: {text}"), About::Agent(agent.id));
-                        bot.talking_to.set(Some(agent.id));
-                        agent.submit_with(text, Vec::new());
-                        bot.typing(agent.id);
+                        bot.say(&format!("🎙 Heard: {text}"), About::Nothing);
+                        let text = if caption.is_empty() { text } else { format!("{caption}\n\n{text}") };
+                        bot.deliver(&message, &text, true);
                     }
-                    Err(why) => bot.say(&format!("Speech to text failed: {why}"), About::Agent(agent.id)),
+                    Err(why) => bot.say(&format!("Speech to text failed: {why}"), About::Nothing),
                 }
             });
         });
@@ -1101,6 +1102,18 @@ fn download(token: &str, file_id: &str) -> Result<Vec<u8>, String> {
         return Err(format!("Telegram answered {}", response.status().as_u16()));
     }
     response.body_mut().with_config().limit(25 * 1024 * 1024).read_to_vec().map_err(|e| e.to_string().replace(token, "…"))
+}
+
+/// The file extension the services expect for an audio type.
+fn audio_extension(mime: &str) -> &'static str {
+    match mime {
+        "audio/mpeg" | "audio/mp3" => "mp3",
+        "audio/mp4" | "audio/m4a" | "audio/x-m4a" | "audio/aac" => "m4a",
+        "audio/wav" | "audio/x-wav" | "audio/wave" => "wav",
+        "audio/webm" => "webm",
+        "audio/flac" | "audio/x-flac" => "flac",
+        _ => "ogg",
+    }
 }
 
 /// A sent file's name, safe as a file name here (no folders, nothing hidden).
