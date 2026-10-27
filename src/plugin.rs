@@ -133,11 +133,49 @@ fn prepare(dir: &Path) -> std::io::Result<()> {
         std::fs::create_dir_all(dir.join(kind.folder()))?;
     }
     for (name, text) in DEFAULT_SKILLS {
-        if !Kind::Skill.entry(&dir.join("disabled"), name).exists() {
-            write_new(&Kind::Skill.file(dir, name), text)?;
+        for base in [dir.to_owned(), dir.join("disabled")] {
+            if Kind::Skill.entry(&base, name).exists() {
+                update(&Kind::Skill.file(&base, name), text)?;
+            }
+        }
+        if !Kind::Skill.entry(dir, name).exists() && !Kind::Skill.entry(&dir.join("disabled"), name).exists() {
+            write_shipped(&Kind::Skill.file(dir, name), text)?;
         }
     }
     Ok(())
+}
+
+/// A shipped file the user never changed follows loom's newer version; one they edited is
+/// theirs and stays. What loom wrote is remembered as a hash beside it (`.shipped`).
+fn update(file: &Path, text: &str) -> std::io::Result<()> {
+    let Ok(current) = std::fs::read_to_string(file) else { return write_shipped(file, text) };
+    if current == text {
+        return std::fs::write(shipped_mark(file), hash(text));
+    }
+    let wrote = std::fs::read_to_string(shipped_mark(file)).unwrap_or_default();
+    if wrote.trim() == hash(&current) { write_shipped(file, text) } else { Ok(()) }
+}
+
+fn write_shipped(file: &Path, text: &str) -> std::io::Result<()> {
+    if let Some(parent) = file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(file, text)?;
+    std::fs::write(shipped_mark(file), hash(text))
+}
+
+fn shipped_mark(file: &Path) -> PathBuf {
+    file.with_file_name(".shipped")
+}
+
+/// FNV-1a: stable across Rust versions (unlike std's hasher), enough to tell texts apart.
+fn hash(text: &str) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in text.bytes() {
+        h ^= u64::from(byte);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}")
 }
 
 fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
@@ -229,11 +267,7 @@ pub fn restore(name: &str) -> std::io::Result<()> {
     if off.exists() {
         std::fs::remove_dir_all(off)?;
     }
-    let file = Kind::Skill.file(&root, name);
-    if let Some(parent) = file.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(file, text)
+    write_shipped(&Kind::Skill.file(&root, name), text)
 }
 
 pub fn hooks_file() -> PathBuf {
@@ -256,6 +290,20 @@ mod tests {
         for kind in Kind::ALL {
             assert!(!description(&kind.template("x")).is_empty(), "{kind:?}");
         }
+    }
+
+    #[test]
+    fn unchanged_skills_follow_new_versions_and_edited_ones_stay() {
+        let dir = std::env::temp_dir().join(format!("loom-plugin-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let file = dir.join("SKILL.md");
+        update(&file, "v1").unwrap();
+        update(&file, "v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "v2");
+        std::fs::write(&file, "mine").unwrap();
+        update(&file, "v3").unwrap();
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

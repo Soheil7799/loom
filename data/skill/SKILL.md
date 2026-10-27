@@ -49,6 +49,16 @@ review. Mention in your reply that it is open.
 cannot wait for the end of your turn (loom already notifies when you ask a permission question
 or finish).
 
+## The user's notes
+
+When the user has loom's Notes add-on on, two more tools reach their own notes: an Obsidian
+vault about their life and work (finances, work, study, languages, health, their system's
+setup…). Before answering about the user's own facts, plans or past decisions ("what did I
+decide about…", "what's my rent", "how did I fix the Wi-Fi last time"), look there first:
+`loom_note_search(query, folder?)` finds the notes (best first, with the matching lines and
+their links), `loom_note_read(note)` reads one in full. Don't write to the vault yourself:
+loom keeps it.
+
 ## Other agents
 
 `loom_agents()` lists the agents open in loom (title, project, status), e.g. to avoid editing

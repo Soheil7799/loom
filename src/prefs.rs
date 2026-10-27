@@ -680,44 +680,67 @@ fn addons(s: &Settings, list: &gtk::ListBox) -> gtk::Box {
     content
 }
 
-/// The Notes add-on: on or off, and its vault.
+/// The Notes add-on: on or off, its vault, and its topics.
 fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
     let main = section("");
-    row(&main, "Use Notes", "What you tell your agents is kept in the vault below, sorted by topic.", &switch(s.notes_enabled, |s, on| s.notes_enabled = on));
+    let topics = gtk::Box::new(gtk::Orientation::Vertical, 22);
 
     let path = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
     let state = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(60).build();
     state.add_css_class("dim");
     state.add_css_class("small");
+    // The vault set up (when Notes is on), then what it is and its topics shown.
     let show = {
-        let (path, state) = (path.clone(), state.clone());
-        move |vault: &str| {
+        let (path, state, topics, window) = (path.clone(), state.clone(), topics.downgrade(), window.downgrade());
+        move || {
+            let s = settings::get();
+            let vault = s.notes_vault.trim().to_owned();
             path.set_css_classes(if vault.is_empty() { &["dim"] } else { &["mono"] });
             if vault.is_empty() {
                 path.set_label("None chosen");
                 state.set_label("Choose an empty folder for a new vault, or a vault you have.");
             } else {
-                path.set_label(vault);
-                state.set_label(&crate::vault::describe(&crate::vault::inspect(&crate::state::expand(std::path::Path::new(vault)))));
+                path.set_label(&vault);
+                let folder = crate::state::expand(std::path::Path::new(&vault));
+                let prepared = if s.notes_enabled { Some(crate::vault::prepare(&folder)) } else { None };
+                state.set_label(&match prepared {
+                    Some(Err(why)) => format!("Could not set the vault up: {why}"),
+                    Some(Ok(())) => {
+                        let notes = crate::vault::notes_in(&folder).iter().filter(|n| !n.strip_prefix(&folder).is_ok_and(|r| r.starts_with(crate::vault::TOPICS))).count();
+                        format!("Ready: {notes} notes, {} topics. It opens in Obsidian too.", crate::topics::list(&folder).len())
+                    }
+                    None => format!("{} Nothing is written there until Notes is on.", crate::vault::describe(&crate::vault::inspect(&folder))),
+                });
+            }
+            if let (Some(topics), Some(window)) = (topics.upgrade(), window.upgrade()) {
+                fill_topics(&topics, &window);
             }
         }
     };
-    show(&s.notes_vault);
+    let on = gtk::Switch::builder().active(s.notes_enabled).valign(gtk::Align::Center).build();
+    let refresh = show.clone();
+    on.connect_active_notify(move |on| {
+        let active = on.is_active();
+        settings::update(|s| s.notes_enabled = active);
+        refresh();
+    });
+    row(&main, "Use Notes", "What you tell your agents is kept in the vault below, sorted by topic.", &on);
+
     let choose = flat_button("Choose…");
-    let w = window.clone();
+    let (w, refresh) = (window.clone(), show.clone());
     choose.connect_clicked(move |_| {
         let dialog = gtk::FileDialog::builder().title("A folder for the vault").modal(true).build();
         let current = settings::get().notes_vault;
         if !current.is_empty() {
             dialog.set_initial_folder(Some(&gio::File::for_path(crate::state::expand(std::path::Path::new(&current)))));
         }
-        let show = show.clone();
+        let refresh = refresh.clone();
         dialog.select_folder(Some(&w), None::<&gio::Cancellable>, move |result| {
             let Some(folder) = result.ok().and_then(|f| f.path()) else { return };
             let chosen = folder.to_string_lossy().into_owned();
-            settings::update(|s| s.notes_vault = chosen.clone());
-            show(&chosen);
+            settings::update(|s| s.notes_vault = chosen);
+            refresh();
         });
     });
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -727,9 +750,91 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     place.append(&line);
     place.append(&state);
     row_stacked(&main, "Vault", "A folder Obsidian can open as a vault. Your notes stay plain Markdown files there.", &place);
-    caption(&main, "Nothing is written to the vault yet in this version.");
+    caption(&main, "Your agents can search and read these notes. Keeping them up to date from your conversations comes next.");
     content.append(&main);
+    content.append(&topics);
+    show();
     content
+}
+
+/// The Notes page's topics: each one's folder, what it listens for, how its changes apply,
+/// with a switch and Edit; and a new one.
+fn fill_topics(holder: &gtk::Box, window: &gtk::Window) {
+    while let Some(child) = holder.first_child() {
+        holder.remove(&child);
+    }
+    let group = section("Topics");
+    let Some(vault) = crate::vault::current() else {
+        caption(&group, "Topics show here once Notes is on and has a vault.");
+        holder.append(&group);
+        return;
+    };
+    let open = |file: std::path::PathBuf, w: &gtk::Window| {
+        // While still attached to the app (closed, it no longer reaches its actions).
+        let _ = w.activate_action("app.open-file", Some(&file.to_string_lossy().to_variant()));
+        w.close();
+    };
+    let refill = {
+        let (holder, window) = (holder.downgrade(), window.downgrade());
+        move || {
+            if let (Some(holder), Some(window)) = (holder.upgrade(), window.upgrade()) {
+                fill_topics(&holder, &window);
+            }
+        }
+    };
+    for topic in crate::topics::list(&vault) {
+        let listens = match topic.listens_for.len() {
+            0 => "listens for nothing yet".to_owned(),
+            n if n > 4 => format!("listens for {}…", topic.listens_for[..4].join(", ")),
+            _ => format!("listens for {}", topic.listens_for.join(", ")),
+        };
+        let apply = match topic.apply {
+            crate::topics::Apply::Ask => "asks before changing",
+            crate::topics::Apply::Auto => "changes directly",
+        };
+        let sync = if topic.sync { "" } else { " · stays on this computer" };
+        let detail = format!("{}/ · {listens} · {apply}{sync}", topic.folder);
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let edit = flat_button("Edit");
+        let (file, w) = (topic.path.clone(), window.clone());
+        edit.connect_clicked(move |_| open(file.clone(), &w));
+        controls.append(&edit);
+        let on = gtk::Switch::builder().active(topic.enabled).valign(gtk::Align::Center).build();
+        let (now, refill) = (topic.clone(), refill.clone());
+        on.connect_active_notify(move |on| {
+            if on.is_active() != now.enabled && crate::topics::set_enabled(&now, on.is_active()).is_ok() {
+                let refill = refill.clone();
+                glib::idle_add_local_once(move || refill());
+            }
+        });
+        controls.append(&on);
+        row(&group, &topic.name, &detail, &controls);
+    }
+    let name = gtk::Entry::builder().placeholder_text("Surfing, Garden…").width_chars(16).build();
+    let create = flat_button("Create");
+    let problem = gtk::Label::builder().xalign(0.0).visible(false).build();
+    problem.add_css_class("small");
+    problem.add_css_class("error");
+    let make = {
+        let (name, problem, w, vault) = (name.clone(), problem.clone(), window.clone(), vault.clone());
+        move || match crate::topics::create(&vault, &name.text()) {
+            Ok(file) => open(file, &w),
+            Err(why) => {
+                problem.set_label(&why);
+                problem.set_visible(true);
+            }
+        }
+    };
+    let again = make.clone();
+    create.connect_clicked(move |_| again());
+    name.connect_activate(move |_| make());
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    controls.append(&problem);
+    controls.append(&name);
+    controls.append(&create);
+    row(&group, "New topic", "", &controls);
+    caption(&group, "Each topic is a note in Topics/: its settings at the top, and below them, in your words, how its notes are kept.");
+    holder.append(&group);
 }
 
 /// loom's own Claude folder: skills, agents and commands for loom's agents only.

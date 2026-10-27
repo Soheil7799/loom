@@ -1,11 +1,13 @@
 //! `loom mcp`: the MCP server loom gives every agent (stdio, one JSON-RPC message per line).
 //! Its tools act on the running app through the control socket: named jobs in the tray
-//! (loom's answer to herdr's named panes), files opened for the user, notifications.
+//! (loom's answer to herdr's named panes), files opened for the user, notifications. With the
+//! Notes add-on on, also the user's notes: searched and read here, from the vault's index.
 //!
 //! LOOM_SOCKET and LOOM_AGENT, set by loom when it starts the agent, say where and who.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -15,6 +17,15 @@ use serde_json::{Value, json};
 use crate::control;
 
 const PROTOCOL: &str = "2025-06-18";
+
+/// The vault's index, kept between calls (refreshed from the files' times at each one).
+static NOTES: Mutex<Option<crate::notes::Index>> = Mutex::new(None);
+
+/// The Notes vault loom has (None: the add-on is off, or no vault chosen).
+fn vault(socket: &str, agent: u32) -> Option<PathBuf> {
+    let info = control::call(socket, agent, "notes_info", json!({})).ok()?;
+    info["vault"].as_str().map(PathBuf::from)
+}
 
 /// Calls in flight, by request id: set to stop one (the client cancelled it).
 type Running = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
@@ -53,15 +64,19 @@ pub fn run() -> i32 {
             });
             continue;
         }
+        let notes = matches!(method, "initialize" | "tools/list").then(|| vault(&socket, agent)).flatten();
         let reply = match method {
             "initialize" => Ok(json!({
                 "protocolVersion": message["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") },
-                "instructions": "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read or fill in with loom_open."
+                "instructions": format!(
+                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read or fill in with loom_open.{}",
+                    if notes.is_some() { " The user keeps notes about their life and work (finances, work, study, languages, health, their system's setup…): before answering about their own facts, plans or past decisions, look with loom_note_search and loom_note_read. Don't edit the vault yourself; loom keeps it." } else { "" }
+                )
             })),
             "ping" => Ok(json!({})),
-            "tools/list" => Ok(json!({ "tools": tools() })),
+            "tools/list" => Ok(json!({ "tools": tools(notes.as_deref()) })),
             _ => Err(json!({ "code": -32601, "message": format!("unknown method {method}") })),
         };
         let response = match reply {
@@ -75,9 +90,9 @@ pub fn run() -> i32 {
     0
 }
 
-fn tools() -> Value {
+fn tools(notes: Option<&std::path::Path>) -> Value {
     let name = json!({ "type": "string", "description": "The job's name, e.g. dev, test, build, logs (one job per name: running it again reuses the chip)" });
-    json!([
+    let mut all = json!([
         {
             "name": "loom_run",
             "description": "Run a shell command as a named job in loom's job tray, in the project folder, where the user sees it live. Use for anything long-running or streaming (dev server, watch mode, build, test suite, install, log tail). Returns at once; then loom_wait or loom_output. Running a name again reruns that job.",
@@ -133,7 +148,62 @@ fn tools() -> Value {
             "description": "The other agents open in loom: title, project, status.",
             "inputSchema": { "type": "object", "properties": {} }
         }
-    ])
+    ]);
+    // The user's notes, only when they have them on.
+    if let (Some(vault), Some(list)) = (notes, all.as_array_mut()) {
+        let folders: Vec<String> = crate::topics::list(vault).into_iter().filter(|t| t.enabled).map(|t| t.folder).collect();
+        let folders = if folders.is_empty() { String::new() } else { format!(" Topic folders: {}.", folders.join(", ")) };
+        list.push(json!({
+            "name": "loom_note_search",
+            "description": format!("Search the user's own notes (an Obsidian vault loom keeps about their life and work). Returns the best matching notes with the lines that matched, what each links to and what links to it.{folders}"),
+            "inputSchema": { "type": "object", "properties": {
+                "query": { "type": "string", "description": "Words to look for (titles, aliases, tags and headings count most)" },
+                "folder": { "type": "string", "description": "Only notes in this folder of the vault (a topic's, e.g. Finances)" },
+                "limit": { "type": "integer", "description": "How many notes (default 8, max 30)" }
+            }, "required": ["query"] }
+        }));
+        list.push(json!({
+            "name": "loom_note_read",
+            "description": "Read one of the user's notes in full, by its path in the vault or its [[name]], with its links and backlinks.",
+            "inputSchema": { "type": "object", "properties": {
+                "note": { "type": "string", "description": "Its path in the vault (Finances/Overview.md) or its name (Overview)" }
+            }, "required": ["note"] }
+        }));
+    }
+    all
+}
+
+/// loom_note_search / loom_note_read, from the index of the vault loom has now.
+fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<String, String> {
+    let vault = vault(socket, agent).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
+    let mut held = NOTES.lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_ref().is_none_or(|index| index.root() != vault) {
+        *held = Some(crate::notes::Index::new(&vault));
+    }
+    let index = held.as_mut().ok_or("no index")?;
+    index.refresh();
+    if tool == "loom_note_read" {
+        let name = args["note"].as_str().unwrap_or("");
+        let (path, text, links, backlinks) = index.read(name).ok_or_else(|| format!("No note named {name}. Find it with loom_note_search."))?;
+        const MOST: usize = 60_000;
+        let text = if text.len() > MOST { format!("{}\n… (cut: the note is longer)", &text[..text.floor_char_boundary(MOST)]) } else { text };
+        return Ok(format!("{path}\n---\n{text}\n---\nLinks to: {}\nLinked from: {}", list_or_none(&links), list_or_none(&backlinks)));
+    }
+    let query = args["query"].as_str().unwrap_or("");
+    let limit = args["limit"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
+    let hits = index.search(query, args["folder"].as_str(), limit);
+    if hits.is_empty() {
+        return Ok(format!("No note matches \"{query}\" ({} notes in the vault).", index.len()));
+    }
+    Ok(hits
+        .iter()
+        .map(|h| format!("{} ({})\n{}\nLinks to: {} · Linked from: {}", h.path, h.title, h.snippet, list_or_none(&h.links), list_or_none(&h.backlinks)))
+        .collect::<Vec<_>>()
+        .join("\n\n"))
+}
+
+fn list_or_none(items: &[String]) -> String {
+    if items.is_empty() { "none".to_owned() } else { items.join(", ") }
 }
 
 fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -> Value {
@@ -149,6 +219,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_open" => control::call(socket, agent, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
         "loom_notify" => control::call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
         "loom_agents" => control::call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
+        tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
         other => Err(format!("unknown tool {other}")),
     };
     match result {

@@ -2348,6 +2348,8 @@ impl App {
                 }
                 Ok(json!({}))
             }
+            // The Notes vault, for the MCP server's note tools (null: Notes is off).
+            "notes_info" => Ok(json!({ "vault": crate::vault::current().map(|v| v.to_string_lossy().into_owned()) })),
             "list_agents" => Ok(json!(
                 self.agents_in_order()
                     .iter()

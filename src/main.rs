@@ -19,7 +19,9 @@ mod memory;
 mod logo;
 mod markdown;
 mod overview;
+mod notes;
 mod plugin;
+mod topics;
 mod vault;
 mod mcp;
 mod picker;
@@ -81,6 +83,11 @@ fn main() -> glib::ExitCode {
     log::install();
     log::set(settings::get().debug_log);
     plugin::init(&app_id);
+    if let Some(vault) = vault::current() {
+        if let Err(err) = vault::prepare(&vault) {
+            log::write("notes", &format!("vault {}: {err}", vault.display()));
+        }
+    }
     // `loom <folder>`: that folder's project page (in the running window, if there is one).
     let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_open(|app, files, _| {
