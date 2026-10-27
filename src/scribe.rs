@@ -481,7 +481,7 @@ fn allowed(vault: &Path, topic: &Topic, change: &Change) -> Result<(), String> {
     }
     let exists = vault.join(path).is_file();
     match change {
-        Change::Create { .. } if exists => Err(format!("{note} exists already.")),
+        // A note made meanwhile (by another change): what was to be in it goes into it.
         Change::Create { .. } => Ok(()),
         _ if !exists => Err(format!("{note} does not exist.")),
         _ => Ok(()),
@@ -493,7 +493,8 @@ pub fn apply(vault: &Path, change: &Change) -> Result<(), String> {
     let path: PathBuf = vault.join(change.note());
     if let Change::Create { text, .. } = change {
         if path.exists() {
-            return Err(format!("{} exists already.", change.note()));
+            let old = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", change.note()))?;
+            return std::fs::write(&path, merge(&old, text)).map_err(|e| e.to_string());
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -512,6 +513,41 @@ pub fn apply(vault: &Path, change: &Change) -> Result<(), String> {
 
 fn ensure_newline(text: &str) -> String {
     if text.ends_with('\n') { text.to_owned() } else { format!("{text}\n") }
+}
+
+/// A new note's text put into a note that exists: each section's lines under the same heading
+/// (or one whose name holds it: "## Changes" → "## Setup and changes"), lines the note has
+/// already left out. Its frontmatter and title are the note's own already.
+fn merge(old: &str, new: &str) -> String {
+    let body = match new.strip_prefix("---\n").and_then(|rest| rest.split_once("\n---\n")) {
+        Some((_, body)) => body,
+        None => new,
+    };
+    let level = |line: &str| line.chars().take_while(|c| *c == '#').count();
+    let mut sections: Vec<(String, Vec<&str>)> = vec![(String::new(), Vec::new())];
+    for line in body.lines() {
+        match level(line) {
+            1 => {}
+            n if n > 1 && line[n..].starts_with(' ') => sections.push((line.trim().to_owned(), Vec::new())),
+            _ => sections.last_mut().expect("one section at least").1.push(line),
+        }
+    }
+    let mut out = old.to_owned();
+    for (heading, lines) in sections {
+        let lines: Vec<&str> = lines.into_iter().filter(|l| !l.trim().is_empty() && !out.lines().any(|o| o.trim() == l.trim())).collect();
+        if lines.is_empty() {
+            continue;
+        }
+        let name = heading.trim_start_matches('#').trim().to_lowercase();
+        let under = out
+            .lines()
+            .find(|l| l.trim() == heading)
+            .or_else(|| (!name.is_empty()).then(|| out.lines().find(|l| level(l) == level(&heading) && l.to_lowercase().contains(&name))).flatten())
+            .unwrap_or(&heading)
+            .to_owned();
+        out = add_under(&out, &under, &lines.join("\n"));
+    }
+    out
 }
 
 /// `added` at the end of the section under the heading `under` (before the next heading of
@@ -723,6 +759,14 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_new_note_made_meanwhile_is_merged_into() {
+        let old = "---\ntags:\n  - system\n---\n\n# Setup\n\n## Setup and changes\n\n- OS: CachyOS.\n\n## Problems and fixes\n";
+        let new = "---\ndate: 2026-10-27\n---\n# Setup\n\n## Changes\n\n- OS: CachyOS.\n- 2026-10-27: a snapshot.\n\n## Hardware\n\n- 16 GB RAM.\n";
+        let merged = super::merge(old, new);
+        assert_eq!(merged, "---\ntags:\n  - system\n---\n\n# Setup\n\n## Setup and changes\n\n- OS: CachyOS.\n- 2026-10-27: a snapshot.\n\n## Problems and fixes\n\n## Hardware\n- 16 GB RAM.\n");
+    }
+
+    #[test]
     fn lines_are_added_at_the_end_of_their_section() {
         let note = "# Money\n\n## Recurring\n- Rent: 650\n- Phone: 12\n\n## Savings\n- 1000\n";
         let out = add_under(note, "## Recurring", "- Gym: 30");
@@ -773,7 +817,8 @@ mod tests {
         let create = Change::Create { note: "Finances/2026-10.md".into(), text: "# October".into() };
         assert!(allowed(&vault, &topic, &create).is_ok());
         apply(&vault, &create).unwrap();
-        assert!(allowed(&vault, &topic, &create).is_err());
+        // Made meanwhile: merged into, not refused.
+        assert!(allowed(&vault, &topic, &create).is_ok());
         apply(&vault, &add("Finances/Overview.md")).unwrap();
         assert_eq!(std::fs::read_to_string(vault.join("Finances/Overview.md")).unwrap(), "## Recurring\n- Rent: 650\n");
         let _ = std::fs::remove_dir_all(&vault);
