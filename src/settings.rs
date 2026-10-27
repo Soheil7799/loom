@@ -54,6 +54,8 @@ pub struct Settings {
     /// The Notes add-on: on, and the vault it keeps notes in (empty: none chosen).
     pub notes_enabled: bool,
     pub notes_vault: String,
+    /// At most this many note checks (calls to Claude) a day.
+    pub notes_daily_calls: u64,
 }
 
 impl Default for Settings {
@@ -86,6 +88,7 @@ impl Default for Settings {
             editor: String::new(),
             notes_enabled: false,
             notes_vault: String::new(),
+            notes_daily_calls: 300,
         }
     }
 }
@@ -192,6 +195,7 @@ fn parse(text: &str) -> Settings {
         editor: string("editor", &d.editor),
         notes_enabled: flag("notesEnabled", d.notes_enabled),
         notes_vault: string("notesVault", &d.notes_vault),
+        notes_daily_calls: v["notesDailyCalls"].as_u64().unwrap_or(d.notes_daily_calls),
     }
 }
 
@@ -224,6 +228,7 @@ fn render(s: &Settings) -> String {
         "editor": s.editor,
         "notesEnabled": s.notes_enabled,
         "notesVault": s.notes_vault,
+        "notesDailyCalls": s.notes_daily_calls,
     }))
     .unwrap_or_default()
 }

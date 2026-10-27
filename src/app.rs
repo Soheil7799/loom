@@ -89,6 +89,8 @@ pub struct App {
     overview_due: Cell<bool>,
     /// The files panel was open when the overview was shown (it opens again with an agent).
     files_hidden_for_overview: Cell<bool>,
+    /// The Notes add-on: Scribe's checks and the Notes tab.
+    pub hub: Rc<crate::hub::Hub>,
     /// The running agents in the Running list's order (ids): one that starts running joins at
     /// the end; dragging reorders.
     running: RefCell<Vec<u32>>,
@@ -235,6 +237,9 @@ impl App {
         // The open file beside the chat(s), above the tray: easy to read next to the agent.
         let files = Files::new();
         files.editor_box.set_size_request(320, -1);
+        let hub = crate::hub::Hub::new();
+        files.add_notes(&hub.panel);
+        files.set_notes_available(crate::vault::current().is_some());
         let reading = gtk::Paned::builder()
             .orientation(gtk::Orientation::Horizontal)
             .start_child(&chats)
@@ -402,11 +407,13 @@ impl App {
             pending_pin: RefCell::default(),
             overview_due: Cell::new(false),
             files_hidden_for_overview: Cell::new(false),
+            hub: hub.clone(),
             project_edges: RefCell::default(),
             running: RefCell::default(),
             running_rows: RefCell::default(),
         });
         this.wire_toast(&toast_go, &toast_close);
+        this.wire_hub();
         this.wire_history();
         this.wire_links();
         // "Ask Claude" in the editor: into the input of the agent in view.
@@ -1273,6 +1280,7 @@ impl App {
         }
         agent.focused.set(true);
         agent.unseen.set(false);
+        self.hub.set_current(agent.session_id(), &agent.title());
         agent.last_active.set(std::time::Instant::now());
         *self.focused.borrow_mut() = Some(agent.clone());
         self.toast_settled(agent);
@@ -1753,6 +1761,17 @@ impl App {
             };
         }
         *self.schedules.borrow_mut() = schedules;
+        // Scribe's line: the Notes tab, beside the agent last looked at.
+        let weak = Rc::downgrade(self);
+        *self.overview.on_scribe.borrow_mut() = Some(Rc::new(move |()| {
+            let Some(app) = weak.upgrade() else { return };
+            let last = app.previous.borrow().clone().or_else(|| app.agents_in_order().first().cloned());
+            if let Some(agent) = last {
+                app.focus(&agent);
+            }
+            app.files.root.set_visible(true);
+            app.files.show_notes();
+        }));
         let weak = Rc::downgrade(self);
         *self.overview.on_open.borrow_mut() = Some(Rc::new(move |id| {
             if let Some(app) = weak.upgrade()
@@ -1963,6 +1982,10 @@ impl App {
     /// Closes `agent`; `refocus` moves focus on to the next one (not when several close at
     /// once: each would be started only to be closed).
     fn remove_agent_then(self: &Rc<Self>, agent: &Rc<Agent>, refocus: bool) {
+        // Its last words into the notes too.
+        if let Some(session) = agent.session_id() {
+            self.hub.check_now(&session, true);
+        }
         let order = self.agents_in_order();
         let position = order.iter().position(|a| Rc::ptr_eq(a, agent)).unwrap_or(0);
         let focused_left = self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent));
@@ -2068,6 +2091,7 @@ impl App {
                 Event::Files => "files".to_owned(),
                 Event::Asked(title) => format!("asked: {title}"),
                 Event::Done => "done".to_owned(),
+                Event::Compacting => "compacting".to_owned(),
                 Event::Failed(why) => format!("failed: {why}"),
                 Event::Forked(_) => "forked".to_owned(),
                 Event::Unsent(n) => format!("{n} messages not sent"),
@@ -2084,7 +2108,13 @@ impl App {
                     self.files.set_repos(agent.repos());
                 }
             }
-            Event::Session => self.save(),
+            Event::Session => {
+                // The conversation in view got its id: Notes follows it.
+                if agent.focused.get() {
+                    self.hub.set_current(agent.session_id(), &agent.title());
+                }
+                self.save();
+            }
             Event::Files => {
                 if agent.focused.get() {
                     self.show_files(&agent);
@@ -2107,7 +2137,15 @@ impl App {
                 if !looking && settings::get().notify_done {
                     self.notify(agent, "Finished");
                 }
+                if let Some(session) = agent.session_id() {
+                    self.hub.turn_done(&session);
+                }
                 self.refresh_sidebar();
+            }
+            Event::Compacting => {
+                if let Some(session) = agent.session_id() {
+                    self.hub.check_now(&session, false);
+                }
             }
             Event::Unsent(_) => {}
             Event::Forked(saved) => {
@@ -2123,6 +2161,51 @@ impl App {
                 }
             }
         }
+    }
+
+    /// Scribe's news shown: the Notes tab marked, and switched to when the user isn't working
+    /// in the panel; a question's conversation opened from it.
+    fn wire_hub(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        *self.hub.on_attention.borrow_mut() = Some(Box::new(move || {
+            let Some(app) = weak.upgrade() else { return };
+            if app.files.root.is_visible() && !app.files.in_use() {
+                app.files.show_notes();
+            } else {
+                app.files.set_notes_news(true);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.hub.on_open.borrow_mut() = Some(Box::new(move |session: &str| {
+            let Some(app) = weak.upgrade() else { return };
+            let agent = app.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(session)).cloned();
+            if let Some(agent) = agent {
+                app.focus(&agent);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.hub.on_changed.borrow_mut() = Some(Box::new(move || {
+            if let Some(app) = weak.upgrade() {
+                let (questions, waiting) = app.hub.counts();
+                app.overview.set_scribe(questions, waiting);
+                let weak = Rc::downgrade(&app);
+                // After the panel is rebuilt (not inside it).
+                glib::idle_add_local_once(move || {
+                    if let Some(app) = weak.upgrade() {
+                        app.refresh_sidebar();
+                    }
+                });
+            }
+        }));
+        settings::on_change({
+            let weak = Rc::downgrade(self);
+            move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.files.set_notes_available(crate::vault::current().is_some());
+                    app.hub.refresh();
+                }
+            }
+        });
     }
 
     fn wire_toast(self: &Rc<Self>, go: &gtk::Button, close: &gtk::Button) {
@@ -2524,7 +2607,7 @@ impl App {
             let alike = |agent: &Rc<Agent>| mine.iter().filter(|a| a.title() == agent.title()).count() > 1;
             let alike: Vec<bool> = mine.iter().map(|a| alike(a)).collect();
             for (i, agent) in mine.into_iter().enumerate() {
-                let row = agent_row(agent, alike[i]);
+                let row = agent_row(agent, alike[i], agent.session_id().is_some_and(|s| self.hub.asks_about(&s)));
                 if i + 1 == count {
                     row.add_css_class("last");
                     last = row.clone();
@@ -3036,7 +3119,7 @@ fn heading_row(text: &str, app: Option<&Rc<App>>) -> gtk::ListBoxRow {
     row
 }
 
-fn agent_row(agent: &Rc<Agent>, alike: bool) -> gtk::ListBoxRow {
+fn agent_row(agent: &Rc<Agent>, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("dot");
@@ -3088,6 +3171,11 @@ fn agent_row(agent: &Rc<Agent>, alike: bool) -> gtk::ListBoxRow {
     }
     line.append(&dot);
     line.append(&names);
+    if scribe_asks {
+        let mark = gtk::Box::builder().valign(gtk::Align::Center).tooltip_text("Scribe has a question about this conversation (the Notes tab)").build();
+        mark.add_css_class("scribe-mark");
+        line.append(&mark);
+    }
     let row = gtk::ListBoxRow::builder().child(&line).build();
     row.add_css_class("agent-row");
     row

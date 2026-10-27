@@ -131,17 +131,19 @@ plans, things to remember, and what was decided.
         "---
 topic: System
 folder: System
-listens-for: [install, package, config, settings, driver, kernel, fix, error, setup, shortcut]
+listens-for: [install, package, config, settings, driver, kernel, hardware, desktop, shortcut, dotfiles]
 apply: auto
 sync: true
 model: haiku
 enabled: true
 ---
-Keep one note per machine or tool (`System/<Name>.md`): what was installed or changed, the
-config that was set and where, and problems with their fixes.
+Keep one note per machine or tool (`System/<Name>.md`; `System/Setup.md` when the machine is
+not named): what was installed or changed, the config that was set and where, and problems
+with the computer and their fixes.
 
 - A fix is written as: the problem, its cause, the fix, the date.
 - Paths and commands go in code blocks, exactly as they were.
+- Not code the user writes in a project: its bugs and fixes belong to the project.
 ",
     ),
 ];

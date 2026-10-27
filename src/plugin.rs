@@ -142,6 +142,10 @@ fn prepare(dir: &Path) -> std::io::Result<()> {
             write_shipped(&Kind::Skill.file(dir, name), text)?;
         }
     }
+    // Scribe's prompts (the Notes add-on's note agent), to read and tune.
+    for (name, text) in crate::scribe::prompts() {
+        update(&dir.join("scribe").join(format!("{name}.md")), text)?;
+    }
     Ok(())
 }
 

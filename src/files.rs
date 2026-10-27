@@ -56,6 +56,10 @@ pub struct Files {
     /// Graph: the commits (hash per row, None for a line of the graph alone).
     graph: gtk::ListBox,
     graph_tab: gtk::ToggleButton,
+    /// Notes (the add-on, when on): Scribe's questions, changes to review, what it wrote.
+    notes_tab: gtk::ToggleButton,
+    /// When the user last clicked, typed or scrolled in this panel.
+    touched: Cell<std::time::Instant>,
     graph_commits: RefCell<Vec<Option<String>>>,
     /// Bumped by each graph fill (an older answer is dropped), and the repo shown.
     graph_round: Cell<u64>,
@@ -99,9 +103,10 @@ impl Files {
         let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").build();
         let changes_tab = gtk::ToggleButton::builder().label("Changes").group(&agent_tab).tooltip_text("Git status of the repos in this project").build();
         let graph_tab = gtk::ToggleButton::builder().label("Graph").group(&agent_tab).tooltip_text("The repo's commits and where each branch is").build();
+        let notes_tab = gtk::ToggleButton::builder().label("Notes").group(&agent_tab).tooltip_text("Your notes: Scribe's questions, changes waiting for your OK, what it wrote").visible(false).build();
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         tabs.add_css_class("segmented");
-        for tab in [&agent_tab, &project_tab, &changes_tab, &graph_tab] {
+        for tab in [&agent_tab, &project_tab, &changes_tab, &graph_tab, &notes_tab] {
             tab.add_css_class("flat");
             tab.add_css_class("tab");
             // The theme styles .text-button.toggle groups its own way (the first one tinted
@@ -328,6 +333,8 @@ impl Files {
             changes_repo: RefCell::default(),
             graph,
             graph_tab: graph_tab.clone(),
+            notes_tab: notes_tab.clone(),
+            touched: Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(3600)),
             graph_commits: RefCell::default(),
             graph_round: Cell::new(0),
             graph_repo: RefCell::default(),
@@ -347,6 +354,40 @@ impl Files {
                 views.set_visible_child_name("agent");
             }
         });
+        let views = files.views.clone();
+        notes_tab.connect_toggled(move |tab| {
+            if tab.is_active() {
+                views.set_visible_child_name("notes");
+                tab.remove_css_class("news");
+            }
+        });
+        // The user working in the panel: Scribe's news does not switch its tab then.
+        let weak = Rc::downgrade(&files);
+        let touch = move || {
+            if let Some(files) = weak.upgrade() {
+                files.touched.set(std::time::Instant::now());
+            }
+        };
+        let click = gtk::GestureClick::new();
+        click.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let touched = touch.clone();
+        click.connect_pressed(move |_, _, _, _| touched());
+        files.root.add_controller(click);
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let touched = touch.clone();
+        keys.connect_key_pressed(move |_, _, _, _| {
+            touched();
+            glib::Propagation::Proceed
+        });
+        files.root.add_controller(keys);
+        let scroll = gtk::EventControllerScroll::new(gtk::EventControllerScrollFlags::VERTICAL);
+        scroll.set_propagation_phase(gtk::PropagationPhase::Capture);
+        scroll.connect_scroll(move |_, _, _| {
+            touch();
+            glib::Propagation::Proceed
+        });
+        files.root.add_controller(scroll);
         // Find in the open file: every match marked, Enter goes to the next.
         if let Some(entry) = files.find_entry() {
             let settings = sourceview::SearchSettings::new();
@@ -1388,6 +1429,38 @@ impl Files {
     pub fn show_project(&self) {
         self.root.set_visible(true);
         self.project_tab.set_active(true);
+    }
+
+    /// The Notes tab's content (the add-on's panel), and whether the tab is offered.
+    pub fn add_notes(&self, panel: &gtk::Box) {
+        self.views.add_named(panel, Some("notes"));
+    }
+
+    pub fn set_notes_available(&self, on: bool) {
+        self.notes_tab.set_visible(on);
+        if !on && self.notes_tab.is_active() {
+            self.project_tab.set_active(true);
+        }
+    }
+
+    pub fn show_notes(&self) {
+        self.notes_tab.set_active(true);
+    }
+
+    /// Something new in Notes: its tab marked (until it is looked at).
+    pub fn set_notes_news(&self, news: bool) {
+        if news && !self.notes_tab.is_active() {
+            self.notes_tab.add_css_class("news");
+        } else {
+            self.notes_tab.remove_css_class("news");
+        }
+    }
+
+    /// The user is working in this panel now (focus in it, or a click, key or scroll in it
+    /// in the last little while).
+    pub fn in_use(&self) -> bool {
+        let focused = self.root.root().and_then(|r| r.focus()).is_some_and(|f| f.is_ancestor(&self.root));
+        focused || self.touched.get().elapsed() < std::time::Duration::from_secs(20)
     }
 
     /// Hands the open file to the other editor of the settings, or the system's default app

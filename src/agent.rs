@@ -73,6 +73,8 @@ pub enum Event {
     Failed(String),
     /// A copy of the conversation was made (fork, rewind): to open beside it.
     Forked(Saved),
+    /// The conversation is being compacted (what came before is about to be summarised).
+    Compacting,
 }
 
 /// An open question, as told outside the window.
@@ -152,6 +154,8 @@ pub struct Agent {
     ready: Cell<bool>,
     turn: Cell<bool>,
     replaying: Cell<bool>,
+    /// What Claude has said this turn (for the journal, written when the turn ends).
+    reply: RefCell<String>,
     /// Messages waiting to be sent: text and attached images (PNG).
     queue: RefCell<VecDeque<(String, Vec<glib::Bytes>)>>,
     /// `!command` runs and their output, for Claude with the next message (as Claude Code's
@@ -233,6 +237,7 @@ impl Agent {
             ready: Cell::new(false),
             turn: Cell::new(false),
             replaying: Cell::new(false),
+            reply: RefCell::default(),
             queue: RefCell::default(),
             context: RefCell::default(),
             waiting: RefCell::default(),
@@ -1253,6 +1258,13 @@ impl Agent {
 
     /// Sends a message into the turn that is running. If the turn ended meanwhile, it goes as
     /// a prompt of its own; if steering fails, it waits for the turn's end (nothing is lost).
+    /// A message of this conversation, for the note agent (only with Notes on).
+    fn journal(&self, role: &str, text: &str) {
+        if let Some(session) = self.session_id.borrow().as_deref() {
+            crate::journal::append(session, role, text, &self.title(), &self.cwd);
+        }
+    }
+
     fn steer(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else {
             self.queue.borrow_mut().push_back((text, images));
@@ -1269,7 +1281,10 @@ impl Agent {
                     agent.queue.borrow_mut().push_back((text, images));
                     agent.send_next();
                 }
-                Ok(_) => agent.context.borrow_mut().clear(),
+                Ok(_) => {
+                    agent.context.borrow_mut().clear();
+                    agent.journal("user", &text);
+                }
                 Err(_) => {
                     agent.chat.notice("Queued: sent when this turn ends.", "dim");
                     agent.queue.borrow_mut().push_back((text, images));
@@ -1342,6 +1357,8 @@ impl Agent {
         let weak = Rc::downgrade(self);
         let prompt = self.prompt_blocks(&text, &images);
         self.context.borrow_mut().clear();
+        self.reply.borrow_mut().clear();
+        self.journal("user", &text);
         conn.request(
             "session/prompt",
             json!({ "sessionId": session, "prompt": prompt }),
@@ -1353,6 +1370,8 @@ impl Agent {
                 });
                 agent.turn.set(false);
                 agent.chat.set_working(None);
+                let reply = agent.reply.take();
+                agent.journal("assistant", &reply);
                 // The process died with the turn: fail() has said so already.
                 if agent.conn.borrow().is_none() {
                     return;
@@ -1897,6 +1916,9 @@ impl Agent {
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_message_chunk" => {
                 self.note_activity();
+                if self.turn.get() && !self.replaying.get() {
+                    self.reply.borrow_mut().push_str(text());
+                }
                 self.chat.agent_text_with(text(), update["messageId"].as_str());
             }
             "notice" => {
@@ -1908,7 +1930,10 @@ impl Agent {
                 self.chat.notice(&line, class);
             }
             "compaction_update" => match update["status"].as_str() {
-                Some("in_progress") => self.chat.notice("Compacting the conversation (the context was nearly full)…", "dim"),
+                Some("in_progress") => {
+                    self.chat.notice("Compacting the conversation (the context was nearly full)…", "dim");
+                    self.emit(Event::Compacting);
+                }
                 Some("completed") => self.chat.notice("Compacted: Claude carries on with a summary of what came before.", "dim"),
                 Some("failed") => self.chat.notice("Compacting failed.", "error"),
                 _ => {}

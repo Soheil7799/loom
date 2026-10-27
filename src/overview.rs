@@ -39,6 +39,9 @@ type Handler<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 pub struct Overview {
     pub root: gtk::Box,
     counts: gtk::Label,
+    /// Scribe's line: questions and changes waiting (a link to the Notes tab).
+    scribe: gtk::Button,
+    pub on_scribe: Handler<()>,
     /// The groups (a heading and its cards each).
     groups: gtk::Box,
     /// Each group's cards and the agents they stand for, in order.
@@ -57,8 +60,12 @@ impl Overview {
         title.add_css_class("overview-title");
         let counts = gtk::Label::builder().xalign(0.0).build();
         counts.add_css_class("dim");
+        let scribe = gtk::Button::builder().halign(gtk::Align::Start).visible(false).build();
+        scribe.add_css_class("flat");
+        scribe.add_css_class("overview-scribe");
         page.append(&title);
         page.append(&counts);
+        page.append(&scribe);
         let groups = gtk::Box::new(gtk::Orientation::Vertical, 18);
         page.set_valign(gtk::Align::Start);
         page.append(&groups);
@@ -81,12 +88,21 @@ impl Overview {
         let overview = Rc::new(Overview {
             root,
             counts,
+            scribe: scribe.clone(),
+            on_scribe: RefCell::default(),
             groups,
             flows: RefCell::default(),
             schedules,
             on_open: RefCell::default(),
             on_schedule_for: RefCell::default(),
             on_schedule: RefCell::default(),
+        });
+        let weak = Rc::downgrade(&overview);
+        scribe.connect_clicked(move |_| {
+            let handler = weak.upgrade().and_then(|o| o.on_scribe.borrow().clone());
+            if let Some(handler) = handler {
+                handler(());
+            }
         });
         overview
     }
@@ -157,6 +173,19 @@ impl Overview {
         section.append(&flow);
         self.groups.append(&section);
         self.flows.borrow_mut().push((flow, ids));
+    }
+
+    /// Scribe's line: (questions, changes waiting for an OK); nothing shown at none.
+    pub fn set_scribe(&self, questions: usize, waiting: usize) {
+        let mut parts = Vec::new();
+        if questions > 0 {
+            parts.push(format!("{questions} question{}", if questions == 1 { "" } else { "s" }));
+        }
+        if waiting > 0 {
+            parts.push(format!("{waiting} change{} to review", if waiting == 1 { "" } else { "s" }));
+        }
+        self.scribe.set_visible(!parts.is_empty());
+        self.scribe.set_label(&format!("Scribe: {} ›", parts.join(" · ")));
     }
 
     pub fn fill(self: &Rc<Self>, mut cards: Vec<Card>, schedules: &[Schedule]) {

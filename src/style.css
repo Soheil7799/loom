@@ -449,3 +449,19 @@ button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
 .prefs-nav row.prefs-nav-sub label { font-size: 0.95em; }
 label.addon-on { color: @loom_ok; font-weight: 600; }
 .prefs-page label.error { color: @loom_err; }
+
+/* Notes: Scribe's panel. */
+.hub { padding: 10px 12px; }
+.hub-head { padding-bottom: 8px; border-bottom: 1px solid @loom_line; }
+.hub-heading { font-size: 0.75em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.6; margin-top: 4px; }
+.hub-card { padding: 10px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
+.hub-card.ask { border: 1px solid alpha(@accent_color, 0.45); }
+.hub-card.written { opacity: 0.85; }
+.hub-topic { font-weight: 600; font-size: 0.85em; color: @accent_color; }
+button.hub-from { padding: 0 4px; min-height: 0; font-size: 0.85em; }
+.hub-note { font-weight: 600; }
+.hub-question { font-weight: 600; }
+.hub-diff { font-size: 0.85em; padding: 6px 8px; border-radius: 6px; background: alpha(@window_fg_color, 0.05); }
+.segmented button.tab.news { box-shadow: inset 0 -2px @accent_color; }
+.scribe-mark { min-width: 7px; min-height: 7px; border-radius: 99px; background: @accent_color; margin-right: 4px; }
+button.overview-scribe { padding: 2px 6px; margin-left: -6px; color: @accent_color; font-weight: 600; min-height: 0; }

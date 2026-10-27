@@ -13,7 +13,9 @@ mod control;
 mod devhooks;
 mod files;
 mod history;
+mod hub;
 mod jobs;
+mod journal;
 mod log;
 mod memory;
 mod logo;
@@ -29,6 +31,7 @@ mod prefs;
 mod quickopen;
 mod repos;
 mod schedule;
+mod scribe;
 mod scratch;
 mod settings;
 mod state;
@@ -76,6 +79,11 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);
     }
+    // `loom scribe-eval <cases.jsonl>`: how well the note agent does on a test set.
+    if std::env::args().nth(1).as_deref() == Some("scribe-eval") {
+        let cases = std::env::args().nth(2).unwrap_or_else(|| "data/scribe-cases.jsonl".to_owned());
+        return glib::ExitCode::from(scribe::eval(std::path::Path::new(&cases)) as u8);
+    }
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     settings::init(&app_id);
@@ -83,6 +91,7 @@ fn main() -> glib::ExitCode {
     log::install();
     log::set(settings::get().debug_log);
     plugin::init(&app_id);
+    journal::init(&app_id);
     if let Some(vault) = vault::current() {
         if let Err(err) = vault::prepare(&vault) {
             log::write("notes", &format!("vault {}: {err}", vault.display()));
