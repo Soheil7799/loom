@@ -518,6 +518,13 @@ fn telegram(s: &Settings) -> gtk::Box {
 fn advanced(s: &Settings) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
 
+    let other = section("Other editor");
+    let editor = gtk::Entry::builder().text(&s.editor).placeholder_text("the system's default app").build();
+    editor.add_css_class("mono");
+    on_done(&editor, |text| settings::update(|s| s.editor = text));
+    row_stacked(&other, "Command", "Ctrl+Shift+O opens the file there (code, gnome-text-editor…); empty uses the app your system opens it with.", &editor);
+    content.append(&other);
+
     let program = section("Agent program");
     let entry = gtk::Entry::builder().text(&s.adapter).placeholder_text(crate::acp::default_adapter().join(" ")).build();
     entry.add_css_class("mono");

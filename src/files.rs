@@ -219,9 +219,6 @@ impl Files {
         let save = button("Save", "Save the changes (Ctrl+S)");
         save.set_visible(false);
         let open_app = button("Open", "Open it in the app your system opens it with");
-        // nevis: Ctrl+Shift+O or the palette (a button too many for a pane this narrow).
-        let in_nevis = button("nevis", "Open in nevis, with Live Preview (Ctrl+Shift+O)");
-        in_nevis.set_visible(false);
         let ask = button("Ask Claude", "Mention this file (or the selected lines) in the chat");
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("flat");
@@ -239,7 +236,6 @@ impl Files {
         editor_header.append(&read_toggle);
         editor_header.append(&ask);
         editor_header.append(&open_app);
-        editor_header.append(&in_nevis);
         editor_header.append(&close);
         let buffer = sourceview::Buffer::new(None);
         buffer.set_highlight_syntax(true);
@@ -493,12 +489,6 @@ impl Files {
         files.commit_entry.connect_activate(move |_| {
             if let Some(files) = weak.upgrade() {
                 files.commit();
-            }
-        });
-        let weak = Rc::downgrade(&files);
-        in_nevis.connect_clicked(move |_| {
-            if let Some(files) = weak.upgrade() {
-                files.open_in_nevis();
             }
         });
         let weak = Rc::downgrade(&files);
@@ -1400,15 +1390,27 @@ impl Files {
         self.project_tab.set_active(true);
     }
 
-    /// Hands the open file to nevis (saved first, so nevis shows what was typed here).
-    /// nevis opens it in a window of its own; it stays open here too.
-    pub fn open_in_nevis(&self) {
+    /// Hands the open file to the other editor of the settings, or the system's default app
+    /// (saved first, so it shows what was typed here). It stays open here too.
+    pub fn open_elsewhere(&self) {
         let Some(path) = self.open.borrow().clone() else { return };
         if self.buffer.is_modified() && !self.save() {
             return;
         }
-        if let Err(err) = std::process::Command::new("nevis").arg(&path).spawn() {
-            self.notice(&format!("Could not start nevis: {err}"));
+        let command = crate::settings::get().editor;
+        let mut words = command.split_whitespace();
+        let Some(program) = words.next() else {
+            let files = self.me.borrow().clone();
+            let window = self.view.root().and_downcast::<gtk::Window>();
+            gtk::FileLauncher::new(Some(&gio::File::for_path(&path))).launch(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+                if let (Err(err), Some(files)) = (result, files.upgrade()) {
+                    files.notice(&format!("Could not open it: {err}"));
+                }
+            });
+            return;
+        };
+        if let Err(err) = std::process::Command::new(program).args(words).arg(&path).spawn() {
+            self.notice(&format!("Could not start {program}: {err}"));
         }
     }
 

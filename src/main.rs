@@ -97,7 +97,7 @@ fn main() -> glib::ExitCode {
         css.load_from_string(CSS);
         theme::watch();
         if let Some(display) = gdk::Display::default() {
-            // Above the user's GTK stylesheet (which it reads colours from), like nevis's chrome.
+            // Above the user's GTK stylesheet (which it reads colours from).
             gtk::style_context_add_provider_for_display(&display, &css, gtk::STYLE_PROVIDER_PRIORITY_USER + 2);
         }
     });

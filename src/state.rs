@@ -198,7 +198,7 @@ mod tests {
         ];
         let layout = Layout {
             projects: vec![
-                Project { path: "/home/x/p".into(), collapsed: true, name: "Starview".into() },
+                Project { path: "/home/x/p".into(), collapsed: true, name: "Acme".into() },
                 Project { path: "/tmp".into(), collapsed: false, name: String::new() },
             ],
             agents: agents.clone(),

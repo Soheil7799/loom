@@ -49,6 +49,8 @@ pub struct Settings {
     pub stt_key: String,
     pub stt_model: String,
     pub stt_language: String,
+    /// Ctrl+Shift+O opens the file in this program (empty: the system's default app).
+    pub editor: String,
 }
 
 impl Default for Settings {
@@ -78,6 +80,7 @@ impl Default for Settings {
             stt_key: String::new(),
             stt_model: String::new(),
             stt_language: String::new(),
+            editor: String::new(),
         }
     }
 }
@@ -181,6 +184,7 @@ fn parse(text: &str) -> Settings {
         stt_key: string("sttKey", &d.stt_key),
         stt_model: string("sttModel", &d.stt_model),
         stt_language: string("sttLanguage", &d.stt_language),
+        editor: string("editor", &d.editor),
     }
 }
 
@@ -210,6 +214,7 @@ fn render(s: &Settings) -> String {
         "sttKey": s.stt_key,
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
+        "editor": s.editor,
     }))
     .unwrap_or_default()
 }

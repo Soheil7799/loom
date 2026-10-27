@@ -711,7 +711,7 @@ impl App {
                 self.files.root.set_visible(true);
                 self.files.choose();
             }
-            (true, true, false, gdk::Key::o) => self.files.open_in_nevis(),
+            (true, true, false, gdk::Key::o) => self.files.open_elsewhere(),
             (true, false, false, gdk::Key::l) => self.focus_input(),
             (true, false, false, gdk::Key::p) => self.find_file(),
             (true, false, false, gdk::Key::backslash) => self.toggle_split(),
@@ -869,7 +869,7 @@ impl App {
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
             "find" => self.find_file(),
-            "nevis" => self.files.open_in_nevis(),
+            "elsewhere" => self.files.open_elsewhere(),
             "tree" => self.files.show_project(),
             "graph" => self.files.show_graph_view(),
             "fork" => {
@@ -1035,7 +1035,7 @@ impl App {
             }),
             act("Project files (tree)", "", |a| a.files.show_project()),
             act("Git changes in this project", "", |a| a.files.show_changes()),
-            act("Open the file in nevis", "Ctrl+Shift+O", |a| a.files.open_in_nevis()),
+            act("Open the file in another editor", "Ctrl+Shift+O", |a| a.files.open_elsewhere()),
             act("Scratch terminal", "Ctrl+`", |a| a.toggle_scratch()),
             act("Run a command in the tray…", "Ctrl+J", |a| a.ask_command()),
             act("Peek the newest job", "Ctrl+Shift+J", |a| a.current_tray().peek_latest()),

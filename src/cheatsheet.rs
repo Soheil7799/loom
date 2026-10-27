@@ -76,7 +76,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+O", "Open a file"),
             ("Ctrl+S", "Save (in the editor)"),
             ("Ctrl+F (in the editor)", "Find in the file"),
-            ("Ctrl+Shift+O", "Open the file in nevis"),
+            ("Ctrl+Shift+O", "Open the file in another editor (Settings → Advanced)"),
         ],
     ),
     (
