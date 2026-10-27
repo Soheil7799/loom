@@ -19,6 +19,8 @@ mod memory;
 mod logo;
 mod markdown;
 mod overview;
+mod plugin;
+mod vault;
 mod mcp;
 mod picker;
 mod prefs;
@@ -78,6 +80,7 @@ fn main() -> glib::ExitCode {
     log::name_for(&app_id);
     log::install();
     log::set(settings::get().debug_log);
+    plugin::init(&app_id);
     // `loom <folder>`: that folder's project page (in the running window, if there is one).
     let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_open(|app, files, _| {

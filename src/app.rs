@@ -539,6 +539,16 @@ impl App {
             }
         });
         self.app.add_action(&overview_action);
+        // For the settings window: a file in loom's editor (Settings → Claude's Edit).
+        let open_action = gio::SimpleAction::new("open-file", Some(glib::VariantTy::STRING));
+        let weak = Rc::downgrade(self);
+        open_action.connect_activate(move |_, target| {
+            let (Some(app), Some(path)) = (weak.upgrade(), target.and_then(|t| t.get::<String>())) else { return };
+            app.window.present();
+            app.files.root.set_visible(true);
+            app.files.open_file(Path::new(&path));
+        });
+        self.app.add_action(&open_action);
 
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {

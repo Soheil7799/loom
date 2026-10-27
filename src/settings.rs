@@ -51,6 +51,9 @@ pub struct Settings {
     pub stt_language: String,
     /// Ctrl+Shift+O opens the file in this program (empty: the system's default app).
     pub editor: String,
+    /// The Notes add-on: on, and the vault it keeps notes in (empty: none chosen).
+    pub notes_enabled: bool,
+    pub notes_vault: String,
 }
 
 impl Default for Settings {
@@ -81,6 +84,8 @@ impl Default for Settings {
             stt_model: String::new(),
             stt_language: String::new(),
             editor: String::new(),
+            notes_enabled: false,
+            notes_vault: String::new(),
         }
     }
 }
@@ -185,6 +190,8 @@ fn parse(text: &str) -> Settings {
         stt_model: string("sttModel", &d.stt_model),
         stt_language: string("sttLanguage", &d.stt_language),
         editor: string("editor", &d.editor),
+        notes_enabled: flag("notesEnabled", d.notes_enabled),
+        notes_vault: string("notesVault", &d.notes_vault),
     }
 }
 
@@ -215,6 +222,8 @@ fn render(s: &Settings) -> String {
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
         "editor": s.editor,
+        "notesEnabled": s.notes_enabled,
+        "notesVault": s.notes_vault,
     }))
     .unwrap_or_default()
 }

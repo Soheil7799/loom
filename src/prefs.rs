@@ -1,5 +1,6 @@
-//! The settings window (Ctrl+,): General, Agents, Appearance, Telegram, Advanced. Every
-//! change is saved at once; Esc closes it.
+//! The settings window (Ctrl+,): General, Agents, Appearance, Claude, Advanced, and the
+//! add-ons (Notes, Telegram, Speech to text), each off until switched on. Every change is
+//! saved at once; Esc closes it.
 
 use std::rc::Rc;
 
@@ -20,14 +21,25 @@ const SCALES: &[(f64, &str)] = &[(0.9, "Small"), (1.0, "Normal"), (1.1, "Large")
 
 const IDLE: &[(u64, &str)] = &[(0, "Never"), (5, "After 5 min"), (15, "After 15 min"), (30, "After 30 min"), (60, "After 1 hour"), (120, "After 2 hours")];
 
-/// The pages: (name, title, icon).
-const PAGES: &[(&str, &str, &str)] = &[
-    ("general", "General", "preferences-system-symbolic"),
-    ("agents", "Agents", "system-users-symbolic"),
-    ("appearance", "Appearance", "applications-graphics-symbolic"),
-    ("telegram", "Telegram", "mail-send-symbolic"),
-    ("advanced", "Advanced", "utilities-terminal-symbolic"),
+/// The pages: (name, title, icon, an add-on's: listed under Add-ons).
+const PAGES: &[(&str, &str, &str, bool)] = &[
+    ("general", "General", "preferences-system-symbolic", false),
+    ("agents", "Agents", "system-users-symbolic", false),
+    ("appearance", "Appearance", "applications-graphics-symbolic", false),
+    ("claude", "Claude", "applications-engineering-symbolic", false),
+    ("advanced", "Advanced", "utilities-terminal-symbolic", false),
+    ("addons", "Add-ons", "application-x-addon-symbolic", false),
+    ("notes", "Notes", "accessories-text-editor-symbolic", true),
+    ("telegram", "Telegram", "mail-send-symbolic", true),
+    ("voice", "Speech to text", "audio-input-microphone-symbolic", true),
 ];
+
+/// The nav row of page `name` selected (its page shown).
+fn go_to(list: &gtk::ListBox, name: &str) {
+    if let Some(index) = PAGES.iter().position(|(n, ..)| *n == name) {
+        list.select_row(list.row_at_index(index as i32).as_ref());
+    }
+}
 
 pub fn open(parent: &impl IsA<gtk::Window>) {
     let s = settings::get();
@@ -43,12 +55,18 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     window.add_css_class("loom");
     window.add_css_class("prefs");
 
+    // The nav first: pages link to each other through it.
+    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).vexpand(true).build();
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(120).hexpand(true).build();
     stack.add_named(&page("General", &general(&s, &window)), Some("general"));
     stack.add_named(&page("Agents", &agents(&s, &window)), Some("agents"));
     stack.add_named(&page("Appearance", &appearance(&s)), Some("appearance"));
-    stack.add_named(&page("Telegram", &telegram(&s)), Some("telegram"));
+    stack.add_named(&page("Claude", &claude(&window)), Some("claude"));
     stack.add_named(&page("Advanced", &advanced(&s)), Some("advanced"));
+    stack.add_named(&page("Add-ons", &addons(&s, &list)), Some("addons"));
+    stack.add_named(&page("Notes", &notes(&s, &window)), Some("notes"));
+    stack.add_named(&page("Telegram", &telegram(&s)), Some("telegram"));
+    stack.add_named(&page("Speech to text", &voice(&s)), Some("voice"));
 
     // The pages, as loom's own sidebar lists agents.
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -57,16 +75,20 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     top.add_css_class("prefs-nav-title");
     top.add_css_class("prefs-nav-top");
     nav.append(&top);
-    let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).vexpand(true).build();
-    for (_, title, icon) in PAGES {
+    for (_, title, icon, addon) in PAGES {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         line.append(&gtk::Image::from_icon_name(icon));
         line.append(&gtk::Label::builder().label(*title).xalign(0.0).build());
         list.append(&line);
+        if *addon {
+            if let Some(row) = list.last_child() {
+                row.add_css_class("prefs-nav-sub");
+            }
+        }
     }
     let pages = stack.clone();
     list.connect_row_selected(move |_, row| {
-        if let Some((name, _, _)) = row.and_then(|r| PAGES.get(r.index() as usize)) {
+        if let Some((name, ..)) = row.and_then(|r| PAGES.get(r.index() as usize)) {
             pages.set_visible_child_name(name);
         }
     });
@@ -88,7 +110,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     body.append(&stack);
     window.set_child(Some(&body));
 
-    // Esc closes; Ctrl+PageUp/PageDown and Alt+1…5 change the page.
+    // Esc closes; Ctrl+PageUp/PageDown and Alt+1…9 change the page.
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let (w, nav_list) = (window.clone(), list.clone());
@@ -101,7 +123,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
         };
         let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
         let alt = modifiers.contains(gdk::ModifierType::ALT_MASK);
-        // The number row's 1…5 by position (evdev 2…6, +8): any layout.
+        // The number row's 1…9 by position (evdev 2…10, +8): any layout.
         let digit = (10..10 + PAGES.len() as u32).contains(&keycode).then(|| keycode - 9);
         match key {
             gdk::Key::Escape => w.close(),
@@ -541,8 +563,34 @@ fn advanced(s: &Settings) -> gtk::Box {
     );
     content.append(&program);
 
-    // Speech to text: the user's own service (Groq, OpenAI…) or a Whisper server of their own.
-    let voice = section("Speech to text");
+    let trouble = section("Troubleshooting");
+    let open = flat_button("Open folder");
+    open.set_visible(s.debug_log);
+    let log_switch = switch(s.debug_log, |s, on| s.debug_log = on);
+    let shown = open.clone();
+    log_switch.connect_active_notify(move |s| shown.set_visible(s.is_active()));
+    open.connect_clicked(|button| {
+        let file = gio::File::for_path(crate::log::path());
+        let window = button.root().and_downcast::<gtk::Window>();
+        gtk::FileLauncher::new(Some(&file)).open_containing_folder(window.as_ref(), None::<&gio::Cancellable>, |_| {});
+    });
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    controls.append(&open);
+    controls.append(&log_switch);
+    row(
+        &trouble,
+        "Debug log",
+        "What loom does, in detail, and its memory use every few minutes, in ~/.local/state/loom/debug.log. Holds parts of conversations; stays on this computer.",
+        &controls,
+    );
+    content.append(&trouble);
+    content
+}
+
+/// Speech to text: the user's own service (Groq, OpenAI…) or a Whisper server of their own.
+fn voice(s: &Settings) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let voice = section("");
     row(&voice, "Use speech to text", "The microphone in the message box, and voice messages sent to the Telegram bot.", &switch(s.stt_enabled, |s, on| s.stt_enabled = on));
     let url = gtk::Entry::builder().text(&s.stt_url).placeholder_text("https://api.groq.com/openai/v1  ·  http://127.0.0.1:8000/v1").build();
     url.add_css_class("mono");
@@ -582,27 +630,233 @@ fn advanced(s: &Settings) -> gtk::Box {
     row(&voice, "Check it", "Sends a second of silence to the address.", &test_line);
     caption(&voice, "What you record goes to the address above, and nowhere else.");
     content.append(&voice);
-
-    let trouble = section("Troubleshooting");
-    let open = flat_button("Open folder");
-    open.set_visible(s.debug_log);
-    let log_switch = switch(s.debug_log, |s, on| s.debug_log = on);
-    let shown = open.clone();
-    log_switch.connect_active_notify(move |s| shown.set_visible(s.is_active()));
-    open.connect_clicked(|button| {
-        let file = gio::File::for_path(crate::log::path());
-        let window = button.root().and_downcast::<gtk::Window>();
-        gtk::FileLauncher::new(Some(&file)).open_containing_folder(window.as_ref(), None::<&gio::Cancellable>, |_| {});
-    });
-    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
-    controls.append(&open);
-    controls.append(&log_switch);
-    row(
-        &trouble,
-        "Debug log",
-        "What loom does, in detail, and its memory use every few minutes, in ~/.local/state/loom/debug.log. Holds parts of conversations; stays on this computer.",
-        &controls,
-    );
-    content.append(&trouble);
     content
+}
+
+/// The add-ons, each off until switched on on its own page.
+fn addons(s: &Settings, list: &gtk::ListBox) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let all = section("");
+    let entries: [(&str, &str, &str, bool); 3] = [
+        ("notes", "Notes", "Keeps what you tell your agents in a vault of notes, by topic (finances, work, study…). The vault opens in Obsidian too.", s.notes_enabled),
+        ("telegram", "Telegram", "Your agents in a Telegram bot of your own: their replies, your messages, their questions.", s.telegram_enabled),
+        ("voice", "Speech to text", "Talk instead of typing, through a transcription service you choose.", s.stt_enabled),
+    ];
+    for (name, title, detail, on) in entries {
+        let state = gtk::Label::new(None);
+        state.add_css_class("small");
+        let show = |state: &gtk::Label, on: bool| {
+            state.set_label(if on { "On" } else { "Off" });
+            if on {
+                state.add_css_class("addon-on");
+                state.remove_css_class("dim");
+            } else {
+                state.add_css_class("dim");
+                state.remove_css_class("addon-on");
+            }
+        };
+        show(&state, on);
+        // Switched on or off on its page while this window is open: told here too.
+        let weak = state.downgrade();
+        settings::on_change(move |s| {
+            if let Some(state) = weak.upgrade() {
+                show(&state, match name {
+                    "notes" => s.notes_enabled,
+                    "telegram" => s.telegram_enabled,
+                    _ => s.stt_enabled,
+                });
+            }
+        });
+        let open = flat_button("Open");
+        let (list, page) = (list.clone(), name);
+        open.connect_clicked(move |_| go_to(&list, page));
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        controls.append(&state);
+        controls.append(&open);
+        row(&all, title, detail, &controls);
+    }
+    caption(&all, "Each one is off until you switch it on, and keeps its settings on its own page.");
+    content.append(&all);
+    content
+}
+
+/// The Notes add-on: on or off, and its vault.
+fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let main = section("");
+    row(&main, "Use Notes", "What you tell your agents is kept in the vault below, sorted by topic.", &switch(s.notes_enabled, |s, on| s.notes_enabled = on));
+
+    let path = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
+    let state = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(60).build();
+    state.add_css_class("dim");
+    state.add_css_class("small");
+    let show = {
+        let (path, state) = (path.clone(), state.clone());
+        move |vault: &str| {
+            path.set_css_classes(if vault.is_empty() { &["dim"] } else { &["mono"] });
+            if vault.is_empty() {
+                path.set_label("None chosen");
+                state.set_label("Choose an empty folder for a new vault, or a vault you have.");
+            } else {
+                path.set_label(vault);
+                state.set_label(&crate::vault::describe(&crate::vault::inspect(&crate::state::expand(std::path::Path::new(vault)))));
+            }
+        }
+    };
+    show(&s.notes_vault);
+    let choose = flat_button("Choose…");
+    let w = window.clone();
+    choose.connect_clicked(move |_| {
+        let dialog = gtk::FileDialog::builder().title("A folder for the vault").modal(true).build();
+        let current = settings::get().notes_vault;
+        if !current.is_empty() {
+            dialog.set_initial_folder(Some(&gio::File::for_path(crate::state::expand(std::path::Path::new(&current)))));
+        }
+        let show = show.clone();
+        dialog.select_folder(Some(&w), None::<&gio::Cancellable>, move |result| {
+            let Some(folder) = result.ok().and_then(|f| f.path()) else { return };
+            let chosen = folder.to_string_lossy().into_owned();
+            settings::update(|s| s.notes_vault = chosen.clone());
+            show(&chosen);
+        });
+    });
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    line.append(&path);
+    line.append(&choose);
+    let place = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    place.append(&line);
+    place.append(&state);
+    row_stacked(&main, "Vault", "A folder Obsidian can open as a vault. Your notes stay plain Markdown files there.", &place);
+    caption(&main, "Nothing is written to the vault yet in this version.");
+    content.append(&main);
+    content
+}
+
+/// loom's own Claude folder: skills, agents and commands for loom's agents only.
+fn claude(window: &gtk::Window) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    content.append(&holder);
+    fill_claude(&holder, window);
+    content
+}
+
+/// (Re)builds the Claude page's sections (after a change to the folder).
+fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
+    while let Some(child) = holder.first_child() {
+        holder.remove(&child);
+    }
+    let refill = {
+        let (holder, window) = (holder.downgrade(), window.downgrade());
+        move || {
+            if let (Some(holder), Some(window)) = (holder.upgrade(), window.upgrade()) {
+                fill_claude(&holder, &window);
+            }
+        }
+    };
+    let edit = |file: std::path::PathBuf| {
+        let w = window.clone();
+        move |_: &gtk::Button| {
+            // While still attached to the app (closed, it no longer reaches its actions).
+            let _ = w.activate_action("app.open-file", Some(&file.to_string_lossy().to_variant()));
+            w.close();
+        }
+    };
+
+    let folder = section("Folder");
+    let where_ = gtk::Label::builder().label(crate::plugin::dir().to_string_lossy()).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
+    where_.add_css_class("mono");
+    let open = flat_button("Open folder");
+    open.connect_clicked(|button| {
+        let window = button.root().and_downcast::<gtk::Window>();
+        gtk::FileLauncher::new(Some(&gio::File::for_path(crate::plugin::dir()))).launch(window.as_ref(), None::<&gio::Cancellable>, |_| {});
+    });
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    line.append(&where_);
+    line.append(&open);
+    row_stacked(&folder, "Where", "Skills, agents, commands and hooks only loom's agents use; claude in a terminal doesn't load them.", &line);
+    caption(&folder, "Changes reach agents started or woken from now on.");
+    holder.append(&folder);
+
+    for kind in crate::plugin::Kind::ALL {
+        let group = section(kind.title());
+        for item in crate::plugin::items(kind) {
+            let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            if item.shipped {
+                let restore = flat_button("Restore");
+                restore.set_tooltip_text(Some("Put back loom's own version"));
+                let (name, refill) = (item.name.clone(), refill.clone());
+                restore.connect_clicked(move |_| {
+                    if crate::plugin::restore(&name).is_ok() {
+                        refill();
+                    }
+                });
+                controls.append(&restore);
+            }
+            let edit_button = flat_button("Edit");
+            edit_button.set_sensitive(item.enabled);
+            edit_button.connect_clicked(edit(item.file.clone()));
+            controls.append(&edit_button);
+            let on = gtk::Switch::builder().active(item.enabled).valign(gtk::Align::Center).build();
+            let (item_now, refill) = (item.clone(), refill.clone());
+            on.connect_active_notify(move |on| {
+                if on.is_active() != item_now.enabled && crate::plugin::set_enabled(&item_now, on.is_active()).is_ok() {
+                    // Rebuilt after the switch has finished moving.
+                    let refill = refill.clone();
+                    glib::idle_add_local_once(move || refill());
+                }
+            });
+            controls.append(&on);
+            row(&group, &item.name, &short(&item.description), &controls);
+        }
+        // A new one: its name, then its file opens in loom's editor.
+        let name = gtk::Entry::builder().placeholder_text("name").width_chars(16).build();
+        name.add_css_class("mono");
+        let create = flat_button("Create");
+        let problem = gtk::Label::builder().xalign(0.0).visible(false).build();
+        problem.add_css_class("small");
+        problem.add_css_class("error");
+        let make = {
+            let (name, problem, w) = (name.clone(), problem.clone(), window.clone());
+            move || match crate::plugin::create(kind, &name.text()) {
+                Ok(file) => {
+                    let _ = w.activate_action("app.open-file", Some(&file.to_string_lossy().to_variant()));
+                    w.close();
+                }
+                Err(why) => {
+                    problem.set_label(&why);
+                    problem.set_visible(true);
+                }
+            }
+        };
+        let again = make.clone();
+        create.connect_clicked(move |_| again());
+        name.connect_activate(move |_| make());
+        let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        controls.append(&problem);
+        controls.append(&name);
+        controls.append(&create);
+        row(&group, &format!("New {}", kind.one()), "", &controls);
+        holder.append(&group);
+    }
+
+    let hooks = section("Hooks");
+    let edit_hooks = flat_button("Edit");
+    edit_hooks.connect_clicked(edit(crate::plugin::hooks_file()));
+    row(&hooks, "hooks.json", "Commands run on Claude Code's events (a tool used, a turn ended), for loom's agents only.", &edit_hooks);
+    holder.append(&hooks);
+}
+
+/// A description as a row shows it: the first sentence, at most two lines' worth.
+fn short(description: &str) -> String {
+    if description.is_empty() {
+        return "No description.".to_owned();
+    }
+    let first = description.split_inclusive(". ").next().unwrap_or(description).trim_end();
+    let first = first.split(" (").next().unwrap_or(first);
+    if first.chars().count() <= 110 {
+        return first.to_owned();
+    }
+    let cut: String = first.chars().take(108).collect();
+    format!("{}…", cut.trim_end())
 }

@@ -443,3 +443,9 @@ button.awake { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px
 button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
 /* Suspended agents in the cards: dimmer (running ones stand out). */
 .agent-title.resting { opacity: 0.6; }
+
+/* Settings: the add-ons listed under "Add-ons" in the nav. */
+.prefs-nav row.prefs-nav-sub { padding-left: 26px; }
+.prefs-nav row.prefs-nav-sub label { font-size: 0.95em; }
+label.addon-on { color: @loom_ok; font-weight: 600; }
+.prefs-page label.error { color: @loom_err; }

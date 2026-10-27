@@ -640,7 +640,12 @@ impl Agent {
 
     /// The session's parameters: folder, loom's MCP server, the extra folders.
     fn session_params(&self) -> Value {
-        let mut params = json!({ "cwd": self.cwd.to_string_lossy(), "mcpServers": self.mcp_servers() });
+        // loom's own Claude folder (skills, agents, commands, hooks for its agents only).
+        let mut params = json!({
+            "cwd": self.cwd.to_string_lossy(),
+            "mcpServers": self.mcp_servers(),
+            "_meta": { "claudeCode": { "options": { "plugins": crate::plugin::session_plugins() } } },
+        });
         let dirs = self.dirs.borrow();
         if !dirs.is_empty() {
             params["additionalDirectories"] = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>().into();
@@ -892,7 +897,7 @@ impl Agent {
         let mut params = self.session_params();
         params["sessionId"] = session.into();
         if let Some(at) = &at {
-            params["_meta"] = json!({ "jetbrains": { "air": { "fork": { "version": 1, "messageId": at } } } });
+            params["_meta"]["jetbrains"] = json!({ "air": { "fork": { "version": 1, "messageId": at } } });
         }
         let weak = Rc::downgrade(self);
         let title = format!("{} (copy)", self.title());

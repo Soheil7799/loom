@@ -1,8 +1,7 @@
 #!/usr/bin/env bash
 # Install loom for the current user: ~/.local/bin/loom (from a release, its bin/loom; from
-# a checkout, built first), its desktop entry and icon, the ACP adapter it drives (npm, into ~/.local/share/loom/adapter), and the
-# `loom` skill that teaches Claude Code its tools (~/.claude/skills/loom).
-# LOOM_SKILL=0 skips the skill.
+# a checkout, built first), its desktop entry and icon, and the ACP adapter it drives (npm,
+# into ~/.local/share/loom/adapter). loom keeps its own skills in ~/.config/loom/claude.
 set -euo pipefail
 cd "$(dirname "$0")"
 
@@ -10,7 +9,6 @@ bindir="$HOME/.local/bin"
 apps="$HOME/.local/share/applications"
 icons="$HOME/.local/share/icons/hicolor/scalable/apps"
 adapter="$HOME/.local/share/loom/adapter"
-skills="$HOME/.claude/skills/loom"
 # The adapter version loom was tested against.
 acp_version="${LOOM_ACP_VERSION:-0.95.0}"
 
@@ -33,7 +31,8 @@ if [[ "$installed" != "$acp_version" ]]; then
     (cd "$adapter" && { [[ -f package.json ]] || npm init -y >/dev/null; } && npm i --ignore-scripts "@agentclientprotocol/claude-agent-acp@$acp_version")
 fi
 
-if [[ "${LOOM_SKILL:-1}" == 1 ]]; then
-    install -Dm644 data/skill/SKILL.md "$skills/SKILL.md"
+# Older versions put the loom skill in ~/.claude/skills; loom now brings its own.
+if [[ -f "$HOME/.claude/skills/loom/SKILL.md" ]]; then
+    echo "loom now keeps its skill in ~/.config/loom/claude: ~/.claude/skills/loom can be deleted."
 fi
 echo "Installed $bindir/loom"

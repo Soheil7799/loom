@@ -38,8 +38,12 @@ a project may hold several git repos.
 ## Agents know about loom
 
 Agents get loom's own MCP server (`loom mcp`). Through it they run long commands as jobs in
-the tray, wait on them, read their output, and open files for you. The `loom` skill, installed
-into `~/.claude/skills/loom`, tells Claude Code when to use these tools.
+the tray, wait on them, read their output, and open files for you. The `loom` skill tells
+Claude Code when to use these tools.
+
+loom has its own Claude folder, `~/.config/loom/claude`: skills, agents, commands and hooks
+that only loom's agents load (`claude` in a terminal doesn't). Settings → Claude lists them,
+switches them on and off, and opens them in loom's editor.
 
 ## Install
 
@@ -68,7 +72,6 @@ With Rust installed, run `./install.sh` in a checkout; it builds loom first (wit
 
 - `loom` into `~/.local/bin`, with a desktop entry and an icon;
 - the ACP adapter into `~/.local/share/loom/adapter`;
-- the `loom` skill into `~/.claude/skills/loom` (`LOOM_SKILL=0 ./install.sh` skips it).
 
 ## Use
 
