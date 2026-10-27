@@ -109,6 +109,20 @@ fn reload() {
             None => false,
         })
     });
+    let listeners = LISTENERS.with(|l| l.borrow().clone());
+    for listener in listeners {
+        listener();
+    }
+}
+
+thread_local! {
+    /// Told when the theme's colours change (after the new ones are in).
+    static LISTENERS: std::cell::RefCell<Vec<std::rc::Rc<dyn Fn()>>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// `f` runs whenever the theme's colours change.
+pub fn on_change(f: impl Fn() + 'static) {
+    LISTENERS.with(|l| l.borrow_mut().push(std::rc::Rc::new(f)));
 }
 
 /// Every terminal takes `font` (from the settings).

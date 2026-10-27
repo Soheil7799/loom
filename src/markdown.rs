@@ -31,7 +31,10 @@ pub fn typed_segments(markdown: &str) -> Vec<Segment> {
         if trimmed.starts_with("```") {
             fenced = !fenced;
         }
+        // 3+ of - * _ draw a line; shorter, or =, would make a heading of the line above.
         let rule = !fenced && trimmed.len() >= 3 && ["-", "*", "_"].iter().any(|c| trimmed.chars().all(|x| x.to_string() == *c));
+        let underline = !fenced && !trimmed.is_empty() && (trimmed.chars().all(|c| c == '=') || trimmed.chars().all(|c| c == '-'));
+        let rule = rule || underline;
         if rule && lines.last().is_some_and(|l| !l.trim().is_empty()) {
             lines.push("");
         }
@@ -255,6 +258,11 @@ mod typed_tests {
         assert_eq!(out[1], Segment::Rule);
         let Segment::Text(markup) = &out[0] else { panic!("{out:?}") };
         assert!(!markup.contains("<span size"), "{markup}");
+        // Short underlines too: never a heading.
+        let out = typed_segments("thanks\n--");
+        assert!(out.iter().all(|s| !matches!(s, Segment::Text(m) if m.contains("<span size"))), "{out:?}");
+        let out = typed_segments("total\n=");
+        assert!(out.iter().all(|s| !matches!(s, Segment::Text(m) if m.contains("<span size"))), "{out:?}");
         // Their line breaks stay.
         let Segment::Text(markup) = &typed_segments("one\ntwo")[0] else { panic!() };
         assert_eq!(markup, "one\ntwo");

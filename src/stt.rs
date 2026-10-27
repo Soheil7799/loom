@@ -51,10 +51,11 @@ fn request(url: &str, key: &str, model: &str, language: &str, audio: &[u8], name
     let mut field = |name: &str, value: &str| {
         body.extend_from_slice(format!("--{boundary}\r\nContent-Disposition: form-data; name=\"{name}\"\r\n\r\n{value}\r\n").as_bytes());
     };
-    if model.is_empty() {
-        return Err("no model set (Settings → Advanced → Speech to text)".to_owned());
+    // None given: none sent (a local Whisper server picks its own; Groq and OpenAI say they
+    // need one).
+    if !model.is_empty() {
+        field("model", model);
     }
-    field("model", model);
     field("response_format", "json");
     if !language.is_empty() {
         field("language", language);
@@ -117,10 +118,13 @@ static TAKES: AtomicU32 = AtomicU32::new(0);
 pub fn record() -> Result<Recording, String> {
     let dir = crate::state::dir().join("voice");
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    // What a loom that ended mid-recording left behind (another process's): gone.
+    // What a loom that ended mid-recording left behind: another process's, over an hour old
+    // (another loom recording now keeps its file).
     let me = format!("{}-", std::process::id());
+    let hour = Duration::from_secs(3600);
     for entry in std::fs::read_dir(&dir).into_iter().flatten().flatten() {
-        if !entry.file_name().to_string_lossy().starts_with(&me) {
+        let old = entry.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > hour);
+        if !entry.file_name().to_string_lossy().starts_with(&me) && old {
             let _ = std::fs::remove_file(entry.path());
         }
     }

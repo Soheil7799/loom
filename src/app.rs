@@ -646,8 +646,8 @@ impl App {
             (false, false, true, gdk::Key::Up) => self.step(-1),
             (false, false, true, gdk::Key::Down) => self.step(1),
             (false, false, true, gdk::Key::Left | gdk::Key::Right) => self.swap(),
-            (true, false, false, gdk::Key::Tab) => self.step(1),
-            (true, true, false, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) => self.step(-1),
+            (true, false, false, gdk::Key::Tab) => self.cycle(1),
+            (true, true, false, gdk::Key::Tab | gdk::Key::ISO_Left_Tab) => self.cycle(-1),
             (true, true, false, gdk::Key::p) => self.palette(),
             // Everything else belongs to a focused terminal (Ctrl+W, Ctrl+K… mean something there).
             _ if in_terminal => return glib::Propagation::Proceed,
@@ -1391,14 +1391,34 @@ impl App {
         }
     }
 
-    fn step(self: &Rc<Self>, by: i32) {
-        let agents = if settings::get().cycle_running { self.running_agents() } else { self.agents_in_order() };
+    /// Ctrl+Tab: through the Running list (stopped ones skipped: passing must wake nothing), or
+    /// the sidebar's order when that setting is off. Nothing running: the one last looked at.
+    fn cycle(self: &Rc<Self>, by: i32) {
+        if !settings::get().cycle_running {
+            self.step(by);
+            return;
+        }
+        let agents: Vec<Rc<Agent>> = self.running_agents().into_iter().filter(|a| a.status() != Status::Failed).collect();
         if agents.is_empty() {
-            // None running: the one last looked at, woken (the user asked for one).
             let last = self.previous.borrow().clone().or_else(|| self.agents_in_order().first().cloned());
             if let Some(agent) = last {
                 self.focus(&agent);
             }
+            return;
+        }
+        // From where the focused one is; from outside the list, the first (or the last).
+        let next = match self.focused.borrow().as_ref().and_then(|f| agents.iter().position(|a| Rc::ptr_eq(a, f))) {
+            Some(at) => (at as i32 + by).rem_euclid(agents.len() as i32) as usize,
+            None if by > 0 => 0,
+            None => agents.len() - 1,
+        };
+        self.focus(&agents[next]);
+    }
+
+    /// Alt+↑/↓, Ctrl+B j/k: the next agent as the sidebar shows them.
+    fn step(self: &Rc<Self>, by: i32) {
+        let agents = self.agents_in_order();
+        if agents.is_empty() {
             return;
         }
         let current = self.focused.borrow().as_ref().and_then(|f| agents.iter().position(|a| Rc::ptr_eq(a, f))).unwrap_or(0) as i32;
@@ -2439,9 +2459,11 @@ impl App {
 
     fn refresh_sidebar(self: &Rc<Self>) {
         self.refresh_title();
-        // Rebuilt in place: the list stays scrolled where it was.
+        // Rebuilt in place: the list stays scrolled where it was (the projects where they were,
+        // whatever the Running list above them gained or lost).
         let scroll = self.list.parent().and_then(|v| v.parent()).and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment());
         let kept = scroll.as_ref().map(|a| a.value());
+        let projects_were = self.projects_top();
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
@@ -2524,8 +2546,25 @@ impl App {
         self.mark_active();
         if let (Some(adjustment), Some(value)) = (scroll, kept) {
             adjustment.set_value(value);
-            glib::idle_add_local_once(move || adjustment.set_value(value));
+            let weak = Rc::downgrade(self);
+            glib::idle_add_local_once(move || {
+                // At the top it stays at the top (a Running list appearing there is to be seen).
+                let shift = if value <= 0.0 { 0.0 } else { weak.upgrade().and_then(|app| Some(app.projects_top()? - projects_were?)).unwrap_or(0.0) };
+                adjustment.set_value(value + shift);
+            });
         }
+    }
+
+    /// Where the first project's card starts in the sidebar list (None before it is laid out).
+    fn projects_top(&self) -> Option<f64> {
+        let mut child = self.list.first_child();
+        while let Some(row) = child {
+            if row.has_css_class("project-row") {
+                return row.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| f64::from(p.y()));
+            }
+            child = row.next_sibling();
+        }
+        None
     }
 
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.

@@ -59,6 +59,8 @@ pub struct Chat {
     options: gtk::Box,
     show_thinking: Cell<bool>,
     placeholder: gtk::Label,
+    /// The input's Markdown marks are due (they follow typing, after a pause).
+    markdown_due: Cell<bool>,
     /// What Claude Code predicts you will send next (shown in the empty input; → or Tab
     /// fills it in).
     suggestion: RefCell<Option<String>>,
@@ -481,6 +483,7 @@ impl Chat {
             show_thinking: Cell::new(true),
             placeholder,
             suggestion: RefCell::default(),
+            markdown_due: Cell::new(false),
             send: send.clone(),
             mic: mic.clone(),
             recording: RefCell::default(),
@@ -894,9 +897,26 @@ impl Chat {
 
         let weak = Rc::downgrade(self);
         markdown_tags(&self.input);
+        // The theme's colours change live: the tags' tints with them.
+        let view = self.input.downgrade();
+        crate::theme::on_change(move || {
+            if let Some(view) = view.upgrade() {
+                markdown_tags(&view);
+            }
+        });
+        self.input.connect_map(markdown_tags);
         self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
-                mark_markdown(buffer);
+                // Marked once typing pauses for a moment (a long paste is not re-marked per key).
+                if !chat.markdown_due.replace(true) {
+                    let (weak, buffer) = (Rc::downgrade(&chat), buffer.clone());
+                    glib::timeout_add_local_once(Duration::from_millis(120), move || {
+                        if let Some(chat) = weak.upgrade() {
+                            chat.markdown_due.set(false);
+                            mark_markdown(&buffer);
+                        }
+                    });
+                }
                 chat.placeholder.set_visible(buffer.char_count() == 0);
                 // Typed something of one's own: the prediction is not wanted.
                 if buffer.char_count() > 0 && chat.suggestion.borrow().as_deref().is_some_and(|s| buffer.text(&buffer.start_iter(), &buffer.end_iter(), false) != s) {
@@ -1582,8 +1602,12 @@ impl Chat {
         }
         let all: Vec<&Value> = options.as_array().into_iter().flatten().filter(|o| o["id"].as_str().is_some_and(|id| id != "mode")).collect();
         // Speed goes in effort's chip (and menu) when there is an effort to go with.
-        let effort = all.iter().find(|o| o["id"] == "effort" || o["category"] == "thought_level").copied();
-        let fast = all.iter().find(|o| o["id"] == "fast" || o["category"] == "model_config").copied();
+        let choices = |o: &&Value| !flat_values(&o["options"]).is_empty();
+        let effort = all.iter().find(|o| (o["id"] == "effort" || o["category"] == "thought_level") && choices(o)).copied();
+        let fast = all
+            .iter()
+            .find(|o| (o["id"] == "fast" || o["name"].as_str().is_some_and(|n| n.starts_with("Fast"))) && choices(o))
+            .copied();
         let joined = effort.is_some() && fast.is_some();
         for option in &all {
             let id = option["id"].as_str().unwrap_or("");
@@ -3475,6 +3499,19 @@ fn markdown_tags(view: &gtk::TextView) {
     let fg = view.color();
     let tint = |alpha: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), alpha);
     let table = view.buffer().tag_table();
+    // Again (the theme changed): the tints only.
+    if let Some(code) = table.lookup("md-code") {
+        code.set_background_rgba(Some(&tint(0.09)));
+        for (name, alpha) in [("md-mark", 0.4), ("md-quote", 0.7)] {
+            if let Some(tag) = table.lookup(name) {
+                tag.set_foreground_rgba(Some(&tint(alpha)));
+            }
+        }
+        if let Some(block) = table.lookup("md-block") {
+            block.set_paragraph_background_rgba(Some(&tint(0.07)));
+        }
+        return;
+    }
     let add = |tag: gtk::TextTag| {
         table.add(&tag);
     };
@@ -3493,6 +3530,10 @@ fn mark_markdown(buffer: &gtk::TextBuffer) {
     let (start, end) = buffer.bounds();
     for name in ["md-code", "md-block", "md-mark", "md-bold", "md-italic", "md-heading", "md-quote"] {
         buffer.remove_tag_by_name(name, &start, &end);
+    }
+    // Something pasted that long is not prose to mark (and would make typing slow).
+    if buffer.char_count() > 20_000 {
+        return;
     }
     let text = buffer.text(&start, &end, false).to_string();
     let apply = |name: &str, from: usize, to: usize| {
