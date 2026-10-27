@@ -63,7 +63,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
         // As if typed and sent: attachments waiting in the composer go with it.
-        "prompt" => app.focused_agent().ok_or("no agent")?.chat.send_text(argument),
+        "prompt" => app.focused_agent().ok_or("no agent")?.chat.send_text(&argument.replace("\\n", "\n")),
         "latest" => {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;
@@ -139,7 +139,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             collect(app.window.upcast_ref(), &test, &mut found);
             found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
         }
-        "type" => app.focused_agent().ok_or("no agent")?.chat.input.buffer().set_text(argument),
+        // "\n" in it: a line break (the control file is a line each).
+        "type" => app.focused_agent().ok_or("no agent")?.chat.input.buffer().set_text(&argument.replace("\\n", "\n")),
         "plancomment" => {
             let entry = find(app.window.upcast_ref(), &|w| w.has_css_class("plan-comment")).and_downcast::<gtk::Entry>().ok_or("no comment field")?;
             entry.set_text(argument);

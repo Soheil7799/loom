@@ -1372,6 +1372,7 @@ impl Files {
                 crate::markdown::Segment::Text(markup) => self.reader.append(&crate::chat::text_label(&markup)),
                 crate::markdown::Segment::Code { code, .. } => self.reader.append(&crate::chat::code_label(&code)),
                 crate::markdown::Segment::Table(rows) => self.reader.append(&crate::chat::table_view(&rows)),
+                crate::markdown::Segment::Rule => self.reader.append(&crate::chat::rule_view()),
             }
         }
     }

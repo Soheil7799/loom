@@ -893,8 +893,10 @@ impl Chat {
         });
 
         let weak = Rc::downgrade(self);
+        markdown_tags(&self.input);
         self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
+                mark_markdown(buffer);
                 chat.placeholder.set_visible(buffer.char_count() == 0);
                 // Typed something of one's own: the prediction is not wanted.
                 if buffer.char_count() > 0 && chat.suggestion.borrow().as_deref().is_some_and(|s| buffer.text(&buffer.start_iter(), &buffer.end_iter(), false) != s) {
@@ -2309,6 +2311,7 @@ impl Chat {
                         }
                         Segment::Code { code, .. } => (code_label(&code).upcast(), code.clone()),
                         Segment::Table(rows) => (table_view(&rows).upcast(), rows.iter().map(|r| r.join(" | ")).collect::<Vec<_>>().join("\n")),
+                        Segment::Rule => (rule_view().upcast(), "---".to_owned()),
                     };
                     let index = comments.borrow().len();
                     comments.borrow_mut().push((quote, String::new()));
@@ -2858,7 +2861,21 @@ impl Message {
                 line.add_css_class("shell-line");
                 self.body.append(&line);
             }
-            if !rest.trim().is_empty() {
+            if rest.trim().is_empty() {
+                return;
+            }
+            // Thinking as written; what the user sent as Markdown (code boxes, lines, lists…),
+            // their line breaks kept.
+            if self.kind == Kind::User {
+                for segment in markdown::typed_segments(rest.trim()) {
+                    match segment {
+                        Segment::Text(markup) => self.body.append(&text_label(&markup)),
+                        Segment::Code { code, .. } => self.body.append(&code_label(&code)),
+                        Segment::Table(rows) => self.body.append(&table_view(&rows)),
+                        Segment::Rule => self.body.append(&rule_view()),
+                    }
+                }
+            } else {
                 self.body.append(&text_label(&glib::markup_escape_text(rest.trim())));
             }
             return;
@@ -2868,6 +2885,7 @@ impl Message {
                 Segment::Text(markup) => self.body.append(&text_label(&markup)),
                 Segment::Code { code, .. } => self.body.append(&code_label(&code)),
                 Segment::Table(rows) => self.body.append(&table_view(&rows)),
+                Segment::Rule => self.body.append(&rule_view()),
             }
         }
     }
@@ -3173,6 +3191,7 @@ impl ToolCard {
                                 Segment::Text(markup) => self.detail.append(&text_label(&markup)),
                                 Segment::Code { code, .. } => self.detail.append(&code_label(&code)),
                                 Segment::Table(rows) => self.detail.append(&table_view(&rows)),
+                                Segment::Rule => self.detail.append(&rule_view()),
                             }
                         }
                     }
@@ -3441,6 +3460,116 @@ pub(crate) fn code_label(code: &str) -> gtk::Overlay {
     overlay.add_css_class("code-wrap");
     overlay.add_overlay(&copy);
     overlay
+}
+
+/// A line across, for `---`.
+pub fn rule_view() -> gtk::Separator {
+    let rule = gtk::Separator::new(gtk::Orientation::Horizontal);
+    rule.add_css_class("md-rule");
+    rule
+}
+
+/// The input's tags for Markdown as typed: code (inline and blocks), the marks themselves
+/// (dim), bold, italics, headings, rules and quotes.
+fn markdown_tags(view: &gtk::TextView) {
+    let fg = view.color();
+    let tint = |alpha: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), alpha);
+    let table = view.buffer().tag_table();
+    let add = |tag: gtk::TextTag| {
+        table.add(&tag);
+    };
+    add(gtk::TextTag::builder().name("md-code").family("JetBrains Mono").background_rgba(&tint(0.09)).build());
+    add(gtk::TextTag::builder().name("md-block").family("JetBrains Mono").paragraph_background_rgba(&tint(0.07)).build());
+    add(gtk::TextTag::builder().name("md-mark").foreground_rgba(&tint(0.4)).build());
+    add(gtk::TextTag::builder().name("md-bold").weight(700).build());
+    add(gtk::TextTag::builder().name("md-italic").style(pango::Style::Italic).build());
+    add(gtk::TextTag::builder().name("md-heading").weight(700).scale(1.15).build());
+    add(gtk::TextTag::builder().name("md-quote").style(pango::Style::Italic).foreground_rgba(&tint(0.7)).build());
+}
+
+/// Marks what is typed as Markdown: fenced blocks, `code`, **bold**, *italics*, # headings,
+/// --- rules and > quotes (the marks dim, as in an editor that knows it).
+fn mark_markdown(buffer: &gtk::TextBuffer) {
+    let (start, end) = buffer.bounds();
+    for name in ["md-code", "md-block", "md-mark", "md-bold", "md-italic", "md-heading", "md-quote"] {
+        buffer.remove_tag_by_name(name, &start, &end);
+    }
+    let text = buffer.text(&start, &end, false).to_string();
+    let apply = |name: &str, from: usize, to: usize| {
+        if to > from {
+            buffer.apply_tag_by_name(name, &buffer.iter_at_offset(from as i32), &buffer.iter_at_offset(to as i32));
+        }
+    };
+    let mut at = 0usize;
+    let mut fenced = false;
+    for line in text.split('\n') {
+        let chars: Vec<char> = line.chars().collect();
+        let n = chars.len();
+        let lead = chars.iter().take_while(|c| c.is_whitespace()).count();
+        let rest: String = chars[lead..].iter().collect();
+        if rest.starts_with("```") {
+            apply("md-block", at, at + n);
+            apply("md-mark", at, at + n);
+            fenced = !fenced;
+        } else if fenced {
+            apply("md-block", at, at + n);
+        } else if rest.starts_with('#') && rest.trim_start_matches('#').starts_with(' ') {
+            let hashes = rest.chars().take_while(|c| *c == '#').count();
+            apply("md-mark", at + lead, at + lead + hashes);
+            apply("md-heading", at + lead + hashes, at + n);
+        } else if rest.len() >= 3 && (rest.chars().all(|c| c == '-') || rest.chars().all(|c| c == '*') || rest.chars().all(|c| c == '_')) {
+            apply("md-mark", at, at + n);
+        } else if rest.starts_with('>') {
+            apply("md-mark", at + lead, at + lead + 1);
+            apply("md-quote", at + lead + 1, at + n);
+        } else {
+            // Inline: `code` first (nothing inside it counts), then **bold**, then *italics*.
+            let mut code = vec![false; n];
+            let mut i = 0;
+            while i < n {
+                if chars[i] == '`'
+                    && let Some(close) = (i + 1..n).find(|j| chars[*j] == '`')
+                {
+                    apply("md-mark", at + i, at + i + 1);
+                    apply("md-code", at + i + 1, at + close);
+                    apply("md-mark", at + close, at + close + 1);
+                    code[i..=close].iter_mut().for_each(|c| *c = true);
+                    i = close + 1;
+                    continue;
+                }
+                i += 1;
+            }
+            let mut i = 0;
+            while i + 1 < n {
+                if !code[i] && chars[i] == '*' && chars[i + 1] == '*'
+                    && let Some(close) = (i + 2..n.saturating_sub(1)).find(|j| !code[*j] && chars[*j] == '*' && chars[*j + 1] == '*')
+                    && close > i + 2
+                {
+                    apply("md-mark", at + i, at + i + 2);
+                    apply("md-bold", at + i + 2, at + close);
+                    apply("md-mark", at + close, at + close + 2);
+                    i = close + 2;
+                    continue;
+                }
+                i += 1;
+            }
+            let mut i = 0;
+            while i < n {
+                let lone = |j: usize| chars[j] == '*' && (j == 0 || chars[j - 1] != '*') && (j + 1 >= n || chars[j + 1] != '*');
+                if !code[i] && lone(i) && i + 1 < n && !chars[i + 1].is_whitespace()
+                    && let Some(close) = (i + 2..n).find(|j| !code[*j] && lone(*j) && !chars[*j - 1].is_whitespace())
+                {
+                    apply("md-mark", at + i, at + i + 1);
+                    apply("md-italic", at + i + 1, at + close);
+                    apply("md-mark", at + close, at + close + 1);
+                    i = close + 1;
+                    continue;
+                }
+                i += 1;
+            }
+        }
+        at += n + 1;
+    }
 }
 
 /// Whether a setting is at its default: "default", "off", or a choice named "Default…".

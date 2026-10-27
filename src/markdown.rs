@@ -12,9 +12,35 @@ pub enum Segment {
     Code { lang: String, code: String },
     /// Rows of cells (Pango markup), the first one the header.
     Table(Vec<Vec<String>>),
+    /// A line across (`---`).
+    Rule,
 }
 
 pub fn segments(markdown: &str) -> Vec<Segment> {
+    segments_with(markdown, false)
+}
+
+/// What a person typed: Markdown too, but every line break where they put it, and a line of
+/// only `---` (or `***`, `___`) always a rule: never the heading Markdown would make of the
+/// text right above it.
+pub fn typed_segments(markdown: &str) -> Vec<Segment> {
+    let mut lines: Vec<&str> = Vec::new();
+    let mut fenced = false;
+    for line in markdown.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("```") {
+            fenced = !fenced;
+        }
+        let rule = !fenced && trimmed.len() >= 3 && ["-", "*", "_"].iter().any(|c| trimmed.chars().all(|x| x.to_string() == *c));
+        if rule && lines.last().is_some_and(|l| !l.trim().is_empty()) {
+            lines.push("");
+        }
+        lines.push(line);
+    }
+    segments_with(&lines.join("\n"), true)
+}
+
+fn segments_with(markdown: &str, keep_lines: bool) -> Vec<Segment> {
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
     let mut out = Vec::new();
     let mut text = String::new();
@@ -157,9 +183,12 @@ pub fn segments(markdown: &str) -> Vec<Segment> {
                     text.push_str(&span);
                 }
             }
-            Event::SoftBreak => text.push(' '),
+            Event::SoftBreak => text.push(if keep_lines { '\n' } else { ' ' }),
             Event::HardBreak => text.push('\n'),
-            Event::Rule => text.push_str("\n──────────\n\n"),
+            Event::Rule => {
+                flush(&mut text, &mut out);
+                out.push(Segment::Rule);
+            }
             Event::TaskListMarker(done) => text.push_str(if done { "☑ " } else { "☐ " }),
             _ => {}
         }
@@ -213,6 +242,23 @@ pub fn looks_like_path(text: &str) -> bool {
         && !["ctrl+", "alt+", "shift+", "super+", "cmd+", "meta+"].contains(&n.to_lowercase().as_str());
     let folder = path.contains('/') && path.ends_with('/') && inner.trim_end_matches('/').split('/').all(plain);
     known || anchored || folder || BARE.contains(&name)
+}
+
+#[cfg(test)]
+mod typed_tests {
+    use super::*;
+
+    #[test]
+    fn a_typed_dash_line_is_a_rule_not_a_heading() {
+        let out = typed_segments("Some text\n---\nmore");
+        assert_eq!(out.len(), 3, "{out:?}");
+        assert_eq!(out[1], Segment::Rule);
+        let Segment::Text(markup) = &out[0] else { panic!("{out:?}") };
+        assert!(!markup.contains("<span size"), "{markup}");
+        // Their line breaks stay.
+        let Segment::Text(markup) = &typed_segments("one\ntwo")[0] else { panic!() };
+        assert_eq!(markup, "one\ntwo");
+    }
 }
 
 #[cfg(test)]
