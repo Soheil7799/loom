@@ -208,16 +208,10 @@ fn parse(path: &Path, text: &str) -> Topic {
 /// Switches a topic on or off (its `enabled:` line, added if missing).
 pub fn set_enabled(topic: &Topic, on: bool) -> std::io::Result<()> {
     let text = std::fs::read_to_string(&topic.path)?;
-    let line = format!("enabled: {on}");
-    let changed = match text.strip_prefix("---\n").and_then(|rest| rest.find("\n---").map(|end| (rest, end))) {
-        Some((rest, end)) => {
-            let front: Vec<&str> = rest[..end].lines().collect();
-            let mut lines: Vec<String> = front.iter().filter(|l| !l.trim_start().starts_with("enabled:")).map(|l| (*l).to_owned()).collect();
-            lines.push(line);
-            format!("---\n{}{}", lines.join("\n"), &rest[end..])
-        }
-        None => format!("---\n{line}\n---\n{text}"),
-    };
+    let changed = vault::edit_frontmatter(&text, |lines| {
+        lines.retain(|l| !l.trim_start().starts_with("enabled:"));
+        lines.push(format!("enabled: {on}"));
+    });
     std::fs::write(&topic.path, changed)
 }
 

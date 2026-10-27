@@ -19,10 +19,20 @@ use crate::scribe::{self, Question, Report};
 
 /// Quiet this long after a turn: the conversation is checked.
 const IDLE: Duration = Duration::from_secs(120);
-/// This much unread (characters): checked at once, even while it goes on.
-const LONG: usize = 24_000;
+/// This much unread (bytes of journal): checked at once, even while it goes on.
+const LONG: u64 = 24_000;
 /// How many of Scribe's own changes are listed.
 const RECENT: usize = 40;
+
+/// Something that writes to the vault, done one at a time.
+enum Job {
+    /// Read a conversation (finished turns only, or all of it).
+    Check(String, bool),
+    /// A question answered.
+    Answer(u64, String),
+    /// A held change written (true) or dropped.
+    Decide(u64, bool),
+}
 
 #[derive(Default)]
 struct Store {
@@ -90,8 +100,8 @@ pub struct Hub {
     pub panel: gtk::Box,
     store: RefCell<Store>,
     running: Cell<bool>,
-    /// Waiting to be checked: (session, finished turns only).
-    queue: RefCell<VecDeque<(String, bool)>>,
+    /// What waits its turn: one thing at a time touches the vault (a check, an answer, an OK).
+    queue: RefCell<VecDeque<Job>>,
     timers: RefCell<HashMap<String, glib::SourceId>>,
     /// The conversation the window shows: (session, title).
     current: RefCell<Option<(String, String)>>,
@@ -160,8 +170,10 @@ impl Hub {
         let weak = Rc::downgrade(&hub);
         glib::timeout_add_local_once(Duration::from_secs(20), move || {
             if let Some(hub) = weak.upgrade() {
+                // Nothing is mid-turn yet: what is left is read whole (a last message whose
+                // answer never came included).
                 for session in crate::journal::waiting() {
-                    hub.check_soon(&session, true, Duration::ZERO);
+                    hub.check_soon(&session, false, Duration::ZERO);
                 }
             }
         });
@@ -192,7 +204,7 @@ impl Hub {
         if self.on().is_none() {
             return;
         }
-        if crate::journal::unread_size(session) >= LONG {
+        if crate::journal::unread_summary(session).is_some_and(|(bytes, _)| bytes >= LONG) {
             self.check_soon(session, true, Duration::ZERO);
         } else {
             self.check_soon(session, true, IDLE);
@@ -213,8 +225,14 @@ impl Hub {
         }
         if after.is_zero() {
             let mut queue = self.queue.borrow_mut();
-            if !queue.iter().any(|(s, _)| s == session) {
-                queue.push_back((session.to_owned(), finished_only));
+            let queued = queue.iter_mut().find_map(|job| match job {
+                Job::Check(s, finished) if s == session => Some(finished),
+                _ => None,
+            });
+            match queued {
+                // Already waiting: asked for all of it now (closed), it reads all of it.
+                Some(finished) => *finished = *finished && finished_only,
+                None => queue.push_back(Job::Check(session.to_owned(), finished_only)),
             }
             drop(queue);
             self.run_next();
@@ -239,9 +257,22 @@ impl Hub {
             self.queue.borrow_mut().clear();
             return;
         };
-        let Some((session, finished_only)) = self.queue.borrow_mut().pop_front() else {
-            self.refresh_head();
-            return;
+        let job = self.queue.borrow_mut().pop_front();
+        let (session, finished_only) = match job {
+            None => {
+                self.refresh_head();
+                return;
+            }
+            Some(Job::Answer(id, answer)) => {
+                self.answer_now(id, &answer);
+                return;
+            }
+            Some(Job::Decide(id, write)) => {
+                self.decide_now(id, write);
+                self.run_next();
+                return;
+            }
+            Some(Job::Check(session, finished_only)) => (session, finished_only),
         };
         let entries = crate::journal::unread(&session, finished_only);
         if entries.is_empty() {
@@ -337,15 +368,16 @@ impl Hub {
                 self.check.set_visible(false);
             }
             (Some(_), Some((session, _))) => {
-                let unread = crate::journal::unread(&session, false);
-                let size: usize = unread.iter().map(|e| e.text.len()).sum();
-                let since = unread.first().map(|e| crate::overview::ago(crate::state::now().saturating_sub(e.at)));
-                self.this_line.set_label(&match (unread.len(), since) {
-                    (0, _) => "This conversation is in your notes up to its last message.".to_owned(),
-                    (n, Some(since)) => format!("{n} message{} · ~{}k characters not read yet · since {since}", if n == 1 { "" } else { "s" }, size.div_ceil(1000)),
-                    (n, None) => format!("{n} messages not read yet"),
+                let unread = crate::journal::unread_summary(&session);
+                self.this_line.set_label(&match unread {
+                    None => "This conversation is in your notes up to its last message.".to_owned(),
+                    Some((bytes, at)) => format!(
+                        "~{}k characters not read yet · since {}",
+                        bytes.div_ceil(1000),
+                        crate::overview::ago(crate::state::now().saturating_sub(at))
+                    ),
                 });
-                self.check.set_visible(!unread.is_empty());
+                self.check.set_visible(unread.is_some());
                 self.check.set_sensitive(!self.running.get());
             }
         }
@@ -503,6 +535,15 @@ impl Hub {
 
     /// A held change written (approved) or dropped.
     fn decide(self: &Rc<Self>, id: u64, write: bool) {
+        if self.running.get() {
+            self.status.set_label("Done as soon as the check that is running ends…");
+            self.queue.borrow_mut().push_front(Job::Decide(id, write));
+            return;
+        }
+        self.decide_now(id, write);
+    }
+
+    fn decide_now(self: &Rc<Self>, id: u64, write: bool) {
         let Some(vault) = self.on() else { return };
         let taken = {
             let mut store = self.store.borrow_mut();
@@ -537,16 +578,35 @@ impl Hub {
 
     /// An answer: the change Scribe was unsure of, made with it (off the main thread).
     fn answer(self: &Rc<Self>, id: u64, answer: &str) {
+        if self.running.get() {
+            self.status.set_label("Written down as soon as the check that is running ends…");
+            self.queue.borrow_mut().push_front(Job::Answer(id, answer.to_owned()));
+            return;
+        }
+        self.answer_now(id, answer);
+    }
+
+    /// The question stays until its answer is written: a call that fails leaves it to try
+    /// again.
+    fn answer_now(self: &Rc<Self>, id: u64, answer: &str) {
         let Some(vault) = self.on() else { return };
         let q = self.store.borrow().questions.iter().find(|q| q["id"].as_u64() == Some(id)).cloned();
-        let Some(q) = q else { return };
+        let Some(q) = q else {
+            self.run_next();
+            return;
+        };
+        if self.store.borrow_mut().calls_left() == 0 {
+            self.status.set_label("Today's limit of note checks is reached (Settings → Notes); the question waits.");
+            self.run_next();
+            return;
+        }
         let question = Question {
             topic: q["topic"].as_str().unwrap_or("").to_owned(),
             question: q["question"].as_str().unwrap_or("").to_owned(),
             options: Vec::new(),
             excerpt: q["excerpt"].as_str().unwrap_or("").to_owned(),
         };
-        self.drop_question(id);
+        self.running.set(true);
         self.status.set_label("Writing your answer down…");
         let (session, title) = (q["session"].as_str().unwrap_or("").to_owned(), q["title"].as_str().unwrap_or("").to_owned());
         let answer = answer.to_owned();
@@ -554,11 +614,19 @@ impl Hub {
         glib::spawn_future_local(async move {
             let done = gio::spawn_blocking(move || scribe::answer(&vault, &question, &answer)).await;
             let Some(hub) = weak.upgrade() else { return };
-            if let Ok(mut report) = done {
-                report.session = session;
-                report.title = title;
-                hub.take(report);
+            hub.running.set(false);
+            match done {
+                Ok(mut report) => {
+                    if report.failed.is_none() {
+                        hub.store.borrow_mut().questions.retain(|q| q["id"].as_u64() != Some(id));
+                    }
+                    report.session = session;
+                    report.title = title;
+                    hub.take(report);
+                }
+                Err(_) => hub.status.set_label("Writing the answer stopped unexpectedly; the question waits."),
             }
+            hub.run_next();
         });
     }
 }

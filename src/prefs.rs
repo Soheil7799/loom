@@ -690,7 +690,8 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let state = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(60).build();
     state.add_css_class("dim");
     state.add_css_class("small");
-    // The vault set up (when Notes is on), then what it is and its topics shown.
+    // The vault set up (when Notes is on), then what it is and its topics shown. Setting up
+    // and counting notes read the disk: off the main thread.
     let show = {
         let (path, state, topics, window) = (path.clone(), state.clone(), topics.downgrade(), window.downgrade());
         move || {
@@ -702,20 +703,37 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
                 state.set_label("Choose an empty folder for a new vault, or a vault you have.");
             } else {
                 path.set_label(&vault);
-                let folder = crate::state::expand(std::path::Path::new(&vault));
-                let prepared = if s.notes_enabled { Some(crate::vault::prepare(&folder)) } else { None };
-                state.set_label(&match prepared {
-                    Some(Err(why)) => format!("Could not set the vault up: {why}"),
-                    Some(Ok(())) => {
-                        let notes = crate::vault::notes_in(&folder).iter().filter(|n| !n.strip_prefix(&folder).is_ok_and(|r| r.starts_with(crate::vault::TOPICS))).count();
-                        format!("Ready: {notes} notes, {} topics. It opens in Obsidian too.", crate::topics::list(&folder).len())
-                    }
-                    None => format!("{} Nothing is written there until Notes is on.", crate::vault::describe(&crate::vault::inspect(&folder))),
-                });
+                state.set_label("…");
             }
-            if let (Some(topics), Some(window)) = (topics.upgrade(), window.upgrade()) {
-                fill_topics(&topics, &window);
-            }
+            let (state, topics, window) = (state.clone(), topics.clone(), window.clone());
+            glib::spawn_future_local(async move {
+                let line = if vault.is_empty() {
+                    None
+                } else {
+                    let enabled = s.notes_enabled;
+                    gio::spawn_blocking(move || {
+                        let folder = crate::state::expand(std::path::Path::new(&vault));
+                        if !enabled {
+                            return format!("{} Nothing is written there until Notes is on.", crate::vault::describe(&crate::vault::inspect(&folder)));
+                        }
+                        match crate::vault::prepare(&folder) {
+                            Err(why) => format!("Could not set the vault up: {why}"),
+                            Ok(()) => {
+                                let notes = crate::vault::notes_in(&folder).iter().filter(|n| !n.strip_prefix(&folder).is_ok_and(|r| r.starts_with(crate::vault::TOPICS))).count();
+                                format!("Ready: {notes} notes, {} topics. It opens in Obsidian too.", crate::topics::list(&folder).len())
+                            }
+                        }
+                    })
+                    .await
+                    .ok()
+                };
+                if let Some(line) = line {
+                    state.set_label(&line);
+                }
+                if let (Some(topics), Some(window)) = (topics.upgrade(), window.upgrade()) {
+                    fill_topics(&topics, &window);
+                }
+            });
         }
     };
     let on = gtk::Switch::builder().active(s.notes_enabled).valign(gtk::Align::Center).build();
@@ -735,12 +753,41 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
         if !current.is_empty() {
             dialog.set_initial_folder(Some(&gio::File::for_path(crate::state::expand(std::path::Path::new(&current)))));
         }
-        let refresh = refresh.clone();
+        let (refresh, w2) = (refresh.clone(), w.clone());
         dialog.select_folder(Some(&w), None::<&gio::Cancellable>, move |result| {
             let Some(folder) = result.ok().and_then(|f| f.path()) else { return };
+            if let Some(why) = crate::vault::unsuitable(&folder) {
+                gtk::AlertDialog::builder().message("Not this folder").detail(why).modal(true).build().show(Some(&w2));
+                return;
+            }
             let chosen = folder.to_string_lossy().into_owned();
-            settings::update(|s| s.notes_vault = chosen);
-            refresh();
+            let use_it = {
+                let refresh = refresh.clone();
+                move || {
+                    settings::update(|s| s.notes_vault = chosen.clone());
+                    refresh();
+                }
+            };
+            // A folder that is neither empty nor a vault: said what loom adds, asked first.
+            match crate::vault::inspect(&folder) {
+                crate::vault::Folder::Other(_) => {
+                    let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                    let ask = gtk::AlertDialog::builder()
+                        .message(format!("Keep your notes in “{name}”?"))
+                        .detail("It isn't an Obsidian vault yet. loom adds Topics/, .loom/ and .obsidian/ to it, and git for its own files; what is there now stays as it is.")
+                        .buttons(["Cancel", "Use it"])
+                        .cancel_button(0)
+                        .default_button(1)
+                        .modal(true)
+                        .build();
+                    ask.choose(Some(&w2), None::<&gio::Cancellable>, move |choice| {
+                        if choice == Ok(1) {
+                            use_it();
+                        }
+                    });
+                }
+                _ => use_it(),
+            }
         });
     });
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -750,7 +797,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     place.append(&line);
     place.append(&state);
     row_stacked(&main, "Vault", "A folder Obsidian can open as a vault. Your notes stay plain Markdown files there.", &place);
-    caption(&main, "Your agents can search and read these notes. Keeping them up to date from your conversations comes next.");
+    caption(&main, "Your agents can search and read these notes, and Scribe keeps them up to date from your conversations (the Notes tab beside the chat shows what it wrote and asks).");
     content.append(&main);
     content.append(&topics);
     show();

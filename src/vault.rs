@@ -85,6 +85,9 @@ pub fn current() -> Option<PathBuf> {
 /// Sets the vault up where something is missing: `.obsidian/`, `.loom/`, the default topics
 /// (once: topics the user deleted stay deleted), and git. Never over the user's files.
 pub fn prepare(path: &Path) -> Result<(), String> {
+    if let Some(why) = unsuitable(path) {
+        return Err(why);
+    }
     let fail = |what: &str, err: std::io::Error| format!("{what}: {err}");
     std::fs::create_dir_all(path).map_err(|e| fail("the vault folder", e))?;
     let obsidian = path.join(".obsidian");
@@ -99,6 +102,7 @@ pub fn prepare(path: &Path) -> Result<(), String> {
         std::fs::write(own.join("vault.json"), "{ \"version\": 1 }\n").map_err(|e| fail(".loom/vault.json", e))?;
     }
     // Every change loom makes becomes a commit; a vault in no repository gets one of its own.
+    // Only loom's own files go in it: the user's notes are theirs to add (or not).
     let in_repo = Command::new("git").arg("-C").arg(path).args(["rev-parse", "--is-inside-work-tree"]).output().is_ok_and(|o| o.status.success());
     if !in_repo {
         let ignore = path.join(".gitignore");
@@ -109,10 +113,24 @@ pub fn prepare(path: &Path) -> Result<(), String> {
         let git = |args: &[&str]| Command::new("git").arg("-C").arg(path).args(args).output().is_ok_and(|o| o.status.success());
         if git(&["init", "-q"]) {
             // Without a git identity the commit fails; the vault still works, uncommitted.
-            let _ = git(&["add", "-A"]) && git(&["commit", "-q", "-m", "loom: the vault is set up"]);
+            let own: Vec<&str> = [".gitignore", TOPICS, ".obsidian/app.json"].into_iter().filter(|f| path.join(f).exists()).collect();
+            let _ = git(&[&["add", "--"][..], &own].concat()) && git(&[&["commit", "-q", "-m", "loom: the vault is set up", "--"][..], &own].concat());
         }
     }
     Ok(())
+}
+
+/// Why `path` can't be a vault (None: it can): the home folder itself, or a system folder.
+pub fn unsuitable(path: &Path) -> Option<String> {
+    let home = gtk::glib::home_dir();
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
+    if path == home || path == Path::new("/") || home.starts_with(&path) {
+        return Some("Your home folder can't be the vault: choose or make a folder inside it.".to_owned());
+    }
+    if !path.starts_with(&home) && ["/usr", "/etc", "/bin", "/sbin", "/lib", "/boot", "/proc", "/sys", "/dev", "/var", "/opt"].iter().any(|s| path.starts_with(s)) {
+        return Some("A system folder can't be the vault.".to_owned());
+    }
+    None
 }
 
 /// A note's frontmatter (`key: value`, `key: [a, b]`, or `key:` with `- item` lines), and the
@@ -149,6 +167,28 @@ pub fn frontmatter(text: &str) -> (Vec<(String, Value)>, &str) {
         keys.push((key.trim().to_owned(), parsed));
     }
     (keys, body)
+}
+
+/// `text` with its frontmatter's lines changed by `edit` (a frontmatter made when there is
+/// none). Windows line ends and an empty frontmatter ("---\n---\n") are kept as they are.
+pub fn edit_frontmatter(text: &str, edit: impl FnOnce(&mut Vec<String>)) -> String {
+    let crlf = text.contains("\r\n");
+    let text = text.replace("\r\n", "\n");
+    let split = text.strip_prefix("---\n").and_then(|rest| {
+        if rest.starts_with("---\n") || rest == "---" {
+            Some(("", rest))
+        } else {
+            rest.find("\n---").map(|end| (&rest[..end], &rest[end + 1..]))
+        }
+    });
+    let (mut lines, after) = match split {
+        Some((front, after)) => (front.lines().map(str::to_owned).collect::<Vec<_>>(), after.to_owned()),
+        None => (Vec::new(), format!("---\n{text}")),
+    };
+    edit(&mut lines);
+    let front = if lines.is_empty() { String::new() } else { format!("{}\n", lines.join("\n")) };
+    let out = format!("---\n{front}{after}");
+    if crlf { out.replace('\n', "\r\n") } else { out }
 }
 
 fn unquote(text: &str) -> String {
@@ -219,6 +259,24 @@ mod tests {
         let (keys, body) = frontmatter("No frontmatter here.");
         assert!(keys.is_empty());
         assert_eq!(body, "No frontmatter here.");
+    }
+
+    #[test]
+    fn frontmatter_is_edited_in_place() {
+        let set = |text: &str| edit_frontmatter(text, |lines| lines.push("k: v".to_owned()));
+        assert_eq!(set("---\ndate: 1\n---\nbody\n"), "---\ndate: 1\nk: v\n---\nbody\n");
+        assert_eq!(set("---\n---\nbody\n"), "---\nk: v\n---\nbody\n");
+        assert_eq!(set("body\n"), "---\nk: v\n---\nbody\n");
+        assert_eq!(set("---\r\ndate: 1\r\n---\r\nbody\r\n"), "---\r\ndate: 1\r\nk: v\r\n---\r\nbody\r\n");
+    }
+
+    #[test]
+    fn unsafe_folders_are_refused() {
+        let home = gtk::glib::home_dir();
+        assert!(unsuitable(&home).is_some());
+        assert!(unsuitable(Path::new("/")).is_some());
+        assert!(unsuitable(Path::new("/etc/loom")).is_some());
+        assert!(unsuitable(&home.join("Notes")).is_none());
     }
 
     #[test]

@@ -15,6 +15,9 @@ use serde_json::{Value, json};
 use crate::journal::Entry;
 use crate::topics::{Apply, Topic};
 
+/// The vault's index, kept between checks.
+static INDEX: std::sync::Mutex<Option<crate::notes::Index>> = std::sync::Mutex::new(None);
+
 /// An excerpt sent at once: about this many characters of conversation.
 const CHUNK: usize = 6000;
 
@@ -163,19 +166,30 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
         report.upto = entries.last().map_or(0, |e| e.end);
         return report;
     }
-    let mut index = crate::notes::Index::new(vault);
+    // One index, kept between checks (only notes that changed are read again).
+    let mut held = INDEX.lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_ref().is_none_or(|index| index.root() != vault) {
+        *held = Some(crate::notes::Index::new(vault));
+    }
+    let Some(index) = held.as_mut() else { return report };
     for chunk in chunks(entries) {
-        let id = format!("{session}@{}", chunk[0].offset);
-        if already_done(vault, &id) {
-            report.upto = chunk.last().map_or(report.upto, |e| e.end);
-            continue;
+        // A piece is done topic by topic: a check that stopped halfway (a call failed, the
+        // day's limit) does the topics it had not done, and only those, the next time.
+        let id = format!("{session}@{}-{}", chunk[0].offset, chunk.last().map_or(0, |e| e.end));
+        if crate::journal::is_done(session, &format!("{id}/routed")) {
+            let all_done = crate::journal::done_with(session, &id);
+            if all_done {
+                report.upto = chunk.last().map_or(report.upto, |e| e.end);
+                continue;
+            }
         }
         if report.calls >= calls_left {
             report.failed = Some("Today's limit of note checks is reached (Settings → Notes).".to_owned());
             return report;
         }
         let excerpt = excerpt(chunk);
-        let routed = match route(&topics, &excerpt) {
+        let resumed = crate::journal::todo(session, &id);
+        let routed = match resumed.map(Ok).unwrap_or_else(|| route(&topics, &excerpt)) {
             Ok(routed) => routed,
             Err(why) => {
                 report.failed = Some(why);
@@ -184,16 +198,27 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
         };
         report.calls += 1;
         report.routed.extend(routed.iter().map(|(name, _)| name.split([':', '(']).next().unwrap_or(name).trim().to_owned()));
-        for (name, about) in routed {
-            // "Work", or as the model sometimes writes it, "Work: job" / "Work (decisions)".
-            let bare = name.split([':', '(']).next().unwrap_or(&name).trim();
-            let Some(topic) = topics.iter().find(|t| t.name.eq_ignore_ascii_case(bare)) else { continue };
+        // "Work", or as the model sometimes writes it, "Work: job" / "Work (decisions)".
+        let routed: Vec<(&Topic, String)> = routed
+            .into_iter()
+            .filter_map(|(name, about)| {
+                let bare = name.split([':', '(']).next().unwrap_or(&name).trim().to_owned();
+                Some((topics.iter().find(|t| t.name.eq_ignore_ascii_case(&bare))?, about))
+            })
+            .collect();
+        // What this piece is about, kept: a check that resumes it does not route it again.
+        crate::journal::set_todo(session, &id, &routed.iter().map(|(t, about)| (t.name.clone(), about.clone())).collect::<Vec<_>>());
+        for (topic, about) in routed {
+            let topic_id = format!("{id}/{}", topic.name);
+            if crate::journal::is_done(session, &topic_id) {
+                continue;
+            }
             if report.calls >= calls_left {
                 report.failed = Some("Today's limit of note checks is reached (Settings → Notes).".to_owned());
                 return report;
             }
             index.refresh();
-            let notes = candidates(vault, &index, topic, &about);
+            let notes = candidates(vault, index, topic, &about);
             let (proposals, questions) = match edit(topic, &notes, &excerpt) {
                 Ok(found) => found,
                 Err(why) => {
@@ -203,7 +228,8 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
             };
             report.calls += 1;
             report.questions.extend(questions);
-            record(vault, topic, proposals, &id, &mut report);
+            record(vault, topic, proposals, &topic_id, &mut report);
+            crate::journal::mark_done(session, &topic_id);
         }
         report.upto = chunk.last().map_or(report.upto, |e| e.end);
     }
@@ -517,18 +543,18 @@ fn replace_line(text: &str, old: &str, new: &str) -> Result<String, String> {
 }
 
 fn set_property(text: &str, key: &str, value: &str) -> Result<String, String> {
-    if key.is_empty() || key.contains([':', '\n']) {
+    if key.is_empty() || key.contains([':', '\n', '\r']) || key.starts_with([' ', '-', '#']) {
         return Err(format!("\"{key}\" is not a property name."));
     }
+    // One line: a value with a line break in it could slip other keys into the frontmatter.
+    if value.contains(['\n', '\r']) {
+        return Err("A property's value is one line.".to_owned());
+    }
     let line = format!("{key}: {value}");
-    let Some(rest) = text.strip_prefix("---\n") else { return Ok(format!("---\n{line}\n---\n{text}")) };
-    let Some(end) = rest.find("\n---") else { return Ok(format!("---\n{line}\n---\n{text}")) };
-    let mut lines: Vec<String> = rest[..end].lines().map(str::to_owned).collect();
-    match lines.iter().position(|l| l.split_once(':').is_some_and(|(k, _)| k.trim() == key)) {
+    Ok(crate::vault::edit_frontmatter(text, |lines| match lines.iter().position(|l| l.split_once(':').is_some_and(|(k, _)| k.trim() == key)) {
         Some(at) => lines[at] = line,
         None => lines.push(line),
-    }
-    Ok(format!("---\n{}{}", lines.join("\n"), &rest[end..]))
+    }))
 }
 
 /// Commits the notes written, alone (other changes in the vault are the user's to commit).
@@ -548,17 +574,6 @@ fn commit(vault: &Path, files: &[String], message: &str) {
             crate::log::write("scribe", &format!("commit: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
     }
-}
-
-/// A piece of journal already turned into notes (its id is in a commit message): a check
-/// run again after a crash does not do it twice.
-fn already_done(vault: &Path, id: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(vault)
-        .args(["log", "--oneline", "-F", "--grep", &format!("[{id}]"), "-n", "1"])
-        .output()
-        .is_ok_and(|o| o.status.success() && !o.stdout.is_empty())
 }
 
 /// What was proposed, kept to be reviewed (the user's OK) across restarts.

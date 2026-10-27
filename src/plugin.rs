@@ -156,7 +156,8 @@ fn update(file: &Path, text: &str) -> std::io::Result<()> {
     if current == text {
         return std::fs::write(shipped_mark(file), hash(text));
     }
-    let wrote = std::fs::read_to_string(shipped_mark(file)).unwrap_or_default();
+    // Older versions kept one `.shipped` per folder (which two files in it overwrote).
+    let wrote = std::fs::read_to_string(shipped_mark(file)).or_else(|_| std::fs::read_to_string(file.with_file_name(".shipped"))).unwrap_or_default();
     if wrote.trim() == hash(&current) { write_shipped(file, text) } else { Ok(()) }
 }
 
@@ -168,8 +169,10 @@ fn write_shipped(file: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(shipped_mark(file), hash(text))
 }
 
+/// The hash of what loom wrote, beside the file: `.SKILL.md.shipped` (one per file).
 fn shipped_mark(file: &Path) -> PathBuf {
-    file.with_file_name(".shipped")
+    let name = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    file.with_file_name(format!(".{name}.shipped"))
 }
 
 /// FNV-1a: stable across Rust versions (unlike std's hasher), enough to tell texts apart.
@@ -307,6 +310,20 @@ mod tests {
         std::fs::write(&file, "mine").unwrap();
         update(&file, "v3").unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), "mine");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn two_shipped_files_in_one_folder_follow_their_own_versions() {
+        let dir = std::env::temp_dir().join(format!("loom-plugin-two-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let (route, edit) = (dir.join("route.md"), dir.join("edit.md"));
+        update(&route, "route v1").unwrap();
+        update(&edit, "edit v1").unwrap();
+        update(&route, "route v2").unwrap();
+        update(&edit, "edit v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&route).unwrap(), "route v2");
+        assert_eq!(std::fs::read_to_string(&edit).unwrap(), "edit v2");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

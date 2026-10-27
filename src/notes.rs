@@ -1,5 +1,5 @@
 //! The vault's index: every note's title, aliases, tags, headings and `[[links]]` (both
-//! ways), and its text, kept in memory and refreshed from the files' times. It finds the
+//! ways), and its words, kept in memory and refreshed from the files' times. It finds the
 //! notes a question or a change is about fast, without reading the vault each time.
 //!
 //! Plain Rust, no GTK: the MCP server (`loom mcp`) runs it in its own process.
@@ -19,9 +19,8 @@ struct Note {
     headings: Vec<String>,
     /// The notes it links to, as written (`[[Target]]` → "Target").
     links: Vec<String>,
-    /// Its text, lowercased, for search.
+    /// Its text, lowercased, for search (the text itself is read from the file when needed).
     lower: String,
-    text: String,
     stamp: Option<(SystemTime, u64)>,
 }
 
@@ -29,6 +28,11 @@ pub struct Index {
     root: PathBuf,
     /// By path relative to the vault.
     notes: HashMap<String, Note>,
+    /// What a name means, lowercased: a path (without .md), then a title, then an alias.
+    names: HashMap<String, String>,
+    /// Each note's links and backlinks, as paths (worked out at each refresh).
+    links: HashMap<String, Vec<String>>,
+    backlinks: HashMap<String, Vec<String>>,
 }
 
 /// One search result.
@@ -45,13 +49,14 @@ pub struct Hit {
 
 impl Index {
     pub fn new(root: &Path) -> Index {
-        Index { root: root.to_owned(), notes: HashMap::new() }
+        Index { root: root.to_owned(), notes: HashMap::new(), names: HashMap::new(), links: HashMap::new(), backlinks: HashMap::new() }
     }
 
     /// Reads what changed since the last time (by modification time and size); drops what is
     /// gone. The topic files are settings, not notes: left out.
     pub fn refresh(&mut self) {
         let mut seen = HashSet::new();
+        let mut changed = false;
         for file in vault::notes_in(&self.root) {
             let Ok(relative) = file.strip_prefix(&self.root) else { continue };
             if relative.starts_with(vault::TOPICS) {
@@ -68,8 +73,52 @@ impl Index {
             let mut note = read(&title, &text);
             note.stamp = stamp;
             self.notes.insert(key, note);
+            changed = true;
         }
+        let before = self.notes.len();
         self.notes.retain(|key, _| seen.contains(key));
+        if changed || self.notes.len() != before || self.names.is_empty() {
+            self.link_up();
+        }
+    }
+
+    /// Names to paths, and every note's links and backlinks, worked out once.
+    fn link_up(&mut self) {
+        let mut paths: Vec<&String> = self.notes.keys().collect();
+        // Sorted: the same name in two folders always means the same one.
+        paths.sort();
+        let mut names: HashMap<String, String> = HashMap::new();
+        // Weakest first, so a path beats a title, which beats an alias.
+        for path in &paths {
+            for alias in &self.notes[path.as_str()].aliases {
+                names.entry(alias.to_lowercase()).or_insert_with(|| (*path).clone());
+            }
+        }
+        let mut titles: HashMap<String, String> = HashMap::new();
+        for path in &paths {
+            titles.entry(self.notes[path.as_str()].title.to_lowercase()).or_insert_with(|| (*path).clone());
+        }
+        names.extend(titles);
+        for path in &paths {
+            names.insert(path.trim_end_matches(".md").to_lowercase(), (*path).clone());
+        }
+        let mut links: HashMap<String, Vec<String>> = HashMap::new();
+        let mut backlinks: HashMap<String, Vec<String>> = HashMap::new();
+        for path in &paths {
+            let mut out: Vec<String> = self.notes[path.as_str()].links.iter().filter_map(|l| names.get(&clean(l)).cloned()).collect();
+            out.dedup();
+            for target in &out {
+                if target != *path {
+                    backlinks.entry(target.clone()).or_default().push((*path).clone());
+                }
+            }
+            links.insert((*path).clone(), out);
+        }
+        for list in backlinks.values_mut() {
+            list.sort();
+            list.dedup();
+        }
+        (self.names, self.links, self.backlinks) = (names, links, backlinks);
     }
 
     pub fn root(&self) -> &Path {
@@ -80,25 +129,14 @@ impl Index {
         self.notes.len()
     }
 
-    /// The path of the note `[[name]]` means: by title or alias (any case), or by its path.
+    /// The path of the note `[[name]]` means: by its path, title or alias (any case).
     pub fn resolve(&self, name: &str) -> Option<String> {
-        let wanted = name.trim().trim_end_matches(".md").to_lowercase();
-        let mut paths: Vec<&String> = self.notes.keys().collect();
-        paths.sort();
-        paths
-            .iter()
-            .find(|p| p.trim_end_matches(".md").to_lowercase() == wanted)
-            .or_else(|| paths.iter().find(|p| self.notes[p.as_str()].title.to_lowercase() == wanted))
-            .or_else(|| paths.iter().find(|p| self.notes[p.as_str()].aliases.iter().any(|a| a.to_lowercase() == wanted)))
-            .map(|p| (*p).clone())
+        self.names.get(&clean(name)).cloned()
     }
 
     /// The notes linking to `path`.
     pub fn backlinks(&self, path: &str) -> Vec<String> {
-        let mut found: Vec<String> =
-            self.notes.iter().filter(|(p, note)| p.as_str() != path && note.links.iter().any(|l| self.resolve(l).as_deref() == Some(path))).map(|(p, _)| p.clone()).collect();
-        found.sort();
-        found
+        self.backlinks.get(path).cloned().unwrap_or_default()
     }
 
     /// The notes `query` is about, best first: words in the title count most, then aliases,
@@ -109,7 +147,7 @@ impl Index {
             return Vec::new();
         }
         let folder = folder.map(|f| f.trim_matches('/').to_lowercase()).filter(|f| !f.is_empty());
-        let mut hits: Vec<Hit> = Vec::new();
+        let mut scored: Vec<(u32, &String)> = Vec::new();
         for (path, note) in &self.notes {
             if folder.as_ref().is_some_and(|f| !path.to_lowercase().starts_with(&format!("{f}/"))) {
                 continue;
@@ -132,31 +170,36 @@ impl Index {
                 score += note.lower.matches(word.as_str()).count().min(5) as u32;
             }
             if score > 0 {
-                hits.push(Hit {
-                    path: path.clone(),
-                    title: note.title.clone(),
-                    score,
-                    snippet: snippet(&note.text, &words),
-                    links: note.links.iter().filter_map(|l| self.resolve(l)).collect(),
-                    backlinks: Vec::new(),
-                });
+                scored.push((score, path));
             }
         }
-        hits.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| a.path.cmp(&b.path)));
-        hits.truncate(limit);
-        for hit in &mut hits {
-            hit.backlinks = self.backlinks(&hit.path);
-        }
-        hits
+        scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
+        scored.truncate(limit);
+        // Only the few kept are read for their lines.
+        scored
+            .into_iter()
+            .map(|(score, path)| Hit {
+                path: path.clone(),
+                title: self.notes[path].title.clone(),
+                score,
+                snippet: snippet(&std::fs::read_to_string(self.root.join(path)).unwrap_or_default(), &words),
+                links: self.links.get(path).cloned().unwrap_or_default(),
+                backlinks: self.backlinks(path),
+            })
+            .collect()
     }
 
     /// A note's text, by path or `[[name]]`, with what it links to and what links to it.
     pub fn read(&self, name: &str) -> Option<(String, String, Vec<String>, Vec<String>)> {
         let path = self.resolve(name)?;
-        let note = &self.notes[&path];
-        let links = note.links.iter().filter_map(|l| self.resolve(l)).collect();
-        Some((path.clone(), note.text.clone(), links, self.backlinks(&path)))
+        let text = std::fs::read_to_string(self.root.join(&path)).ok()?;
+        Some((path.clone(), text, self.links.get(&path).cloned().unwrap_or_default(), self.backlinks(&path)))
     }
+}
+
+/// A name as `[[links]]` and lookups use it: no `.md`, any case.
+fn clean(name: &str) -> String {
+    name.trim().trim_end_matches(".md").to_lowercase()
 }
 
 fn read(title: &str, text: &str) -> Note {
@@ -175,8 +218,10 @@ fn read(title: &str, text: &str) -> Note {
         if fenced {
             continue;
         }
-        if let Some(heading) = trimmed.strip_prefix('#').filter(|h| h.starts_with(['#', ' '])) {
-            headings.push(heading.trim_start_matches('#').trim().to_owned());
+        // An ATX heading ("## Title"); "#budget #2026" is a line of tags.
+        let heading = trimmed.strip_prefix('#').is_some_and(|h| h.starts_with(['#', ' ']));
+        if heading {
+            headings.push(trimmed.trim_start_matches('#').trim().to_owned());
         }
         // [[Target]], [[Target|shown]], [[Target#heading]], ![[embed]].
         let mut rest = line;
@@ -193,7 +238,7 @@ fn read(title: &str, text: &str) -> Note {
         for word in line.split_whitespace() {
             if let Some(tag) = word.strip_prefix('#') {
                 let tag = tag.trim_end_matches(|c: char| !c.is_alphanumeric() && c != '-' && c != '_' && c != '/');
-                if !tag.is_empty() && tag.chars().any(char::is_alphabetic) && !trimmed.starts_with('#') {
+                if !tag.is_empty() && tag.chars().any(char::is_alphabetic) && !heading {
                     tags.push(tag.to_owned());
                 }
             }
@@ -201,7 +246,7 @@ fn read(title: &str, text: &str) -> Note {
     }
     let mut aliases = items("aliases");
     aliases.extend(items("alias"));
-    Note { title: title.to_owned(), aliases, tags, headings, links, lower: text.to_lowercase(), text: text.to_owned(), stamp: None }
+    Note { title: title.to_owned(), aliases, tags, headings, links, lower: text.to_lowercase(), stamp: None }
 }
 
 /// Up to three lines of `text` with a query word in them (else its first lines).
@@ -247,7 +292,8 @@ mod tests {
         assert_eq!(index.resolve("money").as_deref(), Some("Finances/Overview.md"));
         let (_, _, _, back) = index.read("2026-01").unwrap();
         assert_eq!(back, vec!["Finances/Overview.md"]);
-        assert!(index.search("budget", None, 5).iter().any(|h| h.path == "Finances/2026-01.md"));
+        let budget = index.search("budget", None, 5);
+        assert!(budget.iter().any(|h| h.path == "Finances/2026-01.md" && h.score >= 5), "{budget:?}");
         // A deleted note leaves the index.
         std::fs::remove_file(root.join("Work/Acme.md")).unwrap();
         index.refresh();

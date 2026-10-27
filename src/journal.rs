@@ -101,9 +101,22 @@ pub fn unread(session: &str, finished_only: bool) -> Vec<Entry> {
     entries
 }
 
-/// How much is waiting, in characters (what the size trigger counts).
-pub fn unread_size(session: &str) -> usize {
-    unread(session, false).iter().map(|e| e.text.len()).sum()
+/// How much is not read yet (bytes of journal) and since when, without reading it all: the
+/// first unread line only.
+pub fn unread_summary(session: &str) -> Option<(u64, u64)> {
+    use std::io::{BufRead, Seek, SeekFrom};
+    let path = file(session)?;
+    let len = std::fs::metadata(&path).ok()?.len();
+    let from = mark(session);
+    if len <= from {
+        return None;
+    }
+    let mut reader = std::io::BufReader::new(std::fs::File::open(&path).ok()?);
+    reader.seek(SeekFrom::Start(from)).ok()?;
+    let mut line = String::new();
+    reader.read_line(&mut line).ok()?;
+    let at = serde_json::from_str::<Value>(&line).ok()?["at"].as_u64()?;
+    Some((len - from, at))
 }
 
 fn mark_file(session: &str) -> Option<PathBuf> {
@@ -133,6 +146,65 @@ pub fn waiting() -> Vec<String> {
         .collect()
 }
 
+fn done_file(session: &str) -> Option<PathBuf> {
+    file(session).map(|f| f.with_extension("done"))
+}
+
+fn done_lines(session: &str) -> Vec<String> {
+    done_file(session).and_then(|f| std::fs::read_to_string(f).ok()).map(|t| t.lines().map(str::to_owned).collect()).unwrap_or_default()
+}
+
+fn add_done_line(session: &str, line: &str) {
+    if let Some(path) = done_file(session) {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let written = std::fs::OpenOptions::new().create(true).append(true).open(&path).and_then(|mut f| writeln!(f, "{line}"));
+        if let Err(err) = written {
+            crate::log::write("journal", &format!("{}: {err}", path.display()));
+        }
+    }
+}
+
+/// Scribe finished `id` (a piece and a topic: `<session>@<from>-<to>/<topic>`).
+pub fn mark_done(session: &str, id: &str) {
+    add_done_line(session, id);
+}
+
+pub fn is_done(session: &str, id: &str) -> bool {
+    done_lines(session).iter().any(|l| l == id)
+}
+
+/// The topics piece `id` was routed to, with what each is about (kept so a check that
+/// resumes it doesn't route it again).
+pub fn set_todo(session: &str, id: &str, topics: &[(String, String)]) {
+    let one = |(topic, about): &(String, String)| format!("{}\u{1f}{}", topic.replace(['\t', '\n'], " "), about.replace(['\t', '\n'], " "));
+    add_done_line(session, &format!("{id}/topics {}", topics.iter().map(one).collect::<Vec<_>>().join("\t")));
+    add_done_line(session, &format!("{id}/routed"));
+}
+
+/// The topics a piece was routed to, if it was: (topic, about).
+pub fn todo(session: &str, id: &str) -> Option<Vec<(String, String)>> {
+    let prefix = format!("{id}/topics ");
+    let line = done_lines(session).into_iter().rev().find(|l| l.starts_with(&prefix))?;
+    Some(
+        line[prefix.len()..]
+            .split('\t')
+            .filter(|t| !t.is_empty())
+            .map(|t| match t.split_once('\u{1f}') {
+                Some((topic, about)) => (topic.to_owned(), about.to_owned()),
+                None => (t.to_owned(), String::new()),
+            })
+            .collect(),
+    )
+}
+
+/// Every topic of a routed piece is done.
+pub fn done_with(session: &str, id: &str) -> bool {
+    let lines = done_lines(session);
+    todo(session, id).is_some_and(|topics| topics.iter().all(|(t, _)| lines.iter().any(|l| *l == format!("{id}/{t}"))))
+}
+
 /// Journals read to the end and untouched for some days: gone.
 fn prune() {
     let Ok(entries) = std::fs::read_dir(dir()) else { return };
@@ -144,8 +216,8 @@ fn prune() {
         let stale = meta.modified().ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age > old);
         if stale && mark(session) >= meta.len() {
             let _ = std::fs::remove_file(entry.path());
-            if let Some(mark) = mark_file(session) {
-                let _ = std::fs::remove_file(mark);
+            for extra in [mark_file(session), done_file(session)].into_iter().flatten() {
+                let _ = std::fs::remove_file(extra);
             }
         }
     }
@@ -155,11 +227,33 @@ fn prune() {
 mod tests {
     use super::*;
 
+    /// The journal's folder in tests: a temporary one (never the user's).
+    fn temp() -> PathBuf {
+        let root = std::env::temp_dir().join(format!("loom-journal-{}", std::process::id()));
+        let _ = DIR.set(root.clone());
+        root
+    }
+
+    #[test]
+    fn a_piece_is_done_topic_by_topic() {
+        temp();
+        let session = "done-1".to_owned();
+        let id = format!("{session}@0-10");
+        assert!(todo(&session, &id).is_none());
+        set_todo(&session, &id, &[("Work".into(), "the release".into()), ("Finances".into(), "rent".into())]);
+        assert_eq!(todo(&session, &id).unwrap(), vec![("Work".to_owned(), "the release".to_owned()), ("Finances".to_owned(), "rent".to_owned())]);
+        mark_done(&session, &format!("{id}/Work"));
+        assert!(!done_with(&session, &id));
+        mark_done(&session, &format!("{id}/Finances"));
+        assert!(done_with(&session, &id));
+        if let Some(f) = done_file(&session) {
+            let _ = std::fs::remove_file(f);
+        }
+    }
+
     #[test]
     fn lines_are_read_after_the_mark_and_up_to_the_last_reply() {
-        let root = std::env::temp_dir().join(format!("loom-journal-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root);
-        let _ = DIR.set(root.clone());
+        let root = temp();
         let path = file("s-1").unwrap();
         for (role, text) in [("user", "my rent is 650"), ("assistant", "noted"), ("user", "and the phone?")] {
             write_line(&path, &json!({ "at": 1, "role": role, "text": text, "title": "t", "cwd": "/x" })).unwrap();
@@ -172,8 +266,9 @@ mod tests {
         assert_eq!(rest.len(), 1);
         assert_eq!(rest[0].text, "and the phone?");
         assert!(unread("s-1", true).is_empty());
-        assert_eq!(waiting(), vec!["s-1".to_owned()]);
+        assert!(waiting().contains(&"s-1".to_owned()));
         assert!(file("../etc").is_none());
-        let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_file(root.join("s-1.jsonl"));
+        let _ = std::fs::remove_file(root.join("s-1.mark"));
     }
 }
