@@ -354,7 +354,7 @@ impl Chat {
         crew_list.add_css_class("crew");
         let crew_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         crew_column.append(&crew_list);
-        crew_column.set_layout_manager(Some(crate::column::ColumnLayout::new(840)));
+        crew_column.set_layout_manager(Some(crate::column::ColumnLayout::new(800)));
         let crew_revealer = gtk::Revealer::builder().child(&crew_column).reveal_child(false).build();
         root.append(&crew_revealer);
 
@@ -446,7 +446,8 @@ impl Chat {
         input_box.append(&composer);
         let input_column = gtk::Box::new(gtk::Orientation::Vertical, 0);
         input_column.append(&input_box);
-        input_column.set_layout_manager(Some(crate::column::ColumnLayout::new(840)));
+        // The conversation's width (with its padding): the box's edges line up with the text.
+        input_column.set_layout_manager(Some(crate::column::ColumnLayout::new(800)));
         root.append(&input_column);
 
         let completion_list = gtk::ListBox::new();
@@ -1570,21 +1571,23 @@ impl Chat {
         }
     }
 
-    /// Session settings as pickers: each `{id, name, currentValue, options}` (options flat or
-    /// in groups), shown like the mode: "Model · Opus 5.5", "Effort · High". The mode has its
-    /// own pill, so it is left out here.
+    /// Session settings as chips, each with its menu: "Model · Opus 5.5", "Effort · High · Fast"
+    /// (effort and speed, one menu), "Agent · …". All shown (nothing behind a "⋯"); the menus
+    /// open upwards, the box being at the window's bottom. The mode has its own pill.
     pub fn set_options(&self, options: &Value) {
         while let Some(child) = self.options.first_child() {
             self.options.remove(&child);
         }
-        // Settings at their default go behind one "⋯" chip (its tooltip says what they are);
-        // the model, and anything changed, keep a chip of their own.
-        let more_list = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        more_list.add_css_class("option-list");
-        let more_popover = gtk::Popover::builder().child(&more_list).build();
-        let mut more = Vec::new();
-        for option in options.as_array().into_iter().flatten() {
-            let Some(id) = option["id"].as_str().filter(|id| *id != "mode") else { continue };
+        let all: Vec<&Value> = options.as_array().into_iter().flatten().filter(|o| o["id"].as_str().is_some_and(|id| id != "mode")).collect();
+        // Speed goes in effort's chip (and menu) when there is an effort to go with.
+        let effort = all.iter().find(|o| o["id"] == "effort" || o["category"] == "thought_level").copied();
+        let fast = all.iter().find(|o| o["id"] == "fast" || o["category"] == "model_config").copied();
+        let joined = effort.is_some() && fast.is_some();
+        for option in &all {
+            let id = option["id"].as_str().unwrap_or("");
+            if joined && fast.is_some_and(|f| std::ptr::eq(*option, f)) {
+                continue;
+            }
             let values = flat_values(&option["options"]);
             if values.is_empty() {
                 continue;
@@ -1593,28 +1596,29 @@ impl Chat {
             let current = option["currentValue"].as_str().unwrap_or("");
             // "Fast mode · Off" reads as "Fast · Off": the chip is short, the menu says the rest.
             let short = name.strip_suffix(" mode").unwrap_or(name);
-            let label = format!("{short} · {}", chip_value(&values, current));
-            if option["category"].as_str() != Some("model") && at_default(&values, current) {
-                self.option_items(&more_list, &more_popover, id, name, &values, current);
-                more.push(label);
-                continue;
-            }
+            let mut label = format!("{short} · {}", chip_value(&values, current));
             let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
             list.add_css_class("option-list");
-            let popover = gtk::Popover::builder().child(&list).build();
+            let popover = gtk::Popover::builder().child(&list).position(gtk::PositionType::Top).build();
             self.option_items(&list, &popover, id, name, &values, current);
+            let mut tip = option["description"].as_str().unwrap_or(name).to_owned();
+            if joined && effort.is_some_and(|e| std::ptr::eq(*option, e))
+                && let Some(fast) = fast
+            {
+                let fast_values = flat_values(&fast["options"]);
+                let fast_current = fast["currentValue"].as_str().unwrap_or("");
+                let fast_id = fast["id"].as_str().unwrap_or("fast");
+                let fast_name = fast["name"].as_str().unwrap_or("Fast mode");
+                self.option_items(&list, &popover, fast_id, fast_name, &fast_values, fast_current);
+                if !at_default(&fast_values, fast_current) {
+                    label.push_str(" · Fast");
+                }
+                tip = format!("{tip} · {fast_name}: {}", chip_value(&fast_values, fast_current));
+            }
             let button = gtk::MenuButton::builder().label(&label).popover(&popover).build();
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
-            button.set_tooltip_text(option["description"].as_str().or(Some(name)));
-            self.options.append(&button);
-        }
-        if !more.is_empty() {
-            let button = gtk::MenuButton::builder().label("⋯").popover(&more_popover).build();
-            button.add_css_class("chip-picker");
-            button.add_css_class("flat");
-            button.set_tooltip_text(Some(&format!("More settings: {}", more.join(", "))));
-            button.update_property(&[gtk::accessible::Property::Label("More settings")]);
+            button.set_tooltip_text(Some(&tip));
             self.options.append(&button);
         }
     }
