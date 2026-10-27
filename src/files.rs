@@ -87,6 +87,13 @@ pub struct Files {
     recent: RefCell<Vec<PathBuf>>,
     /// "Ask Claude" about the file or the selection: the text for the chat's input.
     pub on_ask: RefCell<Option<Rc<dyn Fn(String)>>>,
+    /// An agent waits for the user to fill a file in (loom_edit): its id, the file, and the
+    /// bar over the editor that says so, with Done and Cancel.
+    request: RefCell<Option<(u64, PathBuf)>>,
+    request_bar: gtk::Box,
+    request_text: gtk::Label,
+    /// Told when the user finishes (true: Done, saved) or cancels a request.
+    pub on_request: RefCell<Option<Rc<dyn Fn(u64, bool)>>>,
     /// Committing in the repo the Changes view shows.
     commit_entry: gtk::Entry,
     changes_repo: RefCell<Option<PathBuf>>,
@@ -282,6 +289,22 @@ impl Files {
 
         editor_box.set_size_request(-1, 200);
         editor_box.append(&editor_header);
+        // An agent waiting for this file to be filled in (loom_edit).
+        let request_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        request_bar.add_css_class("edit-request");
+        request_bar.set_visible(false);
+        let request_text = gtk::Label::builder().xalign(0.0).wrap(true).hexpand(true).build();
+        let request_done = gtk::Button::with_label("Done");
+        request_done.add_css_class("suggested-action");
+        request_done.set_valign(gtk::Align::Center);
+        request_done.set_tooltip_text(Some("Save the file and let the agent go on"));
+        let request_cancel = gtk::Button::with_label("Cancel");
+        request_cancel.add_css_class("prefs-button");
+        request_cancel.set_valign(gtk::Align::Center);
+        request_bar.append(&request_text);
+        request_bar.append(&request_cancel);
+        request_bar.append(&request_done);
+        editor_box.append(&request_bar);
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tabs.add_css_class("editor-tabs");
         tabs.set_visible(false);
@@ -329,6 +352,10 @@ impl Files {
             tabs,
             recent: RefCell::default(),
             on_ask: RefCell::default(),
+            request: RefCell::default(),
+            request_bar: request_bar.clone(),
+            request_text: request_text.clone(),
+            on_request: RefCell::default(),
             commit_entry,
             changes_repo: RefCell::default(),
             graph,
@@ -352,6 +379,18 @@ impl Files {
         agent_tab.connect_toggled(move |tab| {
             if tab.is_active() {
                 views.set_visible_child_name("agent");
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        request_done.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.finish_request(true);
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        request_cancel.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.finish_request(false);
             }
         });
         let views = files.views.clone();
@@ -673,8 +712,46 @@ impl Files {
         Ok(())
     }
 
+    /// An agent waits for the user to fill `path` in: opened with a bar saying what is asked,
+    /// Done and Cancel. Err if another agent already waits for the user, or the file can't
+    /// be opened.
+    pub fn request_edit(&self, id: u64, path: &Path, text: &str) -> Result<(), String> {
+        if self.request.borrow().is_some() {
+            return Err("the user is filling in another file for an agent; ask again when that is done".into());
+        }
+        self.open_for_agent(path)?;
+        *self.request.borrow_mut() = Some((id, path.to_owned()));
+        self.request_text.set_label(text);
+        self.request_bar.set_visible(true);
+        Ok(())
+    }
+
+    /// The request ends: saved and Done (true), or Cancel.
+    fn finish_request(&self, done: bool) {
+        let Some((id, path)) = self.request.borrow().clone() else { return };
+        if done && self.open.borrow().as_deref() == Some(path.as_path()) && self.buffer.is_modified() && !self.save() {
+            return;
+        }
+        self.end_request(id);
+        if let Some(told) = self.on_request.borrow().clone() {
+            told(id, done);
+        }
+    }
+
+    /// The bar goes (the request answered, or the agent stopped waiting).
+    pub fn end_request(&self, id: u64) {
+        let ours = self.request.borrow().as_ref().is_some_and(|(r, _)| *r == id);
+        if ours {
+            self.request.borrow_mut().take();
+            self.request_bar.set_visible(false);
+        }
+    }
+
     /// Reads `path` into the editor; false if it could not be read as text.
     fn load(&self, path: &Path) -> bool {
+        // The waiting bar shows only over the file it is about.
+        let asked = self.request.borrow().as_ref().is_some_and(|(_, p)| p == path);
+        self.request_bar.set_visible(asked);
         let text = match std::fs::read(path) {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(text) => text,

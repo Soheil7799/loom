@@ -85,6 +85,10 @@ pub struct App {
     /// Opened on the overview: (the agent, the one pinned beside it) to put back side by side
     /// when that agent is opened (and saved as it was meanwhile).
     pending_pin: RefCell<Option<(Rc<Agent>, Rc<Agent>)>>,
+    /// Files agents wait for the user to fill in (loom_edit): id → "waiting", "done" or
+    /// "cancelled"; and the next id.
+    edits: RefCell<HashMap<u64, &'static str>>,
+    next_edit: Cell<u64>,
     /// An overview refresh is due (several changes at once make one).
     overview_due: Cell<bool>,
     /// The files panel was open when the overview was shown (it opens again with an agent).
@@ -405,6 +409,8 @@ impl App {
             toast_question: Cell::new(false),
             toast_timeout: RefCell::default(),
             pending_pin: RefCell::default(),
+            edits: RefCell::default(),
+            next_edit: Cell::new(1),
             overview_due: Cell::new(false),
             files_hidden_for_overview: Cell::new(false),
             hub: hub.clone(),
@@ -414,6 +420,12 @@ impl App {
         });
         this.wire_toast(&toast_go, &toast_close);
         this.wire_hub();
+        let weak = Rc::downgrade(&this);
+        *this.files.on_request.borrow_mut() = Some(Rc::new(move |id, done| {
+            if let Some(app) = weak.upgrade() {
+                app.edits.borrow_mut().insert(id, if done { "done" } else { "cancelled" });
+            }
+        }));
         this.wire_history();
         this.wire_links();
         // "Ask Claude" in the editor: into the input of the agent in view.
@@ -2419,6 +2431,49 @@ impl App {
                     widget.grab_focus();
                 }
                 opened.map(|()| json!({}))
+            }
+            // An agent waits for the user to fill a file in (secrets kept out of the chat).
+            "request_edit" => {
+                let agent = agent.ok_or("this agent is no longer open in loom")?;
+                let path = Path::new(params["path"].as_str().ok_or("a path is needed")?);
+                let path = &crate::state::expand(path);
+                let path = if path.is_absolute() { path.to_owned() } else { agent.cwd.join(path) };
+                if path.is_dir() {
+                    return Err(format!("{} is a folder", path.display()));
+                }
+                // A file to fill in may not exist yet (.env): made empty, in a folder that is.
+                if !path.exists() {
+                    if !path.parent().is_some_and(Path::is_dir) {
+                        return Err(format!("the folder of {} does not exist", path.display()));
+                    }
+                    std::fs::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
+                }
+                let id = self.next_edit.get();
+                self.next_edit.set(id + 1);
+                let asked = params["message"].as_str().filter(|m| !m.trim().is_empty()).unwrap_or("Fill this file in, save it, then press Done.");
+                let focus = GtkWindowExt::focus(&self.window);
+                self.files.request_edit(u64::from(id), &path, &format!("{} is waiting: {asked}", agent.title()))?;
+                if let Some(widget) = focus {
+                    widget.grab_focus();
+                }
+                self.edits.borrow_mut().insert(id, "waiting");
+                let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(&agent));
+                if !self.window.is_active() {
+                    self.notify(&agent, &format!("Waits for you to fill in {}", path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()));
+                } else if !looking {
+                    self.show_toast(&agent, &format!("{} waits for you to fill in a file", agent.title()), true);
+                }
+                Ok(json!({ "id": id, "path": path.to_string_lossy() }))
+            }
+            "edit_state" => {
+                let id = params["id"].as_u64().ok_or("an id is needed")?;
+                Ok(json!({ "state": self.edits.borrow().get(&id).copied().unwrap_or("gone") }))
+            }
+            "edit_cancel" => {
+                let id = params["id"].as_u64().ok_or("an id is needed")?;
+                self.files.end_request(id);
+                self.edits.borrow_mut().remove(&id);
+                Ok(json!({}))
             }
             "notify" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;

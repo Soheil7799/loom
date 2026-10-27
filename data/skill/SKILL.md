@@ -40,8 +40,19 @@ dev server). Short, one-shot commands (`git status`, `ls`, a quick grep) stay in
 ## Show the user a file
 
 `loom_open(path)` opens a file in loom's editor panel without taking their keyboard: use it
-for an `.env` they must fill in, a document or plan you wrote for them to read, a config to
-review. Mention in your reply that it is open.
+for a document or plan you wrote for them to read, a config to review. Mention in your reply
+that it is open.
+
+## Have the user fill a file in (secrets)
+
+When something must go in a file that you must not see or have pasted into the chat (an API
+key, a token, a password, personal data), don't ask for it in the chat: call
+`loom_edit(path, message)`. loom opens the file for the user with your message and a Done
+button, and the call waits until they press Done (or Cancel). With `secret: true` (the
+default) you get back only which `KEY=value` lines now have a value, never the values: then
+use the file without reading it or printing it (source it, point the program at it). Write
+the keys it needs into the file first (`OPENAI_API_KEY=`), so the user only fills the values
+in. Use `secret: false` for a file you may read once they are done.
 
 ## Get their attention
 

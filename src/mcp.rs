@@ -71,7 +71,7 @@ pub fn run() -> i32 {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": format!(
-                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read or fill in with loom_open.{}",
+                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read with loom_open. When the user must put something in a file themselves (an API key, a token, a password, any secret that must not pass through the chat), use loom_edit: it opens the file for them and waits until they are done.{}",
                     if notes.is_some() { " The user keeps notes about their life and work (finances, work, study, languages, health, their system's setup…): before answering about their own facts, plans or past decisions, look with loom_note_search and loom_note_read. Don't edit the vault yourself; loom keeps it." } else { "" }
                 )
             })),
@@ -137,6 +137,15 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
             "inputSchema": { "type": "object", "properties": {
                 "path": { "type": "string", "description": "Absolute, or relative to the agent's folder" }
             }, "required": ["path"] }
+        },
+        {
+            "name": "loom_edit",
+            "description": "Ask the user to fill a file in themselves, and wait until they have: opens it in loom's editor with your message and a Done button, and returns when they press Done (saved) or Cancel. For anything the user should not paste into the chat: API keys, tokens, passwords, personal data. The file is created empty if it doesn't exist. With secret: true (the default), you get back only which KEY=value lines now have a value, never the values: don't read the file afterwards, use it (source it, point the program at it).",
+            "inputSchema": { "type": "object", "properties": {
+                "path": { "type": "string", "description": "Absolute, or relative to the agent's folder (e.g. .env)" },
+                "message": { "type": "string", "description": "What to put in it, shown above the file: \"Add your OPENAI_API_KEY\"" },
+                "secret": { "type": "boolean", "description": "It holds secrets: report only which keys are set, never the content (default true)" }
+            }, "required": ["path", "message"] }
         },
         {
             "name": "loom_notify",
@@ -217,6 +226,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_stop" => control::call(socket, agent, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),
         "loom_jobs" => control::call(socket, agent, "list_jobs", json!({})).map(|v| pretty(&v)),
         "loom_open" => control::call(socket, agent, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
+        "loom_edit" => edit(socket, agent, args, cancelled),
         "loom_notify" => control::call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
         "loom_agents" => control::call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
         tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
@@ -257,6 +267,61 @@ fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
     }
 }
 
+/// loom_edit: the file opened for the user, then waiting (cancellable) for Done or Cancel.
+fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
+    let asked = control::call(socket, agent, "request_edit", json!({ "path": args["path"], "message": args["message"] }))?;
+    let id = asked["id"].as_u64().ok_or("loom did not open the file")?;
+    let path = asked["path"].as_str().unwrap_or("").to_owned();
+    let secret = args["secret"].as_bool().unwrap_or(true);
+    loop {
+        if cancelled.load(Ordering::Relaxed) {
+            let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
+            return Err("cancelled".to_owned());
+        }
+        let state = control::call(socket, agent, "edit_state", json!({ "id": id }))?;
+        match state["state"].as_str().unwrap_or("gone") {
+            "waiting" => std::thread::sleep(Duration::from_millis(500)),
+            "done" => {
+                let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                return Ok(if secret {
+                    format!("The user filled in {path} and pressed Done. {} Don't read the file or print its values: use it as it is.", keys_set(&text))
+                } else {
+                    format!("The user edited {path} and pressed Done; read it to go on.")
+                });
+            }
+            "cancelled" => {
+                let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
+                return Ok(format!("The user cancelled: {path} was not filled in. Ask them what to do instead."));
+            }
+            _ => return Err("the request is gone (loom was closed or restarted)".to_owned()),
+        }
+    }
+}
+
+/// Which `KEY=value` lines of a file have a value, without the values: what an agent may know
+/// of a file of secrets.
+fn keys_set(text: &str) -> String {
+    let mut set = Vec::new();
+    let mut empty = Vec::new();
+    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let line = line.strip_prefix("export ").unwrap_or(line);
+        let Some((key, value)) = line.split_once(['=', ':']) else { continue };
+        let key = key.trim();
+        if key.is_empty() || key.contains(char::is_whitespace) {
+            continue;
+        }
+        let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+        if value.is_empty() { empty.push(key.to_owned()) } else { set.push(key.to_owned()) }
+    }
+    match (set.is_empty(), empty.is_empty()) {
+        (true, true) => format!("It has {} non-empty lines (no KEY=value lines to report).", text.lines().filter(|l| !l.trim().is_empty()).count()),
+        (false, true) => format!("Set: {}.", set.join(", ")),
+        (true, false) => format!("Still empty: {}.", empty.join(", ")),
+        (false, false) => format!("Set: {}. Still empty: {}.", set.join(", "), empty.join(", ")),
+    }
+}
+
 fn describe_job(job: Value) -> String {
     let state = if job["running"].as_bool().unwrap_or(false) {
         "running".to_owned()
@@ -267,6 +332,17 @@ fn describe_job(job: Value) -> String {
         }
     };
     format!("Job {}: {state}\n--- output ---\n{}", job["name"].as_str().unwrap_or("?"), job["output"].as_str().unwrap_or(""))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn only_key_names_come_back() {
+        let text = "# comment\nOPENAI_API_KEY=sk-secret\nexport DB_PASSWORD=\"hunter2\"\nEMPTY=\nPORT: 8080\n";
+        let said = super::keys_set(text);
+        assert_eq!(said, "Set: OPENAI_API_KEY, DB_PASSWORD, PORT. Still empty: EMPTY.");
+        assert!(!said.contains("sk-secret") && !said.contains("hunter2"));
+    }
 }
 
 fn pretty(value: &Value) -> String {
