@@ -4,6 +4,57 @@
 
 use gtk::{cairo, gdk, prelude::*};
 
+/// A coffee cup in outline (the Running list's keep-awake), in the widget's own colour (CSS
+/// sets it: dim off, gold on); `steam` above it when on.
+pub fn cup(size: i32, steam: bool) -> gtk::DrawingArea {
+    let area = gtk::DrawingArea::builder().content_width(size).content_height(size).valign(gtk::Align::Center).halign(gtk::Align::Center).build();
+    area.set_draw_func(move |area, cr, width, height| {
+        let c = area.color();
+        cr.set_source_rgba(f64::from(c.red()), f64::from(c.green()), f64::from(c.blue()), f64::from(c.alpha()));
+        let s = f64::from(width.min(height));
+        let (ox, oy) = ((f64::from(width) - s) / 2.0, (f64::from(height) - s) / 2.0);
+        let at = |x: f64, y: f64| (ox + x * s, oy + y * s);
+        cr.set_line_width((s / 11.0).max(1.2));
+        cr.set_line_cap(cairo::LineCap::Round);
+        cr.set_line_join(cairo::LineJoin::Round);
+        // The cup: straight sides, a rounded bottom.
+        let (x0, y0) = at(0.16, 0.42);
+        cr.move_to(x0, y0);
+        let (x1, y1) = at(0.16, 0.70);
+        cr.line_to(x1, y1);
+        let (cx, cy) = at(0.25, 0.86);
+        let (ex, ey) = at(0.38, 0.86);
+        cr.curve_to(x1, cy, cx, ey, ex, ey);
+        let (fx, fy) = at(0.54, 0.86);
+        cr.line_to(fx, fy);
+        let (gx, gy) = at(0.67, 0.86);
+        let (hx, hy) = at(0.76, 0.70);
+        cr.curve_to(gx, gy, hx, gy, hx, hy);
+        let (ix, iy) = at(0.76, 0.42);
+        cr.line_to(ix, iy);
+        cr.close_path();
+        let _ = cr.stroke();
+        // The handle.
+        let (hcx, hcy) = at(0.78, 0.56);
+        cr.new_sub_path();
+        cr.arc(hcx, hcy, s * 0.11, -std::f64::consts::FRAC_PI_2, std::f64::consts::FRAC_PI_2);
+        let _ = cr.stroke();
+        // Steam: two short wisps.
+        if steam {
+            for x in [0.36, 0.56] {
+                let (sx, sy) = at(x, 0.30);
+                cr.move_to(sx, sy);
+                let (ax, ay) = at(x - 0.06, 0.22);
+                let (bx, by) = at(x + 0.06, 0.16);
+                let (tx, ty) = at(x, 0.08);
+                cr.curve_to(ax, ay, bx, by, tx, ty);
+                let _ = cr.stroke();
+            }
+        }
+    });
+    area
+}
+
 pub fn mark(size: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder().content_width(size).content_height(size).build();
     area.add_css_class("logo");

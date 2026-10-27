@@ -2439,6 +2439,9 @@ impl App {
 
     fn refresh_sidebar(self: &Rc<Self>) {
         self.refresh_title();
+        // Rebuilt in place: the list stays scrolled where it was.
+        let scroll = self.list.parent().and_then(|v| v.parent()).and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment());
+        let kept = scroll.as_ref().map(|a| a.value());
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
@@ -2519,6 +2522,10 @@ impl App {
             self.fill_welcome();
         }
         self.mark_active();
+        if let (Some(adjustment), Some(value)) = (scroll, kept) {
+            adjustment.set_value(value);
+            glib::idle_add_local_once(move || adjustment.set_value(value));
+        }
     }
 
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
@@ -2651,7 +2658,10 @@ impl App {
         title.add_css_class("agent-title");
         let project = gtk::Label::builder().label(self.project_label(&agent.project)).max_width_chars(12).ellipsize(pango::EllipsizeMode::End).build();
         project.add_css_class("running-project");
-        let awake = gtk::Button::with_label("☕");
+        // Not a focus stop: clicked, the sidebar is rebuilt, and focus left on it would land on
+        // another row (scrolling the list away).
+        let awake = gtk::Button::builder().child(&crate::logo::cup(14, agent.awake.get())).focus_on_click(false).build();
+        awake.update_property(&[gtk::accessible::Property::Label("Keep awake")]);
         awake.add_css_class("flat");
         awake.add_css_class("awake");
         if agent.awake.get() {

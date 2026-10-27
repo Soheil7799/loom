@@ -437,8 +437,9 @@ button.heading-button:hover { opacity: 1; }
 .agents row.running-row.current { background: alpha(@accent_color, 0.14); }
 .running-number { font-size: 0.8em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
 .running-project { font-size: 0.8em; opacity: 0.5; }
-button.awake { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; opacity: 0.25; }
-.running-row:hover button.awake { opacity: 0.6; }
-button.awake.on { opacity: 1; background: alpha(@loom_warn, 0.15); }
+button.awake { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.3); }
+.running-row:hover button.awake { color: alpha(@window_fg_color, 0.6); }
+/* On: Ayu's gold. */
+button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
 /* Suspended agents in the cards: dimmer (running ones stand out). */
 .agent-title.resting { opacity: 0.6; }
