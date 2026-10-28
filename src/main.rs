@@ -82,10 +82,12 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);
     }
-    // `loom scribe-eval <cases.jsonl>`: how well the note agent does on a test set.
+    // `loom scribe-eval <cases.jsonl> [vault]`: how well the note agent does on a test set
+    // (with that vault's topics, rules learned included; else the default topics).
     if std::env::args().nth(1).as_deref() == Some("scribe-eval") {
         let cases = std::env::args().nth(2).unwrap_or_else(|| "data/scribe-cases.jsonl".to_owned());
-        return glib::ExitCode::from(scribe::eval(std::path::Path::new(&cases)) as u8);
+        let topics = std::env::args().nth(3).map(std::path::PathBuf::from);
+        return glib::ExitCode::from(scribe::eval(std::path::Path::new(&cases), topics.as_deref()) as u8);
     }
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());

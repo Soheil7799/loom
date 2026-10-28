@@ -823,7 +823,7 @@ fn talk_of(excerpt: &str) -> (Vec<Value>, String, String) {
 /// `loom scribe-eval <cases.jsonl>`: runs Scribe on each case (a conversation and the notes
 /// it starts from, in a fresh vault with the default topics) and scores what it did against
 /// what the case expects. Real calls to Claude: a few per case.
-pub fn eval(cases: &Path) -> i32 {
+pub fn eval(cases: &Path, topics_from: Option<&Path>) -> i32 {
     let Ok(text) = std::fs::read_to_string(cases) else {
         eprintln!("Cannot read {}", cases.display());
         return 2;
@@ -836,7 +836,7 @@ pub fn eval(cases: &Path) -> i32 {
         let handles: Vec<_> = cases
             .chunks(cases.len().div_ceil(4).max(1))
             .enumerate()
-            .map(|(part, group)| scope.spawn(move || group.iter().enumerate().map(|(i, case)| eval_case(case, part * 1000 + i)).collect::<Vec<_>>()))
+            .map(|(part, group)| scope.spawn(move || group.iter().enumerate().map(|(i, case)| eval_case(case, part * 1000 + i, topics_from)).collect::<Vec<_>>()))
             .collect();
         handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
     });
@@ -860,12 +860,18 @@ pub fn eval(cases: &Path) -> i32 {
 }
 
 /// (name, passed, why not, topics expected, topics found)
-fn eval_case(case: &Value, n: usize) -> (String, bool, String, Vec<String>, Vec<String>) {
+fn eval_case(case: &Value, n: usize, topics_from: Option<&Path>) -> (String, bool, String, Vec<String>, Vec<String>) {
     let name = case["name"].as_str().unwrap_or("?").to_owned();
     let vault = std::env::temp_dir().join(format!("loom-eval-{}-{n}", std::process::id()));
     let _ = std::fs::remove_dir_all(&vault);
     if let Err(why) = crate::vault::prepare(&vault) {
         return (name, false, why, Vec::new(), Vec::new());
+    }
+    // The user's own topics (with the rules learned from their corrections) over the defaults.
+    if let Some(from) = topics_from {
+        for entry in std::fs::read_dir(from.join(crate::vault::TOPICS)).into_iter().flatten().flatten() {
+            let _ = std::fs::copy(entry.path(), vault.join(crate::vault::TOPICS).join(entry.file_name()));
+        }
     }
     for (path, text) in case["notes"].as_object().into_iter().flatten() {
         let file = vault.join(path);
