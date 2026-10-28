@@ -1855,6 +1855,15 @@ impl Chat {
 
     /// A piece of the agent's message, with the agent's id for the message.
     pub fn agent_text_with(&self, text: &str, id: Option<&str>) {
+        // Another message of the agent's in the same bubble (a read-back conversation has no
+        // tool call between two replies): a paragraph of its own, not run into the last line.
+        let another = match (&*self.last.borrow(), id) {
+            (Last::Agent(message), Some(id)) => message.id.borrow().as_deref().is_some_and(|old| old != id) && !message.text.borrow().ends_with('\n'),
+            _ => false,
+        };
+        if another {
+            self.chunk(Kind::Agent, "\n\n");
+        }
         self.chunk(Kind::Agent, text);
         if let (Some(id), Last::Agent(message)) = (id, &*self.last.borrow()) {
             // Messages run together in one bubble: the latest one's id (forking there keeps all).
