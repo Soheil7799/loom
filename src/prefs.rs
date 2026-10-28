@@ -253,7 +253,7 @@ fn caption(section: &gtk::Box, text: &str) {
 }
 
 fn switch(on: bool, set: impl Fn(&mut Settings, bool) + 'static) -> gtk::Switch {
-    let switch = gtk::Switch::builder().active(on).build();
+    let switch = gtk::Switch::builder().active(on).valign(gtk::Align::Center).build();
     switch.connect_active_notify(move |s| {
         let on = s.is_active();
         settings::update(|settings| set(settings, on));
