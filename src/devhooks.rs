@@ -28,6 +28,7 @@
 //! - `squeezed`: widgets given less room than they measure, and every paned
 //! - `page:<name>`: shows that page of a stack in any open window (settings…)
 //! - `close`: close the focused agent (asks first if it is busy)
+//! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -108,6 +109,12 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             });
         }
         "overview" => app.show_overview(),
+        // As if Scribe had something new (a question, a change to review).
+        "scribenews" => {
+            if let Some(attention) = app.hub.on_attention.borrow().as_ref() {
+                attention();
+            }
+        }
         "about" => crate::about::open(&app.window),
         // The line a project dragged over project <n> (from 1) shows: dropline:<n>:before|after.
         "dropline" => {

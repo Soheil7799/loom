@@ -842,6 +842,13 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     place.append(&line);
     place.append(&state);
     row_stacked(&main, "Vault", "A folder Obsidian can open as a vault. Your notes stay plain Markdown files there.", &place);
+    let calls = gtk::SpinButton::with_range(20.0, 2000.0, 20.0);
+    calls.set_value(s.notes_daily_calls as f64);
+    calls.connect_value_changed(|b| {
+        let value = b.value() as u64;
+        settings::update(|s| s.notes_daily_calls = value);
+    });
+    row(&main, "Calls a day", "At most this many calls to Claude Haiku a day for notes (one per piece of a conversation read, plus one per topic it touches). Past it, checks wait for tomorrow.", &calls);
     caption(&main, "Your agents can search and read these notes, and Scribe keeps them up to date from your conversations (the Notes tab beside the chat shows what it wrote and asks).");
     content.append(&main);
     content.append(&topics);
