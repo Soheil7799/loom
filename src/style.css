@@ -457,6 +457,7 @@ label.addon-on { color: @loom_ok; font-weight: 600; }
 .hub-card { padding: 10px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
 .hub-card.ask { border: 1px solid alpha(@accent_color, 0.45); }
 .hub-card.written { opacity: 0.85; }
+.hub-card button.chosen { border-color: @accent_color; background: alpha(@accent_color, 0.14); }
 .hub-topic { font-weight: 600; font-size: 0.85em; color: @accent_color; }
 button.hub-from { padding: 0 4px; min-height: 0; font-size: 0.85em; }
 .hub-note { font-weight: 600; }

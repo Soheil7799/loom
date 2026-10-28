@@ -124,9 +124,9 @@ impl Files {
         }
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         spacer.set_hexpand(true);
-        let open_button = gtk::Button::from_icon_name("document-open-symbolic");
+        let open_button = gtk::Button::from_icon_name("folder-open-symbolic");
         open_button.add_css_class("flat");
-        open_button.set_tooltip_text(Some("Open any file (Ctrl+O; Ctrl+P to find one by name)"));
+        open_button.set_tooltip_text(Some("Open the project folder in the file manager (Ctrl+O opens a file here)"));
         header.append(&tabs);
         header.append(&spacer);
         header.append(&open_button);
@@ -535,9 +535,9 @@ impl Files {
             }
         });
         let weak = Rc::downgrade(&files);
-        open_button.connect_clicked(move |_| {
+        open_button.connect_clicked(move |button| {
             if let Some(files) = weak.upgrade() {
-                files.choose();
+                files.open_folder(button);
             }
         });
         let weak = Rc::downgrade(&files);
@@ -838,6 +838,21 @@ impl Files {
         self.remember(path);
         self.editor_box.set_visible(true);
         true
+    }
+
+    /// The project folder in the file manager.
+    fn open_folder(&self, button: &gtk::Button) {
+        let folder = self.project.borrow().clone();
+        if folder.as_os_str().is_empty() {
+            return;
+        }
+        let window = button.root().and_downcast::<gtk::Window>();
+        let files = self.me.borrow().clone();
+        gtk::FileLauncher::new(Some(&gio::File::for_path(&folder))).launch(window.as_ref(), None::<&gio::Cancellable>, move |result| {
+            if let (Err(err), Some(files)) = (result, files.upgrade()) {
+                files.notice(&format!("Could not open the folder: {err}"));
+            }
+        });
     }
 
     /// The open file in the app the system opens its kind with.

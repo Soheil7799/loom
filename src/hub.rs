@@ -160,8 +160,18 @@ impl Hub {
         check.connect_clicked(move |_| {
             if let Some(hub) = weak.upgrade() {
                 let session = hub.current.borrow().as_ref().map(|(s, _)| s.clone());
-                if let Some(session) = session {
-                    hub.check_soon(&session, false, Duration::ZERO);
+                let Some(session) = session else { return };
+                let busy = hub.running.get();
+                hub.check.set_sensitive(false);
+                hub.check.set_label(if busy { "Waiting…" } else { "Checking…" });
+                if busy {
+                    hub.status.set_label("This conversation is read as soon as the check running now ends…");
+                }
+                hub.check_soon(&session, false, Duration::ZERO);
+                // Nothing started: there was nothing new to read.
+                if !busy && !hub.running.get() {
+                    hub.status.set_label("Nothing new to read since the last check.");
+                    hub.refresh_head();
                 }
             }
         });
@@ -283,6 +293,7 @@ impl Hub {
         self.running.set(true);
         let title = entries.last().map(|e| e.title.clone()).unwrap_or_default();
         self.status.set_label(&format!("Reading “{title}”…"));
+        self.refresh_head();
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let checked = gio::spawn_blocking(move || scribe::check(&vault, &session, &entries, calls_left)).await;
@@ -377,8 +388,11 @@ impl Hub {
                         crate::overview::ago(crate::state::now().saturating_sub(at))
                     ),
                 });
-                self.check.set_visible(unread.is_some());
-                self.check.set_sensitive(!self.running.get());
+                // While a check runs it says so (one started by hand or by itself).
+                let running = self.running.get();
+                self.check.set_visible(unread.is_some() || running);
+                self.check.set_sensitive(!running);
+                self.check.set_label(if running { "Checking…" } else { "Check now" });
             }
         }
         if !self.running.get() && self.status.label().is_empty() {
@@ -441,9 +455,13 @@ impl Hub {
         for option in q["options"].as_array().into_iter().flatten().filter_map(Value::as_str) {
             let button = gtk::Button::with_label(option);
             button.add_css_class("prefs-button");
-            let (weak, option) = (Rc::downgrade(self), option.to_owned());
-            button.connect_clicked(move |_| {
+            let (weak, option, chosen) = (Rc::downgrade(self), option.to_owned(), card.downgrade());
+            button.connect_clicked(move |button| {
                 if let Some(hub) = weak.upgrade() {
+                    button.add_css_class("chosen");
+                    if let Some(card) = chosen.upgrade() {
+                        card.set_sensitive(false);
+                    }
                     hub.answer(id, &option);
                 }
             });
@@ -455,10 +473,13 @@ impl Hub {
         }
         // An answer of one's own (another currency, a date…).
         let own = gtk::Entry::builder().placeholder_text("Or your own answer, Enter").hexpand(true).build();
-        let weak = Rc::downgrade(self);
+        let (weak, chosen) = (Rc::downgrade(self), card.downgrade());
         own.connect_activate(move |entry| {
             let text = entry.text().trim().to_owned();
             if let (Some(hub), false) = (weak.upgrade(), text.is_empty()) {
+                if let Some(card) = chosen.upgrade() {
+                    card.set_sensitive(false);
+                }
                 hub.answer(id, &text);
             }
         });
@@ -503,7 +524,7 @@ impl Hub {
             if let Some(why) = p["why"].as_str().filter(|w| !w.is_empty()) {
                 let why = gtk::Label::builder().label(why).xalign(0.0).wrap(true).build();
                 why.add_css_class("small");
-                why.add_css_class("dim");
+                why.add_css_class(if p["failed"].as_bool() == Some(true) { "error" } else { "dim" });
                 card.append(&why);
             }
             let id = p["id"].as_u64().unwrap_or(0);
@@ -513,14 +534,21 @@ impl Hub {
             let reject = gtk::Button::with_label("Don't");
             reject.add_css_class("prefs-button");
             let weak = Rc::downgrade(self);
-            approve.connect_clicked(move |_| {
+            // Pressed: said at once (it may wait for a check that is running).
+            let pressed = buttons.clone();
+            approve.connect_clicked(move |button| {
                 if let Some(hub) = weak.upgrade() {
+                    pressed.set_sensitive(false);
+                    button.set_label("Writing…");
                     hub.decide(id, true);
                 }
             });
             let weak = Rc::downgrade(self);
-            reject.connect_clicked(move |_| {
+            let pressed = buttons.clone();
+            reject.connect_clicked(move |button| {
                 if let Some(hub) = weak.upgrade() {
+                    pressed.set_sensitive(false);
+                    button.set_label("Dropping…");
                     hub.decide(id, false);
                 }
             });
@@ -562,6 +590,9 @@ impl Hub {
                 }
                 Err(why) => {
                     self.status.set_label(&format!("Not written: {why}"));
+                    let mut p = p;
+                    p["why"] = format!("Not written: {why}").into();
+                    p["failed"] = true.into();
                     self.store.borrow_mut().pending.insert(0, p);
                 }
             }
@@ -597,6 +628,7 @@ impl Hub {
         };
         if self.store.borrow_mut().calls_left() == 0 {
             self.status.set_label("Today's limit of note checks is reached (Settings → Notes); the question waits.");
+            self.refresh();
             self.run_next();
             return;
         }
@@ -624,7 +656,10 @@ impl Hub {
                     report.title = title;
                     hub.take(report);
                 }
-                Err(_) => hub.status.set_label("Writing the answer stopped unexpectedly; the question waits."),
+                Err(_) => {
+                    hub.status.set_label("Writing the answer stopped unexpectedly; the question waits.");
+                    hub.refresh();
+                }
             }
             hub.run_next();
         });
