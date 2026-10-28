@@ -1931,7 +1931,7 @@ impl Agent {
             }
             "compaction_update" => match update["status"].as_str() {
                 Some("in_progress") => {
-                    self.chat.notice("Compacting the conversation (the context was nearly full)…", "dim");
+                    self.chat.notice("Compacting the conversation…", "dim");
                     self.emit(Event::Compacting);
                 }
                 Some("completed") => self.chat.notice("Compacted: Claude carries on with a summary of what came before.", "dim"),

@@ -468,3 +468,16 @@ button.overview-scribe { padding: 2px 6px; margin-left: -6px; color: @accent_col
 /* An agent waits for the user to fill the open file in (loom_edit). */
 .edit-request { padding: 8px 12px; background: alpha(@accent_color, 0.12); border-bottom: 1px solid alpha(@accent_color, 0.35); }
 .edit-request label { font-weight: 600; }
+
+/* Settings' close button, as loom's other icon buttons. */
+button.prefs-close { margin: 10px 12px; min-width: 30px; min-height: 30px; padding: 0;
+  border-radius: 8px; background: none; box-shadow: none; border: none;
+  opacity: 0.68; font-size: 1.3em; }
+button.prefs-close:hover { background: alpha(@window_fg_color, 0.08); opacity: 1; }
+button.prefs-close:focus-visible { outline: 2px solid alpha(@accent_color, 0.7);
+  outline-offset: -2px; }
+
+/* By the context meter once the context is fuller than the user's setting. */
+button.compact-alert { padding: 2px 10px; min-height: 0; border-radius: 8px; font-size: 0.9em;
+  color: @loom_warn; background: alpha(@loom_warn, 0.12); box-shadow: none; border: none; }
+button.compact-alert:hover { background: alpha(@loom_warn, 0.22); }

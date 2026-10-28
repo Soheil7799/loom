@@ -56,6 +56,9 @@ pub struct Settings {
     pub notes_vault: String,
     /// At most this many note checks (calls to Claude) a day.
     pub notes_daily_calls: u64,
+    /// A Compact button by the context meter once the context is at least this full (%).
+    pub compact_alert: bool,
+    pub compact_at: u64,
 }
 
 impl Default for Settings {
@@ -89,6 +92,8 @@ impl Default for Settings {
             notes_enabled: false,
             notes_vault: String::new(),
             notes_daily_calls: 300,
+            compact_alert: true,
+            compact_at: 80,
         }
     }
 }
@@ -196,6 +201,8 @@ fn parse(text: &str) -> Settings {
         notes_enabled: flag("notesEnabled", d.notes_enabled),
         notes_vault: string("notesVault", &d.notes_vault),
         notes_daily_calls: v["notesDailyCalls"].as_u64().unwrap_or(d.notes_daily_calls),
+        compact_alert: flag("compactAlert", d.compact_alert),
+        compact_at: v["compactAt"].as_u64().unwrap_or(d.compact_at).clamp(10, 95),
     }
 }
 
@@ -229,6 +236,8 @@ fn render(s: &Settings) -> String {
         "notesEnabled": s.notes_enabled,
         "notesVault": s.notes_vault,
         "notesDailyCalls": s.notes_daily_calls,
+        "compactAlert": s.compact_alert,
+        "compactAt": s.compact_at,
     }))
     .unwrap_or_default()
 }

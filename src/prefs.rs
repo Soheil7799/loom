@@ -46,7 +46,6 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     let window = gtk::Window::builder()
         .title("loom settings")
         .transient_for(parent)
-        .modal(true)
         .default_width(820)
         .default_height(600)
         .build();
@@ -107,8 +106,37 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
 
     let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     body.append(&nav);
-    body.append(&stack);
+    // The pages, with a close button over their top right corner.
+    let pages_overlay = gtk::Overlay::builder().child(&stack).hexpand(true).build();
+    let close = gtk::Button::builder().label("×").tooltip_text("Close (Esc)").halign(gtk::Align::End).valign(gtk::Align::Start).build();
+    close.add_css_class("prefs-close");
+    close.update_property(&[gtk::accessible::Property::Label("Close Settings")]);
+    let w = window.downgrade();
+    close.connect_clicked(move |_| {
+        if let Some(w) = w.upgrade() {
+            w.close();
+        }
+    });
+    pages_overlay.add_overlay(&close);
+    body.append(&pages_overlay);
     window.set_child(Some(&body));
+
+    // A click anywhere in the main window puts Settings away, and still lands. Not on the
+    // main window turning active (focus follows the mouse: a hover would close it), nor on
+    // Settings losing focus (its own dialogs take it).
+    let click = gtk::GestureClick::builder().button(0).propagation_phase(gtk::PropagationPhase::Capture).build();
+    let w = window.downgrade();
+    click.connect_pressed(move |_, _, _, _| {
+        if let Some(w) = w.upgrade().filter(|w| w.is_visible()) {
+            w.close();
+        }
+    });
+    let parent = parent.as_ref().clone();
+    parent.add_controller(click.clone());
+    window.connect_close_request(move |_| {
+        parent.remove_controller(&click);
+        glib::Propagation::Proceed
+    });
 
     // Esc closes; Ctrl+PageUp/PageDown and Alt+1…9 change the page.
     let keys = gtk::EventControllerKey::new();
@@ -338,6 +366,23 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
         "After a turn, Claude Haiku guesses what you'll write next; → or Tab fills it in. A little usage each turn.",
         &switch(s.suggest_prompts, |s, on| s.suggest_prompts = on),
     );
+    // How full, then on or off.
+    let at = gtk::SpinButton::with_range(10.0, 95.0, 5.0);
+    at.set_value(s.compact_at as f64);
+    at.set_sensitive(s.compact_alert);
+    at.set_tooltip_text(Some("Percent of the context"));
+    at.connect_value_changed(|b| {
+        let value = b.value() as u64;
+        settings::update(|s| s.compact_at = value);
+    });
+    let on = switch(s.compact_alert, |s, on| s.compact_alert = on);
+    let spin = at.clone();
+    on.connect_active_notify(move |s| spin.set_sensitive(s.is_active()));
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    controls.append(&at);
+    controls.append(&gtk::Label::new(Some("%")));
+    controls.append(&on);
+    row(&chat, "Remind me to compact", "Once the context is this full, a Compact button shows by the context meter, top right.", &controls);
     content.append(&chat);
 
     let schedules = section("Scheduled prompts");

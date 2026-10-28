@@ -1302,10 +1302,7 @@ impl App {
         if !self.is_pinned(agent) {
             self.chat_stack.set_visible_child(&agent.chat.root);
         }
-        // A collapsed project opens to show what was picked.
-        if let Some(project) = self.projects.borrow_mut().iter_mut().find(|p| p.path == agent.project) {
-            project.collapsed = false;
-        }
+        // A collapsed project stays collapsed: the agent is reached from the running list.
         self.show_tray(&agent.project, &agent.tray);
         self.show_files(&agent);
         if matches!(agent.status(), Status::Suspended | Status::Failed) {

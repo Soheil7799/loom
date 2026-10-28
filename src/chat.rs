@@ -44,6 +44,8 @@ pub struct Chat {
     state: gtk::Label,
     mode: gtk::Button,
     usage: gtk::Label,
+    /// Shown once the context is fuller than the user's setting: sends /compact.
+    compact: gtk::Button,
     /// The conversation's cost and the account's limit, from the agent.
     spend: gtk::Label,
     /// What the usage popover shows of this conversation: (used, size) tokens, its cost, the
@@ -290,6 +292,11 @@ impl Chat {
         usage_button.add_css_class("flat");
         usage_button.add_css_class("usage-button");
         usage_button.set_tooltip_text(Some("Context and usage limits"));
+        let compact = gtk::Button::with_label("Compact");
+        compact.add_css_class("compact-alert");
+        compact.set_valign(gtk::Align::Center);
+        compact.set_visible(false);
+        header.append(&compact);
         header.append(&usage_button);
         root.append(&header);
 
@@ -473,6 +480,7 @@ impl Chat {
             state,
             mode,
             usage,
+            compact: compact.clone(),
             spend,
             spent: RefCell::default(),
             usage_body: usage_body.clone(),
@@ -538,6 +546,22 @@ impl Chat {
             on_answer: RefCell::default(),
         });
         chat.wire();
+        // /compact sent; whatever was being typed is kept.
+        let weak = Rc::downgrade(&chat);
+        compact.connect_clicked(move |_| {
+            let Some(chat) = weak.upgrade() else { return };
+            let buffer = chat.input.buffer();
+            let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            chat.send_text("/compact");
+            buffer.set_text(&typed);
+            chat.compact.set_visible(false);
+        });
+        let weak = Rc::downgrade(&chat);
+        crate::settings::on_change(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.show_compact();
+            }
+        });
         let weak = Rc::downgrade(&chat);
         send.connect_clicked(move |_| {
             if let Some(chat) = weak.upgrade() {
@@ -1758,6 +1782,22 @@ impl Chat {
         } else {
             self.context.remove_css_class("full");
         }
+        self.show_compact();
+    }
+
+    /// The Compact button, when the setting is on and the context is at least that full.
+    fn show_compact(&self) {
+        let s = crate::settings::get();
+        let share = match self.spent.borrow().0 {
+            Some((used, size)) if size > 0 => used as f64 / size as f64,
+            _ => 0.0,
+        };
+        let percent = (share * 100.0).round() as u64;
+        let show = s.compact_alert && percent >= s.compact_at;
+        if show {
+            self.compact.set_tooltip_text(Some(&format!("The context is {percent}% full: summarise the conversation so far to make room (/compact)")));
+        }
+        self.compact.set_visible(show);
     }
 
     // ---- messages -------------------------------------------------------------------------
