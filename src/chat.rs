@@ -1903,7 +1903,30 @@ impl Chat {
     }
 
     pub fn user_chunk(&self, text: &str) {
+        // The summary a compacted conversation goes on from: folded, its own kind of block.
+        let starts = !matches!(&*self.last.borrow(), Last::User(_));
+        if starts && text.trim_start().starts_with(SUMMARY_START) {
+            let message = self.summary();
+            *self.last.borrow_mut() = Last::User(message.clone());
+            message.text.borrow_mut().push_str(text);
+            message.render_soon();
+            return;
+        }
         self.chunk(Kind::User, text);
+    }
+
+    /// A compaction's summary: one line, opened to read it (as Markdown). Not one of the
+    /// conversation's messages (export, the last reply, rewind).
+    fn summary(&self) -> Rc<Message> {
+        self.group.take();
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        body.add_css_class("msg-agent");
+        let expander = gtk::Expander::new(Some("Summary of the conversation before: what Claude carries on from"));
+        expander.add_css_class("thought");
+        expander.add_css_class("summary");
+        expander.set_child(Some(&body));
+        self.list.append(&expander);
+        Rc::new(Message { kind: Kind::Agent, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() })
     }
 
     fn message(&self, kind: Kind) -> Rc<Message> {
@@ -3814,6 +3837,9 @@ mod tests {
         assert_eq!(changed_lines("", "x\ny"), vec![('+', "x"), ('+', "y")]);
     }
 }
+
+/// How the summary of a compacted conversation starts (Claude Code's words).
+const SUMMARY_START: &str = "This session is being continued from a previous conversation";
 
 /// A message's right-click menu: what is selected in it, its own buttons' actions, and a quote
 /// of it (or of the selection) into the input. Over the text's own menu (Capture); the Menu
