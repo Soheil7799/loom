@@ -29,6 +29,7 @@
 //! - `page:<name>`: shows that page of a stack in any open window (settings…)
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
+//! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -109,6 +110,17 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             });
         }
         "overview" => app.show_overview(),
+        // The sidebar's right-click menu: of row n (from 0), or of its empty part.
+        "rowmenu" => app.row_menu_for_tests(argument.parse().ok()),
+        // The open popovers' text, printed (a menu's items, greyed out ones marked).
+        "poptext" => {
+            let mut found = Vec::new();
+            popovers(app.window.upcast_ref(), &mut found);
+            for popover in found {
+                eprintln!("POPOVER");
+                print_items(popover.upcast_ref());
+            }
+        }
         // As if Scribe had something new (a question, a change to review).
         "scribenews" => {
             if let Some(attention) = app.hub.on_attention.borrow().as_ref() {
@@ -270,14 +282,6 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // Widgets given less room than they need (with their ancestors), and every paned.
         "squeezed" => squeezed(app.window.upcast_ref(), 0),
-        // The text in open popovers, for when they cannot be drawn.
-        "poptext" => {
-            let mut found = Vec::new();
-            popovers(app.window.upcast_ref(), &mut found);
-            for popover in found {
-                print_labels(popover.upcast_ref());
-            }
-        }
         // Every other window too (settings…): <prefix>-1.png, -2…
         "snapall" => {
             let windows: Vec<gtk::Window> = gtk::Window::list_toplevels()
@@ -346,6 +350,34 @@ fn squeezed(widget: &gtk::Widget, depth: usize) {
     while let Some(c) = child {
         squeezed(&c, depth + 1);
         child = c.next_sibling();
+    }
+}
+
+fn print_items(widget: &gtk::Widget) {
+    if widget.is::<gtk::Separator>() {
+        eprintln!("  ----");
+    } else if let Some(button) = widget.downcast_ref::<gtk::Button>() {
+        let mut texts = Vec::new();
+        collect_text(button.upcast_ref(), &mut texts);
+        let marks = format!("{}{}", if button.is_sensitive() { "" } else { " [off]" }, if button.has_css_class("danger") { " [red]" } else { "" });
+        eprintln!("  {}{marks}", texts.join("   "));
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        print_items(&w);
+        child = w.next_sibling();
+    }
+}
+
+fn collect_text(widget: &gtk::Widget, texts: &mut Vec<String>) {
+    if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+        texts.push(label.label().to_string());
+    }
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        collect_text(&w, texts);
+        child = w.next_sibling();
     }
 }
 

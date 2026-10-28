@@ -74,6 +74,9 @@ pub struct Files {
     repos: RefCell<Vec<PathBuf>>,
     agent_repos: RefCell<Vec<PathBuf>>,
     shown_changes: RefCell<Vec<PathBuf>>,
+    /// The Changes rows for their menu: (repo, file as git names it, staged, unstaged, can be
+    /// reverted).
+    change_info: RefCell<Vec<(PathBuf, String, bool, bool, bool)>>,
     filling: Cell<bool>,
     /// Bumped by each Changes fill: an answer from git for an older one is dropped.
     changes_round: Cell<u64>,
@@ -344,6 +347,7 @@ impl Files {
             repos: RefCell::default(),
             agent_repos: RefCell::default(),
             shown_changes: RefCell::default(),
+            change_info: RefCell::default(),
             filling: Cell::new(false),
             changes_round: Cell::new(0),
             tree,
@@ -505,6 +509,70 @@ impl Files {
             if let Some(files) = weak.upgrade() {
                 files.fill_repo_view();
             }
+        });
+        // Right-click menus: a file in the tree, in the agent's files, in the Changes.
+        let weak = Rc::downgrade(&files);
+        crate::menu::on_right_click(&files.tree, move |x, y| {
+            let Some(files) = weak.upgrade() else { return };
+            let picked = files.tree.pick(x, y, gtk::PickFlags::DEFAULT);
+            let expander = picked.and_then(|w| if w.is::<gtk::TreeExpander>() { Some(w) } else { w.ancestor(gtk::TreeExpander::static_type()) });
+            let Some(row) = expander.and_downcast::<gtk::TreeExpander>().and_then(|e| e.list_row()) else { return };
+            let Some(info) = row.item().and_downcast::<gio::FileInfo>() else { return };
+            let Some(path) = file_of(&info).and_then(|f| f.path()) else { return };
+            let is_dir = info.file_type() == gio::FileType::Directory;
+            let menu = if is_dir {
+                let row = row.clone();
+                crate::menu::Menu::new().item(if row.is_expanded() { "Fold" } else { "Unfold" }, move || row.set_expanded(!row.is_expanded())).section()
+            } else {
+                files.open_item(&path)
+            };
+            files.file_items(menu, &path, is_dir).popup(&files.tree, x, y);
+        });
+        let weak = Rc::downgrade(&files);
+        crate::menu::on_right_click(&files.list, move |x, y| {
+            let Some(files) = weak.upgrade() else { return };
+            let Some(row) = files.list.row_at_y(y as i32) else { return };
+            let path = files.shown.borrow().get(row.index() as usize).map(|(path, _)| path.clone());
+            let Some(path) = path else { return };
+            let menu = files.open_item(&path);
+            files.file_items(menu, &path, false).popup(&files.list, x, y);
+        });
+        let weak = Rc::downgrade(&files);
+        crate::menu::on_right_click(&files.changes, move |x, y| {
+            let Some(files) = weak.upgrade() else { return };
+            let Some(row) = files.changes.row_at_y(y as i32) else { return };
+            let at = row.index() as usize;
+            let (Some(path), Some((repo, file, staged, unstaged, revertable))) =
+                (files.shown_changes.borrow().get(at).cloned(), files.change_info.borrow().get(at).cloned())
+            else {
+                return;
+            };
+            let me = files.me.borrow().clone();
+            let git = move |f: Box<dyn Fn(&Files)>| {
+                let me = me.clone();
+                move || {
+                    if let Some(files) = me.upgrade() {
+                        f(&files);
+                    }
+                }
+            };
+            let (r1, f1, r2, f2, r3, f3, r4, f4) = (repo.clone(), file.clone(), repo.clone(), file.clone(), repo.clone(), file.clone(), repo, file);
+            let mut menu = if path.is_file() { files.open_item(&path) } else { crate::menu::Menu::new() };
+            menu = menu
+                .item("What changed in it", git(Box::new(move |files| files.show_diff(&r1, &f1))))
+                .item("Stage", git(Box::new(move |files| files.git_then_refresh(&r2, vec!["add".into(), "--".into(), f2.clone()]))))
+                .enabled(unstaged)
+                .item("Unstage", git(Box::new(move |files| files.git_then_refresh(&r3, vec!["restore".into(), "--staged".into(), "--".into(), f3.clone()]))))
+                .enabled(staged)
+                .section();
+            if path.exists() {
+                menu = files.file_items(menu, &path, path.is_dir());
+            }
+            menu.section()
+                .item("Throw its changes away…", git(Box::new(move |files| files.revert(&r4, &f4))))
+                .enabled(revertable)
+                .danger()
+                .popup(&files.changes, x, y);
         });
         let weak = Rc::downgrade(&files);
         files.changes.connect_row_activated(move |_, row| {
@@ -838,6 +906,61 @@ impl Files {
         self.remember(path);
         self.editor_box.set_visible(true);
         true
+    }
+
+    /// A file's first menu items: open it here, or in its own app.
+    fn open_item(&self, path: &Path) -> crate::menu::Menu {
+        let me = self.me.borrow().clone();
+        let (p1, p2, at) = (path.to_owned(), path.to_owned(), self.root.clone());
+        crate::menu::Menu::new()
+            .item("Open", move || {
+                if let Some(files) = me.upgrade() {
+                    files.open_file(&p1);
+                }
+            })
+            .item("Open in its app", move || crate::menu::launch(&at, &p2))
+            .section()
+    }
+
+    /// The items every file and folder has: where it is, its path, the chat, the trash.
+    fn file_items(&self, menu: crate::menu::Menu, path: &Path, is_dir: bool) -> crate::menu::Menu {
+        let base = self.base.borrow().clone();
+        let relative = path.strip_prefix(&base).map(Path::to_path_buf).unwrap_or_else(|_| path.to_owned());
+        let at = self.root.clone();
+        let (p1, p2, p3) = (path.to_owned(), path.to_owned(), path.to_owned());
+        let (a1, a2, a3) = (at.clone(), at.clone(), at.clone());
+        let rel = relative.to_string_lossy().into_owned();
+        let rel2 = rel.clone();
+        let ask = self.on_ask.borrow().clone();
+        let me = self.me.borrow().clone();
+        let menu = if is_dir {
+            menu.item("Open in the file manager", move || crate::menu::launch(&a1, &p1))
+        } else {
+            menu.item("Show in the file manager", move || crate::menu::reveal(&a1, &p1))
+        };
+        menu.item("Mention in the chat", move || {
+            if let Some(ask) = &ask {
+                ask(format!("@{rel} "));
+            }
+        })
+        .section()
+        .item("Copy its path", move || crate::menu::copy(&a2, &p2.to_string_lossy()))
+        .item("Copy its path in the project", move || crate::menu::copy(&a3, &rel2))
+        .section()
+        .item("Move to the trash", move || {
+            let Some(files) = me.upgrade() else { return };
+            let name = p3.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            match gio::File::for_path(&p3).trash(None::<&gio::Cancellable>) {
+                Ok(()) => {
+                    if files.open.borrow().as_deref() == Some(p3.as_path()) {
+                        files.close();
+                    }
+                    files.notice(&format!("{name} is in the trash (restore it from the file manager's Trash)."));
+                }
+                Err(err) => files.notice(&format!("Could not move {name} to the trash: {err}")),
+            }
+        })
+        .danger()
     }
 
     /// The project folder in the file manager.
@@ -1198,6 +1321,7 @@ impl Files {
         parts.push(if status.changes.is_empty() { "clean".to_owned() } else { format!("{} changed", status.changes.len()) });
         self.repo_line.set_label(&parts.join("  ·  "));
         let mut paths = Vec::new();
+        let mut info = Vec::new();
         *self.changes_repo.borrow_mut() = Some(repo.to_owned());
         for (raw, file) in &status.changes {
             let code = raw.trim();
@@ -1255,8 +1379,10 @@ impl Files {
             row.append(&actions);
             self.changes.append(&row);
             paths.push(repo.join(file));
+            info.push((repo.to_owned(), file.clone(), staged, unstaged, raw != "??" && !raw.starts_with('R') && !raw.starts_with('C')));
         }
         *self.shown_changes.borrow_mut() = paths;
+        *self.change_info.borrow_mut() = info;
     }
 
     /// Runs git in `repo`: its output, or what it said went wrong.
@@ -1803,7 +1929,7 @@ fn ref_badges(refs: &str, remotes: &[String]) -> Vec<(String, &'static str)> {
 }
 
 /// The text selected in a label under `widget` (the Read view), if any.
-fn selected_text(widget: &gtk::Widget) -> Option<String> {
+pub fn selected_text(widget: &gtk::Widget) -> Option<String> {
     if let Some(label) = widget.downcast_ref::<gtk::Label>()
         && let Some((a, b)) = label.selection_bounds()
         && a != b

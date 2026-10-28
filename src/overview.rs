@@ -50,6 +50,8 @@ pub struct Overview {
     pub on_open: Handler<u32>,
     pub on_schedule_for: Handler<u32>,
     pub on_schedule: Handler<(u64, Act)>,
+    /// A card right-clicked: its agent, the card, and where.
+    pub on_menu: Handler<(u32, gtk::Widget, f64, f64)>,
 }
 
 impl Overview {
@@ -96,6 +98,7 @@ impl Overview {
             on_open: RefCell::default(),
             on_schedule_for: RefCell::default(),
             on_schedule: RefCell::default(),
+            on_menu: RefCell::default(),
         });
         let weak = Rc::downgrade(&overview);
         scribe.connect_clicked(move |_| {
@@ -244,6 +247,14 @@ impl Overview {
         }
         // As tall as what it shows (not as the tallest card of its row).
         root.set_valign(gtk::Align::Start);
+        let (weak, id) = (Rc::downgrade(self), card.id);
+        let at = root.downgrade();
+        crate::menu::on_right_click(&root, move |x, y| {
+            let handler = weak.upgrade().and_then(|o| o.on_menu.borrow().clone());
+            if let (Some(handler), Some(at)) = (handler, at.upgrade()) {
+                handler((id, at.upcast(), x, y));
+            }
+        });
         if card.status == Status::Blocked {
             root.add_css_class("needs-you");
         }

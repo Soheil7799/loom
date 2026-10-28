@@ -199,6 +199,47 @@ impl Tray {
                 tray.peek(&job);
             }
         });
+        // Right-click: what the peek's buttons do, and the command and output to copy.
+        let weak = Rc::downgrade(&job);
+        crate::menu::on_right_click(&chip, move |x, y| {
+            let Some(job) = weak.upgrade() else { return };
+            let act = |f: fn(&Tray, &Rc<Job>)| {
+                let weak = Rc::downgrade(&job);
+                move || {
+                    if let Some(job) = weak.upgrade()
+                        && let Some(tray) = job.tray.upgrade()
+                    {
+                        f(&tray, &job);
+                    }
+                }
+            };
+            let command = job.command.borrow().clone();
+            let running = job.is_running();
+            let docked = job.docked.borrow().is_some();
+            let mut menu = crate::menu::Menu::new().item("Show its output", act(|tray, job| tray.peek(job)));
+            if command.is_some() {
+                menu = menu.item("Run again", act(|_, job| job.restart())).item("Stop", act(|_, job| job.stop())).enabled(running);
+            }
+            menu = menu.item(
+                if docked { "Unpin" } else { "Pin above the tray" },
+                act(|tray, job| if job.docked.borrow().is_some() { tray.unpin(job) } else { tray.pin(job) }),
+            );
+            let (chip, chip2) = (job.chip.clone(), job.chip.clone());
+            let output = Rc::downgrade(&job);
+            menu = menu.section();
+            if let Some(command) = command {
+                menu = menu.item("Copy the command", move || crate::menu::copy(&chip, &command));
+            }
+            menu.item("Copy its output", move || {
+                if let Some(job) = output.upgrade() {
+                    crate::menu::copy(&chip2, &job.output(10_000));
+                }
+            })
+            .section()
+            .item("Remove from the tray", act(|tray, job| tray.remove(job)))
+            .danger()
+            .popup(&job.chip, x, y);
+        });
         self.chips.append(&chip);
         self.hint.set_visible(false);
         self.jobs.borrow_mut().push(job.clone());

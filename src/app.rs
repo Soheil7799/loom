@@ -499,8 +499,11 @@ impl App {
         let weak = Rc::downgrade(self);
         click.connect_pressed(move |_, _, x, y| {
             let Some(app) = weak.upgrade() else { return };
-            if let Some(row) = app.list.row_at_y(y as i32) {
-                app.row_menu(row.index() as usize, x, y);
+            match app.list.row_at_y(y as i32) {
+                // A heading (Running, Projects): no menu of its own.
+                Some(row) if matches!(app.rows.borrow().get(row.index() as usize), Some(Row::Heading)) => {}
+                Some(row) => app.row_menu(Some(row.index() as usize), x, y),
+                None => app.row_menu(None, x, y),
             }
         });
         self.list.add_controller(click);
@@ -1798,6 +1801,20 @@ impl App {
             }
         }));
         let weak = Rc::downgrade(self);
+        *self.overview.on_menu.borrow_mut() = Some(Rc::new(move |(id, card, x, y)| {
+            let Some(app) = weak.upgrade() else { return };
+            let Some(agent) = app.agent_by_id(id) else { return };
+            let (weak, target) = (Rc::downgrade(&app), Rc::downgrade(&agent));
+            app.agent_menu(&agent)
+                .section()
+                .item("Schedule a prompt…", move || {
+                    if let (Some(app), Some(agent)) = (weak.upgrade(), target.upgrade()) {
+                        app.schedule_for(&agent);
+                    }
+                })
+                .popup(&card, x, y);
+        }));
+        let weak = Rc::downgrade(self);
         *self.overview.on_schedule.borrow_mut() = Some(Rc::new(move |(id, act)| {
             let Some(app) = weak.upgrade() else { return };
             match act {
@@ -2528,67 +2545,118 @@ impl App {
         }
     }
 
-    /// The right-click menu of row `index`, at (x, y) in the list.
-    fn row_menu(self: &Rc<Self>, index: usize, x: f64, y: f64) {
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    /// The right-click menu of row `index` (None: the empty part of the list), at (x, y) in
+    /// the list.
+    fn row_menu(self: &Rc<Self>, index: Option<usize>, x: f64, y: f64) {
+        use crate::menu::Menu;
         let weak = Rc::downgrade(self);
-        let item = |label: &str, f: Box<dyn Fn(&Rc<App>)>| {
-            let button = gtk::Button::with_label(label);
-            button.add_css_class("flat");
-            button.add_css_class("menu-item");
-            if let Some(child) = button.child().and_downcast::<gtk::Label>() {
-                child.set_xalign(0.0);
-            }
+        // An action on the app, run if it is still there.
+        let on = |f: Box<dyn Fn(&Rc<App>)>| {
             let weak = weak.clone();
-            button.connect_clicked(move |_| {
+            move || {
                 if let Some(app) = weak.upgrade() {
-                    app.menu.popdown();
                     f(&app);
                 }
-            });
-            content.append(&button);
+            }
         };
-        match self.rows.borrow().get(index) {
+        let row = index.and_then(|i| match self.rows.borrow().get(i) {
+            Some(Row::Project(path)) => Some(Row::Project(path.clone())),
+            Some(Row::Agent(agent)) => Some(Row::Agent(agent.clone())),
+            _ => None,
+        });
+        let menu = match row {
             Some(Row::Project(path)) => {
-                let (p1, p2, p3, p4, p5) = (path.clone(), path.clone(), path.clone(), path.clone(), path.clone());
-                item("Conversations (new or past)", Box::new(move |app| app.show_project(&p1, &p1)));
-                item("Rename…", Box::new(move |app| app.rename_project_at(&p5, x, y)));
-                item("Scratch terminal here", Box::new(move |app| {
-                    app.scratch.hide();
-                    app.scratch.toggle(&p2);
-                }));
-                item("Collapse / expand", Box::new(move |app| app.toggle_collapsed(&p3)));
-                item("Remove from the sidebar", Box::new(move |app| app.remove_project(&p4)));
-            }
-            Some(Row::Agent(agent)) => {
-                let target = Rc::downgrade(agent);
-                let with = |f: fn(&Rc<App>, &Rc<Agent>)| -> Box<dyn Fn(&Rc<App>)> {
-                    let target = target.clone();
-                    Box::new(move |app| {
-                        if let Some(agent) = target.upgrade() {
-                            f(app, &agent);
-                        }
+                let p = || path.clone();
+                let collapsed = self.projects.borrow().iter().any(|e| e.path == path && e.collapsed);
+                let (p1, p2, p3, p4, p5, p6, p7) = (p(), p(), p(), p(), p(), p(), p());
+                let list = self.list.clone();
+                Menu::new()
+                    .item("New agent here", on(Box::new(move |app| app.start_agent_in(p1.clone()))))
+                    .item("Conversations (new or past)", on(Box::new(move |app| app.show_project(&p2, &p2))))
+                    .section()
+                    .item("Open in the file manager", move || crate::menu::launch(&list, &p3))
+                    .item("Copy its path", {
+                        let list = self.list.clone();
+                        move || crate::menu::copy(&list, &p4.to_string_lossy())
                     })
-                };
-                item("Rename…", with(|app, agent| {
-                    app.focus(agent);
-                    app.begin_rename();
-                }));
-                item("Show beside the focused one", with(|app, agent| {
-                    app.pin(agent);
-                    app.save();
-                }));
-                item("Restart", with(|_, agent| agent.restart()));
-                item("Suspend (free its memory)", with(|_, agent| {
-                    agent.suspend();
-                }));
-                item("Close", with(|app, agent| app.close_agent(agent)));
+                    .item("Scratch terminal here", on(Box::new(move |app| {
+                        app.scratch.hide();
+                        app.scratch.toggle(&p5);
+                    })))
+                    .section()
+                    .item("Rename…", on(Box::new(move |app| app.rename_project_at(&p6, x, y))))
+                    .item(if collapsed { "Show its agents" } else { "Hide its agents" }, on(Box::new(move |app| app.toggle_collapsed(&p7))))
+                    .section()
+                    .item("Remove from the sidebar", on(Box::new(move |app| app.remove_project(&path))))
+                    .danger()
             }
-            Some(Row::Heading) | None => return,
-        }
-        self.menu.set_child(Some(&content));
-        self.menu.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        self.menu.popup();
+            Some(Row::Agent(agent)) => self.agent_menu(&agent),
+            // The empty part of the list.
+            _ => Menu::new()
+                .item("New agent…", on(Box::new(|app| app.new_agent(false))))
+                .hint("Ctrl+N")
+                .item("Open a project folder…", on(Box::new(|app| app.new_agent(true))))
+                .hint("Ctrl+Shift+N")
+                .section()
+                .item("Show every project's agents", on(Box::new(|app| app.collapse_all(false))))
+                .item("Hide every project's agents", on(Box::new(|app| app.collapse_all(true)))),
+        };
+        menu.popup(&self.list, x, y);
+    }
+
+    pub fn row_menu_for_tests(self: &Rc<Self>, index: Option<usize>) {
+        let y = index.and_then(|i| self.list.row_at_index(i as i32)).and_then(|r| r.compute_bounds(&self.list)).map_or(400.0, |b| f64::from(b.y() + 10.0));
+        self.row_menu(index, 60.0, y);
+    }
+
+    /// An agent's right-click menu (its sidebar row, its overview card).
+    fn agent_menu(self: &Rc<Self>, agent: &Rc<Agent>) -> crate::menu::Menu {
+        use crate::menu::Menu;
+        let weak = Rc::downgrade(self);
+        let target = Rc::downgrade(agent);
+        let with = |f: fn(&Rc<App>, &Rc<Agent>)| {
+            let (weak, target) = (weak.clone(), target.clone());
+            move || {
+                if let (Some(app), Some(agent)) = (weak.upgrade(), target.upgrade()) {
+                    f(&app, &agent);
+                }
+            }
+        };
+        let focused = self.focused_agent().is_some_and(|f| Rc::ptr_eq(&f, agent));
+        let suspended = agent.status() == Status::Suspended;
+        let cwd = agent.cwd.clone();
+        let (list, list2, cwd2) = (self.list.clone(), self.list.clone(), cwd.clone());
+        Menu::new()
+            .item("Open", with(|app, agent| app.focus(agent)))
+            .enabled(!focused)
+            .item("Show beside the focused one", with(|app, agent| {
+                app.pin(agent);
+                app.save();
+            }))
+            .enabled(!focused)
+            .item(if agent.awake.get() { "Let it rest when idle" } else { "Keep awake" }, with(|app, agent| {
+                agent.awake.set(!agent.awake.get());
+                app.save();
+                app.refresh_sidebar();
+            }))
+            .section()
+            .item("Rename…", with(|app, agent| {
+                app.focus(agent);
+                app.begin_rename();
+            }))
+            .hint("F2")
+            .item("Open its folder in the file manager", move || crate::menu::launch(&list, &cwd))
+            .item("Copy its folder's path", move || crate::menu::copy(&list2, &cwd2.to_string_lossy()))
+            .section()
+            .item("Restart", with(|_, agent| agent.restart()))
+            .item("Suspend (free its memory)", with(|_, agent| {
+                agent.suspend();
+            }))
+            .enabled(!suspended)
+            .section()
+            .item("Close", with(|app, agent| app.close_agent(agent)))
+            .hint("Ctrl+W")
+            .danger()
     }
 
     /// "agent — project · loom", for the window list and the taskbar.

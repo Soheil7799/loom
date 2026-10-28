@@ -1927,6 +1927,7 @@ impl Chat {
                 wrap.add_overlay(&copy);
                 self.list.append(&wrap);
                 let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
+                message_menu(&wrap, &message, &self.input, vec![("Copy the whole message", copy.clone())]);
                 let weak = Rc::downgrade(&message);
                 copy.connect_clicked(move |button| {
                     if let Some(message) = weak.upgrade() {
@@ -1959,6 +1960,12 @@ impl Chat {
                 wrap.add_overlay(&actions);
                 self.list.append(&wrap);
                 let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
+                message_menu(
+                    &wrap,
+                    &message,
+                    &self.input,
+                    vec![("Copy the whole message", copy.clone()), ("Edit and send again", edit.clone()), ("Rewind to here", rewind.clone())],
+                );
                 let weak = Rc::downgrade(&message);
                 copy.connect_clicked(move |button| {
                     if let Some(message) = weak.upgrade() {
@@ -3801,4 +3808,43 @@ mod tests {
     fn a_new_file_is_all_added() {
         assert_eq!(changed_lines("", "x\ny"), vec![('+', "x"), ('+', "y")]);
     }
+}
+
+/// A message's right-click menu: what is selected in it, its own buttons' actions, and a quote
+/// of it (or of the selection) into the input. Over the text's own menu (Capture).
+fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextView, actions: Vec<(&'static str, gtk::Button)>) {
+    let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).propagation_phase(gtk::PropagationPhase::Capture).build();
+    let (at, message, input) = (wrap.downgrade(), Rc::downgrade(message), input.downgrade());
+    click.connect_pressed(move |gesture, _, x, y| {
+        let (Some(wrap), Some(message), Some(input)) = (at.upgrade(), message.upgrade(), input.upgrade()) else { return };
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+        let selected = crate::files::selected_text(message.body.upcast_ref()).filter(|t| !t.trim().is_empty());
+        let (copied, there) = (selected.clone(), wrap.clone());
+        let mut menu = crate::menu::Menu::new()
+            .item("Copy", move || {
+                if let Some(text) = &copied {
+                    crate::menu::copy(&there, text);
+                }
+            })
+            .hint("Ctrl+C")
+            .enabled(selected.is_some());
+        for (label, button) in &actions {
+            let button = button.clone();
+            menu = menu.item(label, move || button.emit_clicked());
+        }
+        let quoted = selected.unwrap_or_else(|| message.text.borrow().trim().to_owned());
+        menu.section()
+            .item("Quote in your reply", move || {
+                let buffer = input.buffer();
+                let quote = format!("> {}\n\n", quoted.trim().replace('\n', "\n> "));
+                buffer.place_cursor(&buffer.end_iter());
+                if buffer.char_count() > 0 {
+                    buffer.insert_at_cursor("\n");
+                }
+                buffer.insert_at_cursor(&quote);
+                input.grab_focus();
+            })
+            .popup(&wrap, x, y);
+    });
+    wrap.add_controller(click);
 }

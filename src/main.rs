@@ -18,6 +18,7 @@ mod jobs;
 mod journal;
 mod log;
 mod memory;
+mod menu;
 mod logo;
 mod markdown;
 mod overview;
