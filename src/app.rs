@@ -2410,10 +2410,12 @@ impl App {
             });
             return glib::Propagation::Stop;
         }
-        self.save();
+        // Stopped first: what was waiting to be sent goes back in the input, and is saved
+        // with it as the draft.
         for agent in self.agents.borrow().iter() {
             agent.stop();
         }
+        self.save();
         for tray in self.trays.borrow().values() {
             tray.stop_all();
         }

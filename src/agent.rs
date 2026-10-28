@@ -21,6 +21,20 @@ use crate::chat::{Chat, PermissionCard};
 use crate::files::Mark;
 use crate::jobs::Tray;
 use crate::state::Saved;
+/// At most this many messages from before a compaction are shown when a conversation is
+/// opened again (the newest).
+const EARLIER: usize = 400;
+
+/// " (28 Oct, 12:15)" for a file's ISO time, in local time; nothing if unreadable.
+fn when_said(iso: &str) -> String {
+    glib::DateTime::from_iso8601(iso, None)
+        .ok()
+        .and_then(|t| t.to_local().ok())
+        .and_then(|t| t.format("%e %b, %H:%M").ok())
+        .map(|t| format!(" ({})", t.trim()))
+        .unwrap_or_default()
+}
+
 /// What compacting before resting keeps: what the next session needs to carry on.
 const REST_COMPACT: &str = "/compact Keep what is still open: unfinished tasks, decisions made and why, the files involved, and anything asked for that is not done yet.";
 
@@ -691,6 +705,55 @@ impl Agent {
             self.forget_subs();
             self.files.borrow_mut().clear();
             self.replaying.set(true);
+            // A compacted conversation is replayed from its summary on: what came before is
+            // read from Claude Code's own file of it and shown first (off the main thread).
+            let (weak, id) = (Rc::downgrade(self), session.clone());
+            glib::spawn_future_local(async move {
+                let earlier = gio::spawn_blocking(move || crate::compacted::earlier(&id, EARLIER)).await.unwrap_or_default();
+                if let Some(agent) = weak.upgrade() {
+                    agent.show_earlier(earlier);
+                    agent.load_session(session);
+                }
+            });
+            return;
+        }
+        conn.request("session/new", self.session_params(), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            match result {
+                Ok(result) => {
+                    agent.fresh.set(true);
+                    *agent.session_id.borrow_mut() = result["sessionId"].as_str().map(str::to_owned);
+                    agent.emit(Event::Session);
+                    agent.session_ready(&result);
+                }
+                Err(err) => agent.fail(&format!("Could not open a session: {}", message(&err))),
+            }
+        });
+    }
+
+    /// What a compacted conversation said before (it is not in its replay).
+    fn show_earlier(&self, (earlier, left_out): (Vec<crate::compacted::Said>, usize)) {
+        use crate::compacted::Said;
+        if earlier.is_empty() {
+            return;
+        }
+        if left_out > 0 {
+            self.chat.notice(&format!("{left_out} earlier messages are not shown (they are kept in Claude Code's own file of this conversation)."), "dim");
+        }
+        for said in earlier {
+            match said {
+                Said::User(text) => self.chat.user(&text),
+                Said::Agent(text) => self.chat.agent_text_with(&text, None),
+                Said::Compacted(when) => self.chat.notice(&format!("Compacted here{}.", when_said(&when)), "dim"),
+            }
+        }
+        self.chat.notice("Compacted: Claude carries on with a summary of the above (it does not see the above itself).", "dim");
+    }
+
+    fn load_session(self: &Rc<Self>, session: String) {
+        let Some(conn) = self.conn.borrow().clone() else { return };
+        let weak = Rc::downgrade(self);
+        {
             let mut params = self.session_params();
             params["sessionId"] = session.into();
             conn.request("session/load", params, move |result| {
@@ -711,19 +774,6 @@ impl Agent {
                     }
                     // Anything else keeps the session, to try again later.
                     Err(err) => agent.fail(&format!("Could not resume this conversation: {}", message(&err))),
-                }
-            });
-        } else {
-            conn.request("session/new", self.session_params(), move |result| {
-                let Some(agent) = weak.upgrade() else { return };
-                match result {
-                    Ok(result) => {
-                        agent.fresh.set(true);
-                        *agent.session_id.borrow_mut() = result["sessionId"].as_str().map(str::to_owned);
-                        agent.emit(Event::Session);
-                        agent.session_ready(&result);
-                    }
-                    Err(err) => agent.fail(&format!("Could not open a session: {}", message(&err))),
                 }
             });
         }

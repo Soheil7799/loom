@@ -117,12 +117,16 @@ pub fn now() -> u64 {
 /// When a conversation was last written, from Claude Code's own file of it (for agents saved
 /// before loom kept the time itself).
 pub fn session_written(session: &str) -> Option<u64> {
-    let projects = glib::home_dir().join(".claude/projects");
+    let modified = std::fs::metadata(claude_file(session)?).ok()?.modified().ok()?;
+    modified.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
+}
+
+/// Claude Code's own file of a conversation (in its config folder: $CLAUDE_CONFIG_DIR, or
+/// ~/.claude), under whichever project folder it is.
+pub fn claude_file(session: &str) -> Option<PathBuf> {
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| glib::home_dir().join(".claude"));
     let name = format!("{session}.jsonl");
-    std::fs::read_dir(projects).ok()?.flatten().find_map(|dir| {
-        let modified = std::fs::metadata(dir.path().join(&name)).ok()?.modified().ok()?;
-        modified.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
-    })
+    std::fs::read_dir(config.join("projects")).ok()?.flatten().map(|dir| dir.path().join(&name)).find(|file| file.is_file())
 }
 
 fn saved_json(a: &Saved) -> Value {
