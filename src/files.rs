@@ -1948,14 +1948,9 @@ pub fn selected_text(widget: &gtk::Widget) -> Option<String> {
     None
 }
 
-/// The theme's symbolic icon for a file's kind (from its name), or a folder's.
+/// A file's icon by its kind (from its name), or a folder's.
 fn file_icon(path: &Path, is_dir: bool) -> gio::Icon {
-    if is_dir {
-        return gio::ThemedIcon::new("folder-symbolic").upcast();
-    }
-    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let (kind, _) = gio::content_type_guess(Some(name.as_str()), None);
-    gio::content_type_get_symbolic_icon(&kind)
+    crate::icons::for_file(path, is_dir)
 }
 
 fn modified_time(path: &Path) -> Option<SystemTime> {

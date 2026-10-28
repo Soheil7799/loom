@@ -19,6 +19,7 @@ mod journal;
 mod log;
 mod memory;
 mod compacted;
+mod icons;
 mod menu;
 mod logo;
 mod markdown;
