@@ -35,6 +35,13 @@ Not worth keeping: questions without an answer, examples and hypotheticals, the 
 
 Most excerpts touch no topic: then return an empty list. Never assume the user's gender. For each topic you return, give `about`: 3 to 8 words that would find the related notes.";
 
+/// Turns a correction into a rule (its own prompt, editable in loom's Claude folder).
+const RULE: &str = "You help keep one topic of a person's notes. A notes keeper proposed a change to their notes and they said no to it (or undid it), and told you why.
+
+Write ONE rule for this topic's instructions that would have kept the keeper from making that change, and that still makes sense for later conversations: one short imperative sentence, under 25 words, in the person's own terms. If what they said is already a rule, keep their words. Don't repeat the particular amounts or names of this change unless the rule is about them. Don't write anything else.
+
+Answer as JSON: {\"rule\": \"...\"}";
+
 const EDIT: &str = "You keep one topic of a person's notes (an Obsidian vault of Markdown files).
 
 You get the topic's own instructions (how its notes are kept: follow them), the notes that may need the change (path and full text; maybe none), and an excerpt of a conversation. Return the small changes that record what the USER stated or confirmed.
@@ -147,6 +154,8 @@ pub struct Proposal {
     pub topic: String,
     pub change: Change,
     pub reason: String,
+    /// The piece of the conversation it came from.
+    pub excerpt: String,
 }
 
 /// A question Scribe asks instead of guessing.
@@ -408,7 +417,7 @@ fn edit(topic: &Topic, notes: &[(String, String)], excerpt: &str) -> Result<(Vec
         .as_array()
         .map(|all| {
             all.iter()
-                .filter_map(|c| Some(Proposal { topic: topic.name.clone(), reason: c["reason"].as_str().unwrap_or("").to_owned(), change: Change::from_json(c)? }))
+                .filter_map(|c| Some(Proposal { topic: topic.name.clone(), reason: c["reason"].as_str().unwrap_or("").to_owned(), change: Change::from_json(c)?, excerpt: excerpt.to_owned() }))
                 .collect()
         })
         .unwrap_or_default();
@@ -438,8 +447,8 @@ fn prompt(name: &str, built_in: &str) -> String {
 }
 
 /// The built-in prompts, for loom's Claude folder (name, text).
-pub fn prompts() -> [(&'static str, &'static str); 2] {
-    [("route", ROUTE), ("edit", EDIT)]
+pub fn prompts() -> [(&'static str, &'static str); 3] {
+    [("route", ROUTE), ("edit", EDIT), ("rule", RULE)]
 }
 
 /// One call to Claude (`claude -p`), its answer as the schema's JSON.
@@ -700,11 +709,16 @@ fn commit(vault: &Path, files: &[String], message: &str) {
 
 /// What was proposed, kept to be reviewed (the user's OK) across restarts.
 pub fn proposal_json(p: &Proposal, why: &str, session: &str, title: &str) -> Value {
-    json!({ "topic": p.topic, "reason": p.reason, "change": p.change.to_json(), "why": why, "session": session, "title": title, "at": crate::state::now() })
+    json!({ "topic": p.topic, "reason": p.reason, "change": p.change.to_json(), "why": why, "session": session, "title": title, "at": crate::state::now(), "excerpt": p.excerpt })
 }
 
 pub fn proposal_from(v: &Value) -> Option<Proposal> {
-    Some(Proposal { topic: v["topic"].as_str()?.to_owned(), reason: v["reason"].as_str().unwrap_or("").to_owned(), change: Change::from_json(&v["change"])? })
+    Some(Proposal {
+        topic: v["topic"].as_str()?.to_owned(),
+        reason: v["reason"].as_str().unwrap_or("").to_owned(),
+        change: Change::from_json(&v["change"])?,
+        excerpt: v["excerpt"].as_str().unwrap_or("").to_owned(),
+    })
 }
 
 /// An approved held change: checked again (the note may have changed) and made, committed.
@@ -714,6 +728,96 @@ pub fn approve(vault: &Path, proposal: &Proposal) -> Result<Written, String> {
     let done = apply(vault, &proposal.change)?;
     commit(vault, &[proposal.change.note().to_owned()], &format!("loom: {}: {} (approved)", proposal.topic, proposal.reason));
     Ok(done)
+}
+
+/// A rule for a topic's instructions, from the user's correction of a change (rejected or
+/// undone) and what they said about it: one call to Claude.
+pub fn rule_from(vault: &Path, topic: &str, change: &Change, reason: &str, said: &str) -> Result<String, String> {
+    let topic = crate::topics::list(vault).into_iter().find(|t| t.name == topic).ok_or_else(|| format!("There is no topic {topic} any more."))?;
+    let input = format!(
+        "TOPIC: {}\nITS INSTRUCTIONS:\n{}\n\nTHE CHANGE THE USER SAID NO TO ({}):\n{}\n\nWHY THE NOTES KEEPER MADE IT: {reason}\n\nWHAT THE USER SAID: {said}",
+        topic.name,
+        topic.instructions,
+        change.note(),
+        change.diff()
+    );
+    let schema = json!({ "type": "object", "properties": { "rule": { "type": "string" } }, "required": ["rule"] });
+    let answer = ask(&prompt("rule", RULE), &input, &schema, &topic.model)?;
+    let rule = answer["rule"].as_str().unwrap_or("").trim().trim_start_matches("- ").replace('\n', " ");
+    if rule.is_empty() { Err("No rule came of it.".to_owned()) } else { Ok(rule) }
+}
+
+/// Where a topic's learned rules go in its file.
+const RULES: &str = "## Rules learned";
+
+/// Adds a rule to a topic's instructions (under "Rules learned"), committed like a change.
+pub fn add_rule(vault: &Path, topic: &str, rule: &str) -> Result<(), String> {
+    let topic = crate::topics::list(vault).into_iter().find(|t| t.name == topic).ok_or_else(|| format!("There is no topic {topic} any more."))?;
+    let rule = rule.trim().replace('\n', " ");
+    if rule.is_empty() {
+        return Err("The rule is empty.".to_owned());
+    }
+    let text = std::fs::read_to_string(&topic.path).map_err(|e| e.to_string())?;
+    std::fs::write(&topic.path, add_under(&text, RULES, &format!("- {rule}"))).map_err(|e| e.to_string())?;
+    if let Ok(file) = topic.path.strip_prefix(vault) {
+        commit(vault, &[file.to_string_lossy().into_owned()], &format!("loom: {}: a rule learned from a correction", topic.name));
+    }
+    Ok(())
+}
+
+/// A test case from a correction (for `loom scribe-eval`): the conversation the change came
+/// from, the note as it was before, and that the change must not be proposed again.
+pub fn correction_case(p: &Proposal, note_before: Option<&str>, said: &str, when: &str) -> Option<Value> {
+    let (talk, title, project) = talk_of(&p.excerpt);
+    if talk.is_empty() {
+        return None;
+    }
+    let mark = match &p.change {
+        Change::Add { text, .. } | Change::Create { text, .. } => text.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#') && *l != "---")?.trim_start_matches("- ").to_owned(),
+        Change::Replace { new, .. } => new.trim().trim_start_matches("- ").to_owned(),
+        Change::Property { key, value, .. } => format!("{key}: {value}"),
+    };
+    let notes = note_before.map(|text| json!({ p.change.note(): text })).unwrap_or_else(|| json!({}));
+    Some(json!({
+        "name": format!("correction {when}: {}", p.change.note()),
+        "notes": notes,
+        "talk": talk,
+        "title": title,
+        "project": project,
+        "why": said,
+        "expect": { "topics": [p.topic], "absent": [{ "note": p.change.note(), "contains": mark }] },
+    }))
+}
+
+/// An excerpt (as `excerpt` writes it) back into its turns, the conversation's name and project.
+fn talk_of(excerpt: &str) -> (Vec<Value>, String, String) {
+    let (mut title, mut project) = (String::new(), String::new());
+    let mut body = excerpt;
+    if let Some(rest) = excerpt.strip_prefix("CONVERSATION: ") {
+        let (head, after) = rest.split_once("\n\n").unwrap_or((rest, ""));
+        body = after;
+        let quoted: Vec<&str> = head.split('"').collect();
+        if head.starts_with('"') {
+            title = quoted.get(1).copied().unwrap_or("").to_owned();
+            project = quoted.get(3).copied().unwrap_or("").to_owned();
+        } else {
+            project = quoted.get(1).copied().unwrap_or("").to_owned();
+        }
+    }
+    let mut talk: Vec<Value> = Vec::new();
+    for block in body.split("\n\n") {
+        let turn = block.strip_prefix("USER: ").map(|t| ("user", t)).or_else(|| block.strip_prefix("AGENT: ").map(|t| ("assistant", t)));
+        match (turn, talk.last_mut()) {
+            (Some((role, text)), _) => talk.push(json!([role, text])),
+            // A message with a blank line in it: still the one before.
+            (None, Some(last)) => {
+                let joined = format!("{}\n\n{block}", last[1].as_str().unwrap_or(""));
+                last[1] = joined.into();
+            }
+            (None, None) => {}
+        }
+    }
+    (talk, title, project)
 }
 
 /// `loom scribe-eval <cases.jsonl>`: runs Scribe on each case (a conversation and the notes
@@ -801,6 +905,19 @@ fn eval_case(case: &Value, n: usize) -> (String, bool, String, Vec<String>, Vec<
     if expect["changes_or_question"].as_bool() == Some(true) {
         let ok = !proposals.is_empty() || !report.questions.is_empty();
         return (name, ok, if ok { String::new() } else { "nothing proposed or asked".to_owned() }, expected, found);
+    }
+    // A correction: what the user said no to must not come back.
+    if let Some(absent) = expect["absent"].as_array() {
+        let back: Vec<String> = absent
+            .iter()
+            .filter(|a| {
+                let (note, contains) = (a["note"].as_str().unwrap_or(""), a["contains"].as_str().unwrap_or("").to_lowercase());
+                proposals.iter().any(|p| p.change.note().starts_with(note) && p.change.diff().to_lowercase().contains(&contains))
+            })
+            .map(|a| format!("{} ∋ {}", a["note"].as_str().unwrap_or(""), a["contains"].as_str().unwrap_or("")))
+            .collect();
+        let ok = back.is_empty();
+        return (name, ok, if ok { String::new() } else { format!("proposed again what was said no to: {}", back.join(", ")) }, expected, found);
     }
     let wanted = expect["changes"].as_array().cloned().unwrap_or_default();
     if wanted.is_empty() {
@@ -892,6 +1009,30 @@ mod tests {
         assert!(allowed(&vault, &topic, &create).is_ok());
         apply(&vault, &add("Finances/Overview.md")).unwrap();
         assert_eq!(std::fs::read_to_string(vault.join("Finances/Overview.md")).unwrap(), "## Recurring\n- Rent: 650\n");
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn a_correction_becomes_a_case() {
+        let p = Proposal {
+            topic: "Finances".into(),
+            change: Change::Add { note: "Finances/Overview.md".into(), under: "## Recurring".into(), text: "- Gym: 30".into() },
+            reason: "x".into(),
+            excerpt: "CONVERSATION: \"Gym talk\", in the user's project folder \"life\"\n\nUSER: I might join a gym.\n\nIt costs 30.\n\nAGENT: Noted.".into(),
+        };
+        let case = correction_case(&p, Some("## Recurring\n"), "only might", "2026-10-28").unwrap();
+        assert_eq!(case["talk"], json!([["user", "I might join a gym.\n\nIt costs 30."], ["assistant", "Noted."]]));
+        assert_eq!((case["title"].as_str(), case["project"].as_str()), (Some("Gym talk"), Some("life")));
+        assert_eq!(case["expect"]["absent"][0]["contains"], "Gym: 30");
+        assert_eq!(case["notes"]["Finances/Overview.md"], "## Recurring\n");
+        // A rule goes under its own heading, made the first time.
+        let vault = std::env::temp_dir().join(format!("loom-rule-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&vault);
+        crate::vault::prepare(&vault).unwrap();
+        add_rule(&vault, "Finances", "Only record costs the user has committed to.").unwrap();
+        add_rule(&vault, "Finances", "Amounts are net.").unwrap();
+        let text = std::fs::read_to_string(vault.join("Topics/Finances.md")).unwrap();
+        assert!(text.contains("## Rules learned\n- Only record costs the user has committed to.\n- Amounts are net."), "{text}");
         let _ = std::fs::remove_dir_all(&vault);
     }
 

@@ -872,6 +872,18 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     });
     row(&main, "Calls a day", "At most this many calls to Claude Haiku a day for notes (one per piece of a conversation read, plus one per topic it touches). Past it, checks wait for tomorrow.", &calls);
     caption(&main, "Your agents can search and read these notes, and Scribe keeps them up to date from your conversations (the Notes tab beside the chat shows what it wrote and asks).");
+    // Corrections the user explained: rules in the topics, and tests kept on this machine.
+    let corrections = crate::hub::corrections_path();
+    let kept = std::fs::read_to_string(&corrections).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
+    if kept > 0 {
+        caption(
+            &main,
+            &format!(
+                "When you say why Scribe got something wrong, it becomes a rule in that topic (under Rules learned) and a test. {kept} kept: check Scribe still passes them with  loom scribe-eval {} <your vault>",
+                corrections.display()
+            ),
+        );
+    }
     content.append(&main);
     content.append(&topics);
     show();

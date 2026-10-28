@@ -46,6 +46,9 @@ struct Store {
     questions: Vec<Value>,
     /// What Scribe changed, newest first.
     recent: Vec<Value>,
+    /// Changes the user said no to or undid, each with a box to say why (it becomes a rule):
+    /// the change (proposal_json), "noteBefore", "stage" (ask, drafting, draft), "draft".
+    teach: Vec<Value>,
     /// The day (YYYY-MM-DD) and the calls to Claude made on it.
     day: String,
     calls: u64,
@@ -68,6 +71,7 @@ impl Store {
             pending: list("pending"),
             questions: list("questions"),
             recent,
+            teach: list("teach"),
             day: v["day"].as_str().unwrap_or("").to_owned(),
             calls: v["calls"].as_u64().unwrap_or(0),
             next_id: v["nextId"].as_u64().unwrap_or(1),
@@ -80,7 +84,7 @@ impl Store {
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
-        let text = json!({ "pending": self.pending, "questions": self.questions, "recent": self.recent, "day": self.day, "calls": self.calls, "nextId": self.next_id }).to_string();
+        let text = json!({ "pending": self.pending, "questions": self.questions, "recent": self.recent, "teach": self.teach, "day": self.day, "calls": self.calls, "nextId": self.next_id }).to_string();
         let written = std::fs::OpenOptions::new().create(true).write(true).truncate(true).mode(0o600).open(&path).and_then(|mut f| std::io::Write::write_all(&mut f, text.as_bytes()));
         if let Err(err) = written {
             crate::log::write("scribe", &format!("{}: {err}", path.display()));
@@ -110,10 +114,14 @@ fn log_path() -> PathBuf {
 }
 
 fn log_line(v: &Value) {
+    append_line(&log_path(), v);
+}
+
+/// One JSON line more at the end of `path` (made owner-only).
+fn append_line(path: &std::path::Path, v: &Value) {
     use std::io::Write;
     use std::os::unix::fs::OpenOptionsExt;
-    let path = log_path();
-    let written = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path).and_then(|mut f| writeln!(f, "{v}"));
+    let written = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path).and_then(|mut f| writeln!(f, "{v}"));
     if let Err(err) = written {
         crate::log::write("scribe", &format!("{}: {err}", path.display()));
     }
@@ -176,6 +184,12 @@ fn day_heading(at: u64) -> String {
     } else {
         glib::DateTime::from_unix_local(at as i64).ok().and_then(|d| d.format("%A %e %B").ok()).map(|d| d.to_string().replace("  ", " ").to_uppercase()).unwrap_or(day)
     }
+}
+
+/// The corrections the user explained, as tests for `loom scribe-eval` (private: they hold
+/// the user's notes and words, so they stay in loom's state folder, never in the vault).
+pub fn corrections_path() -> PathBuf {
+    crate::journal::store_path().with_file_name("scribe-corrections.jsonl")
 }
 
 fn today() -> String {
@@ -596,6 +610,12 @@ impl Hub {
             empty.add_css_class("dim");
             self.body.append(&empty);
         }
+        if !store.teach.is_empty() {
+            self.body.append(&heading("WHY NOT?"));
+            for t in &store.teach {
+                self.body.append(&self.teach_card(t));
+            }
+        }
         if !store.questions.is_empty() {
             self.body.append(&heading("QUESTIONS"));
             for q in &store.questions {
@@ -633,6 +653,197 @@ impl Hub {
         drop(store);
         if let Some(changed) = self.on_changed.borrow().as_ref() {
             changed();
+        }
+    }
+
+    /// A change said no to (or undone) waits for a word on why, if the user wants to give one.
+    fn offer_teaching(&self, change: &Value, note_before: Option<String>) {
+        let mut t = change.clone();
+        // What a written change did is in the history; only the note before is wanted here.
+        if let Some(fields) = t.as_object_mut() {
+            fields.remove("before");
+            fields.remove("after");
+        }
+        t["noteBefore"] = note_before.into();
+        t["stage"] = "ask".into();
+        let mut store = self.store.borrow_mut();
+        t["id"] = store.id().into();
+        store.teach.insert(0, t);
+        // A few at most: older ones nobody answered go.
+        store.teach.truncate(3);
+        store.save();
+    }
+
+    fn teach_card(self: &Rc<Self>, t: &Value) -> gtk::Box {
+        let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        card.add_css_class("hub-card");
+        card.add_css_class("ask");
+        let id = t["id"].as_u64().unwrap_or(0);
+        let Some(proposal) = scribe::proposal_from(t) else { return card };
+        card.append(&from_line(self, t));
+        let what = gtk::Label::builder().label(format!("{} · {}", proposal.change.note(), proposal.change.summary())).xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).build();
+        what.add_css_class("hub-note");
+        card.append(&what);
+        let diff = gtk::Label::builder().label(proposal.change.diff()).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
+        diff.add_css_class("hub-diff");
+        diff.add_css_class("mono");
+        card.append(&diff);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let weak = Rc::downgrade(self);
+        match t["stage"].as_str() {
+            Some("drafting") => {
+                let busy = gtk::Label::builder().label("Drafting a rule…").xalign(0.0).build();
+                busy.add_css_class("dim");
+                card.append(&busy);
+                return card;
+            }
+            Some("draft") => {
+                let says = gtk::Label::builder().label(format!("A rule for {}, kept in its topic file (change it as you like):", proposal.topic)).xalign(0.0).wrap(true).build();
+                says.add_css_class("small");
+                card.append(&says);
+                let rule = gtk::Entry::builder().text(t["draft"].as_str().unwrap_or("")).hexpand(true).build();
+                let keep = gtk::Button::with_label("Keep it");
+                keep.add_css_class("suggested-action");
+                let (entry, chosen) = (rule.clone(), card.downgrade());
+                let kept = move |hub: &Rc<Hub>| {
+                    let text = entry.text().trim().to_owned();
+                    if !text.is_empty() {
+                        if let Some(card) = chosen.upgrade() {
+                            card.set_sensitive(false);
+                        }
+                        hub.keep_rule(id, &text);
+                    }
+                };
+                let kept = Rc::new(kept);
+                let (w, k) = (weak.clone(), kept.clone());
+                rule.connect_activate(move |_| {
+                    if let Some(hub) = w.upgrade() {
+                        k(&hub);
+                    }
+                });
+                let w = weak.clone();
+                keep.connect_clicked(move |_| {
+                    if let Some(hub) = w.upgrade() {
+                        kept(&hub);
+                    }
+                });
+                card.append(&rule);
+                line.append(&keep);
+            }
+            _ => {
+                let says = gtk::Label::builder()
+                    .label(format!("Tell Scribe why, and it keeps it as a rule for {} (and as a test it must pass). Optional.", proposal.topic))
+                    .xalign(0.0)
+                    .wrap(true)
+                    .build();
+                says.add_css_class("small");
+                card.append(&says);
+                let why = gtk::Entry::builder().placeholder_text("Why not? Enter").hexpand(true).build();
+                let (w, chosen) = (weak.clone(), card.downgrade());
+                why.connect_activate(move |entry| {
+                    let text = entry.text().trim().to_owned();
+                    if let (Some(hub), false) = (w.upgrade(), text.is_empty()) {
+                        if let Some(card) = chosen.upgrade() {
+                            card.set_sensitive(false);
+                        }
+                        hub.teach(id, &text);
+                    }
+                });
+                line.append(&why);
+            }
+        }
+        let skip = gtk::Button::with_label(if t["stage"].as_str() == Some("draft") { "Drop" } else { "Skip" });
+        skip.add_css_class("flat");
+        skip.connect_clicked(move |_| {
+            if let Some(hub) = weak.upgrade() {
+                hub.forget_teaching(id);
+            }
+        });
+        line.append(&skip);
+        card.append(&line);
+        card
+    }
+
+    /// Test hooks: the newest correction answered with `said`, or its drafted rule kept.
+    pub fn teach_newest(self: &Rc<Self>, said: &str) {
+        let id = self.store.borrow().teach.first().and_then(|t| t["id"].as_u64());
+        if let Some(id) = id {
+            self.teach(id, said);
+        }
+    }
+
+    pub fn keep_newest_rule(self: &Rc<Self>) {
+        let first = self.store.borrow().teach.first().cloned();
+        if let Some(t) = first.filter(|t| t["stage"].as_str() == Some("draft")) {
+            self.keep_rule(t["id"].as_u64().unwrap_or(0), t["draft"].as_str().unwrap_or(""));
+        }
+    }
+
+    fn forget_teaching(self: &Rc<Self>, id: u64) {
+        self.store.borrow_mut().teach.retain(|t| t["id"].as_u64() != Some(id));
+        self.store.borrow().save();
+        self.refresh();
+    }
+
+    fn set_teaching(&self, id: u64, f: impl FnOnce(&mut Value)) {
+        let mut store = self.store.borrow_mut();
+        if let Some(t) = store.teach.iter_mut().find(|t| t["id"].as_u64() == Some(id)) {
+            f(t);
+        }
+        store.save();
+    }
+
+    /// The user said why: kept as a test, and a rule drafted from it (one call to Claude).
+    fn teach(self: &Rc<Self>, id: u64, said: &str) {
+        let Some(vault) = self.on() else { return };
+        let Some(t) = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).cloned() else { return };
+        let Some(proposal) = scribe::proposal_from(&t) else { return };
+        if let Some(case) = scribe::correction_case(&proposal, t["noteBefore"].as_str(), said, &today()) {
+            append_line(&corrections_path(), &case);
+        }
+        if self.store.borrow_mut().calls_left() == 0 {
+            self.say("Kept as a test. Today's limit of note checks is reached (Settings → Notes), so no rule is drafted.", true);
+            self.forget_teaching(id);
+            return;
+        }
+        self.set_teaching(id, |t| t["stage"] = "drafting".into());
+        self.store.borrow_mut().calls += 1;
+        self.refresh();
+        let said = said.to_owned();
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let drafted = gio::spawn_blocking(move || scribe::rule_from(&vault, &proposal.topic, &proposal.change, &proposal.reason, &said)).await;
+            let Some(hub) = weak.upgrade() else { return };
+            match drafted {
+                Ok(Ok(rule)) => hub.set_teaching(id, |t| {
+                    t["stage"] = "draft".into();
+                    t["draft"] = rule.into();
+                }),
+                Ok(Err(why)) => {
+                    hub.set_teaching(id, |t| t["stage"] = "ask".into());
+                    hub.say(&format!("No rule drafted: {why}"), true);
+                }
+                Err(_) => {
+                    hub.set_teaching(id, |t| t["stage"] = "ask".into());
+                    hub.say("Drafting the rule stopped unexpectedly.", true);
+                }
+            }
+            hub.refresh();
+        });
+    }
+
+    fn keep_rule(self: &Rc<Self>, id: u64, rule: &str) {
+        let Some(vault) = self.on() else { return };
+        let Some(topic) = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).and_then(|t| t["topic"].as_str().map(str::to_owned)) else { return };
+        match scribe::add_rule(&vault, &topic, rule) {
+            Ok(()) => {
+                self.say(&format!("Kept as a rule for {topic} (in its topic file, under Rules learned)."), false);
+                self.forget_teaching(id);
+            }
+            Err(why) => {
+                self.say(&format!("Not kept: {why}"), true);
+                self.refresh();
+            }
         }
     }
 
@@ -870,11 +1081,12 @@ impl Hub {
         match scribe::undo(&vault, proposal.change.note(), &done, &what) {
             Ok(()) => {
                 log_line(&json!({ "undo": id, "at": crate::state::now() }));
+                self.offer_teaching(&v, done.before.clone());
                 let mut store = self.store.borrow_mut();
                 store.recent.retain(|r| r["id"].as_u64() != Some(id));
                 store.save();
                 drop(store);
-                self.say(&format!("Undone: {}", proposal.change.note()), false);
+                self.say(&format!("Undone: {}. Tell Scribe why in the Notes panel, and it keeps it as a rule.", proposal.change.note()), false);
             }
             Err(why) => self.say(&format!("Not undone ({}): {why}", proposal.change.note()), true),
         }
@@ -1007,6 +1219,8 @@ impl Hub {
             let mut dropped = p.clone();
             dropped["at"] = crate::state::now().into();
             log_change(&dropped, "dropped", None);
+            let before = scribe::proposal_from(&p).and_then(|q| std::fs::read_to_string(vault.join(q.change.note())).ok());
+            self.offer_teaching(&p, before);
         }
         if write {
             let Some(proposal) = scribe::proposal_from(&p) else { return };

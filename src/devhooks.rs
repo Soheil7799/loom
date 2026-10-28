@@ -31,6 +31,7 @@
 //! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
 //! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
 //! - `noteshistory`: the Notes history page · `unfold`: every folded row unfolded
+//! - `teach:<why>` / `keeprule`: answer the newest "Why not?", keep its drafted rule
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -112,6 +113,9 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "overview" => app.show_overview(),
         "noteshistory" => app.show_notes_history(),
+        // The newest "Why not?" answered, and its drafted rule kept.
+        "teach" => app.hub.teach_newest(argument),
+        "keeprule" => app.hub.keep_newest_rule(),
         // Every folded row unfolded (their buttons exist only then).
         "unfold" => {
             let mut found = Vec::new();
