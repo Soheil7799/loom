@@ -1026,6 +1026,11 @@ impl Agent {
 
     // ---- turns ----------------------------------------------------------------------------
 
+    /// Something waits to go with the next message (a `!command`'s output) or to be sent.
+    pub fn has_pending(&self) -> bool {
+        !self.context.borrow().is_empty() || !self.queue.borrow().is_empty() || !self.waiting.borrow().is_empty()
+    }
+
     /// About to be suspended: first sums up the conversation (the prompt cache is still warm,
     /// so it costs little, and resuming reads the summary instead of everything), then rests.
     pub fn compact_then_rest(self: &Rc<Self>) {
@@ -1417,7 +1422,10 @@ impl Agent {
                 }
                 // Compacted (or not: it rests all the same, with the whole conversation),
                 // unless it was opened or kept awake meanwhile.
-                if agent.resting.replace(false) && !agent.focused.get() && !agent.awake.get() {
+                // Something came in meanwhile (a scheduled prompt, a message from another
+                // agent): it is sent, and the agent stays awake.
+                let came_in = !agent.queue.borrow().is_empty() || !agent.waiting.borrow().is_empty();
+                if agent.resting.replace(false) && !agent.focused.get() && !agent.awake.get() && !came_in {
                     agent.refresh_status();
                     agent.suspend();
                     return;

@@ -1328,6 +1328,9 @@ impl Files {
             // git's two columns: the index (staged) and the work tree (not yet).
             let staged = !raw.starts_with(' ') && !raw.starts_with('?');
             let unstaged = raw.ends_with(|c: char| c != ' ');
+            // Not new files (nothing to go back to) nor renames (the old name too would be
+            // involved): those are for git itself.
+            let revertable = raw != "??" && !raw.starts_with('R') && !raw.starts_with('C');
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.add_css_class("file-row");
             row.add_css_class("change-row");
@@ -1370,16 +1373,14 @@ impl Files {
                 let (r, p) = (repo.to_owned(), file.clone());
                 add("unstage", "Leave it out of the next commit", Box::new(move |files| files.git_then_refresh(&r, vec!["restore".into(), "--staged".into(), "--".into(), p.clone()])));
             }
-            // Not for new files (nothing to go back to) nor renames (the old name too would be
-            // involved): those are for git itself.
-            if raw != "??" && !raw.starts_with('R') && !raw.starts_with('C') {
+            if revertable {
                 let (r, p) = (repo.to_owned(), file.clone());
                 add("revert", "Throw its changes away (asks first)", Box::new(move |files| files.revert(&r, &p)));
             }
             row.append(&actions);
             self.changes.append(&row);
             paths.push(repo.join(file));
-            info.push((repo.to_owned(), file.clone(), staged, unstaged, raw != "??" && !raw.starts_with('R') && !raw.starts_with('C')));
+            info.push((repo.to_owned(), file.clone(), staged, unstaged, revertable));
         }
         *self.shown_changes.borrow_mut() = paths;
         *self.change_info.borrow_mut() = info;

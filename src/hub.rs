@@ -210,6 +210,11 @@ pub struct Hub {
     page_status: gtk::Label,
     /// The topics the topic filter offers ("All topics" first).
     page_topics: RefCell<Vec<String>>,
+    /// The history as listed (the notes before and after left out), and the log's length
+    /// when read: read again only when it grew.
+    listed: RefCell<(u64, Rc<Vec<Value>>)>,
+    /// The page is being filled (choosing the topic list fills it again otherwise).
+    filling: Cell<bool>,
     /// Hides the page's status line a little after it was said.
     page_status_timer: RefCell<Option<glib::SourceId>>,
     /// The app shows the history page.
@@ -283,6 +288,8 @@ impl Hub {
             page_status,
             page_topics: RefCell::new(vec![String::new()]),
             page_status_timer: RefCell::default(),
+            listed: RefCell::default(),
+            filling: Cell::new(false),
             on_history: RefCell::default(),
             panel,
             store: RefCell::new(Store::load()),
@@ -425,6 +432,8 @@ impl Hub {
         }
         let Some(vault) = self.on() else {
             self.queue.borrow_mut().clear();
+            // What waited (an OK, an undo) shows as it was again.
+            self.refresh();
             return;
         };
         let job = self.queue.borrow_mut().pop_front();
@@ -712,29 +721,67 @@ impl Hub {
         if undone || dropped {
             row.add_css_class("gone");
         }
-        let card = self.change_card(v, false);
-        // Undo: only a change written, not undone yet, and kept with what it did.
-        if !undone && !dropped && (v["after"].is_string() || v["undoable"].as_bool() == Some(true)) {
-            let undo = gtk::Button::builder().label("Undo").halign(gtk::Align::Start).build();
-            undo.add_css_class("prefs-button");
-            undo.set_tooltip_text(Some("Put the note back as it was before this change"));
-            let (weak, id) = (Rc::downgrade(self), v["id"].as_u64().unwrap_or(0));
-            undo.connect_clicked(move |button| {
-                if let Some(hub) = weak.upgrade() {
-                    button.set_sensitive(false);
-                    button.set_label("Undoing…");
-                    hub.undo(id);
-                }
-            });
-            card.append(&undo);
-        }
-        row.set_child(Some(&card));
+        // Its card is made when it is first unfolded (a long history lists many).
+        let (weak, v) = (Rc::downgrade(self), v.clone());
+        row.connect_expanded_notify(move |row| {
+            if !row.is_expanded() || row.child().is_some() {
+                return;
+            }
+            let Some(hub) = weak.upgrade() else { return };
+            let card = hub.change_card(&v, false);
+            // Undo: only a change written, not undone yet, and kept with what it did.
+            if !undone && !dropped && (v["after"].is_string() || v["undoable"].as_bool() == Some(true)) {
+                let undo = gtk::Button::builder().label("Undo").halign(gtk::Align::Start).build();
+                undo.add_css_class("prefs-button");
+                undo.set_tooltip_text(Some("Put the note back as it was before this change"));
+                let (weak, id) = (Rc::downgrade(&hub), v["id"].as_u64().unwrap_or(0));
+                undo.connect_clicked(move |button| {
+                    if let Some(hub) = weak.upgrade() {
+                        button.set_sensitive(false);
+                        button.set_label("Undoing…");
+                        hub.undo(id);
+                    }
+                });
+                card.append(&undo);
+            }
+            row.set_child(Some(&card));
+        });
         row
+    }
+
+    /// The history to list: whether a change can be undone, not the notes themselves.
+    fn listed(&self) -> Rc<Vec<Value>> {
+        let length = std::fs::metadata(log_path()).map_or(0, |m| m.len());
+        if self.listed.borrow().0 == length && length > 0 {
+            return self.listed.borrow().1.clone();
+        }
+        let entries: Vec<Value> = history()
+            .into_iter()
+            .map(|mut v| {
+                v["undoable"] = v["after"].is_string().into();
+                if let Some(fields) = v.as_object_mut() {
+                    fields.remove("before");
+                    fields.remove("after");
+                }
+                v
+            })
+            .collect();
+        let entries = Rc::new(entries);
+        *self.listed.borrow_mut() = (length, entries.clone());
+        entries
     }
 
     /// The history page, filled again (as searched and filtered).
     pub fn fill_page(self: &Rc<Self>) {
-        let entries = history();
+        if self.filling.replace(true) {
+            return;
+        }
+        self.fill_page_now();
+        self.filling.set(false);
+    }
+
+    fn fill_page_now(self: &Rc<Self>) {
+        let entries = self.listed();
         // The topic filter offers the topics there are changes for.
         let mut topics: Vec<String> = entries.iter().filter_map(|v| v["topic"].as_str().map(str::to_owned)).collect();
         topics.sort();
@@ -756,7 +803,7 @@ impl Hub {
         }
         let mut day = String::new();
         let mut shown = 0;
-        for v in &entries {
+        for v in entries.iter() {
             if !dropped && v["kind"].as_str() == Some("dropped") {
                 continue;
             }
@@ -807,9 +854,17 @@ impl Hub {
     }
 
     fn undo_now(self: &Rc<Self>, id: u64) {
-        let Some(vault) = self.on() else { return };
-        let entry = history().into_iter().find(|v| v["id"].as_u64() == Some(id) && v["kind"].as_str() == Some("written") && v["undone"].is_null());
-        let Some((v, proposal)) = entry.and_then(|v| scribe::proposal_from(&v).map(|p| (v, p))) else { return };
+        let Some(vault) = self.on() else {
+            self.say("Not undone: the Notes add-on is off (Settings → Notes).", true);
+            self.refresh();
+            return;
+        };
+        let entry = history().into_iter().find(|v| v["id"].as_u64() == Some(id) && v["kind"].as_str() == Some("written") && v["undone"].is_null() && v["after"].is_string());
+        let Some((v, proposal)) = entry.and_then(|v| scribe::proposal_from(&v).map(|p| (v, p))) else {
+            self.say("Not undone: what this change did is not in the history.", true);
+            self.refresh();
+            return;
+        };
         let done = scribe::Written { before: v["before"].as_str().map(str::to_owned), after: v["after"].as_str().unwrap_or("").to_owned() };
         let what = format!("{}: {}", proposal.topic, if proposal.reason.is_empty() { proposal.change.summary() } else { proposal.reason.clone() });
         match scribe::undo(&vault, proposal.change.note(), &done, &what) {
@@ -855,6 +910,9 @@ impl Hub {
 
     /// Searched or filtered: the page's status line is old news.
     fn filtered(self: &Rc<Self>) {
+        if self.filling.get() {
+            return;
+        }
         if let Some(timer) = self.page_status_timer.take() {
             timer.remove();
         }
@@ -946,7 +1004,9 @@ impl Hub {
         };
         let Some(p) = taken else { return };
         if !write {
-            log_change(&p, "dropped", None);
+            let mut dropped = p.clone();
+            dropped["at"] = crate::state::now().into();
+            log_change(&dropped, "dropped", None);
         }
         if write {
             let Some(proposal) = scribe::proposal_from(&p) else { return };

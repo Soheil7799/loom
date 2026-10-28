@@ -130,7 +130,13 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             popovers(app.window.upcast_ref(), &mut found);
             for popover in found {
                 eprintln!("POPOVER");
-                print_items(popover.upcast_ref());
+                let mut buttons = Vec::new();
+                collect(popover.upcast_ref(), &|w| w.is::<gtk::Button>(), &mut buttons);
+                if buttons.is_empty() {
+                    print_labels(popover.upcast_ref());
+                } else {
+                    print_items(popover.upcast_ref());
+                }
             }
         }
         // As if Scribe had something new (a question, a change to review).

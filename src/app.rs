@@ -1364,6 +1364,8 @@ impl App {
 
     /// Shows `agent` beside the focused one (in place of any pinned before).
     fn pin(self: &Rc<Self>, agent: &Rc<Agent>) {
+        // Compacting on its way to being suspended: in view now, so it stays awake.
+        agent.resting.set(false);
         // A pair chosen now replaces the one from before.
         self.pending_pin.borrow_mut().take();
         if self.is_pinned(agent) || self.focused.borrow().as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
@@ -1818,6 +1820,9 @@ impl App {
         *self.overview.on_menu.borrow_mut() = Some(Rc::new(move |(id, card, x, y)| {
             let Some(app) = weak.upgrade() else { return };
             let Some(agent) = app.agent_by_id(id) else { return };
+            // The cards are rebuilt as agents change: the menu hangs off the page instead.
+            let page = app.overview.root.clone();
+            let (x, y) = card.compute_point(&page, &gtk::graphene::Point::new(x as f32, y as f32)).map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())));
             let (weak, target) = (Rc::downgrade(&app), Rc::downgrade(&agent));
             app.agent_menu(&agent)
                 .section()
@@ -1826,7 +1831,7 @@ impl App {
                         app.schedule_for(&agent);
                     }
                 })
-                .popup(&card, x, y);
+                .popup(&page, x, y);
         }));
         let weak = Rc::downgrade(self);
         *self.overview.on_schedule.borrow_mut() = Some(Rc::new(move |(id, act)| {
@@ -2337,7 +2342,8 @@ impl App {
             let in_view = agent.focused.get() || self.is_pinned(&agent);
             if agent.status() == Status::Idle && !in_view && !agent.awake.get() && agent.last_active.get().elapsed() > limit {
                 // A draft in its input: something is still being said to it, nothing changes.
-                if s.rest_compact && agent.chat.context_used() >= s.rest_compact_tokens && agent.chat.draft().trim().is_empty() {
+                // A command's output waiting for the next message would go in front of /compact.
+                if s.rest_compact && agent.chat.context_used() >= s.rest_compact_tokens && agent.chat.draft().trim().is_empty() && !agent.has_pending() {
                     agent.compact_then_rest();
                 } else {
                     agent.suspend();
@@ -2685,7 +2691,7 @@ impl App {
             .item("Suspend (free its memory)", with(|_, agent| {
                 agent.suspend();
             }))
-            .enabled(!suspended)
+            .enabled(!suspended && !agent.is_busy())
             .item("Restart", with(|_, agent| agent.restart()))
             .item("Close", with(|app, agent| app.close_agent(agent)))
             .hint("Ctrl+W")
