@@ -32,6 +32,7 @@
 //! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
 //! - `noteshistory`: the Notes history page · `unfold`: every folded row unfolded
 //! - `teach:<why>` / `keeprule`: answer the newest "Why not?", keep its drafted rule
+//! - `fixnewest:<comment>`: a comment on the newest written change
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -116,6 +117,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // The newest "Why not?" answered, and its drafted rule kept.
         "teach" => app.hub.teach_newest(argument),
         "keeprule" => app.hub.keep_newest_rule(),
+        // A comment on the newest written change (Scribe changes the note as it says).
+        "fixnewest" => app.hub.fix_newest(argument),
         // Every folded row unfolded (their buttons exist only then).
         "unfold" => {
             let mut found = Vec::new();

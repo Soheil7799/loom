@@ -270,6 +270,12 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
 /// Proposed changes made (their topic changes directly) or held (it asks first, or a change
 /// does not fit); what was written is one commit.
 fn record(vault: &Path, topic: &Topic, proposals: Vec<Proposal>, id: &str, report: &mut Report) {
+    record_as(vault, topic, proposals, id, report, false);
+}
+
+/// `asked`: the user asked for these changes themselves (written even where the topic asks
+/// first).
+fn record_as(vault: &Path, topic: &Topic, proposals: Vec<Proposal>, id: &str, report: &mut Report, asked: bool) {
     let mut written = Vec::new();
     let mut reasons = Vec::new();
     for proposal in proposals {
@@ -277,7 +283,7 @@ fn record(vault: &Path, topic: &Topic, proposals: Vec<Proposal>, id: &str, repor
             report.held.push((proposal, why));
             continue;
         }
-        if topic.apply == Apply::Ask {
+        if topic.apply == Apply::Ask && !asked {
             report.held.push((proposal, "This topic asks before changing.".to_owned()));
             continue;
         }
@@ -312,6 +318,33 @@ pub fn answer(vault: &Path, question: &Question, answer: &str) -> Report {
             report.calls = 1;
             let id = format!("answer@{}", crate::state::now());
             record(vault, &topic, proposals, &id, &mut report);
+        }
+        Err(why) => report.failed = Some(why),
+    }
+    report
+}
+
+/// The user's comment on a change Scribe wrote ("it's net, not gross"): the note changed as
+/// they say, at once (they asked for it). One call to Claude.
+pub fn fix(vault: &Path, done: &Proposal, comment: &str) -> Report {
+    let mut report = Report::default();
+    let Some(topic) = crate::topics::list(vault).into_iter().find(|t| t.name == done.topic) else {
+        report.failed = Some(format!("There is no topic {} any more.", done.topic));
+        return report;
+    };
+    let note = done.change.note().to_owned();
+    let notes: Vec<(String, String)> = std::fs::read_to_string(vault.join(&note)).ok().map(|text| vec![(note.clone(), text)]).unwrap_or_default();
+    let excerpt = format!(
+        "{}\n\nTHE NOTES KEEPER MADE THIS CHANGE TO {note}:\n{}\n\nUSER (about that change, telling the notes keeper what to change in the note; do what they say, and nothing else): {comment}",
+        done.excerpt,
+        done.change.diff()
+    );
+    match edit(&topic, &notes, &excerpt) {
+        Ok((proposals, _)) => {
+            report.calls = 1;
+            let proposals = proposals.into_iter().map(|p| Proposal { reason: format!("You asked: {comment}"), ..p }).collect();
+            let id = format!("fix@{}", crate::state::now());
+            record_as(vault, &topic, proposals, &id, &mut report, true);
         }
         Err(why) => report.failed = Some(why),
     }

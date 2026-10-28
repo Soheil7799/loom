@@ -36,6 +36,8 @@ enum Job {
     Decide(u64, bool),
     /// A written change undone.
     Undo(u64),
+    /// A written change (its row's data) changed again as the user says.
+    Fix(Value, String),
 }
 
 #[derive(Default)]
@@ -319,6 +321,21 @@ impl Hub {
             on_open: RefCell::default(),
             on_changed: RefCell::default(),
         });
+        // What the panel showed is seen once the user leaves it: folded from then on.
+        let weak = Rc::downgrade(&hub);
+        hub.panel.connect_unmap(move |_| {
+            if let Some(hub) = weak.upgrade()
+                && hub.mark_seen(None)
+            {
+                // Shown folded from the next look on (rebuilt once the switch is over).
+                let weak = Rc::downgrade(&hub);
+                glib::idle_add_local_once(move || {
+                    if let Some(hub) = weak.upgrade() {
+                        hub.refresh();
+                    }
+                });
+            }
+        });
         let weak = Rc::downgrade(&hub);
         page_search.connect_search_changed(move |_| {
             if let Some(hub) = weak.upgrade() {
@@ -470,6 +487,10 @@ impl Hub {
                 self.run_next();
                 return;
             }
+            Some(Job::Fix(v, comment)) => {
+                self.fix_now(&v, &comment);
+                return;
+            }
             Some(Job::Check(session, finished_only)) => (session, finished_only),
         };
         let entries = crate::journal::unread(&session, finished_only);
@@ -519,6 +540,7 @@ impl Hub {
                 log_change(&v, "written", Some(done));
                 // What it did is in the history (whole notes): here only that it can be undone.
                 v["undoable"] = true.into();
+                v["unseen"] = true.into();
                 store.recent.insert(0, v);
             }
             store.recent.truncate(RECENT);
@@ -772,6 +794,14 @@ impl Hub {
         }
     }
 
+    /// Test hook: a comment on the newest written change.
+    pub fn fix_newest(self: &Rc<Self>, comment: &str) {
+        let first = self.store.borrow().recent.first().cloned();
+        if let Some(v) = first {
+            self.fix(v, comment.to_owned());
+        }
+    }
+
     pub fn keep_newest_rule(self: &Rc<Self>) {
         let first = self.store.borrow().teach.first().cloned();
         if let Some(t) = first.filter(|t| t["stage"].as_str() == Some("draft")) {
@@ -934,8 +964,16 @@ impl Hub {
         }
         // Its card is made when it is first unfolded (a long history lists many).
         let (weak, v) = (Rc::downgrade(self), v.clone());
+        let unseen = v["unseen"].as_bool() == Some(true);
         row.connect_expanded_notify(move |row| {
-            if !row.is_expanded() || row.child().is_some() {
+            // Folded by hand: seen.
+            if !row.is_expanded() {
+                if let (Some(hub), Some(id)) = (weak.upgrade(), v["id"].as_u64()) {
+                    hub.mark_seen(Some(id));
+                }
+                return;
+            }
+            if row.child().is_some() {
                 return;
             }
             let Some(hub) = weak.upgrade() else { return };
@@ -954,10 +992,98 @@ impl Hub {
                     }
                 });
                 card.append(&undo);
+                // A comment on it: Scribe changes the note as the user says.
+                let comment = gtk::Entry::builder().placeholder_text("Ask Scribe to change it… Enter").hexpand(true).build();
+                comment.set_tooltip_text(Some("What's wrong or missing in this change (\"it's net, not gross\"): Scribe changes the note that way at once"));
+                let (weak, row_data, held) = (Rc::downgrade(&hub), v.clone(), card.downgrade());
+                comment.connect_activate(move |entry| {
+                    let text = entry.text().trim().to_owned();
+                    if let (Some(hub), false) = (weak.upgrade(), text.is_empty()) {
+                        if let Some(card) = held.upgrade() {
+                            card.set_sensitive(false);
+                        }
+                        hub.fix(row_data.clone(), text);
+                    }
+                });
+                card.append(&comment);
             }
             row.set_child(Some(&card));
         });
+        // Not seen yet: open (its card made now).
+        if unseen {
+            row.set_expanded(true);
+        }
         row
+    }
+
+    /// Seen: one written change (by id), or all the panel shows (None).
+    fn mark_seen(&self, id: Option<u64>) -> bool {
+        let mut store = self.store.borrow_mut();
+        let mut changed = false;
+        for v in store.recent.iter_mut().filter(|v| id.is_none() || v["id"].as_u64() == id) {
+            if let Some(fields) = v.as_object_mut() {
+                changed |= fields.remove("unseen").is_some();
+            }
+        }
+        if changed {
+            store.save();
+        }
+        changed
+    }
+
+    /// A comment on a written change: the note changed as the user says (after the check
+    /// running now, if one is).
+    fn fix(self: &Rc<Self>, v: Value, comment: String) {
+        if self.running.get() {
+            self.say("Changed as you say as soon as the check that is running ends…", false);
+            self.queue.borrow_mut().push_front(Job::Fix(v, comment));
+            return;
+        }
+        self.fix_now(&v, &comment);
+    }
+
+    fn fix_now(self: &Rc<Self>, v: &Value, comment: &str) {
+        let Some(vault) = self.on() else { return };
+        let Some(done) = scribe::proposal_from(v) else {
+            self.run_next();
+            return;
+        };
+        if self.store.borrow_mut().calls_left() == 0 {
+            self.say("Today's limit of note checks is reached (Settings → Notes): your comment waits for tomorrow.", true);
+            self.refresh();
+            self.run_next();
+            return;
+        }
+        self.running.set(true);
+        self.status.set_label(&format!("Changing {} as you say…", done.change.note()));
+        let (session, title) = (v["session"].as_str().unwrap_or("").to_owned(), v["title"].as_str().unwrap_or("").to_owned());
+        let (comment, note) = (comment.to_owned(), done.change.note().to_owned());
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let report = gio::spawn_blocking(move || scribe::fix(&vault, &done, &comment)).await;
+            let Some(hub) = weak.upgrade() else { return };
+            hub.running.set(false);
+            match report {
+                Ok(mut report) => {
+                    let (failed, nothing) = (report.failed.clone(), report.applied.is_empty() && report.held.is_empty());
+                    report.session = session;
+                    report.title = title;
+                    hub.take(report);
+                    if let Some(why) = failed {
+                        hub.say(&format!("Not changed: {why}"), true);
+                    } else if nothing {
+                        hub.say(&format!("Scribe found nothing to change in {note} for that."), true);
+                    } else {
+                        hub.say(&format!("Changed {note} as you asked."), false);
+                    }
+                }
+                Err(_) => {
+                    hub.say("Changing it stopped unexpectedly.", true);
+                    hub.refresh();
+                }
+            }
+            hub.run_next();
+        });
     }
 
     /// The history to list: whether a change can be undone, not the notes themselves.
@@ -1232,6 +1358,7 @@ impl Hub {
                     p["why"] = "".into();
                     log_change(&p, "written", Some(&done));
                     p["undoable"] = true.into();
+                    p["unseen"] = true.into();
                     let mut store = self.store.borrow_mut();
                     store.recent.insert(0, p);
                     store.recent.truncate(RECENT);
