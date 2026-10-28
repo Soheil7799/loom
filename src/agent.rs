@@ -666,10 +666,15 @@ impl Agent {
     /// The session's parameters: folder, loom's MCP server, the extra folders.
     fn session_params(&self) -> Value {
         // loom's own Claude folder (skills, agents, commands, hooks for its agents only).
+        // Claude Code's own compaction of an idle session is off: loom compacts only when it
+        // suspends an agent, never one the user keeps awake or has open (Settings → Agents).
         let mut params = json!({
             "cwd": self.cwd.to_string_lossy(),
             "mcpServers": self.mcp_servers(),
-            "_meta": { "claudeCode": { "options": { "plugins": crate::plugin::session_plugins() } } },
+            "_meta": { "claudeCode": { "options": {
+                "plugins": crate::plugin::session_plugins(),
+                "settings": { "idleCompaction": false },
+            } } },
         });
         let dirs = self.dirs.borrow();
         if !dirs.is_empty() {
