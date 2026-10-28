@@ -30,6 +30,7 @@
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
 //! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
+//! - `noteshistory`: the Notes history page · `unfold`: every folded row unfolded
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -110,6 +111,17 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             });
         }
         "overview" => app.show_overview(),
+        "noteshistory" => app.show_notes_history(),
+        // Every folded row unfolded (their buttons exist only then).
+        "unfold" => {
+            let mut found = Vec::new();
+            collect(app.window.upcast_ref(), &|w| w.is::<gtk::Expander>(), &mut found);
+            for w in found {
+                if let Some(e) = w.downcast_ref::<gtk::Expander>() {
+                    e.set_expanded(true);
+                }
+            }
+        }
         // The sidebar's right-click menu: of row n (from 0), or of its empty part.
         "rowmenu" => app.row_menu_for_tests(argument.parse().ok()),
         // The open popovers' text, printed (a menu's items, greyed out ones marked).

@@ -225,6 +225,8 @@ impl App {
         chat_stack.add_named(&history.root, Some("project"));
         let overview = crate::overview::Overview::new();
         chat_stack.add_named(&overview.root, Some("overview"));
+        let hub = crate::hub::Hub::new();
+        chat_stack.add_named(&hub.page, Some("notes"));
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
@@ -241,7 +243,6 @@ impl App {
         // The open file beside the chat(s), above the tray: easy to read next to the agent.
         let files = Files::new();
         files.editor_box.set_size_request(320, -1);
-        let hub = crate::hub::Hub::new();
         files.add_notes(&hub.panel);
         files.set_notes_available(crate::vault::current().is_some());
         let reading = gtk::Paned::builder()
@@ -1074,6 +1075,7 @@ impl App {
             act("Clear finished jobs", "Ctrl+Shift+X", |a| a.current_tray().clear_finished()),
             act("Questions waiting", "Ctrl+I", |a| a.open_inbox()),
             act("Overview of all agents", "Ctrl+Shift+A", |a| a.show_overview()),
+            act("Notes history", "", |a| a.show_notes_history()),
             act("Schedule a prompt for this agent…", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     a.schedule_for(&agent);
@@ -1725,6 +1727,19 @@ impl App {
         self.overview.grab_focus();
     }
 
+    /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
+    pub fn show_notes_history(self: &Rc<Self>) {
+        if let Some(old) = self.focused.borrow_mut().take() {
+            old.focused.set(false);
+            *self.previous.borrow_mut() = Some(old);
+        }
+        self.chat_stack.set_visible_child_name("notes");
+        self.hub.fill_page();
+        self.mark_active();
+        self.refresh_sidebar();
+        self.hub.focus_page();
+    }
+
     fn fill_overview(self: &Rc<Self>) {
         let schedules = self.schedules.borrow().clone();
         let cards = self
@@ -2200,6 +2215,12 @@ impl App {
                 app.files.show_notes();
             } else {
                 app.files.set_notes_news(true);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.hub.on_history.borrow_mut() = Some(Box::new(move || {
+            if let Some(app) = weak.upgrade() {
+                app.show_notes_history();
             }
         }));
         let weak = Rc::downgrade(self);

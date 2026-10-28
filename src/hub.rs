@@ -21,8 +21,10 @@ use crate::scribe::{self, Question, Report};
 const IDLE: Duration = Duration::from_secs(120);
 /// This much unread (bytes of journal): checked at once, even while it goes on.
 const LONG: u64 = 24_000;
-/// How many of Scribe's own changes are listed.
-const RECENT: usize = 40;
+/// How many of Scribe's own changes the panel lists (the history page has them all).
+const RECENT: usize = 5;
+/// The history page lists this many at most (the newest).
+const PAGE: usize = 400;
 
 /// Something that writes to the vault, done one at a time.
 enum Job {
@@ -32,6 +34,8 @@ enum Job {
     Answer(u64, String),
     /// A held change written (true) or dropped.
     Decide(u64, bool),
+    /// A written change undone.
+    Undo(u64),
 }
 
 #[derive(Default)]
@@ -53,10 +57,17 @@ impl Store {
         let Ok(text) = std::fs::read_to_string(crate::journal::store_path()) else { return Store::default() };
         let Ok(v) = serde_json::from_str::<Value>(&text) else { return Store::default() };
         let list = |k: &str| v[k].as_array().cloned().unwrap_or_default();
+        let mut recent = list("recent");
+        if !log_path().exists() {
+            for v in recent.iter().rev() {
+                log_change(v, "written", None);
+            }
+        }
+        recent.truncate(RECENT);
         Store {
             pending: list("pending"),
             questions: list("questions"),
-            recent: list("recent"),
+            recent,
             day: v["day"].as_str().unwrap_or("").to_owned(),
             calls: v["calls"].as_u64().unwrap_or(0),
             next_id: v["nextId"].as_u64().unwrap_or(1),
@@ -92,6 +103,76 @@ impl Store {
     }
 }
 
+/// Every change Scribe wrote and every one the user dropped, one JSON line each (with the
+/// note before and after, to undo it), and the undos: `{"undo": id}`.
+fn log_path() -> PathBuf {
+    crate::journal::store_path().with_file_name("scribe-history.jsonl")
+}
+
+fn log_line(v: &Value) {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let path = log_path();
+    let written = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&path).and_then(|mut f| writeln!(f, "{v}"));
+    if let Err(err) = written {
+        crate::log::write("scribe", &format!("{}: {err}", path.display()));
+    }
+}
+
+/// A change into the history: "written" (with what it did) or "dropped".
+fn log_change(v: &Value, kind: &str, done: Option<&scribe::Written>) {
+    let mut v = v.clone();
+    v["kind"] = kind.into();
+    if let Some(done) = done {
+        v["before"] = done.before.clone().into();
+        v["after"] = done.after.clone().into();
+    }
+    log_line(&v);
+}
+
+/// The history, newest first: the undone changes marked `"undone": true`.
+fn history() -> Vec<Value> {
+    let text = std::fs::read_to_string(log_path()).unwrap_or_default();
+    let lines: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+    let undone: Vec<u64> = lines.iter().filter_map(|v| v["undo"].as_u64()).collect();
+    let mut changes: Vec<Value> = lines
+        .into_iter()
+        .filter(|v| v["undo"].is_null())
+        .map(|mut v| {
+            if v["id"].as_u64().is_some_and(|id| undone.contains(&id)) {
+                v["undone"] = true.into();
+            }
+            v
+        })
+        .collect();
+    changes.reverse();
+    changes
+}
+
+/// "12:40" today, "26 Oct, 12:40" before.
+fn when(at: u64) -> String {
+    let Ok(time) = glib::DateTime::from_unix_local(at as i64) else { return String::new() };
+    let format = if day_of(at) == today() { "%H:%M" } else { "%e %b, %H:%M" };
+    time.format(format).map(|t| t.to_string().trim().replace("  ", " ")).unwrap_or_default()
+}
+
+fn day_of(at: u64) -> String {
+    glib::DateTime::from_unix_local(at as i64).ok().and_then(|d| d.format("%Y-%m-%d").ok()).map(|d| d.to_string()).unwrap_or_default()
+}
+
+/// A day's heading on the history page: "Today", "Yesterday", "Monday 26 October".
+fn day_heading(at: u64) -> String {
+    let day = day_of(at);
+    let yesterday = glib::DateTime::now_local().ok().and_then(|d| d.add_days(-1).ok()).and_then(|d| d.format("%Y-%m-%d").ok()).map(|d| d.to_string());
+    if day == today() {
+        "TODAY".to_owned()
+    } else if Some(&day) == yesterday.as_ref() {
+        "YESTERDAY".to_owned()
+    } else {
+        glib::DateTime::from_unix_local(at as i64).ok().and_then(|d| d.format("%A %e %B").ok()).map(|d| d.to_string().replace("  ", " ").to_uppercase()).unwrap_or(day)
+    }
+}
+
 fn today() -> String {
     glib::DateTime::now_local().ok().and_then(|d| d.format("%Y-%m-%d").ok()).map(|d| d.to_string()).unwrap_or_default()
 }
@@ -115,6 +196,17 @@ pub struct Hub {
     pub on_open: RefCell<Option<Box<dyn Fn(&str)>>>,
     /// The counts changed (sidebar, overview).
     pub on_changed: RefCell<Option<Box<dyn Fn()>>>,
+    /// The history page (in the main area, where the chats are).
+    pub page: gtk::Box,
+    page_list: gtk::Box,
+    page_search: gtk::SearchEntry,
+    page_topic: gtk::DropDown,
+    page_dropped: gtk::CheckButton,
+    page_status: gtk::Label,
+    /// The topics the topic filter offers ("All topics" first).
+    page_topics: RefCell<Vec<String>>,
+    /// The app shows the history page.
+    pub on_history: RefCell<Option<Box<dyn Fn()>>>,
 }
 
 impl Hub {
@@ -141,7 +233,49 @@ impl Hub {
         let body = gtk::Box::new(gtk::Orientation::Vertical, 14);
         let scroll = gtk::ScrolledWindow::builder().child(&body).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         panel.append(&scroll);
+        // The history page: every change, newest first, by day; searched, filtered, undone.
+        let page = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        page.add_css_class("chat");
+        let inner = gtk::Box::new(gtk::Orientation::Vertical, 12);
+        inner.add_css_class("overview");
+        inner.add_css_class("notes-history");
+        inner.set_valign(gtk::Align::Start);
+        let title = gtk::Label::builder().label("Notes history").xalign(0.0).build();
+        title.add_css_class("overview-title");
+        let about = gtk::Label::builder()
+            .label("Everything Scribe wrote in your notes, newest first. Undo puts a note back as it was; if it changed since, only that change's lines are taken out.")
+            .xalign(0.0)
+            .wrap(true)
+            .build();
+        about.add_css_class("dim");
+        let page_search = gtk::SearchEntry::builder().placeholder_text("Search notes, reasons and lines").hexpand(true).build();
+        let page_topic = gtk::DropDown::from_strings(&["All topics"]);
+        page_topic.set_tooltip_text(Some("Only this topic's changes"));
+        let page_dropped = gtk::CheckButton::with_label("Show dropped");
+        page_dropped.set_tooltip_text(Some("Also the changes you said no to"));
+        let filters = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        filters.append(&page_search);
+        filters.append(&page_topic);
+        filters.append(&page_dropped);
+        let page_status = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
+        page_status.add_css_class("small");
+        let page_list = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        inner.append(&title);
+        inner.append(&about);
+        inner.append(&filters);
+        inner.append(&page_status);
+        inner.append(&page_list);
+        let page_scroll = gtk::ScrolledWindow::builder().child(&inner).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        page.append(&page_scroll);
         let hub = Rc::new(Hub {
+            page,
+            page_list,
+            page_search: page_search.clone(),
+            page_topic: page_topic.clone(),
+            page_dropped: page_dropped.clone(),
+            page_status,
+            page_topics: RefCell::new(vec![String::new()]),
+            on_history: RefCell::default(),
             panel,
             store: RefCell::new(Store::load()),
             running: Cell::new(false),
@@ -155,6 +289,24 @@ impl Hub {
             on_attention: RefCell::default(),
             on_open: RefCell::default(),
             on_changed: RefCell::default(),
+        });
+        let weak = Rc::downgrade(&hub);
+        page_search.connect_search_changed(move |_| {
+            if let Some(hub) = weak.upgrade() {
+                hub.fill_page();
+            }
+        });
+        let weak = Rc::downgrade(&hub);
+        page_topic.connect_selected_notify(move |_| {
+            if let Some(hub) = weak.upgrade() {
+                hub.fill_page();
+            }
+        });
+        let weak = Rc::downgrade(&hub);
+        page_dropped.connect_toggled(move |_| {
+            if let Some(hub) = weak.upgrade() {
+                hub.fill_page();
+            }
         });
         let weak = Rc::downgrade(&hub);
         check.connect_clicked(move |_| {
@@ -282,6 +434,11 @@ impl Hub {
                 self.run_next();
                 return;
             }
+            Some(Job::Undo(id)) => {
+                self.undo_now(id);
+                self.run_next();
+                return;
+            }
             Some(Job::Check(session, finished_only)) => (session, finished_only),
         };
         let entries = crate::journal::unread(&session, finished_only);
@@ -325,8 +482,10 @@ impl Hub {
                 let id = store.id();
                 store.questions.push(json!({ "id": id, "topic": q.topic, "question": q.question, "options": q.options, "excerpt": q.excerpt, "session": report.session, "title": report.title, "at": crate::state::now() }));
             }
-            for p in &report.applied {
-                let v = scribe::proposal_json(p, "", &report.session, &report.title);
+            for (p, done) in &report.applied {
+                let mut v = scribe::proposal_json(p, "", &report.session, &report.title);
+                v["id"] = store.id().into();
+                log_change(&v, "written", Some(done));
                 store.recent.insert(0, v);
             }
             store.recent.truncate(RECENT);
@@ -432,9 +591,25 @@ impl Hub {
         }
         if !store.recent.is_empty() {
             self.body.append(&heading("WRITTEN"));
-            for p in &store.recent {
-                self.body.append(&self.change_card(p, false));
+            let rows = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            for p in store.recent.iter().take(RECENT) {
+                rows.append(&self.change_row(p));
             }
+            self.body.append(&rows);
+        }
+        if log_path().exists() {
+            let all = gtk::Button::builder().label("Full history").halign(gtk::Align::Start).build();
+            all.add_css_class("prefs-button");
+            all.set_tooltip_text(Some("Everything Scribe wrote, searched and undone, in the main area"));
+            let weak = Rc::downgrade(self);
+            all.connect_clicked(move |_| {
+                if let Some(hub) = weak.upgrade()
+                    && let Some(show) = hub.on_history.borrow().as_ref()
+                {
+                    show();
+                }
+            });
+            self.body.append(&all);
         }
         drop(store);
         if let Some(changed) = self.on_changed.borrow().as_ref() {
@@ -499,18 +674,176 @@ impl Hub {
         card
     }
 
+    /// A written (or dropped) change, folded to one line: the note, what was done, when.
+    /// Unfolded: where it came from, why, the lines, and Undo.
+    fn change_row(self: &Rc<Self>, v: &Value) -> gtk::Expander {
+        let row = gtk::Expander::new(None);
+        row.add_css_class("hub-row");
+        let Some(proposal) = scribe::proposal_from(v) else { return row };
+        let (undone, dropped) = (v["undone"].as_bool() == Some(true), v["kind"].as_str() == Some("dropped"));
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let note = gtk::Label::builder().label(proposal.change.note()).xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).build();
+        note.add_css_class("hub-note");
+        let mut said = vec![proposal.change.summary()];
+        if dropped {
+            said.push("dropped".to_owned());
+        } else if undone {
+            said.push("undone".to_owned());
+        }
+        said.push(when(v["at"].as_u64().unwrap_or(0)));
+        let what = gtk::Label::new(Some(&said.join(" · ")));
+        what.add_css_class("small");
+        what.add_css_class("dim");
+        line.append(&note);
+        line.append(&what);
+        row.set_label_widget(Some(&line));
+        if undone || dropped {
+            row.add_css_class("gone");
+        }
+        let card = self.change_card(v, false);
+        // Undo: only a change written, not undone yet, and kept with what it did.
+        if !undone && !dropped && v["after"].is_string() {
+            let undo = gtk::Button::builder().label("Undo").halign(gtk::Align::Start).build();
+            undo.add_css_class("prefs-button");
+            undo.set_tooltip_text(Some("Put the note back as it was before this change"));
+            let (weak, id) = (Rc::downgrade(self), v["id"].as_u64().unwrap_or(0));
+            undo.connect_clicked(move |button| {
+                if let Some(hub) = weak.upgrade() {
+                    button.set_sensitive(false);
+                    button.set_label("Undoing…");
+                    hub.undo(id);
+                }
+            });
+            card.append(&undo);
+        }
+        row.set_child(Some(&card));
+        row
+    }
+
+    /// The history page, filled again (as searched and filtered).
+    pub fn fill_page(self: &Rc<Self>) {
+        let entries = history();
+        // The topic filter offers the topics there are changes for.
+        let mut topics: Vec<String> = entries.iter().filter_map(|v| v["topic"].as_str().map(str::to_owned)).collect();
+        topics.sort();
+        topics.dedup();
+        topics.insert(0, String::new());
+        if *self.page_topics.borrow() != topics {
+            let chosen = self.page_topics.borrow().get(self.page_topic.selected() as usize).cloned().unwrap_or_default();
+            *self.page_topics.borrow_mut() = topics.clone();
+            let names: Vec<&str> = topics.iter().map(|t| if t.is_empty() { "All topics" } else { t.as_str() }).collect();
+            // Setting the model selects its first entry: the page is filled once more then.
+            self.page_topic.set_model(Some(&gtk::StringList::new(&names)));
+            self.page_topic.set_selected(topics.iter().position(|t| *t == chosen).unwrap_or(0) as u32);
+        }
+        let topic = self.page_topics.borrow().get(self.page_topic.selected() as usize).cloned().unwrap_or_default();
+        let search = self.page_search.text().to_lowercase();
+        let dropped = self.page_dropped.is_active();
+        while let Some(child) = self.page_list.first_child() {
+            self.page_list.remove(&child);
+        }
+        let mut day = String::new();
+        let mut shown = 0;
+        for v in &entries {
+            if !dropped && v["kind"].as_str() == Some("dropped") {
+                continue;
+            }
+            if !topic.is_empty() && v["topic"].as_str() != Some(topic.as_str()) {
+                continue;
+            }
+            if !search.is_empty() {
+                let Some(p) = scribe::proposal_from(v) else { continue };
+                let haystack = format!("{} {} {} {}", p.change.note(), p.reason, p.change.diff(), v["title"].as_str().unwrap_or("")).to_lowercase();
+                if !haystack.contains(&search) {
+                    continue;
+                }
+            }
+            let at = v["at"].as_u64().unwrap_or(0);
+            if day_of(at) != day {
+                day = day_of(at);
+                self.page_list.append(&heading(&day_heading(at)));
+            }
+            self.page_list.append(&self.change_row(v));
+            shown += 1;
+            if shown == PAGE {
+                break;
+            }
+        }
+        if shown == 0 {
+            let empty = gtk::Label::builder()
+                .label(if entries.is_empty() { "Nothing written yet." } else { "No change matches." })
+                .xalign(0.0)
+                .margin_top(12)
+                .build();
+            empty.add_css_class("dim");
+            self.page_list.append(&empty);
+        }
+    }
+
+    pub fn focus_page(&self) {
+        self.page_search.grab_focus();
+    }
+
+    /// A written change undone (after the check running now, if one is).
+    fn undo(self: &Rc<Self>, id: u64) {
+        if self.running.get() {
+            self.say("Undone as soon as the check that is running ends…", false);
+            self.queue.borrow_mut().push_front(Job::Undo(id));
+            return;
+        }
+        self.undo_now(id);
+    }
+
+    fn undo_now(self: &Rc<Self>, id: u64) {
+        let Some(vault) = self.on() else { return };
+        let entry = history().into_iter().find(|v| v["id"].as_u64() == Some(id) && v["kind"].as_str() == Some("written") && v["undone"].is_null());
+        let Some((v, proposal)) = entry.and_then(|v| scribe::proposal_from(&v).map(|p| (v, p))) else { return };
+        let done = scribe::Written { before: v["before"].as_str().map(str::to_owned), after: v["after"].as_str().unwrap_or("").to_owned() };
+        let what = format!("{}: {}", proposal.topic, if proposal.reason.is_empty() { proposal.change.summary() } else { proposal.reason.clone() });
+        match scribe::undo(&vault, proposal.change.note(), &done, &what) {
+            Ok(()) => {
+                log_line(&json!({ "undo": id, "at": crate::state::now() }));
+                let mut store = self.store.borrow_mut();
+                store.recent.retain(|r| r["id"].as_u64() != Some(id));
+                store.save();
+                drop(store);
+                self.say(&format!("Undone: {}", proposal.change.note()), false);
+            }
+            Err(why) => self.say(&format!("Not undone ({}): {why}", proposal.change.note()), true),
+        }
+        self.refresh();
+        if self.page.is_mapped() {
+            self.fill_page();
+        }
+    }
+
+    /// Said in the panel and on the history page.
+    fn say(&self, text: &str, error: bool) {
+        self.status.set_label(text);
+        self.page_status.set_label(text);
+        self.page_status.set_visible(true);
+        if error {
+            self.page_status.add_css_class("error");
+        } else {
+            self.page_status.remove_css_class("error");
+        }
+    }
+
     fn change_card(self: &Rc<Self>, p: &Value, waiting: bool) -> gtk::Box {
         let card = gtk::Box::new(gtk::Orientation::Vertical, 6);
         card.add_css_class("hub-card");
         let Some(proposal) = scribe::proposal_from(p) else { return card };
         card.append(&from_line(self, p));
-        let what = gtk::Label::builder()
-            .label(proposal.change.note())
-            .xalign(0.0)
-            .ellipsize(pango::EllipsizeMode::Middle)
-            .build();
-        what.add_css_class("hub-note");
-        card.append(&what);
+        // A written one is unfolded from a row that names its note already.
+        if waiting {
+            let what = gtk::Label::builder()
+                .label(proposal.change.note())
+                .xalign(0.0)
+                .ellipsize(pango::EllipsizeMode::Middle)
+                .build();
+            what.add_css_class("hub-note");
+            card.append(&what);
+        }
         if !proposal.reason.is_empty() {
             let reason = gtk::Label::builder().label(&proposal.reason).xalign(0.0).wrap(true).build();
             reason.add_css_class("small");
@@ -579,12 +912,20 @@ impl Hub {
             at.map(|at| store.pending.remove(at))
         };
         let Some(p) = taken else { return };
+        if !write {
+            log_change(&p, "dropped", None);
+        }
         if write {
             let Some(proposal) = scribe::proposal_from(&p) else { return };
             match scribe::approve(&vault, &proposal) {
-                Ok(()) => {
+                Ok(done) => {
+                    let mut p = p.clone();
+                    // Written now: its time is the writing's.
+                    p["at"] = crate::state::now().into();
+                    p["why"] = "".into();
+                    log_change(&p, "written", Some(&done));
                     let mut store = self.store.borrow_mut();
-                    store.recent.insert(0, p.clone());
+                    store.recent.insert(0, p);
                     store.recent.truncate(RECENT);
                     self.status.set_label(&format!("Written: {}", proposal.change.note()));
                 }

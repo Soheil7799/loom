@@ -108,6 +108,19 @@ impl Change {
         }
     }
 
+    /// What it does, in a few words: "added 2 lines", "set status".
+    pub fn summary(&self) -> String {
+        match self {
+            Change::Add { text, .. } => match text.lines().count() {
+                1 => "added a line".to_owned(),
+                n => format!("added {n} lines"),
+            },
+            Change::Replace { .. } => "changed a line".to_owned(),
+            Change::Create { .. } => "new note".to_owned(),
+            Change::Property { key, .. } => format!("set {key}"),
+        }
+    }
+
     /// The change as a diff to read: + lines added, - lines gone.
     pub fn diff(&self) -> String {
         let plus = |text: &str| text.lines().map(|l| format!("+ {l}")).collect::<Vec<_>>().join("\n");
@@ -119,6 +132,13 @@ impl Change {
             Change::Property { key, value, .. } => format!("+ {key}: {value}"),
         }
     }
+}
+
+/// A note as it was before a change (None: there was no such note) and as the change left it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Written {
+    pub before: Option<String>,
+    pub after: String,
 }
 
 /// A change and why, for a topic, from a conversation.
@@ -144,8 +164,8 @@ pub struct Question {
 pub struct Report {
     pub session: String,
     pub title: String,
-    /// Changes written (and committed).
-    pub applied: Vec<Proposal>,
+    /// Changes written (and committed), with the note before and after.
+    pub applied: Vec<(Proposal, Written)>,
     /// Changes waiting for the user's OK (an `ask` topic, or one that no longer fitted).
     pub held: Vec<(Proposal, String)>,
     pub questions: Vec<Question>,
@@ -253,10 +273,10 @@ fn record(vault: &Path, topic: &Topic, proposals: Vec<Proposal>, id: &str, repor
             continue;
         }
         match apply(vault, &proposal.change) {
-            Ok(()) => {
+            Ok(done) => {
                 written.push(proposal.change.note().to_owned());
                 reasons.push(proposal.reason.clone());
-                report.applied.push(proposal);
+                report.applied.push((proposal, done));
             }
             Err(why) => report.held.push((proposal, why)),
         }
@@ -488,18 +508,22 @@ fn allowed(vault: &Path, topic: &Topic, change: &Change) -> Result<(), String> {
     }
 }
 
-/// Makes a change in the vault (after `allowed`).
-pub fn apply(vault: &Path, change: &Change) -> Result<(), String> {
+/// Makes a change in the vault (after `allowed`): the note before and after, to undo it.
+pub fn apply(vault: &Path, change: &Change) -> Result<Written, String> {
     let path: PathBuf = vault.join(change.note());
     if let Change::Create { text, .. } = change {
         if path.exists() {
             let old = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", change.note()))?;
-            return std::fs::write(&path, merge(&old, text)).map_err(|e| e.to_string());
+            let after = merge(&old, text);
+            std::fs::write(&path, &after).map_err(|e| e.to_string())?;
+            return Ok(Written { before: Some(old), after });
         }
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
-        return std::fs::write(&path, ensure_newline(text)).map_err(|e| e.to_string());
+        let after = ensure_newline(text);
+        std::fs::write(&path, &after).map_err(|e| e.to_string())?;
+        return Ok(Written { before: None, after });
     }
     let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", change.note()))?;
     let changed = match change {
@@ -508,7 +532,54 @@ pub fn apply(vault: &Path, change: &Change) -> Result<(), String> {
         Change::Property { key, value, .. } => set_property(&text, key, value)?,
         Change::Create { .. } => unreachable!(),
     };
-    std::fs::write(&path, changed).map_err(|e| e.to_string())
+    std::fs::write(&path, &changed).map_err(|e| e.to_string())?;
+    Ok(Written { before: Some(text), after: changed })
+}
+
+/// Undoes a written change. A note nothing else touched since goes back as it was (a note
+/// the change made goes to the trash); one changed since loses only the change's own lines,
+/// if they are still there as written. Committed, like the change was.
+pub fn undo(vault: &Path, note: &str, written: &Written, what: &str) -> Result<(), String> {
+    let path = vault.join(note);
+    let now = std::fs::read_to_string(&path).ok();
+    let back = match now {
+        Some(now) if now == written.after => written.before.clone(),
+        Some(now) => match &written.before {
+            Some(before) => Some(take_out(&now, before, &written.after).ok_or("The note changed since, around these lines: open it to change it yourself.")?),
+            None => return Err("The note changed since it was made: open it to remove it yourself.".to_owned()),
+        },
+        None => return Err("The note is not there any more.".to_owned()),
+    };
+    match back {
+        Some(text) => std::fs::write(&path, text).map_err(|e| e.to_string())?,
+        None => {
+            use gtk::gio::prelude::FileExt;
+            gtk::gio::File::for_path(&path).trash(None::<&gtk::gio::Cancellable>).map_err(|e| e.to_string())?
+        }
+    }
+    commit(vault, &[note.to_owned()], &format!("loom: undo: {what}"));
+    Ok(())
+}
+
+/// `now` with what the change put in (the lines between what `before` and `after` share at
+/// their start and end) back as it was. None if that part is not in `now` just once.
+fn take_out(now: &str, before: &str, after: &str) -> Option<String> {
+    let (b, a): (Vec<&str>, Vec<&str>) = (before.split_inclusive('\n').collect(), after.split_inclusive('\n').collect());
+    let start = b.iter().zip(&a).take_while(|(x, y)| x == y).count();
+    let end = b[start..].iter().rev().zip(a[start..].iter().rev()).take_while(|(x, y)| x == y).count();
+    let (old, new) = (b[start..b.len() - end].concat(), a[start..a.len() - end].concat());
+    if new.is_empty() {
+        return None;
+    }
+    // With the line before it, when there is one: the same line may well be elsewhere too.
+    let lead = if start > 0 { a[start - 1] } else { "" };
+    let (find, keep) = (format!("{lead}{new}"), lead.len());
+    let at = match now.match_indices(&find).count() {
+        1 => now.find(&find)? + keep,
+        _ if now.matches(new.as_str()).count() == 1 => now.find(&new)?,
+        _ => return None,
+    };
+    Some(format!("{}{old}{}", &now[..at], &now[at + new.len()..]))
 }
 
 fn ensure_newline(text: &str) -> String {
@@ -637,12 +708,12 @@ pub fn proposal_from(v: &Value) -> Option<Proposal> {
 }
 
 /// An approved held change: checked again (the note may have changed) and made, committed.
-pub fn approve(vault: &Path, proposal: &Proposal) -> Result<(), String> {
+pub fn approve(vault: &Path, proposal: &Proposal) -> Result<Written, String> {
     let topic = crate::topics::list(vault).into_iter().find(|t| t.name == proposal.topic).ok_or_else(|| format!("There is no topic {} any more.", proposal.topic))?;
     allowed(vault, &topic, &proposal.change)?;
-    apply(vault, &proposal.change)?;
+    let done = apply(vault, &proposal.change)?;
     commit(vault, &[proposal.change.note().to_owned()], &format!("loom: {}: {} (approved)", proposal.topic, proposal.reason));
-    Ok(())
+    Ok(done)
 }
 
 /// `loom scribe-eval <cases.jsonl>`: runs Scribe on each case (a conversation and the notes
@@ -721,7 +792,7 @@ fn eval_case(case: &Value, n: usize) -> (String, bool, String, Vec<String>, Vec<
     if let Some(why) = report.failed {
         return (name, false, why, expected, found);
     }
-    let proposals: Vec<&Proposal> = report.applied.iter().chain(report.held.iter().map(|(p, _)| p)).collect();
+    let proposals: Vec<&Proposal> = report.applied.iter().map(|(p, _)| p).chain(report.held.iter().map(|(p, _)| p)).collect();
     let describe = || {
         let changes = proposals.iter().map(|p| format!("{} {}", p.change.note(), p.change.diff().replace('\n', " ")));
         let asked = report.questions.iter().map(|q| format!("asked: {}", q.question));
@@ -821,6 +892,37 @@ mod tests {
         assert!(allowed(&vault, &topic, &create).is_ok());
         apply(&vault, &add("Finances/Overview.md")).unwrap();
         assert_eq!(std::fs::read_to_string(vault.join("Finances/Overview.md")).unwrap(), "## Recurring\n- Rent: 650\n");
+        let _ = std::fs::remove_dir_all(&vault);
+    }
+
+    #[test]
+    fn written_changes_are_undone() {
+        let vault = std::env::temp_dir().join(format!("loom-undo-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&vault);
+        std::fs::create_dir_all(&vault).unwrap();
+        let note = vault.join("Health.md");
+        std::fs::write(&note, "# Health\n## Sleep\n- 7h\n## Food\n- less sugar\n").unwrap();
+        let add = Change::Add { note: "Health.md".into(), under: "## Sleep".into(), text: "- 8h on weekends".into() };
+        let done = apply(&vault, &add).unwrap();
+        // Untouched since: back exactly as it was.
+        undo(&vault, "Health.md", &done, "x").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), done.before.clone().unwrap());
+        // Changed since (elsewhere): only the change's own line goes.
+        let done = apply(&vault, &add).unwrap();
+        let edited = done.after.replace("- less sugar", "- less sugar\n- more water");
+        std::fs::write(&note, &edited).unwrap();
+        undo(&vault, "Health.md", &done, "x").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "# Health\n## Sleep\n- 7h\n## Food\n- less sugar\n- more water\n");
+        // The line itself changed since: left alone.
+        let done = apply(&vault, &add).unwrap();
+        std::fs::write(&note, done.after.replace("- 8h on weekends", "- 9h on weekends")).unwrap();
+        assert!(undo(&vault, "Health.md", &done, "x").is_err());
+        let replace = Change::Replace { note: "Health.md".into(), old: "- 7h".into(), new: "- 7.5h".into() };
+        std::fs::write(&note, "# Health\n## Sleep\n- 7h\n").unwrap();
+        let done = apply(&vault, &replace).unwrap();
+        std::fs::write(&note, format!("{}- naps\n", done.after)).unwrap();
+        undo(&vault, "Health.md", &done, "x").unwrap();
+        assert_eq!(std::fs::read_to_string(&note).unwrap(), "# Health\n## Sleep\n- 7h\n- naps\n");
         let _ = std::fs::remove_dir_all(&vault);
     }
 
