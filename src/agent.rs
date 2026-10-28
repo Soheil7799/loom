@@ -199,6 +199,8 @@ pub struct Agent {
     modes: RefCell<Vec<String>>,
     mode: RefCell<String>,
     pending: RefCell<Vec<Pending>>,
+    /// The workflows it launched (their cards in the conversation).
+    workflows: RefCell<Vec<Rc<crate::workflow::Run>>>,
     /// Subagents met in this conversation (live and replayed).
     subs: RefCell<Vec<Rc<Sub>>>,
     asked: Cell<u64>,
@@ -256,6 +258,7 @@ impl Agent {
             ready: Cell::new(false),
             turn: Cell::new(false),
             replaying: Cell::new(false),
+            workflows: RefCell::default(),
             reply: RefCell::default(),
             queue: RefCell::default(),
             context: RefCell::default(),
@@ -708,6 +711,7 @@ impl Agent {
             // The conversation comes back as updates; start from an empty view.
             self.chat.clear();
             self.forget_subs();
+            self.workflows.borrow_mut().clear();
             self.files.borrow_mut().clear();
             self.replaying.set(true);
             // A compacted conversation is replayed from its summary on: what came before is
@@ -1000,6 +1004,7 @@ impl Agent {
         }
         self.chat.clear();
         self.forget_subs();
+        self.workflows.borrow_mut().clear();
         self.chat.set_plan(&Value::Null);
         self.emit(Event::Session);
         self.start();
@@ -1845,6 +1850,49 @@ impl Agent {
         sub
     }
 
+    /// A Workflow tool call's result: the workflow, followed in a card of its own.
+    fn workflow_launched(self: &Rc<Self>, update: &Value) {
+        let Some(tool_id) = update["toolCallId"].as_str() else { return };
+        if self.workflows.borrow().iter().any(|w| w.tool_id == tool_id) {
+            return;
+        }
+        let Some(launch) = crate::workflow::launch_of(update) else { return };
+        let weak = Rc::downgrade(self);
+        let run = crate::workflow::Run::new(tool_id, launch, move || weak.upgrade().is_some_and(|a| a.conn.borrow().is_some()));
+        let weak = Rc::downgrade(self);
+        *run.on_open.borrow_mut() = Some(Rc::new(move |path: PathBuf, label: String| {
+            let Some(agent) = weak.upgrade() else { return };
+            let viewer = Chat::viewer();
+            viewer.set_show_thinking(crate::settings::get().show_thinking);
+            crate::workflow::fill_transcript(&viewer, &path);
+            agent.chat.show_aside(viewer.root.upcast_ref(), &format!("Workflow agent · {label}"));
+        }));
+        let weak = Rc::downgrade(self);
+        *run.on_changed.borrow_mut() = Some(Rc::new(move || {
+            if let Some(agent) = weak.upgrade() {
+                agent.workflow_note();
+            }
+        }));
+        self.chat.block(&run.root);
+        self.workflows.borrow_mut().push(run);
+        self.workflow_note();
+    }
+
+    /// The strip under the conversation: what its running workflows are at.
+    fn workflow_note(&self) {
+        let running: Vec<String> = self
+            .workflows
+            .borrow()
+            .iter()
+            .filter(|w| !w.done.get())
+            .map(|w| {
+                let (done, all) = w.counts();
+                format!("Workflow {}: {done} of {all} agents done", w.name)
+            })
+            .collect();
+        self.chat.set_workflow_note((!running.is_empty()).then(|| running.join(" · ")));
+    }
+
     /// Thinking shown or hidden, in its subagents' conversations too.
     pub fn set_show_thinking(&self, show: bool) {
         self.chat.set_show_thinking(show);
@@ -2039,6 +2087,7 @@ impl Agent {
             "tool_call" | "tool_call_update" => {
                 self.note_activity();
                 self.tool(update);
+                self.workflow_launched(update);
             }
             "plan" => self.chat.set_plan(&update["entries"]),
             "subagent_update" => self.subagent_update(update),

@@ -491,6 +491,18 @@ button.compact-alert { padding: 2px 10px; min-height: 0; border-radius: 8px; fon
   color: @loom_warn; background: alpha(@loom_warn, 0.12); box-shadow: none; border: none; }
 button.compact-alert:hover { background: alpha(@loom_warn, 0.22); }
 
+/* A workflow's card in the conversation (workflow.rs). */
+.workflow-card { padding: 10px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); margin: 4px 0; }
+.workflow-title { font-weight: 700; }
+label.workflow-status { font-size: 0.85em; padding: 1px 8px; border-radius: 999px; background: alpha(@accent_color, 0.16); color: @accent_color; }
+label.workflow-status.done { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.7); }
+label.workflow-status.stopped { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.5); }
+.workflow-progress { font-variant-numeric: tabular-nums; }
+list.workflow-agents { background: transparent; }
+list.workflow-agents row { padding: 3px 4px; border-radius: 6px; }
+list.workflow-agents label.running { color: @accent_color; }
+.workflow-agent { font-weight: 600; }
+
 /* Right-click menus (menu.rs). */
 popover.context-menu > contents { padding: 4px; min-width: 220px; }
 popover.context-menu separator { margin: 4px 6px; background: alpha(@window_fg_color, 0.1); }

@@ -91,6 +91,8 @@ pub struct Chat {
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
     /// Subagents at work this turn: their task's tool call, what they last did, when.
     crew: RefCell<Vec<Crew>>,
+    /// What the agent's workflows are at (see set_workflow_note).
+    workflow_note: RefCell<Option<String>>,
     crew_list: gtk::ListBox,
     crew_revealer: gtk::Revealer,
     /// A row of the strip clicked: its key (a subagent session, or a task's tool call).
@@ -513,6 +515,7 @@ impl Chat {
             group: RefCell::default(),
             tools: RefCell::default(),
             crew: RefCell::default(),
+            workflow_note: RefCell::default(),
             crew_list,
             crew_revealer,
             on_crew_open: RefCell::default(),
@@ -2033,6 +2036,20 @@ impl Chat {
         Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() })
     }
 
+    /// A block of its own in the conversation, after what is there (a workflow's card).
+    pub fn block(&self, widget: &impl IsA<gtk::Widget>) {
+        self.group.take();
+        self.list.append(widget);
+        *self.last.borrow_mut() = Last::None;
+    }
+
+    /// What the agent's workflows are at ("Workflow council: 120 of 180 agents done"), said
+    /// where "Working…" is between turns. None: none runs.
+    pub fn set_workflow_note(&self, note: Option<String>) {
+        *self.workflow_note.borrow_mut() = note;
+        self.background_note();
+    }
+
     /// A notice with a button that does something about it.
     pub fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
         // A retry that failed again replaces its card rather than stacking another.
@@ -2182,12 +2199,17 @@ impl Chat {
             .iter()
             .filter(|c| c.ended.is_none() && c.state.as_deref().unwrap_or("running") == "running" && (!c.guessed || c.at.elapsed().as_secs() < 90))
             .count();
-        if running == 0 {
+        let workflow = self.workflow_note.borrow().clone();
+        if running == 0 && workflow.is_none() {
             self.working.set_label("");
             self.working.set_tooltip_text(None);
+        } else if running == 0 {
+            self.working.set_markup(&format!("✻ {}", glib::markup_escape_text(&workflow.unwrap_or_default())));
+            self.working.set_tooltip_text(Some("Claude goes on when it is done; its card in the conversation shows each agent."));
         } else {
             let plural = if running == 1 { "agent" } else { "agents" };
-            self.working.set_markup(&format!("✻ Waiting for <b>{running}</b> background {plural} to finish"));
+            let also = workflow.map(|w| format!(" · {}", glib::markup_escape_text(&w))).unwrap_or_default();
+            self.working.set_markup(&format!("✻ Waiting for <b>{running}</b> background {plural} to finish{also}"));
             self.working.set_tooltip_text(Some("Claude goes on when they are done; the strip above shows each."));
         }
     }

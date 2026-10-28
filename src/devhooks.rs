@@ -33,6 +33,7 @@
 //! - `noteshistory`: the Notes history page · `unfold`: every folded row unfolded
 //! - `teach:<why>` / `keeprule`: answer the newest "Why not?", keep its drafted rule
 //! - `fixnewest:<comment>`: a comment on the newest written change
+//! - `wfopen:<n>`: open agent n of the first workflow card
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -117,6 +118,13 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // The newest "Why not?" answered, and its drafted rule kept.
         "teach" => app.hub.teach_newest(argument),
         "keeprule" => app.hub.keep_newest_rule(),
+        // Row n (from 0) of the first workflow card's agents, opened.
+        "wfopen" => {
+            let mut found = Vec::new();
+            collect(app.window.upcast_ref(), &|w| w.has_css_class("workflow-agents"), &mut found);
+            let row = found.first().and_then(|l| l.downcast_ref::<gtk::ListBox>()).and_then(|l| l.row_at_index(argument.parse().unwrap_or(0)));
+            row.ok_or("no workflow agent there")?.emit_activate();
+        }
         // A comment on the newest written change (Scribe changes the note as it says).
         "fixnewest" => app.hub.fix_newest(argument),
         // Every folded row unfolded (their buttons exist only then).

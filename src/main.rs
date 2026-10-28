@@ -43,6 +43,7 @@ mod suggest;
 mod telegram;
 mod term;
 mod theme;
+mod workflow;
 
 use gtk::{gdk, gio, glib, prelude::*};
 
