@@ -495,10 +495,9 @@ impl App {
                 app.refresh_inbox();
             }
         });
-        // Right-click on a project or agent: its menu.
-        let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+        // Right-click (or the Menu key) on a project or agent: its menu.
         let weak = Rc::downgrade(self);
-        click.connect_pressed(move |_, _, x, y| {
+        crate::menu::on_right_click(&self.list, move |x, y| {
             let Some(app) = weak.upgrade() else { return };
             match app.list.row_at_y(y as i32) {
                 // A heading (Running, Projects): no menu of its own.
@@ -507,7 +506,6 @@ impl App {
                 None => app.row_menu(None, x, y),
             }
         });
-        self.list.add_controller(click);
 
         let weak = Rc::downgrade(self);
         self.run_entry.connect_activate(move |entry| {
@@ -2600,7 +2598,7 @@ impl App {
                 let list = self.list.clone();
                 Menu::new()
                     .item("New agent here", on(Box::new(move |app| app.start_agent_in(p1.clone()))))
-                    .item("Conversations (new or past)", on(Box::new(move |app| app.show_project(&p2, &p2))))
+                    .item("Conversations…", on(Box::new(move |app| app.show_project(&p2, &p2))))
                     .section()
                     .item("Open in the file manager", move || crate::menu::launch(&list, &p3))
                     .item("Copy its path", {
@@ -2620,14 +2618,22 @@ impl App {
             }
             Some(Row::Agent(agent)) => self.agent_menu(&agent),
             // The empty part of the list.
-            _ => Menu::new()
-                .item("New agent…", on(Box::new(|app| app.new_agent(false))))
-                .hint("Ctrl+N")
-                .item("Open a project folder…", on(Box::new(|app| app.new_agent(true))))
-                .hint("Ctrl+Shift+N")
-                .section()
-                .item("Show every project's agents", on(Box::new(|app| app.collapse_all(false))))
-                .item("Hide every project's agents", on(Box::new(|app| app.collapse_all(true)))),
+            _ => {
+                let (any_shut, any_open) = {
+                    let projects = self.projects.borrow();
+                    (projects.iter().any(|p| p.collapsed), projects.iter().any(|p| !p.collapsed))
+                };
+                Menu::new()
+                    .item("New agent…", on(Box::new(|app| app.new_agent(false))))
+                    .hint("Ctrl+N")
+                    .item("Open a project folder…", on(Box::new(|app| app.new_agent(true))))
+                    .hint("Ctrl+Shift+N")
+                    .section()
+                    .item("Show every project's agents", on(Box::new(|app| app.collapse_all(false))))
+                    .enabled(any_shut)
+                    .item("Hide every project's agents", on(Box::new(|app| app.collapse_all(true))))
+                    .enabled(any_open)
+            }
         };
         menu.popup(&self.list, x, y);
     }
@@ -2662,7 +2668,7 @@ impl App {
                 app.save();
             }))
             .enabled(!focused)
-            .item(if agent.awake.get() { "Let it rest when idle" } else { "Keep awake" }, with(|app, agent| {
+            .item(if agent.awake.get() { "Allow suspending when idle" } else { "Keep awake" }, with(|app, agent| {
                 agent.awake.set(!agent.awake.get());
                 app.save();
                 app.refresh_sidebar();
@@ -2676,12 +2682,11 @@ impl App {
             .item("Open its folder in the file manager", move || crate::menu::launch(&list, &cwd))
             .item("Copy its folder's path", move || crate::menu::copy(&list2, &cwd2.to_string_lossy()))
             .section()
-            .item("Restart", with(|_, agent| agent.restart()))
             .item("Suspend (free its memory)", with(|_, agent| {
                 agent.suspend();
             }))
             .enabled(!suspended)
-            .section()
+            .item("Restart", with(|_, agent| agent.restart()))
             .item("Close", with(|app, agent| app.close_agent(agent)))
             .hint("Ctrl+W")
             .danger()
@@ -2949,7 +2954,7 @@ impl App {
         if agent.awake.get() {
             awake.add_css_class("on");
         }
-        awake.set_tooltip_text(Some(if agent.awake.get() { "Kept awake: never suspended while idle (click to let it rest)" } else { "Keep it awake: never suspended while idle" }));
+        awake.set_tooltip_text(Some(if agent.awake.get() { "Kept awake: never suspended while idle (click to allow it)" } else { "Keep it awake: never suspended while idle" }));
         let (weak, target) = (Rc::downgrade(self), Rc::downgrade(agent));
         awake.connect_clicked(move |_| {
             if let (Some(app), Some(agent)) = (weak.upgrade(), target.upgrade()) {

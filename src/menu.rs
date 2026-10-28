@@ -64,7 +64,6 @@ impl Menu {
     pub fn popup(self, on: &impl IsA<gtk::Widget>, x: f64, y: f64) {
         let on = on.as_ref();
         let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        content.add_css_class("menu");
         let popover = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).halign(gtk::Align::Start).child(&content).build();
         popover.add_css_class("context-menu");
         popover.set_parent(on);
@@ -101,16 +100,23 @@ impl Menu {
                 content.append(&button);
             }
         }
-        // Up and Down go from item to item (Tab does too).
+        // Up and Down go from item to item, round from the last to the first (Tab does too);
+        // Home and End to the first and the last.
         let keys = gtk::EventControllerKey::new();
         let moving = content.clone();
         keys.connect_key_pressed(move |_, key, _, _| {
-            let direction = match key {
-                gdk::Key::Down => gtk::DirectionType::TabForward,
-                gdk::Key::Up => gtk::DirectionType::TabBackward,
+            let items: Vec<gtk::Widget> = std::iter::successors(moving.first_child(), |w| w.next_sibling()).filter(|w| w.is::<gtk::Button>() && w.is_sensitive()).collect();
+            let at = items.iter().position(|w| w.has_focus());
+            let to = match (key, at) {
+                (gdk::Key::Down, Some(i)) => (i + 1) % items.len(),
+                (gdk::Key::Up, Some(i)) => (i + items.len() - 1) % items.len(),
+                (gdk::Key::Down | gdk::Key::Home, _) => 0,
+                (gdk::Key::Up | gdk::Key::End, _) => items.len().saturating_sub(1),
                 _ => return glib::Propagation::Proceed,
             };
-            moving.child_focus(direction);
+            if let Some(item) = items.get(to) {
+                item.grab_focus();
+            }
             glib::Propagation::Stop
         });
         popover.add_controller(keys);
@@ -140,12 +146,32 @@ pub fn reveal(widget: &impl IsA<gtk::Widget>, path: &std::path::Path) {
     gtk::FileLauncher::new(Some(&gtk::gio::File::for_path(path))).open_containing_folder(window.as_ref(), None::<&gtk::gio::Cancellable>, |_| {});
 }
 
-/// A right click on `widget` (any button 3 press): `f` with the point, in its coordinates.
+/// A right click on `widget` (any button 3 press), or the Menu key or Shift+F10 while
+/// something in it has the keyboard: `f` with the point, in its coordinates.
 pub fn on_right_click(widget: &impl IsA<gtk::Widget>, f: impl Fn(f64, f64) + 'static) {
+    let f = Rc::new(f);
     let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).build();
+    let clicked = f.clone();
     click.connect_pressed(move |gesture, _, x, y| {
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        f(x, y);
+        clicked(x, y);
     });
     widget.as_ref().add_controller(click);
+    on_menu_key(widget, move |x, y| f(x, y));
+}
+
+/// The Menu key or Shift+F10 while something in `widget` has the keyboard: `f` with a point
+/// on that thing (its left part, half way down), in `widget`'s coordinates.
+pub fn on_menu_key(widget: &impl IsA<gtk::Widget>, f: impl Fn(f64, f64) + 'static) {
+    let keys = gtk::EventControllerKey::builder().propagation_phase(gtk::PropagationPhase::Capture).build();
+    let at = widget.as_ref().downgrade();
+    keys.connect_key_pressed(move |_, key, _, state| {
+        let menu_key = key == gdk::Key::Menu || (key == gdk::Key::F10 && state.contains(gdk::ModifierType::SHIFT_MASK));
+        let Some(widget) = at.upgrade().filter(|_| menu_key) else { return glib::Propagation::Proceed };
+        let focus = widget.root().and_then(|r| r.focus()).filter(|f| f == &widget || f.is_ancestor(&widget));
+        let point = focus.and_then(|f| f.compute_bounds(&widget)).map_or((16.0, 16.0), |b| (f64::from(b.x()) + 16.0, f64::from(b.y() + b.height() / 2.0)));
+        f(point.0, point.1);
+        glib::Propagation::Stop
+    });
+    widget.as_ref().add_controller(keys);
 }

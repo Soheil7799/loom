@@ -1031,7 +1031,7 @@ impl Agent {
     pub fn compact_then_rest(self: &Rc<Self>) {
         crate::log::debug!(format!("agent {}", self.id), "compacts before resting: {} tokens", self.chat.context_used());
         self.resting.set(true);
-        self.chat.notice("Resting: compacting the conversation first (open it and press Esc to keep it all).", "dim");
+        self.chat.notice("Suspending: compacting the conversation first (open it and press Esc to keep it all).", "dim");
         self.queue.borrow_mut().push_back((REST_COMPACT.to_owned(), Vec::new()));
         self.send_next();
     }

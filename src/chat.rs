@@ -3816,13 +3816,16 @@ mod tests {
 }
 
 /// A message's right-click menu: what is selected in it, its own buttons' actions, and a quote
-/// of it (or of the selection) into the input. Over the text's own menu (Capture).
+/// of it (or of the selection) into the input. Over the text's own menu (Capture); the Menu
+/// key or Shift+F10 too.
 fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextView, actions: Vec<(&'static str, gtk::Button)>) {
     let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).propagation_phase(gtk::PropagationPhase::Capture).build();
     let (at, message, input) = (wrap.downgrade(), Rc::downgrade(message), input.downgrade());
-    click.connect_pressed(move |gesture, _, x, y| {
-        let (Some(wrap), Some(message), Some(input)) = (at.upgrade(), message.upgrade(), input.upgrade()) else { return };
+    click.connect_pressed(|gesture, _, _, _| {
         gesture.set_state(gtk::EventSequenceState::Claimed);
+    });
+    let open = Rc::new(move |x: f64, y: f64| {
+        let (Some(wrap), Some(message), Some(input)) = (at.upgrade(), message.upgrade(), input.upgrade()) else { return };
         let selected = crate::files::selected_text(message.body.upcast_ref()).filter(|t| !t.trim().is_empty());
         let (copied, there) = (selected.clone(), wrap.clone());
         let mut menu = crate::menu::Menu::new()
@@ -3851,5 +3854,8 @@ fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextVie
             })
             .popup(&wrap, x, y);
     });
+    let opened = open.clone();
+    click.connect_pressed(move |_, _, x, y| opened(x, y));
     wrap.add_controller(click);
+    crate::menu::on_menu_key(wrap, move |x, y| open(x, y));
 }

@@ -156,6 +156,11 @@ fn when(at: u64) -> String {
     time.format(format).map(|t| t.to_string().trim().replace("  ", " ")).unwrap_or_default()
 }
 
+/// "12:40".
+fn clock(at: u64) -> String {
+    glib::DateTime::from_unix_local(at as i64).ok().and_then(|t| t.format("%H:%M").ok()).map(|t| t.to_string()).unwrap_or_default()
+}
+
 fn day_of(at: u64) -> String {
     glib::DateTime::from_unix_local(at as i64).ok().and_then(|d| d.format("%Y-%m-%d").ok()).map(|d| d.to_string()).unwrap_or_default()
 }
@@ -205,6 +210,8 @@ pub struct Hub {
     page_status: gtk::Label,
     /// The topics the topic filter offers ("All topics" first).
     page_topics: RefCell<Vec<String>>,
+    /// Hides the page's status line a little after it was said.
+    page_status_timer: RefCell<Option<glib::SourceId>>,
     /// The app shows the history page.
     pub on_history: RefCell<Option<Box<dyn Fn()>>>,
 }
@@ -251,8 +258,8 @@ impl Hub {
         let page_search = gtk::SearchEntry::builder().placeholder_text("Search notes, reasons and lines").hexpand(true).build();
         let page_topic = gtk::DropDown::from_strings(&["All topics"]);
         page_topic.set_tooltip_text(Some("Only this topic's changes"));
-        let page_dropped = gtk::CheckButton::with_label("Show dropped");
-        page_dropped.set_tooltip_text(Some("Also the changes you said no to"));
+        let page_dropped = gtk::CheckButton::with_label("Show what you said no to");
+        page_dropped.set_tooltip_text(Some("Also the changes you didn't let Scribe write"));
         let filters = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         filters.append(&page_search);
         filters.append(&page_topic);
@@ -275,6 +282,7 @@ impl Hub {
             page_dropped: page_dropped.clone(),
             page_status,
             page_topics: RefCell::new(vec![String::new()]),
+            page_status_timer: RefCell::default(),
             on_history: RefCell::default(),
             panel,
             store: RefCell::new(Store::load()),
@@ -293,19 +301,19 @@ impl Hub {
         let weak = Rc::downgrade(&hub);
         page_search.connect_search_changed(move |_| {
             if let Some(hub) = weak.upgrade() {
-                hub.fill_page();
+                hub.filtered();
             }
         });
         let weak = Rc::downgrade(&hub);
         page_topic.connect_selected_notify(move |_| {
             if let Some(hub) = weak.upgrade() {
-                hub.fill_page();
+                hub.filtered();
             }
         });
         let weak = Rc::downgrade(&hub);
         page_dropped.connect_toggled(move |_| {
             if let Some(hub) = weak.upgrade() {
-                hub.fill_page();
+                hub.filtered();
             }
         });
         let weak = Rc::downgrade(&hub);
@@ -486,6 +494,8 @@ impl Hub {
                 let mut v = scribe::proposal_json(p, "", &report.session, &report.title);
                 v["id"] = store.id().into();
                 log_change(&v, "written", Some(done));
+                // What it did is in the history (whole notes): here only that it can be undone.
+                v["undoable"] = true.into();
                 store.recent.insert(0, v);
             }
             store.recent.truncate(RECENT);
@@ -593,7 +603,7 @@ impl Hub {
             self.body.append(&heading("WRITTEN"));
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 4);
             for p in store.recent.iter().take(RECENT) {
-                rows.append(&self.change_row(p));
+                rows.append(&self.change_row(p, true));
             }
             self.body.append(&rows);
         }
@@ -676,7 +686,8 @@ impl Hub {
 
     /// A written (or dropped) change, folded to one line: the note, what was done, when.
     /// Unfolded: where it came from, why, the lines, and Undo.
-    fn change_row(self: &Rc<Self>, v: &Value) -> gtk::Expander {
+    /// `dated`: the day said too (not under a day's heading).
+    fn change_row(self: &Rc<Self>, v: &Value, dated: bool) -> gtk::Expander {
         let row = gtk::Expander::new(None);
         row.add_css_class("hub-row");
         let Some(proposal) = scribe::proposal_from(v) else { return row };
@@ -686,11 +697,12 @@ impl Hub {
         note.add_css_class("hub-note");
         let mut said = vec![proposal.change.summary()];
         if dropped {
-            said.push("dropped".to_owned());
+            said.push("not written".to_owned());
         } else if undone {
             said.push("undone".to_owned());
         }
-        said.push(when(v["at"].as_u64().unwrap_or(0)));
+        let at = v["at"].as_u64().unwrap_or(0);
+        said.push(if dated { when(at) } else { clock(at) });
         let what = gtk::Label::new(Some(&said.join(" · ")));
         what.add_css_class("small");
         what.add_css_class("dim");
@@ -702,7 +714,7 @@ impl Hub {
         }
         let card = self.change_card(v, false);
         // Undo: only a change written, not undone yet, and kept with what it did.
-        if !undone && !dropped && v["after"].is_string() {
+        if !undone && !dropped && (v["after"].is_string() || v["undoable"].as_bool() == Some(true)) {
             let undo = gtk::Button::builder().label("Undo").halign(gtk::Align::Start).build();
             undo.add_css_class("prefs-button");
             undo.set_tooltip_text(Some("Put the note back as it was before this change"));
@@ -763,7 +775,7 @@ impl Hub {
                 day = day_of(at);
                 self.page_list.append(&heading(&day_heading(at)));
             }
-            self.page_list.append(&self.change_row(v));
+            self.page_list.append(&self.change_row(v, false));
             shown += 1;
             if shown == PAGE {
                 break;
@@ -817,16 +829,37 @@ impl Hub {
         }
     }
 
-    /// Said in the panel and on the history page.
-    fn say(&self, text: &str, error: bool) {
+    /// Said in the panel and on the history page (there for a few seconds; an error until
+    /// the next search or filter).
+    fn say(self: &Rc<Self>, text: &str, error: bool) {
         self.status.set_label(text);
         self.page_status.set_label(text);
         self.page_status.set_visible(true);
+        if let Some(timer) = self.page_status_timer.take() {
+            timer.remove();
+        }
         if error {
             self.page_status.add_css_class("error");
         } else {
             self.page_status.remove_css_class("error");
+            let weak = Rc::downgrade(self);
+            let timer = glib::timeout_add_local_once(Duration::from_secs(6), move || {
+                if let Some(hub) = weak.upgrade() {
+                    hub.page_status_timer.take();
+                    hub.page_status.set_visible(false);
+                }
+            });
+            *self.page_status_timer.borrow_mut() = Some(timer);
         }
+    }
+
+    /// Searched or filtered: the page's status line is old news.
+    fn filtered(self: &Rc<Self>) {
+        if let Some(timer) = self.page_status_timer.take() {
+            timer.remove();
+        }
+        self.page_status.set_visible(false);
+        self.fill_page();
     }
 
     fn change_card(self: &Rc<Self>, p: &Value, waiting: bool) -> gtk::Box {
@@ -881,7 +914,7 @@ impl Hub {
             reject.connect_clicked(move |button| {
                 if let Some(hub) = weak.upgrade() {
                     pressed.set_sensitive(false);
-                    button.set_label("Dropping…");
+                    button.set_label("Not writing…");
                     hub.decide(id, false);
                 }
             });
@@ -924,6 +957,7 @@ impl Hub {
                     p["at"] = crate::state::now().into();
                     p["why"] = "".into();
                     log_change(&p, "written", Some(&done));
+                    p["undoable"] = true.into();
                     let mut store = self.store.borrow_mut();
                     store.recent.insert(0, p);
                     store.recent.truncate(RECENT);

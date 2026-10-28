@@ -398,8 +398,8 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     controls.append(&on);
     let compact = row(
         &resting,
-        "Compact before resting",
-        "An agent about to be suspended first sums up its conversation, while its prompt cache is still warm: resuming it is then quick and cheap. Never the one you have open, nor one with something waiting on you.",
+        "Compact before suspending",
+        "Sums up its conversation first, so resuming it is quick and cheap. Never the open agent, nor one waiting on you.",
         &controls,
     );
     // Only when idle agents are suspended at all ("Never" is the first choice).

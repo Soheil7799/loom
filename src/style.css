@@ -461,7 +461,7 @@ label.addon-on { color: @loom_ok; font-weight: 600; }
 .hub-row title { padding: 4px 6px; border-radius: 8px; }
 .hub-row title:hover { background: alpha(@window_fg_color, 0.05); }
 .hub-row .hub-card { margin-top: 4px; }
-.hub-row.gone .hub-note { opacity: 0.55; text-decoration-line: line-through; }
+.hub-row.gone .hub-note { opacity: 0.55; }
 .hub-card button.chosen { border-color: @accent_color; background: alpha(@accent_color, 0.14); }
 .hub-topic { font-weight: 600; font-size: 0.85em; color: @accent_color; }
 button.hub-from { padding: 0 4px; min-height: 0; font-size: 0.85em; }
@@ -494,3 +494,6 @@ popover.context-menu separator { margin: 4px 6px; background: alpha(@window_fg_c
 popover.context-menu label.menu-hint { color: alpha(@window_fg_color, 0.5); font-size: 0.9em; }
 popover.context-menu button.menu-item.danger label { color: @loom_err; }
 popover.context-menu button.menu-item:disabled label { opacity: 0.45; }
+
+/* The keyboard lands on the same highlight as the pointer, not the focus ring. */
+popover.context-menu button.menu-item:focus-visible { outline: none; background: alpha(@accent_color, 0.14); }
