@@ -1102,13 +1102,21 @@ impl Files {
         if self.tree.model().is_some() {
             return;
         }
-        let root = gio::File::for_path(&*self.project.borrow());
-        TREE_ROOT.with(|r| *r.borrow_mut() = self.project.borrow().clone());
-        let model = gtk::TreeListModel::new(folder(&root), false, false, |item| {
-            let info = item.downcast_ref::<gio::FileInfo>()?;
-            (info.file_type() == gio::FileType::Directory).then(|| file_of(info).map(|f| folder(&f)))?
+        let project = self.project.borrow().clone();
+        TREE_ROOT.with(|r| *r.borrow_mut() = project.clone());
+        IGNORED.with(|i| i.borrow_mut().clear());
+        self.tree.set_model(Some(&tree_model(&project)));
+        // What git ignores (target/, node_modules/…) is dimmed: asked off the main thread,
+        // then the tree is shown again with it (nothing is open in it yet).
+        let (tree, asked) = (self.tree.clone(), project.clone());
+        glib::spawn_future_local(async move {
+            let ignored = gio::spawn_blocking(move || ignored_in(&asked)).await.unwrap_or_default();
+            if ignored.is_empty() || TREE_ROOT.with(|r| *r.borrow() != project) {
+                return;
+            }
+            IGNORED.with(|i| *i.borrow_mut() = ignored);
+            tree.set_model(Some(&tree_model(&project)));
         });
-        self.tree.set_model(Some(&gtk::SingleSelection::new(Some(model))));
     }
 
     /// The focused agent's repos (latest first): the Changes tab starts on the first.
@@ -1774,6 +1782,8 @@ fn folder(dir: &gio::File) -> gio::ListModel {
 thread_local! {
     /// The folder the tree shows.
     static TREE_ROOT: std::cell::RefCell<PathBuf> = std::cell::RefCell::default();
+    /// What git ignores in the tree's project (files, and folders as a whole).
+    static IGNORED: std::cell::RefCell<std::collections::HashSet<PathBuf>> = std::cell::RefCell::default();
 }
 
 /// A tree row's file, and whether it is a folder.
@@ -1837,6 +1847,34 @@ fn file_of(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_object("standard::file").and_downcast::<gio::File>()
 }
 
+/// The tree of `project`, read as folders open.
+fn tree_model(project: &Path) -> gtk::SingleSelection {
+    let model = gtk::TreeListModel::new(folder(&gio::File::for_path(project)), false, false, |item| {
+        let info = item.downcast_ref::<gio::FileInfo>()?;
+        (info.file_type() == gio::FileType::Directory).then(|| file_of(info).map(|f| folder(&f)))?
+    });
+    gtk::SingleSelection::new(Some(model))
+}
+
+/// The files and folders git ignores in `project` (none if it is no repository).
+fn ignored_in(project: &Path) -> std::collections::HashSet<PathBuf> {
+    let Ok(out) = std::process::Command::new("git").arg("-C").arg(project).args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).output() else {
+        return Default::default();
+    };
+    if !out.status.success() {
+        return Default::default();
+    }
+    String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(|p| project.join(p.trim_end_matches('/'))).collect()
+}
+
+/// Whether git ignores `path` (or a folder it is in).
+fn is_ignored(path: &Path) -> bool {
+    IGNORED.with(|ignored| {
+        let ignored = ignored.borrow();
+        !ignored.is_empty() && path.ancestors().any(|p| ignored.contains(p))
+    })
+}
+
 /// Tree rows: an expander arrow, then the name.
 fn tree_factory() -> gtk::SignalListItemFactory {
     let factory = gtk::SignalListItemFactory::new();
@@ -1874,6 +1912,13 @@ fn tree_factory() -> gtk::SignalListItemFactory {
         let Some(info) = row.item().and_downcast::<gio::FileInfo>() else { return };
         let Some(line) = expander.child().and_downcast::<gtk::Box>() else { return };
         let is_dir = info.file_type() == gio::FileType::Directory;
+        if file_of(&info).and_then(|f| f.path()).is_some_and(|p| is_ignored(&p)) {
+            line.add_css_class("ignored");
+            line.set_tooltip_text(Some("Ignored by git"));
+        } else {
+            line.remove_css_class("ignored");
+            line.set_tooltip_text(None);
+        }
         if let Some(icon) = line.first_child().and_downcast::<gtk::Image>() {
             icon.set_from_gicon(&file_icon(Path::new(info.name().as_path()), is_dir));
         }

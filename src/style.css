@@ -187,6 +187,8 @@ button.small { padding: 0 8px; min-height: 22px; font-size: 0.9em; }
 .file-list row:hover { background: alpha(@window_fg_color, 0.05); }
 .file-list row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .file-row { padding: 6px 10px; }
+/* What git ignores, dimmed in the tree (icon and name together). */
+.ignored { opacity: 0.45; }
 /* File icons are drawn in their own colours (icons.rs): full strength. */
 .file-icon { -gtk-icon-size: 16px; margin-right: 2px; }
 .badge { font-size: 0.8em; font-weight: 700; padding: 1px 7px; min-height: 0; border-radius: 99px; letter-spacing: 0.02em; }
