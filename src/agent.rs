@@ -21,6 +21,9 @@ use crate::chat::{Chat, PermissionCard};
 use crate::files::Mark;
 use crate::jobs::Tray;
 use crate::state::Saved;
+/// What compacting before resting keeps: what the next session needs to carry on.
+const REST_COMPACT: &str = "/compact Keep what is still open: unfinished tasks, decisions made and why, the files involved, and anything asked for that is not done yet.";
+
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Status {
@@ -206,6 +209,8 @@ pub struct Agent {
     pub used: Cell<u64>,
     /// Kept awake (the ☕ in the Running list): never suspended for being idle.
     pub awake: Cell<bool>,
+    /// Compacting on its way to being suspended (opening it keeps it awake).
+    pub resting: Cell<bool>,
     /// The last turn was stopped (Esc, Stop), not finished.
     pub last_cancelled: Cell<bool>,
     /// The last turn ended on an error (what it said).
@@ -265,6 +270,7 @@ impl Agent {
             last_took: Cell::new(0),
             used: Cell::new(used),
             awake: Cell::new(saved.awake),
+            resting: Cell::new(false),
             last_cancelled: Cell::new(false),
             last_error: RefCell::default(),
             adapter_suggests: Cell::new(false),
@@ -1020,6 +1026,16 @@ impl Agent {
 
     // ---- turns ----------------------------------------------------------------------------
 
+    /// About to be suspended: first sums up the conversation (the prompt cache is still warm,
+    /// so it costs little, and resuming reads the summary instead of everything), then rests.
+    pub fn compact_then_rest(self: &Rc<Self>) {
+        crate::log::debug!(format!("agent {}", self.id), "compacts before resting: {} tokens", self.chat.context_used());
+        self.resting.set(true);
+        self.chat.notice("Resting: compacting the conversation first (open it and press Esc to keep it all).", "dim");
+        self.queue.borrow_mut().push_back((REST_COMPACT.to_owned(), Vec::new()));
+        self.send_next();
+    }
+
     /// A message, with images attached (PNG).
     pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
         self.last_active.set(Instant::now());
@@ -1358,7 +1374,11 @@ impl Agent {
         let prompt = self.prompt_blocks(&text, &images);
         self.context.borrow_mut().clear();
         self.reply.borrow_mut().clear();
-        self.journal("user", &text);
+        // Compacting before resting is loom's doing, not the conversation's.
+        let quiet = self.resting.get();
+        if !quiet {
+            self.journal("user", &text);
+        }
         conn.request(
             "session/prompt",
             json!({ "sessionId": session, "prompt": prompt }),
@@ -1371,7 +1391,9 @@ impl Agent {
                 agent.turn.set(false);
                 agent.chat.set_working(None);
                 let reply = agent.reply.take();
-                agent.journal("assistant", &reply);
+                if !quiet {
+                    agent.journal("assistant", &reply);
+                }
                 // The process died with the turn: fail() has said so already.
                 if agent.conn.borrow().is_none() {
                     return;
@@ -1392,6 +1414,13 @@ impl Agent {
                         *agent.last_error.borrow_mut() = Some(message(&err));
                         agent.chat.notice(&format!("Error: {}", message(&err)), "error");
                     }
+                }
+                // Compacted (or not: it rests all the same, with the whole conversation),
+                // unless it was opened or kept awake meanwhile.
+                if agent.resting.replace(false) && !agent.focused.get() && !agent.awake.get() {
+                    agent.refresh_status();
+                    agent.suspend();
+                    return;
                 }
                 agent.chat.turn_done(started.elapsed().as_secs());
                 agent.last_turn.set(Instant::now());

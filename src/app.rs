@@ -1294,6 +1294,7 @@ impl App {
             *self.previous.borrow_mut() = Some(old);
         }
         agent.focused.set(true);
+        agent.resting.set(false);
         agent.unseen.set(false);
         self.hub.set_current(agent.session_id(), &agent.title());
         agent.last_active.set(std::time::Instant::now());
@@ -2311,11 +2312,17 @@ impl App {
             return;
         }
         let limit = Duration::from_secs(minutes * 60);
+        let s = settings::get();
         let agents = self.agents.borrow().clone();
         for agent in agents {
             let in_view = agent.focused.get() || self.is_pinned(&agent);
             if agent.status() == Status::Idle && !in_view && !agent.awake.get() && agent.last_active.get().elapsed() > limit {
-                agent.suspend();
+                // A draft in its input: something is still being said to it, nothing changes.
+                if s.rest_compact && agent.chat.context_used() >= s.rest_compact_tokens && agent.chat.draft().trim().is_empty() {
+                    agent.compact_then_rest();
+                } else {
+                    agent.suspend();
+                }
             }
         }
     }

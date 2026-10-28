@@ -1182,6 +1182,11 @@ impl Chat {
         self.notice("Not sent (the turn was stopped first): it is back in the input.", "dim");
     }
 
+    /// The tokens in the context, as last reported.
+    pub fn context_used(&self) -> u64 {
+        self.spent.borrow().0.map_or(0, |(used, _)| used)
+    }
+
     /// The draft in the input (kept across restarts).
     pub fn draft(&self) -> String {
         let buffer = self.input.buffer();

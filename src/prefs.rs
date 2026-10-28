@@ -19,7 +19,8 @@ const MODES: &[(&str, &str)] = &[
 
 const SCALES: &[(f64, &str)] = &[(0.9, "Small"), (1.0, "Normal"), (1.1, "Large"), (1.25, "Larger"), (1.4, "Largest")];
 
-const IDLE: &[(u64, &str)] = &[(0, "Never"), (5, "After 5 min"), (15, "After 15 min"), (30, "After 30 min"), (60, "After 1 hour"), (120, "After 2 hours")];
+const REST_TOKENS: &[(u64, &str)] = &[(50_000, "Over 50K tokens"), (100_000, "Over 100K tokens"), (200_000, "Over 200K tokens"), (400_000, "Over 400K tokens")];
+const IDLE: &[(u64, &str)] = &[(0, "Never"), (5, "After 5 min"), (15, "After 15 min"), (30, "After 30 min"), (45, "After 45 min"), (60, "After 1 hour"), (120, "After 2 hours")];
 
 /// The pages: (name, title, icon, an add-on's: listed under Add-ons).
 const PAGES: &[(&str, &str, &str, bool)] = &[
@@ -220,7 +221,7 @@ fn texts(title: &str, detail: &str) -> gtk::Box {
 }
 
 /// A row: title and a line of explanation, its control on the right.
-fn row(section: &gtk::Box, title: &str, detail: &str, control: &impl IsA<gtk::Widget>) {
+fn row(section: &gtk::Box, title: &str, detail: &str, control: &impl IsA<gtk::Widget>) -> gtk::Box {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     line.add_css_class("prefs-row");
     control.as_ref().set_valign(gtk::Align::Center);
@@ -229,6 +230,7 @@ fn row(section: &gtk::Box, title: &str, detail: &str, control: &impl IsA<gtk::Wi
     if let Some(rows) = rows_of(section) {
         rows.append(&line);
     }
+    line
 }
 
 /// A row whose control needs the width (an entry): it goes under the title.
@@ -332,8 +334,6 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
     );
     row(&behaviour, "Confirm quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
     row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
-    let idle = dropdown(IDLE, s.idle_minutes, |m| format!("After {m} min"), |s, m| s.idle_minutes = m);
-    row(&behaviour, "Suspend idle agents", "Frees an unwatched agent's memory; opening it resumes the conversation.", &idle);
     content.append(&behaviour);
 
     let keyboard = section("Keyboard");
@@ -384,6 +384,28 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     controls.append(&on);
     row(&chat, "Remind me to compact", "Once the context is this full, a Compact button shows by the context meter, top right.", &controls);
     content.append(&chat);
+
+    let resting = section("Idle agents");
+    let idle = dropdown(IDLE, s.idle_minutes, |m| format!("After {m} min"), |s, m| s.idle_minutes = m);
+    row(&resting, "Suspend idle agents", "Frees an unwatched agent's memory; opening it resumes the conversation.", &idle);
+    let tokens = dropdown(REST_TOKENS, s.rest_compact_tokens, |t| format!("Over {}K tokens", t / 1000), |s, t| s.rest_compact_tokens = t);
+    tokens.set_sensitive(s.rest_compact);
+    let on = switch(s.rest_compact, |s, on| s.rest_compact = on);
+    let t = tokens.clone();
+    on.connect_active_notify(move |s| t.set_sensitive(s.is_active()));
+    let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    controls.append(&tokens);
+    controls.append(&on);
+    let compact = row(
+        &resting,
+        "Compact before resting",
+        "An agent about to be suspended first sums up its conversation, while its prompt cache is still warm: resuming it is then quick and cheap. Never the one you have open, nor one with something waiting on you.",
+        &controls,
+    );
+    // Only when idle agents are suspended at all ("Never" is the first choice).
+    compact.set_visible(s.idle_minutes != 0);
+    idle.connect_selected_notify(move |d| compact.set_visible(d.selected() != 0));
+    content.append(&resting);
 
     let schedules = section("Scheduled prompts");
     let open = flat_button("Open the overview");
