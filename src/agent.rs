@@ -429,7 +429,8 @@ impl Agent {
 
     /// The adapter process, while it runs.
     pub fn adapter_pid(&self) -> Option<u32> {
-        self.conn.borrow().as_ref().map(|c| c.pid())
+        // 0: its process is not running (yet), so there is none to measure.
+        self.conn.borrow().as_ref().map(|c| c.pid()).filter(|pid| *pid != 0)
     }
 
     pub fn status(&self) -> Status {
@@ -621,7 +622,7 @@ impl Agent {
                 let text = if !self.cwd.is_dir() {
                     format!("Could not start: this agent's folder no longer exists ({}). Its conversation is kept; resume it from the project page in a folder that exists.", self.cwd.display())
                 } else {
-                    format!("Could not start Claude Code ({}): {err}", provider::adapter_command().join(" "))
+                    format!("Could not start Claude Code ({}): {err}", provider::program())
                 };
                 if self.cwd.is_dir() {
                     self.offer_retry(&text);

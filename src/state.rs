@@ -121,12 +121,15 @@ pub fn session_written(session: &str) -> Option<u64> {
     modified.duration_since(std::time::UNIX_EPOCH).ok().map(|d| d.as_secs())
 }
 
-/// Claude Code's own file of a conversation (in its config folder: $CLAUDE_CONFIG_DIR, or
-/// ~/.claude), under whichever project folder it is.
+/// Claude Code's config folder: $CLAUDE_CONFIG_DIR, or ~/.claude.
+pub fn claude_dir() -> PathBuf {
+    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| glib::home_dir().join(".claude"))
+}
+
+/// Claude Code's own file of a conversation, under whichever project folder it is.
 pub fn claude_file(session: &str) -> Option<PathBuf> {
-    let config = std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| glib::home_dir().join(".claude"));
     let name = format!("{session}.jsonl");
-    std::fs::read_dir(config.join("projects")).ok()?.flatten().map(|dir| dir.path().join(&name)).find(|file| file.is_file())
+    std::fs::read_dir(claude_dir().join("projects")).ok()?.flatten().map(|dir| dir.path().join(&name)).find(|file| file.is_file())
 }
 
 fn saved_json(a: &Saved) -> Value {

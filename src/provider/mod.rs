@@ -34,9 +34,12 @@ pub struct Conn {
     link: Link,
 }
 
-/// The adapter command loom would run for ACP (the one set, else its default).
-pub fn adapter_command() -> Vec<String> {
-    acp::chosen().unwrap_or_else(acp::default_adapter)
+/// What runs an agent, as a command line (for an error that names it).
+pub fn program() -> String {
+    match acp::chosen() {
+        Some(command) => command.join(" "),
+        None => claude::program().to_string_lossy().into_owned(),
+    }
 }
 
 /// The ACP adapter run when none is set.
@@ -48,9 +51,10 @@ pub fn default_adapter() -> Vec<String> {
 pub fn describe() -> String {
     match acp::chosen() {
         Some(command) => format!("ACP adapter: {}", command.join(" ")),
-        None => match claude::installed_version() {
+        // Never waits for `claude --version` (this is shown on the main loop).
+        None => match claude::known_version() {
             Some(version) => format!("Claude Code {version}"),
-            None => "Claude Code (not found)".to_owned(),
+            None => "Claude Code".to_owned(),
         },
     }
 }

@@ -8,11 +8,6 @@ use serde_json::{Value, json};
 
 use super::tools::{self, ToolUse};
 
-/// Claude Code's config folder ($CLAUDE_CONFIG_DIR, or ~/.claude).
-fn config_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| gtk::glib::home_dir().join(".claude"))
-}
-
 /// A conversation's file, whichever project folder it is in.
 pub fn file(session: &str) -> Option<PathBuf> {
     crate::state::claude_file(session)
@@ -21,7 +16,7 @@ pub fn file(session: &str) -> Option<PathBuf> {
 /// Every conversation: sessionId, cwd, title, updatedAt (ISO), newest first.
 pub fn list() -> Vec<Value> {
     let mut found: Vec<(std::time::SystemTime, Value)> = Vec::new();
-    let Ok(projects) = std::fs::read_dir(config_dir().join("projects")) else { return Vec::new() };
+    let Ok(projects) = std::fs::read_dir(crate::state::claude_dir().join("projects")) else { return Vec::new() };
     for project in projects.flatten() {
         let Ok(files) = std::fs::read_dir(project.path()) else { continue };
         for entry in files.flatten() {

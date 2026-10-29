@@ -24,15 +24,36 @@ use tools::ToolUse;
 /// protocol is not documented; a newer Claude Code may change it).
 pub const BUILT_FOR: &str = "2.1.312";
 
-/// The installed Claude Code's version (`claude --version`), read once.
+/// The `claude` program: on PATH, else where its installers put it (a launcher's PATH may
+/// leave those out).
+pub fn program() -> PathBuf {
+    static PROGRAM: OnceLock<PathBuf> = OnceLock::new();
+    PROGRAM
+        .get_or_init(|| {
+            let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join("claude"));
+            let home = glib::home_dir();
+            let usual = [home.join(".local/bin/claude"), home.join(".claude/local/claude"), PathBuf::from("/usr/local/bin/claude"), PathBuf::from("/usr/bin/claude")];
+            on_path.chain(usual).find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("claude"))
+        })
+        .clone()
+}
+
+static VERSION: OnceLock<Option<String>> = OnceLock::new();
+
+/// The installed Claude Code's version (`claude --version`, run once: it takes a moment, so
+/// never on the main loop; Claude Code's own report fills it in when a session opens).
 pub fn installed_version() -> Option<String> {
-    static VERSION: OnceLock<Option<String>> = OnceLock::new();
     VERSION
         .get_or_init(|| {
-            let out = std::process::Command::new("claude").arg("--version").env_remove("CLAUDECODE").output().ok()?;
+            let out = std::process::Command::new(program()).arg("--version").env_remove("CLAUDECODE").output().ok()?;
             String::from_utf8_lossy(&out.stdout).split_whitespace().next().map(str::to_owned)
         })
         .clone()
+}
+
+/// The installed version if already known (never waits).
+pub fn known_version() -> Option<String> {
+    VERSION.get().cloned().flatten()
 }
 
 /// Permission modes, as the adapter named them.
@@ -97,7 +118,13 @@ pub struct Link {
     effort: RefCell<String>,
     fast: Cell<bool>,
     used: Cell<u64>,
+    /// The streaming message's input tokens.
+    input: Cell<u64>,
     size: Cell<u64>,
+    /// Claude Code is in a turn (from its first words to its result).
+    busy: Cell<bool>,
+    /// Results to come that answer no prompt (turns Claude Code took of its own).
+    skip: Cell<u32>,
     cost: Cell<Option<f64>>,
     limit: RefCell<Value>,
     /// A new conversation, not named yet: its first prompt names it.
@@ -125,6 +152,11 @@ fn final_report(path: &Path) -> Option<String> {
     };
     let report = tools::agent_report(report.trim());
     (!report.is_empty()).then_some(report)
+}
+
+/// A message's input tokens, cached ones too.
+fn input_tokens(usage: &Value) -> u64 {
+    ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens"].iter().filter_map(|k| usage[*k].as_u64()).sum()
 }
 
 fn error(message: &str) -> Value {
@@ -161,7 +193,10 @@ impl Link {
             effort: RefCell::new("default".to_owned()),
             fast: Cell::new(false),
             used: Cell::new(0),
+            input: Cell::new(0),
             size: Cell::new(0),
+            busy: Cell::new(false),
+            skip: Cell::new(0),
             cost: Cell::new(None),
             limit: RefCell::new(Value::Null),
             untitled: Cell::new(false),
@@ -174,9 +209,33 @@ impl Link {
     }
 
     pub fn stop(&self) {
-        if let Some(process) = self.process.borrow_mut().take() {
+        let process = self.process.borrow_mut().take();
+        if let Some(process) = process {
             process.stop();
         }
+        // Told on the next pass of the main loop: loom may be stopping it from inside its own
+        // state (answered now, a reply would reach back into it).
+        self.drop_pending(true);
+    }
+
+    /// What waited on the process that is gone: its requests fail, its questions are dropped
+    /// (an answer to one later goes nowhere). The prompt's answer stays (it may come from the
+    /// next process).
+    fn drop_pending(&self, later: bool) {
+        let controls: Vec<Reply> = self.controls.borrow_mut().drain().map(|(_, r)| r).collect();
+        let fail = move || {
+            for reply in controls {
+                reply(Err(error("the agent stopped")));
+            }
+        };
+        if later {
+            glib::idle_add_local_once(fail);
+        } else {
+            fail();
+        }
+        self.asks.borrow_mut().clear();
+        self.busy.set(false);
+        self.skip.set(0);
     }
 
     fn write(&self, value: &Value) {
@@ -219,7 +278,7 @@ impl Link {
                     "promptCapabilities": { "image": true, "embeddedContext": true },
                     "sessionCapabilities": { "resume": {}, "list": {}, "fork": {}, "close": {} }
                 },
-                "agentInfo": { "name": "claude-code", "version": installed_version() }
+                "agentInfo": { "name": "claude-code", "version": known_version() }
             }))),
             "session/new" => {
                 let id = glib::uuid_string_random().to_string();
@@ -346,7 +405,7 @@ impl Link {
     /// loom's settings; `reply` gets the session's modes and options.
     fn start(&self, id: String, resume: bool, params: &Value, reply: Reply) {
         self.stop();
-        let mut program: Vec<String> = ["claude", "--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--include-partial-messages"]
+        let mut program: Vec<String> = [program().to_string_lossy().as_ref(), "--output-format", "stream-json", "--verbose", "--input-format", "stream-json", "--permission-prompt-tool", "stdio", "--include-partial-messages"]
             .iter()
             .map(|s| s.to_string())
             .collect();
@@ -404,11 +463,14 @@ impl Link {
             match result {
                 // No login (and no API key): said when the session opens, as loom offers its
                 // Log in then.
-                Ok(init) if init["account"]["tokenSource"] == "none" && init["account"]["apiKeySource"].is_null() => {
+                Ok(init) if init["account"]["apiProvider"] == "firstParty" && init["account"]["tokenSource"] == "none" && init["account"]["apiKeySource"].is_null() => {
                     link.stop();
                     reply(Err(error("Not logged in · Please run /login")));
                 }
                 Ok(init) => {
+                    if let Some(version) = init["claude_code_version"].as_str() {
+                        let _ = VERSION.set(Some(version.to_owned()));
+                    }
                     if let Some(mode) = init["current_permission_mode"].as_str() {
                         *link.mode.borrow_mut() = mode.to_owned();
                     }
@@ -442,14 +504,14 @@ impl Link {
 
     /// The process ended: what waited on it fails, and loom hears of it.
     fn ended(&self) {
-        let controls: Vec<Reply> = self.controls.borrow_mut().drain().map(|(_, r)| r).collect();
-        for reply in controls {
+        // Taken out first: loom may call back in while told (a waiting message sent next).
+        let had = self.process.borrow_mut().take().is_some();
+        self.drop_pending(false);
+        let prompt = self.prompt.borrow_mut().take();
+        if let Some(reply) = prompt {
             reply(Err(error("the agent stopped")));
         }
-        if let Some(reply) = self.prompt.borrow_mut().take() {
-            reply(Err(error("the agent stopped")));
-        }
-        if self.process.borrow_mut().take().is_some() {
+        if had {
             (self.on_incoming)(Incoming::Exited);
         }
     }
@@ -481,7 +543,8 @@ impl Link {
                     link.write_user(&json!([{ "type": "text", "text": format!("Implement the following plan:\n\n{plan}") }]));
                 }
                 Err(err) => {
-                    if let Some(reply) = link.prompt.borrow_mut().take() {
+                    let prompt = link.prompt.borrow_mut().take();
+                    if let Some(reply) = prompt {
                         reply(Err(err));
                     }
                 }
@@ -512,7 +575,13 @@ impl Link {
             return reply(Err(error("the agent is not running")));
         }
         self.cancelled.set(false);
-        if let Some(old) = self.prompt.borrow_mut().replace(reply) {
+        // Claude Code is in a turn of its own (it went on after a background task, or with a
+        // message sent into the last one): that turn's end is not this prompt's.
+        if self.busy.get() && self.prompt.borrow().is_none() {
+            self.skip.set(self.skip.get() + 1);
+        }
+        let old = self.prompt.borrow_mut().replace(reply);
+        if let Some(old) = old {
             old(Ok(json!({ "stopReason": "cancelled" })));
         }
         self.write_user(&params["prompt"]);
@@ -542,7 +611,15 @@ impl Link {
         }
         self.usage();
         self.context();
-        let Some(reply) = self.prompt.borrow_mut().take() else { return };
+        self.busy.set(false);
+        self.streamed.borrow_mut().clear();
+        self.subs.borrow_mut().retain(|s| !s.ended);
+        if self.skip.get() > 0 {
+            self.skip.set(self.skip.get() - 1);
+            return;
+        }
+        let prompt = self.prompt.borrow_mut().take();
+        let Some(reply) = prompt else { return };
         let text = message["result"].as_str().unwrap_or("").to_owned();
         let cancelled = self.cancelled.replace(false);
         if cancelled {
@@ -685,6 +762,9 @@ impl Link {
     // ---- Claude Code's messages -----------------------------------------------------------
 
     fn handle(&self, message: Value) {
+        if matches!(message["type"].as_str(), Some("stream_event" | "assistant")) {
+            self.busy.set(true);
+        }
         match message["type"].as_str().unwrap_or("") {
             "control_response" => {
                 let response = &message["response"];
@@ -796,6 +876,9 @@ impl Link {
                 let id = event["message"]["id"].as_str().unwrap_or("").to_owned();
                 self.streamed.borrow_mut().insert(id.clone());
                 *self.message.borrow_mut() = id;
+                let usage = &event["message"]["usage"];
+                self.input.set(input_tokens(usage));
+                self.count(usage);
             }
             "content_block_delta" => {
                 let delta = &event["delta"];
@@ -808,15 +891,22 @@ impl Link {
                     _ => {}
                 }
             }
-            "message_delta" => {
-                let usage = &event["usage"];
-                let used = ["input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens", "output_tokens"].iter().filter_map(|k| usage[*k].as_u64()).sum::<u64>();
-                if used > 0 {
-                    self.used.set(used);
-                    self.usage();
-                }
-            }
+            "message_delta" => self.count(&event["usage"]),
             _ => {}
+        }
+    }
+
+    /// The context: the message's input (its own count if it has one, else the one its start
+    /// gave) and its output so far.
+    fn count(&self, usage: &Value) {
+        let input = match input_tokens(usage) {
+            0 => self.input.get(),
+            n => n,
+        };
+        let used = input + usage["output_tokens"].as_u64().unwrap_or(0);
+        if used > 0 {
+            self.used.set(used);
+            self.usage();
         }
     }
 
@@ -897,6 +987,7 @@ impl Link {
             let Some(tool) = block["tool_use_id"].as_str().and_then(|id| self.tools.borrow().get(id).cloned()) else { continue };
             if matches!(tool.name.as_str(), "Agent" | "Task") {
                 let background = self.subs.borrow().iter().any(|s| s.key == tool.id && s.background) || structured["status"] == "async_launched";
+                self.tools.borrow_mut().remove(&tool.id);
                 if background {
                     self.with_sub(&tool.id, |s| s.background = true);
                 } else {
@@ -914,6 +1005,8 @@ impl Link {
             if sub.is_none() {
                 self.task_list(&tool, structured, block["is_error"].as_bool() == Some(true));
             }
+            // Its result is in: nothing more comes for it.
+            self.tools.borrow_mut().remove(&tool.id);
         }
     }
 

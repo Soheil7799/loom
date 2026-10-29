@@ -1418,12 +1418,12 @@ impl Chat {
         *self.suggestion.borrow_mut() = text;
     }
 
-    /// Sends `text` as if typed and sent (with any images attached).
     /// Sends `text` as the Compact button does: never through the input (test hook).
     pub fn submit_direct(&self, text: &str) {
         self.call(&self.on_submit, (text.to_owned(), Vec::new()));
     }
 
+    /// Sends `text` as if typed and sent (with any images attached).
     pub fn send_text(self: &Rc<Self>, text: &str) {
         self.input.buffer().set_text(text);
         self.submit();
