@@ -3,7 +3,7 @@
 //! files in a side editor, and a scratch terminal is one key away.
 
 mod about;
-mod acp;
+mod provider;
 mod agent;
 mod app;
 mod chat;

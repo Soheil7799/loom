@@ -11,7 +11,7 @@ use std::time::Duration;
 use gtk::{gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
-use crate::acp::Conn;
+use crate::provider::Conn;
 
 /// A conversation Claude Code kept.
 #[derive(Clone, Debug)]
@@ -41,7 +41,7 @@ pub fn list(done: impl FnOnce(Result<Vec<Past>, String>) + 'static) -> Option<st
     };
     let on_exit = finish.clone();
     let conn = match Conn::spawn(&glib::home_dir(), move |incoming| {
-        if let crate::acp::Incoming::Exited = incoming {
+        if let crate::provider::Incoming::Exited = incoming {
             on_exit(Err("the agent program stopped".to_owned()));
         }
     }) {
@@ -90,7 +90,7 @@ pub fn delete(session: String, done: impl FnOnce(Result<(), String>) + 'static) 
     };
     let on_exit = finish.clone();
     let conn = match Conn::spawn(&glib::home_dir(), move |incoming| {
-        if let crate::acp::Incoming::Exited = incoming {
+        if let crate::provider::Incoming::Exited = incoming {
             on_exit(Err("the agent program stopped".to_owned()));
         }
     }) {

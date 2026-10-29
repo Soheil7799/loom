@@ -44,8 +44,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     tagline.add_css_class("dim");
     tagline.set_margin_top(12);
     body.append(&tagline);
-    let adapter = crate::acp::adapter_version().unwrap_or_else(|| "—".into());
-    let versions = gtk::Label::builder().label(format!("loom {} · adapter {adapter}", env!("CARGO_PKG_VERSION"))).selectable(true).build();
+    let versions = gtk::Label::builder().label(format!("loom {} · {}", env!("CARGO_PKG_VERSION"), crate::provider::describe())).selectable(true).build();
     for class in ["mono", "small", "dim"] {
         versions.add_css_class(class);
     }

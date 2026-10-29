@@ -94,9 +94,8 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     });
     list.select_row(list.row_at_index(0).as_ref());
     nav.append(&list);
-    let version = crate::acp::adapter_version().unwrap_or_else(|| "—".into());
     // The versions, and About behind them.
-    let foot_label = gtk::Label::builder().label(format!("loom {} · adapter {version}", env!("CARGO_PKG_VERSION"))).xalign(0.0).build();
+    let foot_label = gtk::Label::builder().label(format!("loom {} · {}", env!("CARGO_PKG_VERSION"), crate::provider::describe())).xalign(0.0).build();
     foot_label.add_css_class("mono");
     let foot = gtk::Button::builder().child(&foot_label).tooltip_text("About Loom").build();
     foot.add_css_class("flat");
@@ -615,17 +614,17 @@ fn advanced(s: &Settings) -> gtk::Box {
     content.append(&other);
 
     let program = section("Agent program");
-    let entry = gtk::Entry::builder().text(&s.adapter).placeholder_text(crate::acp::default_adapter().join(" ")).build();
+    let entry = gtk::Entry::builder().text(&s.adapter).placeholder_text("empty: Claude Code itself").build();
     entry.add_css_class("mono");
     entry.connect_changed(|e| {
         let text = e.text().trim().to_owned();
         settings::update(|s| s.adapter = text);
     });
-    let version = crate::acp::adapter_version().unwrap_or_else(|| "not found".to_owned());
+    let example = crate::provider::default_adapter().join(" ");
     row_stacked(
         &program,
-        "Command",
-        &format!("The ACP adapter each agent runs; empty uses the one loom installed (claude-agent-acp {version}). For agents started from now on."),
+        "ACP adapter",
+        &format!("Empty: agents run Claude Code itself. An ACP adapter's command here runs them through it instead ({example}, or another ACP agent). For agents started from now on."),
         &entry,
     );
     content.append(&program);

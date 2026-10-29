@@ -16,7 +16,7 @@ use gtk::prelude::*;
 use gtk::{gio, glib};
 use serde_json::{Value, json};
 
-use crate::acp::{self, Conn, Incoming};
+use crate::provider::{self, Conn, Incoming};
 use crate::chat::{Chat, PermissionCard};
 use crate::files::Mark;
 use crate::jobs::Tray;
@@ -621,7 +621,7 @@ impl Agent {
                 let text = if !self.cwd.is_dir() {
                     format!("Could not start: this agent's folder no longer exists ({}). Its conversation is kept; resume it from the project page in a folder that exists.", self.cwd.display())
                 } else {
-                    format!("Could not start Claude Code ({}): {err}", acp::adapter_command().join(" "))
+                    format!("Could not start Claude Code ({}): {err}", provider::adapter_command().join(" "))
                 };
                 if self.cwd.is_dir() {
                     self.offer_retry(&text);
@@ -1430,7 +1430,7 @@ impl Agent {
     }
 
     /// Ctrl+Enter: what waits goes into the running turn now (or as the next prompt).
-    fn send_waiting_now(self: &Rc<Self>) {
+    pub(crate) fn send_waiting_now(self: &Rc<Self>) {
         crate::log::debug!(format!("agent {}", self.id), "send now (Ctrl+Enter): {} waiting", self.waiting.borrow().len());
         let Some((text, images)) = self.take_waiting() else { return };
         // Nothing to say (a command output already went with an earlier message).
