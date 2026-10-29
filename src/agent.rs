@@ -1924,9 +1924,23 @@ impl Agent {
     /// Stops one of its workflows (its card's Stop): Claude is asked to stop just that task
     /// (its TaskStop tool; its result marks the card). Claude Code's interrupt is no way: it
     /// ends every workflow when it stops a turn, and none when there is no turn.
-    fn stop_workflow(self: &Rc<Self>, run: &crate::workflow::Run) {
+    fn stop_workflow(self: &Rc<Self>, run: &Rc<crate::workflow::Run>) {
         crate::log::debug!(format!("agent {}", self.id), "stop workflow {}", run.task);
         self.submit_with(format!("Stop the background workflow {} (task {}) with TaskStop. Nothing else.", run.name, run.task), Vec::new());
+        // Once nothing of that request is left (its turn over, or taken back) and the workflow
+        // still runs, Stop is offered again.
+        let (weak, card) = (Rc::downgrade(self), Rc::downgrade(run));
+        glib::timeout_add_local(Duration::from_secs(2), move || {
+            let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) else { return glib::ControlFlow::Break };
+            if run.done.get() {
+                return glib::ControlFlow::Break;
+            }
+            if agent.turn.get() || !agent.queue.borrow().is_empty() || !agent.waiting.borrow().is_empty() {
+                return glib::ControlFlow::Continue;
+            }
+            run.stop_unanswered();
+            glib::ControlFlow::Break
+        });
     }
 
     /// Claude Code's interrupt (Esc during a turn) ends every workflow running in the

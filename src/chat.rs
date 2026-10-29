@@ -549,21 +549,23 @@ impl Chat {
             on_answer: RefCell::default(),
         });
         chat.wire();
-        // /compact sent; whatever was being typed is kept.
+        // /compact sent on its own: what is being typed, and images attached, stay for the next
+        // message. Only between turns (the button is not shown during one).
         let weak = Rc::downgrade(&chat);
         compact.connect_clicked(move |_| {
             let Some(chat) = weak.upgrade() else { return };
-            let buffer = chat.input.buffer();
-            let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
-            chat.send_text("/compact");
-            buffer.set_text(&typed);
+            if chat.working_since.get().is_some() {
+                return;
+            }
             chat.compact.set_visible(false);
+            chat.call(&chat.on_submit, ("/compact".to_owned(), Vec::new()));
         });
         let weak = Rc::downgrade(&chat);
-        crate::settings::on_change(move |_| {
-            if let Some(chat) = weak.upgrade() {
-                chat.show_compact();
-            }
+        // Until the chat goes (a viewer's goes once it is closed).
+        crate::settings::on_change_while(move |_| {
+            let Some(chat) = weak.upgrade() else { return false };
+            chat.show_compact();
+            true
         });
         let weak = Rc::downgrade(&chat);
         send.connect_clicked(move |_| {
@@ -1715,6 +1717,7 @@ impl Chat {
     /// A turn runs (Some: since when) or not: the composer says so, and send becomes stop.
     pub fn set_working(self: &Rc<Self>, since: Option<std::time::Instant>) {
         let was = self.working_since.replace(since);
+        self.show_compact();
         self.send.set_label(if since.is_some() { "■" } else { "↑" });
         self.send.set_tooltip_text(Some(if since.is_some() { "Stop (Esc)" } else { "Send (Enter)" }));
         if since.is_some() {
@@ -1801,7 +1804,7 @@ impl Chat {
             _ => 0.0,
         };
         let percent = (share * 100.0).round() as u64;
-        let show = s.compact_alert && percent >= s.compact_at;
+        let show = s.compact_alert && percent >= s.compact_at && self.working_since.get().is_none();
         if show {
             self.compact.set_tooltip_text(Some(&format!("The context is {percent}% full: summarise the conversation so far to make room (/compact)")));
         }

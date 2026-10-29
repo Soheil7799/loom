@@ -182,6 +182,10 @@ pub struct Run {
     members: RefCell<Vec<Member>>,
     /// How much of the journal is read.
     read: Cell<u64>,
+    /// Its output file, once found (it is there, empty, from the launch on).
+    output: RefCell<Option<PathBuf>>,
+    /// What the strip was last told: (done, all, over).
+    told: Cell<(usize, usize, bool)>,
     /// The members the list shows (it is filled again only when they change).
     shown: RefCell<Vec<Member>>,
     pub done: Cell<bool>,
@@ -247,6 +251,8 @@ impl Run {
             list: list.clone(),
             members: RefCell::default(),
             read: Cell::new(0),
+            output: RefCell::default(),
+            told: Cell::new((0, 0, false)),
             shown: RefCell::default(),
             done: Cell::new(false),
             live,
@@ -316,7 +322,10 @@ impl Run {
         }
         // Over once its output is written whole (the file is there, empty, from its launch on;
         // one stopped stays so: that is told by the stop, see stopped_task).
-        let output = find_output(&temporary(), &self.dir, &self.task).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        if self.output.borrow().is_none() {
+            *self.output.borrow_mut() = find_output(&temporary(), &self.dir, &self.task);
+        }
+        let output = self.output.borrow().as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
         if let Some(output) = output {
             self.done.set(true);
             self.status.set_label("done");
@@ -355,8 +364,20 @@ impl Run {
         if self.agents.is_expanded() {
             self.fill_list();
         }
-        if let Some(changed) = self.on_changed.borrow().clone() {
+        // The strip is told only of a change.
+        if self.told.replace((done, all, self.done.get())) != (done, all, self.done.get())
+            && let Some(changed) = self.on_changed.borrow().clone()
+        {
             changed();
+        }
+    }
+
+    /// Its Stop was asked for and nothing stopped it (the request was taken back, or Claude
+    /// did not stop it): Stop can be pressed again.
+    pub fn stop_unanswered(&self) {
+        if !self.done.get() {
+            self.stop.set_sensitive(true);
+            self.stop.set_label("Stop");
         }
     }
 

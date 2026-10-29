@@ -203,7 +203,7 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
         *held = Some(crate::notes::Index::new(vault));
     }
     let Some(index) = held.as_mut() else { return report };
-    for chunk in chunks(entries) {
+    for chunk in pieces(session, entries) {
         // A piece is done topic by topic: a check that stopped halfway (a call failed, the
         // day's limit) does the topics it had not done, and only those, the next time.
         let id = format!("{session}@{}-{}", chunk[0].offset, chunk.last().map_or(0, |e| e.end));
@@ -219,15 +219,20 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
             return report;
         }
         let excerpt = excerpt(chunk);
-        let resumed = crate::journal::todo(session, &id);
-        let routed = match resumed.map(Ok).unwrap_or_else(|| route(&topics, &excerpt)) {
-            Ok(routed) => routed,
-            Err(why) => {
-                report.failed = Some(why);
-                return report;
+        // A resumed piece is routed already (no call).
+        let routed = match crate::journal::todo(session, &id) {
+            Some(routed) => routed,
+            None => {
+                report.calls += 1;
+                match route(&topics, &excerpt) {
+                    Ok(routed) => routed,
+                    Err(why) => {
+                        report.failed = Some(why);
+                        return report;
+                    }
+                }
             }
         };
-        report.calls += 1;
         report.routed.extend(routed.iter().map(|(name, _)| name.split([':', '(']).next().unwrap_or(name).trim().to_owned()));
         // "Work", or as the model sometimes writes it, "Work: job" / "Work (decisions)".
         let routed: Vec<(&Topic, String)> = routed
@@ -353,6 +358,22 @@ pub fn fix(vault: &Path, done: &Proposal, comment: &str) -> Report {
 }
 
 /// The entries in pieces of about `CHUNK` characters (a message is never split).
+/// The pieces to read: a piece a check stopped halfway in comes first, as it was then (more
+/// said since is a piece of its own), so it is resumed rather than read again differently.
+fn pieces<'a>(session: &str, entries: &'a [Entry]) -> Vec<&'a [Entry]> {
+    if let Some(first) = entries.first()
+        && let Some(end) = crate::journal::routed_end(session, &format!("{session}@{}-", first.offset))
+    {
+        let upto = entries.iter().position(|e| e.end > end).unwrap_or(entries.len());
+        if upto > 0 {
+            let mut out = vec![&entries[..upto]];
+            out.extend(chunks(&entries[upto..]));
+            return out;
+        }
+    }
+    chunks(entries)
+}
+
 fn chunks(entries: &[Entry]) -> Vec<&[Entry]> {
     let mut out = Vec::new();
     let (mut start, mut size) = (0, 0);

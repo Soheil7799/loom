@@ -1040,7 +1040,7 @@ impl App {
             act("Move this project down", "", |a| a.move_project(1)),
             act("Restart this agent", "", |a| {
                 if let Some(agent) = a.focused_agent() {
-                    agent.restart();
+                    a.unless_stopping(&agent, "Restart", "The conversation goes on after it.", |_, agent| agent.restart());
                 }
             }),
             act("Stop the turn", "Esc", |a| {
@@ -2000,14 +2000,22 @@ impl App {
     }
 
     fn close_agent(self: &Rc<Self>, agent: &Rc<Agent>) {
-        if !agent.is_busy() {
-            self.remove_agent(agent);
+        self.unless_stopping(agent, "Close", "The conversation itself is kept: Ctrl+Shift+T reopens it.", |app, agent| app.remove_agent(agent));
+    }
+
+    /// Does `then` at once, or after asking if it would stop what `agent` is doing: a turn, or a
+    /// workflow it launched (one runs on after the turn, and dies with the agent's process).
+    fn unless_stopping(self: &Rc<Self>, agent: &Rc<Agent>, action: &str, kept: &str, then: impl FnOnce(&Rc<App>, &Rc<Agent>) + 'static) {
+        let (busy, workflow) = (agent.is_busy(), agent.workflow_running());
+        if !busy && !workflow {
+            then(self, agent);
             return;
         }
+        let (message, stops) = if busy { ("is working", "what it is doing") } else { ("has a workflow running", "its workflow") };
         let dialog = gtk::AlertDialog::builder()
-            .message(format!("“{}” is working", agent.title()))
-            .detail("Closing stops what it is doing. The conversation itself is kept: Ctrl+Shift+T reopens it.")
-            .buttons(["Keep it", "Close"])
+            .message(format!("“{}” {message}", agent.title()))
+            .detail(format!("{action} stops {stops}. {kept}"))
+            .buttons(["Keep it", action])
             .cancel_button(0)
             .default_button(0)
             .build();
@@ -2015,7 +2023,7 @@ impl App {
         let agent = agent.clone();
         dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |choice| {
             if let (Some(app), Ok(1)) = (weak.upgrade(), choice) {
-                app.remove_agent(&agent);
+                then(&app, &agent);
             }
         });
     }
@@ -2086,7 +2094,7 @@ impl App {
     /// Takes a project out of the sidebar, closing its agents (asks first if any is busy).
     fn remove_project(self: &Rc<Self>, path: &Path) {
         let agents: Vec<Rc<Agent>> = self.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
-        let busy = agents.iter().filter(|a| a.is_busy()).count();
+        let busy = agents.iter().filter(|a| a.is_busy() || a.workflow_running()).count();
         let path = path.to_owned();
         let weak = Rc::downgrade(self);
         let go = move || {
@@ -2115,7 +2123,7 @@ impl App {
         }
         let dialog = gtk::AlertDialog::builder()
             .message("Remove this project?")
-            .detail(format!("{busy} of its agents {} working; removing stops them. Conversations are kept.", if busy == 1 { "is" } else { "are" }))
+            .detail(format!("{busy} of its agents {} working (a turn, or a workflow running on); removing stops them. Conversations are kept.", if busy == 1 { "is" } else { "are" }))
             .buttons(["Keep it", "Remove"])
             .cancel_button(0)
             .default_button(0)
@@ -2490,18 +2498,29 @@ impl App {
                 if path.is_dir() {
                     return Err(format!("{} is a folder", path.display()));
                 }
-                // A file to fill in may not exist yet (.env): made empty, in a folder that is.
-                if !path.exists() {
+                if self.files.requesting() {
+                    return Err("the user is filling in another file for an agent; ask again when that is done".into());
+                }
+                // A file to fill in may not exist yet (.env): made empty, in a folder that is,
+                // readable by the user only (it is for secrets).
+                let made = !path.exists();
+                if made {
                     if !path.parent().is_some_and(Path::is_dir) {
                         return Err(format!("the folder of {} does not exist", path.display()));
                     }
-                    std::fs::write(&path, "").map_err(|e| format!("{}: {e}", path.display()))?;
+                    use std::os::unix::fs::OpenOptionsExt;
+                    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
                 }
                 let id = self.next_edit.get();
                 self.next_edit.set(id + 1);
                 let asked = params["message"].as_str().filter(|m| !m.trim().is_empty()).unwrap_or("Fill this file in, save it, then press Done.");
                 let focus = GtkWindowExt::focus(&self.window);
-                self.files.request_edit(u64::from(id), &path, &format!("{} is waiting: {asked}", agent.title()))?;
+                if let Err(err) = self.files.request_edit(u64::from(id), &path, &format!("{} is waiting: {asked}", agent.title())) {
+                    if made {
+                        let _ = std::fs::remove_file(&path);
+                    }
+                    return Err(err);
+                }
                 if let Some(widget) = focus {
                     widget.grab_focus();
                 }
@@ -2691,11 +2710,13 @@ impl App {
             .item("Open its folder in the file manager", move || crate::menu::launch(&list, &cwd))
             .item("Copy its folder's path", move || crate::menu::copy(&list2, &cwd2.to_string_lossy()))
             .section()
-            .item("Suspend (free its memory)", with(|_, agent| {
-                agent.suspend();
+            .item("Suspend (free its memory)", with(|app, agent| {
+                app.unless_stopping(agent, "Suspend", "The conversation goes on when it is opened again.", |_, agent| {
+                    agent.suspend();
+                });
             }))
             .enabled(!suspended && !agent.is_busy())
-            .item("Restart", with(|_, agent| agent.restart()))
+            .item("Restart", with(|app, agent| app.unless_stopping(agent, "Restart", "The conversation goes on after it.", |_, agent| agent.restart())))
             .item("Close", with(|app, agent| app.close_agent(agent)))
             .hint("Ctrl+W")
             .danger()

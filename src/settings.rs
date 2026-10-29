@@ -107,7 +107,8 @@ impl Default for Settings {
 thread_local! {
     static CURRENT: RefCell<Option<Settings>> = const { RefCell::new(None) };
     static FILE: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
-    static LISTENERS: RefCell<Vec<Rc<dyn Fn(&Settings)>>> = const { RefCell::new(Vec::new()) };
+    /// Told of each change; one that answers false is done listening.
+    static LISTENERS: RefCell<Vec<Rc<dyn Fn(&Settings) -> bool>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Reads the settings for `app_id` (a test instance keeps its own file).
@@ -164,12 +165,21 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
         }
     }
     let listeners = LISTENERS.with(|l| l.borrow().clone());
-    for listener in listeners {
-        listener(&settings);
+    let done: Vec<_> = listeners.into_iter().filter(|listener| !listener(&settings)).collect();
+    if !done.is_empty() {
+        LISTENERS.with(|l| l.borrow_mut().retain(|kept| !done.iter().any(|d| Rc::ptr_eq(d, kept))));
     }
 }
 
 pub fn on_change(f: impl Fn(&Settings) + 'static) {
+    on_change_while(move |s| {
+        f(s);
+        true
+    });
+}
+
+/// Told of each change for as long as `f` answers true (one for something that can go).
+pub fn on_change_while(f: impl Fn(&Settings) -> bool + 'static) {
     LISTENERS.with(|l| l.borrow_mut().push(Rc::new(f)));
 }
 

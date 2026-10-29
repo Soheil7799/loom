@@ -783,6 +783,11 @@ impl Files {
     /// An agent waits for the user to fill `path` in: opened with a bar saying what is asked,
     /// Done and Cancel. Err if another agent already waits for the user, or the file can't
     /// be opened.
+    /// The user is filling in a file for an agent now.
+    pub fn requesting(&self) -> bool {
+        self.request.borrow().is_some()
+    }
+
     pub fn request_edit(&self, id: u64, path: &Path, text: &str) -> Result<(), String> {
         if self.request.borrow().is_some() {
             return Err("the user is filling in another file for an agent; ask again when that is done".into());

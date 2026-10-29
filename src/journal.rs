@@ -188,6 +188,12 @@ pub fn set_todo(session: &str, id: &str, topics: &[(String, String)]) {
     add_done_line(session, &format!("{id}/routed"));
 }
 
+/// Where the piece starting with `start` (its id up to "-") ended when it was routed, if a
+/// check routed it.
+pub fn routed_end(session: &str, start: &str) -> Option<u64> {
+    done_lines(session).into_iter().rev().find_map(|l| l.strip_prefix(start)?.split_once("/topics ")?.0.parse().ok())
+}
+
 /// The topics a piece was routed to, if it was: (topic, about).
 pub fn todo(session: &str, id: &str) -> Option<Vec<(String, String)>> {
     let prefix = format!("{id}/topics ");

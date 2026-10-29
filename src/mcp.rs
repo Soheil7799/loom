@@ -273,6 +273,8 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
     let id = asked["id"].as_u64().ok_or("loom did not open the file")?;
     let path = asked["path"].as_str().unwrap_or("").to_owned();
     let secret = args["secret"].as_bool().unwrap_or(true);
+    // The key names the agent put there itself (the template): the only names said back.
+    let template = std::fs::read_to_string(&path).unwrap_or_default();
     loop {
         if cancelled.load(Ordering::Relaxed) {
             let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
@@ -285,7 +287,7 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
                 let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
                 return Ok(if secret {
-                    format!("The user filled in {path} and pressed Done. {} Don't read the file or print its values: use it as it is.", keys_set(&text))
+                    format!("The user filled in {path} and pressed Done. {} Don't read the file or print its values: use it as it is.", keys_set(&template, &text))
                 } else {
                     format!("The user edited {path} and pressed Done; read it to go on.")
                 });
@@ -299,27 +301,50 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
     }
 }
 
-/// Which `KEY=value` lines of a file have a value, without the values: what an agent may know
-/// of a file of secrets.
-fn keys_set(text: &str) -> String {
-    let mut set = Vec::new();
-    let mut empty = Vec::new();
-    for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
-        let line = line.strip_prefix("export ").unwrap_or(line);
-        let Some((key, value)) = line.split_once(['=', ':']) else { continue };
-        let key = key.trim();
-        if key.is_empty() || key.contains(char::is_whitespace) {
-            continue;
+/// A file's `KEY=value` (or `key: value`) lines: (key, has a value).
+fn key_lines(text: &str) -> Vec<(String, bool)> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .filter_map(|line| {
+            let line = line.strip_prefix("export ").unwrap_or(line);
+            let (key, value) = line.split_once(['=', ':'])?;
+            let key = key.trim();
+            let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
+            (!key.is_empty() && !key.contains(char::is_whitespace)).then(|| (key.to_owned(), !value.is_empty()))
+        })
+        .collect()
+}
+
+/// Which keys of a file of secrets have a value, without the values: what an agent may know
+/// of it. Only keys that were in the file when it was asked for (`template`) are named:
+/// anything else the user typed (a bare token, "name:password") could be a secret itself.
+fn keys_set(template: &str, text: &str) -> String {
+    let known: Vec<String> = key_lines(template).into_iter().map(|(key, _)| key).collect();
+    let (mut set, mut empty, mut other) = (Vec::new(), Vec::new(), 0);
+    for (key, has_value) in key_lines(text) {
+        match (known.contains(&key), has_value) {
+            (true, true) => set.push(key),
+            (true, false) => empty.push(key),
+            (false, _) => other += 1,
         }
-        let value = value.trim().trim_matches(|c| c == '"' || c == '\'');
-        if value.is_empty() { empty.push(key.to_owned()) } else { set.push(key.to_owned()) }
     }
-    match (set.is_empty(), empty.is_empty()) {
-        (true, true) => format!("It has {} non-empty lines (no KEY=value lines to report).", text.lines().filter(|l| !l.trim().is_empty()).count()),
-        (false, true) => format!("Set: {}.", set.join(", ")),
-        (true, false) => format!("Still empty: {}.", empty.join(", ")),
-        (false, false) => format!("Set: {}. Still empty: {}.", set.join(", "), empty.join(", ")),
+    let lines = text.lines().filter(|l| !l.trim().is_empty() && !l.trim().starts_with('#')).count();
+    let other = other.max(lines.saturating_sub(set.len() + empty.len()));
+    let mut said = Vec::new();
+    if !set.is_empty() {
+        said.push(format!("Set: {}.", set.join(", ")));
     }
+    if !empty.is_empty() {
+        said.push(format!("Still empty: {}.", empty.join(", ")));
+    }
+    if other > 0 {
+        said.push(format!("{other} other non-empty lines (not named: they may be secrets themselves)."));
+    }
+    if said.is_empty() {
+        said.push("It is empty.".to_owned());
+    }
+    said.join(" ")
 }
 
 fn describe_job(job: Value) -> String {
@@ -338,10 +363,11 @@ fn describe_job(job: Value) -> String {
 mod tests {
     #[test]
     fn only_key_names_come_back() {
-        let text = "# comment\nOPENAI_API_KEY=sk-secret\nexport DB_PASSWORD=\"hunter2\"\nEMPTY=\nPORT: 8080\n";
-        let said = super::keys_set(text);
-        assert_eq!(said, "Set: OPENAI_API_KEY, DB_PASSWORD, PORT. Still empty: EMPTY.");
-        assert!(!said.contains("sk-secret") && !said.contains("hunter2"));
+        let template = "OPENAI_API_KEY=\nDB_PASSWORD=\nEMPTY=\nPORT: 8080\n";
+        let text = "# comment\nOPENAI_API_KEY=sk-secret\nexport DB_PASSWORD=\"hunter2\"\nEMPTY=\nPORT: 8080\nc2stcHJvai1hYmMxMjM=\nuser:hunter3\n";
+        let said = super::keys_set(template, text);
+        assert_eq!(said, "Set: OPENAI_API_KEY, DB_PASSWORD, PORT. Still empty: EMPTY. 2 other non-empty lines (not named: they may be secrets themselves).");
+        assert!(!said.contains("sk-secret") && !said.contains("hunter") && !said.contains("c2st"));
     }
 }
 

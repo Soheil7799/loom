@@ -1242,30 +1242,43 @@ impl Hub {
             self.refresh();
             return;
         };
-        let entry = history().into_iter().find(|v| v["id"].as_u64() == Some(id) && v["kind"].as_str() == Some("written") && v["undone"].is_null() && v["after"].is_string());
-        let Some((v, proposal)) = entry.and_then(|v| scribe::proposal_from(&v).map(|p| (v, p))) else {
-            self.say("Not undone: what this change did is not in the history.", true);
-            self.refresh();
-            return;
-        };
-        let done = scribe::Written { before: v["before"].as_str().map(str::to_owned), after: v["after"].as_str().unwrap_or("").to_owned() };
-        let what = format!("{}: {}", proposal.topic, if proposal.reason.is_empty() { proposal.change.summary() } else { proposal.reason.clone() });
-        match scribe::undo(&vault, proposal.change.note(), &done, &what) {
-            Ok(()) => {
-                log_line(&json!({ "undo": id, "at": crate::state::now() }));
-                self.offer_teaching(&v, done.before.clone());
-                let mut store = self.store.borrow_mut();
-                store.recent.retain(|r| r["id"].as_u64() != Some(id));
-                store.save();
-                drop(store);
-                self.say(&format!("Undone: {}. Tell Scribe why in the Notes panel, and it keeps it as a rule.", proposal.change.note()), false);
+        // The history read and the note put back (a commit) off the main thread.
+        self.running.set(true);
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let undone = gio::spawn_blocking(move || {
+                let entry = history().into_iter().find(|v| v["id"].as_u64() == Some(id) && v["kind"].as_str() == Some("written") && v["undone"].is_null() && v["after"].is_string());
+                let Some((v, proposal)) = entry.and_then(|v| scribe::proposal_from(&v).map(|p| (v, p))) else {
+                    return Err("Not undone: what this change did is not in the history.".to_owned());
+                };
+                let done = scribe::Written { before: v["before"].as_str().map(str::to_owned), after: v["after"].as_str().unwrap_or("").to_owned() };
+                let what = format!("{}: {}", proposal.topic, if proposal.reason.is_empty() { proposal.change.summary() } else { proposal.reason.clone() });
+                let note = proposal.change.note().to_owned();
+                scribe::undo(&vault, &note, &done, &what).map_err(|why| format!("Not undone ({note}): {why}"))?;
+                Ok((v, note, done.before))
+            })
+            .await
+            .unwrap_or_else(|_| Err("Undoing it stopped unexpectedly.".to_owned()));
+            let Some(hub) = weak.upgrade() else { return };
+            hub.running.set(false);
+            match undone {
+                Ok((v, note, before)) => {
+                    log_line(&json!({ "undo": id, "at": crate::state::now() }));
+                    hub.offer_teaching(&v, before);
+                    let mut store = hub.store.borrow_mut();
+                    store.recent.retain(|r| r["id"].as_u64() != Some(id));
+                    store.save();
+                    drop(store);
+                    hub.say(&format!("Undone: {note}. Tell Scribe why in the Notes panel, and it keeps it as a rule."), false);
+                }
+                Err(why) => hub.say(&why, true),
             }
-            Err(why) => self.say(&format!("Not undone ({}): {why}", proposal.change.note()), true),
-        }
-        self.refresh();
-        if self.page.is_mapped() {
-            self.fill_page();
-        }
+            hub.refresh();
+            if hub.page.is_mapped() {
+                hub.fill_page();
+            }
+            hub.run_next();
+        });
     }
 
     /// Said in the panel and on the history page (there for a few seconds; an error until
@@ -1394,33 +1407,49 @@ impl Hub {
             let before = scribe::proposal_from(&p).and_then(|q| std::fs::read_to_string(vault.join(q.change.note())).ok());
             self.offer_teaching(&p, before);
         }
-        if write {
-            let Some(proposal) = scribe::proposal_from(&p) else { return };
-            match scribe::approve(&vault, &proposal) {
+        // A change that no longer reads is dropped (and that is kept).
+        let proposal = if write { scribe::proposal_from(&p) } else { None };
+        let Some(proposal) = proposal else {
+            self.store.borrow().save();
+            self.refresh();
+            return;
+        };
+        // Written (a commit) off the main thread.
+        self.running.set(true);
+        self.status.set_label(&format!("Writing {}…", proposal.change.note()));
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let note = proposal.change.note().to_owned();
+            let written = gio::spawn_blocking(move || scribe::approve(&vault, &proposal)).await.unwrap_or_else(|_| Err("it stopped unexpectedly".to_owned()));
+            let Some(hub) = weak.upgrade() else { return };
+            hub.running.set(false);
+            match written {
                 Ok(done) => {
-                    let mut p = p.clone();
+                    let mut p = p;
                     // Written now: its time is the writing's.
                     p["at"] = crate::state::now().into();
                     p["why"] = "".into();
                     log_change(&p, "written", Some(&done));
                     p["undoable"] = true.into();
                     p["unseen"] = true.into();
-                    let mut store = self.store.borrow_mut();
+                    let mut store = hub.store.borrow_mut();
                     store.recent.insert(0, p);
                     store.recent.truncate(RECENT);
-                    self.status.set_label(&format!("Written: {}", proposal.change.note()));
+                    drop(store);
+                    hub.status.set_label(&format!("Written: {note}"));
                 }
                 Err(why) => {
-                    self.status.set_label(&format!("Not written: {why}"));
+                    hub.status.set_label(&format!("Not written: {why}"));
                     let mut p = p;
                     p["why"] = format!("Not written: {why}").into();
                     p["failed"] = true.into();
-                    self.store.borrow_mut().pending.insert(0, p);
+                    hub.store.borrow_mut().pending.insert(0, p);
                 }
             }
-        }
-        self.store.borrow().save();
-        self.refresh();
+            hub.store.borrow().save();
+            hub.refresh();
+            hub.run_next();
+        });
     }
 
     fn drop_question(self: &Rc<Self>, id: u64) {
