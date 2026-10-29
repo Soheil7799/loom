@@ -186,6 +186,8 @@ pub struct Agent {
     shell_stopped: Cell<bool>,
     /// The adapter can resume a session without replaying it.
     can_resume: Cell<bool>,
+    /// The provider tells when a background task ends, and stops one when asked.
+    tasks: Cell<bool>,
     /// Folders beyond `cwd` it may work in.
     dirs: RefCell<Vec<PathBuf>>,
     /// A turn Claude started by itself (a background task ended): since when, and the timer
@@ -265,6 +267,7 @@ impl Agent {
             shell_stopped: Cell::new(false),
             shell_pid: Cell::new(None),
             can_resume: Cell::new(false),
+            tasks: Cell::new(false),
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
             quiet_timer: RefCell::default(),
@@ -639,6 +642,7 @@ impl Agent {
             match result {
                 Ok(result) => {
                     agent.can_resume.set(!result["agentCapabilities"]["sessionCapabilities"]["resume"].is_null());
+                    agent.tasks.set(result["agentCapabilities"]["_meta"]["loom"]["tasks"].as_bool() == Some(true));
                     agent.open_session();
                 }
                 Err(err) => agent.fail(&format!("The agent did not start: {}", message(&err))),
@@ -1544,7 +1548,10 @@ impl Agent {
         }
         if let (Some(conn), Some(session)) = (conn, self.session_id.borrow().clone()) {
             conn.notify("session/cancel", json!({ "sessionId": session }));
-            self.workflows_ended_by_cancel();
+            // A provider that tells tasks' ends says which the interrupt ended.
+            if !self.tasks.get() {
+                self.workflows_ended_by_cancel();
+            }
         }
         self.refresh_status();
     }
@@ -1904,6 +1911,20 @@ impl Agent {
     /// ends every workflow when it stops a turn, and none when there is no turn.
     fn stop_workflow(self: &Rc<Self>, run: &Rc<crate::workflow::Run>) {
         crate::log::debug!(format!("agent {}", self.id), "stop workflow {}", run.task);
+        // The provider stops it itself (no turn of Claude's): its end comes as a task_update.
+        if self.tasks.get()
+            && let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id())
+        {
+            let (weak, card) = (Rc::downgrade(self), Rc::downgrade(run));
+            conn.request("_session/stop_task", json!({ "sessionId": session, "taskId": run.task }), move |result| {
+                let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) else { return };
+                if let Err(err) = result {
+                    agent.chat.notice(&format!("Could not stop the workflow {}: {}", run.name, message(&err)), "error");
+                    run.stop_unanswered();
+                }
+            });
+            return;
+        }
         self.submit_with(format!("Stop the background workflow {} (task {}) with TaskStop. Nothing else.", run.name, run.task), Vec::new());
         // Once nothing of that request is left (its turn over, or taken back) and the workflow
         // still runs, Stop is offered again.
@@ -2169,6 +2190,15 @@ impl Agent {
                 }
             }
             "config_option_update" => self.set_config(&update["configOptions"]),
+            // A background task ended (done, failed, stopped): a workflow's card says so.
+            "task_update" => {
+                let task = update["taskId"].as_str().unwrap_or("");
+                let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| w.task == task && !w.done.get()).cloned().collect();
+                let output = update["outputFile"].as_str().filter(|f| !f.is_empty()).map(PathBuf::from);
+                for run in ended {
+                    run.ended(update["status"].as_str().unwrap_or("completed"), output.clone());
+                }
+            }
             // The provider goes on in a new conversation (a plan carried out in a fresh
             // context): reopened later, that one is read back.
             "session_replaced" => {

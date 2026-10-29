@@ -498,6 +498,7 @@ button.workflow-stop { min-height: 0; padding: 1px 10px; font-size: 0.85em; }
 label.workflow-status { font-size: 0.85em; padding: 1px 8px; border-radius: 999px; background: alpha(@accent_color, 0.16); color: @accent_color; }
 label.workflow-status.done { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.7); }
 label.workflow-status.stopped { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.5); }
+label.workflow-status.failed { background: alpha(@loom_err, 0.12); color: @loom_err; }
 .workflow-progress { font-variant-numeric: tabular-nums; }
 list.workflow-agents { background: transparent; }
 list.workflow-agents row { padding: 3px 4px; border-radius: 6px; }

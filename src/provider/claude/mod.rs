@@ -129,6 +129,8 @@ pub struct Link {
     limit: RefCell<Value>,
     /// A new conversation, not named yet: its first prompt names it.
     untitled: Cell<bool>,
+    /// Background tasks running: their kind (local_workflow, local_agent, local_bash…).
+    task_types: RefCell<HashMap<String, String>>,
     /// The task list (TaskCreate / TaskUpdate) as plan entries: (task id, entry).
     tasks: RefCell<Vec<(String, Value)>>,
 }
@@ -201,6 +203,7 @@ impl Link {
             limit: RefCell::new(Value::Null),
             untitled: Cell::new(false),
             tasks: RefCell::default(),
+            task_types: RefCell::default(),
         }))
     }
 
@@ -276,7 +279,10 @@ impl Link {
                 "agentCapabilities": {
                     "loadSession": true,
                     "promptCapabilities": { "image": true, "embeddedContext": true },
-                    "sessionCapabilities": { "resume": {}, "list": {}, "fork": {}, "close": {} }
+                    "sessionCapabilities": { "resume": {}, "list": {}, "fork": {}, "close": {} },
+                    // Background tasks: their ends are told (task_update), and one is stopped
+                    // by _session/stop_task.
+                    "_meta": { "loom": { "tasks": true } }
                 },
                 "agentInfo": { "name": "claude-code", "version": known_version() }
             }))),
@@ -317,6 +323,10 @@ impl Link {
                     let result = gio::spawn_blocking(move || transcripts::fork(&session, at.as_deref())).await.unwrap_or_else(|_| Err("fork failed".to_owned()));
                     reply(result.map(|id| json!({ "sessionId": id })).map_err(|e| error(&e)));
                 });
+            }
+            "_session/stop_task" => {
+                let task = params["taskId"].as_str().unwrap_or("").to_owned();
+                self.control(json!({ "subtype": "stop_task", "task_id": task }), move |result| reply(result.map(|_| json!({}))));
             }
             "session/close" => reply(Ok(json!({}))),
             "session/list" => {
@@ -818,6 +828,9 @@ impl Link {
             }
             "task_started" => {
                 let (task, tool) = (message["task_id"].as_str(), message["tool_use_id"].as_str());
+                if let Some(task) = task {
+                    self.task_types.borrow_mut().insert(task.to_owned(), message["task_type"].as_str().unwrap_or("").to_owned());
+                }
                 if let (Some(task), Some(tool)) = (task, tool)
                     && let Some(sub) = self.subs.borrow_mut().iter_mut().find(|s| s.key == tool)
                 {
@@ -836,6 +849,12 @@ impl Link {
             "task_notification" => {
                 let task = message["task_id"].as_str();
                 let tool = message["tool_use_id"].as_str();
+                // Any background task's end, for loom (a workflow's card follows it).
+                let kind = task.and_then(|t| self.task_types.borrow_mut().remove(t)).unwrap_or_default();
+                self.send(None, json!({
+                    "sessionUpdate": "task_update", "taskId": task, "toolCallId": tool, "taskType": kind,
+                    "status": message["status"], "outputFile": message["output_file"], "summary": message["summary"],
+                }));
                 let key = self.subs.borrow().iter().find(|s| s.task.as_deref() == task || tool == Some(s.key.as_str())).map(|s| s.key.clone());
                 let Some(key) = key else { return };
                 let status = message["status"].as_str().unwrap_or("completed");

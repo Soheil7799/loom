@@ -381,6 +381,31 @@ impl Run {
         }
     }
 
+    /// Its end, as the provider tells it: done (its output in `output`), failed, or stopped.
+    pub fn ended(&self, status: &str, output: Option<PathBuf>) {
+        if self.done.get() {
+            return;
+        }
+        match status {
+            "completed" => {
+                if output.is_some() {
+                    *self.output.borrow_mut() = output;
+                }
+                self.poll();
+            }
+            "failed" => {
+                self.done.set(true);
+                self.status.set_label("failed");
+                self.status.add_css_class("failed");
+                self.stop.set_visible(false);
+                if let Some(changed) = self.on_changed.borrow().clone() {
+                    changed();
+                }
+            }
+            _ => self.stopped(),
+        }
+    }
+
     /// Stopped from loom: over, whatever its files say later.
     pub fn stopped(&self) {
         self.done.set(true);
