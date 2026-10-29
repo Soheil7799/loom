@@ -133,8 +133,6 @@ pub struct Link {
     parts: RefCell<Value>,
     /// A new conversation, not named yet: its first prompt names it.
     untitled: Cell<bool>,
-    /// Background tasks running: their kind (local_workflow, local_agent, local_bash…).
-    task_types: RefCell<HashMap<String, String>>,
     /// Background tasks running: the tool call that started each.
     task_calls: RefCell<HashMap<String, String>>,
     /// The task list (TaskCreate / TaskUpdate) as plan entries: (task id, entry).
@@ -211,7 +209,6 @@ impl Link {
             turn_message: RefCell::default(),
             untitled: Cell::new(false),
             tasks: RefCell::default(),
-            task_types: RefCell::default(),
             task_calls: RefCell::default(),
         }))
     }
@@ -246,6 +243,7 @@ impl Link {
             fail();
         }
         self.asks.borrow_mut().clear();
+        self.task_calls.borrow_mut().clear();
         self.busy.set(false);
         self.skip.set(0);
     }
@@ -339,6 +337,11 @@ impl Link {
             "_session/rewind_files" => {
                 let request = json!({ "subtype": "rewind_files", "user_message_id": params["userMessageId"], "dry_run": params["dryRun"].as_bool() == Some(true) });
                 self.control(request, reply);
+            }
+            // Claude Code's next-message suggestions on or off, in a session that runs.
+            "_session/suggestions" => {
+                let on = params["enabled"].as_bool().unwrap_or(true);
+                self.control(json!({ "subtype": "apply_flag_settings", "settings": { "promptSuggestionEnabled": on } }), move |result| reply(result.map(|_| json!({}))));
             }
             "_session/stop_task" => {
                 let task = params["taskId"].as_str().unwrap_or("").to_owned();
@@ -621,7 +624,7 @@ impl Link {
         }
         let old = self.prompt.borrow_mut().replace(reply);
         if let Some(old) = old {
-            old(Ok(json!({ "stopReason": "cancelled" })));
+            old(Ok(json!({ "stopReason": "cancelled", "_meta": self.turn_meta() })));
         }
         let message = self.write_user(&params["prompt"]);
         *self.turn_message.borrow_mut() = Some(message);
@@ -661,29 +664,39 @@ impl Link {
         let prompt = self.prompt.borrow_mut().take();
         let Some(reply) = prompt else { return };
         let text = message["result"].as_str().unwrap_or("").to_owned();
+        // The message the turn started from: its file changes can be undone to it.
+        let meta = self.turn_meta();
+        let failed = |text: &str| {
+            let mut err = error(text);
+            err["_meta"] = meta.clone();
+            err
+        };
         let cancelled = self.cancelled.replace(false);
         if cancelled {
-            return reply(Ok(json!({ "stopReason": "cancelled" })));
+            return reply(Ok(json!({ "stopReason": "cancelled", "_meta": meta })));
         }
         match message["subtype"].as_str() {
-            Some("success") if message["is_error"].as_bool() == Some(true) => reply(Err(error(if text.is_empty() { "Claude Code reported an error" } else { &text }))),
+            Some("success") if message["is_error"].as_bool() == Some(true) => reply(Err(failed(if text.is_empty() { "Claude Code reported an error" } else { &text }))),
             Some("success") => {
                 let reason = match message["stop_reason"].as_str() {
                     Some("max_tokens") => "max_tokens",
                     Some("refusal") => "refusal",
                     _ => "end_turn",
                 };
-                // The message the turn started from: its file changes can be undone to it.
-                let message = self.turn_message.borrow_mut().take();
-                reply(Ok(json!({ "stopReason": reason, "_meta": { "loom": { "userMessageId": message } } })));
+                reply(Ok(json!({ "stopReason": reason, "_meta": meta })));
             }
-            Some("error_max_turns") => reply(Ok(json!({ "stopReason": "max_turn_requests" }))),
+            Some("error_max_turns") => reply(Ok(json!({ "stopReason": "max_turn_requests", "_meta": meta }))),
             _ => {
                 let errors: Vec<&str> = message["errors"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
                 let text = if !errors.is_empty() { errors.join("; ") } else if !text.is_empty() { text } else { "the turn failed".to_owned() };
-                reply(Err(error(&text)));
+                reply(Err(failed(&text)));
             }
         }
+    }
+
+    /// The `_meta` a turn's end carries: the message it started from (taken: told once).
+    fn turn_meta(&self) -> Value {
+        json!({ "loom": { "userMessageId": self.turn_message.borrow_mut().take() } })
     }
 
     /// How full the context is, as Claude Code counts it (the model's own window).
@@ -889,7 +902,6 @@ impl Link {
             "task_started" => {
                 let (task, tool) = (message["task_id"].as_str(), message["tool_use_id"].as_str());
                 if let Some(task) = task {
-                    self.task_types.borrow_mut().insert(task.to_owned(), message["task_type"].as_str().unwrap_or("").to_owned());
                     self.task_calls.borrow_mut().insert(task.to_owned(), tool.unwrap_or("").to_owned());
                 }
                 if let (Some(task), Some(tool)) = (task, tool)
@@ -911,14 +923,10 @@ impl Link {
                 let task = message["task_id"].as_str();
                 let tool = message["tool_use_id"].as_str();
                 // Any background task's end, for loom (a workflow's card follows it).
-                let kind = task.and_then(|t| self.task_types.borrow_mut().remove(t)).unwrap_or_default();
                 if let Some(task) = task {
                     self.task_calls.borrow_mut().remove(task);
                 }
-                self.send(None, json!({
-                    "sessionUpdate": "task_update", "taskId": task, "toolCallId": tool, "taskType": kind,
-                    "status": message["status"], "outputFile": message["output_file"], "summary": message["summary"],
-                }));
+                self.send(None, json!({ "sessionUpdate": "task_update", "taskId": task, "status": message["status"], "outputFile": message["output_file"] }));
                 let key = self.subs.borrow().iter().find(|s| s.task.as_deref() == task || tool == Some(s.key.as_str())).map(|s| s.key.clone());
                 let Some(key) = key else { return };
                 let status = message["status"].as_str().unwrap_or("completed");

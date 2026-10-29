@@ -67,6 +67,8 @@ pub struct App {
     /// The project being renamed (None: the focused agent).
     renaming: RefCell<Option<PathBuf>>,
     quitting: Cell<bool>,
+    /// Next-message suggestions were on (agents are told when that changes).
+    suggestions: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
     prefix: Cell<bool>,
     prefix_hint: gtk::Label,
@@ -397,6 +399,7 @@ impl App {
             rename_entry,
             renaming: RefCell::default(),
             quitting: Cell::new(false),
+            suggestions: Cell::new(settings::get().suggest_prompts),
             bot: crate::telegram::Bot::new(),
             prefix: Cell::new(false),
             prefix_hint,
@@ -630,9 +633,13 @@ impl App {
             (s.text_scale * 100.0).round() / 100.0
         ));
         let mic = crate::stt::configured();
+        let suggestions = s.suggest_prompts != self.suggestions.replace(s.suggest_prompts);
         for agent in self.agents.borrow().iter() {
             agent.set_show_thinking(s.show_thinking);
             agent.chat.set_mic_visible(mic);
+            if suggestions {
+                agent.set_suggestions(s.suggest_prompts);
+            }
         }
         crate::theme::refont(&s.terminal_font);
     }
@@ -2011,12 +2018,12 @@ impl App {
     /// Does `then` at once, or after asking if it would stop what `agent` is doing: a turn, or a
     /// workflow it launched (one runs on after the turn, and dies with the agent's process).
     fn unless_stopping(self: &Rc<Self>, agent: &Rc<Agent>, action: &str, kept: &str, then: impl FnOnce(&Rc<App>, &Rc<Agent>) + 'static) {
-        let (busy, workflow) = (agent.is_busy(), agent.workflow_running());
+        let (busy, workflow) = (agent.is_busy(), agent.background_running());
         if !busy && !workflow {
             then(self, agent);
             return;
         }
-        let (message, stops) = if busy { ("is working", "what it is doing") } else { ("has a workflow running", "its workflow") };
+        let (message, stops) = if busy { ("is working", "what it is doing") } else { ("has work running in the background", "that work") };
         let dialog = gtk::AlertDialog::builder()
             .message(format!("“{}” {message}", agent.title()))
             .detail(format!("{action} stops {stops}. {kept}"))
@@ -2099,7 +2106,7 @@ impl App {
     /// Takes a project out of the sidebar, closing its agents (asks first if any is busy).
     fn remove_project(self: &Rc<Self>, path: &Path) {
         let agents: Vec<Rc<Agent>> = self.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
-        let busy = agents.iter().filter(|a| a.is_busy() || a.workflow_running()).count();
+        let busy = agents.iter().filter(|a| a.is_busy() || a.background_running()).count();
         let path = path.to_owned();
         let weak = Rc::downgrade(self);
         let go = move || {
@@ -2354,7 +2361,7 @@ impl App {
         for agent in agents {
             let in_view = agent.focused.get() || self.is_pinned(&agent);
             // A workflow it launched still runs: suspending it would stop the workflow.
-            if agent.status() == Status::Idle && !in_view && !agent.awake.get() && !agent.workflow_running() && agent.last_active.get().elapsed() > limit {
+            if agent.status() == Status::Idle && !in_view && !agent.awake.get() && !agent.background_running() && agent.last_active.get().elapsed() > limit {
                 // A draft in its input: something is still being said to it, nothing changes.
                 // A command's output waiting for the next message would go in front of /compact.
                 if s.rest_compact && agent.chat.context_used() >= s.rest_compact_tokens && agent.chat.draft().trim().is_empty() && !agent.has_pending() {
@@ -2393,7 +2400,7 @@ impl App {
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let busy: Vec<String> =
-            self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.workflow_running()).map(|a| a.title()).collect();
+            self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
         let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
         let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {

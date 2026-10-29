@@ -190,8 +190,10 @@ pub struct Agent {
     tasks: Cell<bool>,
     /// The running turn changed files (its footer offers to undo them).
     wrote: Cell<bool>,
-    /// Commands running in the background, shown in the strip: key → (what it does, since).
-    commands: RefCell<HashMap<String, (String, Instant)>>,
+    /// Its subagents' edit calls not finished yet.
+    sub_edits: RefCell<std::collections::HashSet<String>>,
+    /// Commands running in the background, shown in the strip: key → since when.
+    commands: RefCell<HashMap<String, Instant>>,
     /// Folders beyond `cwd` it may work in.
     dirs: RefCell<Vec<PathBuf>>,
     /// A turn Claude started by itself (a background task ended): since when, and the timer
@@ -274,6 +276,7 @@ impl Agent {
             tasks: Cell::new(false),
             commands: RefCell::default(),
             wrote: Cell::new(false),
+            sub_edits: RefCell::default(),
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
             quiet_timer: RefCell::default(),
@@ -1492,7 +1495,10 @@ impl Agent {
                 agent.last_active.set(Instant::now());
                 // Files it changed can be undone back to its message (a provider that keeps
                 // file checkpoints says which).
-                let undo = result.as_ref().ok().and_then(|r| r["_meta"]["loom"]["userMessageId"].as_str().map(str::to_owned)).filter(|_| agent.wrote.get());
+                let undo = match &result {
+                    Ok(r) | Err(r) => r["_meta"]["loom"]["userMessageId"].as_str().map(str::to_owned),
+                }
+                .filter(|_| agent.wrote.get());
                 match result {
                     Ok(result) => {
                         agent.last_cancelled.set(result["stopReason"].as_str() == Some("cancelled"));
@@ -1972,19 +1978,19 @@ impl Agent {
 
     /// Undoes Claude's file changes made from `message` on (that turn's and later ones'), once
     /// the user has seen what would change. The conversation stays as it is.
-    pub fn undo_files(self: &Rc<Self>, message: String) {
-        if self.turn.get() {
+    pub fn undo_files(self: &Rc<Self>, message_id: String) {
+        if self.turn.get() || self.autonomous.get().is_some() {
             self.chat.notice("File changes can be undone once this turn is over.", "dim");
             return;
         }
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
         let weak = Rc::downgrade(self);
-        conn.request("_session/rewind_files", json!({ "sessionId": session, "userMessageId": message, "dryRun": true }), move |result| {
+        conn.request("_session/rewind_files", json!({ "sessionId": session, "userMessageId": message_id, "dryRun": true }), move |result| {
             let Some(agent) = weak.upgrade() else { return };
             let preview = match result {
                 Ok(preview) if preview["canRewind"].as_bool() == Some(true) => preview,
                 Ok(preview) => return agent.chat.notice(&format!("Can't undo these changes: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
-                Err(err) => return agent.chat.notice(&format!("Can't undo these changes: {}", message_of(&err)), "error"),
+                Err(err) => return agent.chat.notice(&format!("Can't undo these changes: {}", message(&err)), "error"),
             };
             let files: Vec<String> = preview["filesChanged"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_owned)).collect();
             if files.is_empty() {
@@ -1997,30 +2003,45 @@ impl Agent {
             };
             let (plus, minus) = (preview["insertions"].as_u64().unwrap_or(0), preview["deletions"].as_u64().unwrap_or(0));
             let text = format!("Undo the changes to {what} (+{plus} −{minus}) Claude made from this message on? The conversation stays as it is.");
-            let (weak, message) = (Rc::downgrade(&agent), message.clone());
+            let (weak, message_id) = (Rc::downgrade(&agent), message_id.clone());
             agent.chat.notice_choice(&text, "Undo", Rc::new(move || {
                 if let Some(agent) = weak.upgrade() {
-                    agent.rewind_files(message.clone(), files.len());
+                    agent.rewind_files(message_id.clone());
                 }
             }));
         });
     }
 
-    fn rewind_files(self: &Rc<Self>, message: String, count: usize) {
+    fn rewind_files(self: &Rc<Self>, message_id: String) {
+        // Claude went back to work since it asked: not under its edits.
+        if self.turn.get() || self.autonomous.get().is_some() {
+            self.chat.notice("Not undone: Claude is working. Undo once this turn is over.", "dim");
+            return;
+        }
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
         let weak = Rc::downgrade(self);
-        conn.request("_session/rewind_files", json!({ "sessionId": session, "userMessageId": message }), move |result| {
+        conn.request("_session/rewind_files", json!({ "sessionId": session, "userMessageId": message_id }), move |result| {
             let Some(agent) = weak.upgrade() else { return };
             match result {
                 Ok(done) if done["canRewind"].as_bool() == Some(true) => {
-                    let files = if count == 1 { "1 file is".to_owned() } else { format!("{count} files are") };
-                    agent.chat.notice(&format!("Undone: {files} back as they were at that message."), "dim");
+                    agent.chat.notice("Undone: the files are back as they were at that message.", "dim");
                     agent.repo_changed();
                 }
                 Ok(done) => agent.chat.notice(&format!("Could not undo: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
-                Err(err) => agent.chat.notice(&format!("Could not undo: {}", message_of(&err)), "error"),
+                Err(err) => agent.chat.notice(&format!("Could not undo: {}", message(&err)), "error"),
             }
         });
+    }
+
+    /// Claude Code's next-message suggestions switched on or off (Settings), for the session
+    /// that runs (a new one is opened with the setting as it is).
+    pub fn set_suggestions(&self, on: bool) {
+        if let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) {
+            conn.request("_session/suggestions", json!({ "sessionId": session, "enabled": on }), |_| {});
+        }
+        if !on {
+            self.chat.set_suggestion(None);
+        }
     }
 
     /// Ctrl+B D: what runs in the foreground (a command, a subagent) goes on in the background,
@@ -2041,6 +2062,12 @@ impl Agent {
     /// One of its workflows still runs (its agent must not be suspended meanwhile).
     pub fn workflow_running(&self) -> bool {
         self.workflows.borrow().iter().any(|w| !w.done.get())
+    }
+
+    /// Work of its own runs in the background (a workflow, a command): suspending or closing
+    /// it would stop that.
+    pub fn background_running(&self) -> bool {
+        self.workflow_running() || !self.commands.borrow().is_empty()
     }
 
     /// The strip under the conversation: what its running workflows are at.
@@ -2119,6 +2146,7 @@ impl Agent {
     /// No subagents (the conversation is read back, or cleared): their views go too.
     fn forget_subs(&self) {
         self.subs.borrow_mut().clear();
+        self.commands.borrow_mut().clear();
         self.chat.crew_clear();
         self.chat.show_main();
     }
@@ -2193,6 +2221,16 @@ impl Agent {
             "agent_thought_chunk" => sub.chat.thought(text),
             "tool_call" | "tool_call_update" => {
                 sub.chat.tool(update);
+                // Its edits are the turn's too (they are undone with it): an edit call that
+                // completes.
+                if let Some(call) = update["toolCallId"].as_str().filter(|_| !self.replaying.get()) {
+                    if update["kind"] == "edit" {
+                        self.sub_edits.borrow_mut().insert(call.to_owned());
+                    }
+                    if update["status"] == "completed" && self.sub_edits.borrow_mut().remove(call) {
+                        self.wrote.set(true);
+                    }
+                }
                 if let Some(title) = update["title"].as_str() {
                     *sub.step.borrow_mut() = crate::chat::tool_title(title);
                 }
@@ -2288,13 +2326,19 @@ impl Agent {
                     .filter(|t| t["taskType"] == "local_bash")
                     .filter_map(|t| Some((format!("task:{}:{}", t["taskId"].as_str()?, t["toolCallId"].as_str().unwrap_or("")), t["description"].as_str().unwrap_or("command").to_owned())))
                     .collect();
+                // A workflow no longer running there, its end never told (an interrupt): over.
+                let running: Vec<&str> = update["tasks"].as_array().into_iter().flatten().filter_map(|t| t["taskId"].as_str()).collect();
+                let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done.get() && !running.contains(&w.task.as_str())).cloned().collect();
+                for run in ended {
+                    run.stopped();
+                }
                 let gone: Vec<String> = self.commands.borrow().keys().filter(|k| !live.iter().any(|(l, _)| l == *k)).cloned().collect();
                 for key in gone {
                     self.commands.borrow_mut().remove(&key);
                     self.chat.crew_remove(&key);
                 }
                 for (key, name) in live {
-                    let started = self.commands.borrow_mut().entry(key.clone()).or_insert_with(|| (name.clone(), Instant::now())).1;
+                    let started = *self.commands.borrow_mut().entry(key.clone()).or_insert_with(Instant::now);
                     self.chat.crew_set(crate::chat::Crew { key, name, step: "command".to_owned(), at: Instant::now(), started, state: Some("running".to_owned()), ended: None, guessed: false });
                 }
                 self.emit(Event::Changed);
@@ -2339,10 +2383,8 @@ impl Agent {
                 self.chat.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
                 self.chat.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
                 let context = &update["_meta"]["loom/context"];
-                if !context.is_null() {
-                    let parts = context["parts"].as_array().into_iter().flatten().filter_map(|p| Some((p["name"].as_str()?.to_owned(), p["tokens"].as_u64()?))).collect();
-                    self.chat.set_context_parts(parts, context["autoCompactAt"].as_u64());
-                }
+                let parts = context["parts"].as_array().into_iter().flatten().filter_map(|p| Some((p["name"].as_str()?.to_owned(), p["tokens"].as_u64()?))).collect();
+                self.chat.set_context_parts(parts, context["autoCompactAt"].as_u64());
             }
             _ => {}
         }
@@ -2479,10 +2521,5 @@ fn own_program() -> Option<PathBuf> {
 }
 
 fn message(error: &Value) -> String {
-    message_of(error)
-}
-
-/// An error's message (a name the undo code can use where `message` is a variable).
-fn message_of(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
 }
