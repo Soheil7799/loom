@@ -53,6 +53,8 @@ pub struct Chat {
     /// What the usage popover shows of this conversation: (used, size) tokens, its cost, the
     /// account limit the agent last reported.
     spent: RefCell<(Option<(u64, u64)>, Option<String>, Option<String>)>,
+    /// What fills the context (name, tokens), biggest first, and where it compacts by itself.
+    context_parts: RefCell<(Vec<(String, u64)>, Option<u64>)>,
     usage_body: gtk::Box,
     /// Sent messages, newest last (Up/Down in the input), where Up has got to, and what
     /// was typed before.
@@ -504,6 +506,7 @@ impl Chat {
             spend,
             version_note,
             spent: RefCell::default(),
+            context_parts: RefCell::default(),
             usage_body: usage_body.clone(),
             history: RefCell::default(),
             history_at: Cell::new(None),
@@ -1240,6 +1243,13 @@ impl Chat {
             Some((used, _)) => body.append(&usage_note(&format!("Context: {} tokens", k(used)))),
             None => body.append(&usage_note("Context: not reported yet")),
         }
+        let (parts, compacts_at) = self.context_parts.borrow().clone();
+        if !parts.is_empty() {
+            body.append(&usage_parts(&parts, &k));
+        }
+        if let Some(at) = compacts_at {
+            body.append(&usage_note(&format!("Compacts by itself at {} tokens.", k(at))));
+        }
         if let Some(cost) = cost {
             body.append(&usage_note(&format!("Cost: {cost}")));
         }
@@ -1803,6 +1813,11 @@ impl Chat {
             }
             None => false,
         });
+    }
+
+    /// What fills the context, for the usage popover.
+    pub fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {
+        *self.context_parts.borrow_mut() = (parts, compacts_at);
     }
 
     pub fn set_usage(&self, used: u64, size: u64) {
@@ -3458,6 +3473,24 @@ fn usage_heading(text: &str) -> gtk::Label {
     let label = gtk::Label::builder().label(text.to_uppercase()).xalign(0.0).build();
     label.add_css_class("usage-heading");
     label
+}
+
+/// What fills the context: a name and its tokens a line.
+fn usage_parts(parts: &[(String, u64)], k: &dyn Fn(u64) -> String) -> gtk::Grid {
+    let grid = gtk::Grid::builder().column_spacing(16).row_spacing(2).build();
+    grid.add_css_class("context-parts");
+    for (row, (name, tokens)) in parts.iter().enumerate() {
+        let name = gtk::Label::builder().label(name).xalign(0.0).hexpand(true).build();
+        let amount = gtk::Label::builder().label(k(*tokens)).xalign(1.0).build();
+        for label in [&name, &amount] {
+            label.add_css_class("dim");
+            label.add_css_class("small");
+        }
+        amount.add_css_class("numeric");
+        grid.attach(&name, 0, row as i32, 1, 1);
+        grid.attach(&amount, 1, row as i32, 1, 1);
+    }
+    grid
 }
 
 fn usage_note(text: &str) -> gtk::Label {

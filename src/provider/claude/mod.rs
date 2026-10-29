@@ -127,6 +127,8 @@ pub struct Link {
     skip: Cell<u32>,
     cost: Cell<Option<f64>>,
     limit: RefCell<Value>,
+    /// What fills the context, as Claude Code last counted it.
+    parts: RefCell<Value>,
     /// A new conversation, not named yet: its first prompt names it.
     untitled: Cell<bool>,
     /// Background tasks running: their kind (local_workflow, local_agent, local_bash…).
@@ -201,6 +203,7 @@ impl Link {
             skip: Cell::new(0),
             cost: Cell::new(None),
             limit: RefCell::new(Value::Null),
+            parts: RefCell::new(Value::Null),
             untitled: Cell::new(false),
             tasks: RefCell::default(),
             task_types: RefCell::default(),
@@ -541,6 +544,7 @@ impl Link {
         self.tools.borrow_mut().clear();
         self.tasks.borrow_mut().clear();
         self.used.set(0);
+        *self.parts.borrow_mut() = Value::Null;
         let mut params = self.params.borrow().clone();
         params["_meta"]["claudeCode"]["options"]["permissionMode"] = mode.into();
         let me = self.me.clone();
@@ -663,6 +667,17 @@ impl Link {
             if let (Some(used), Some(size)) = (context["totalTokens"].as_u64(), context["maxTokens"].as_u64()) {
                 link.used.set(used);
                 link.size.set(size);
+                // What fills it (what is loaded: not deferred tools, the buffer or free space).
+                let mut parts: Vec<Value> = context["categories"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|c| c["kind"] == "used" && c["tokens"].as_u64().is_some_and(|t| t > 0))
+                    .map(|c| json!({ "name": c["name"], "tokens": c["tokens"] }))
+                    .collect();
+                parts.sort_by_key(|p| std::cmp::Reverse(p["tokens"].as_u64().unwrap_or(0)));
+                let compacts = (context["isAutoCompactEnabled"].as_bool() == Some(true)).then(|| context["autoCompactThreshold"].clone());
+                *link.parts.borrow_mut() = json!({ "parts": parts, "autoCompactAt": compacts });
                 link.usage();
             }
         });
@@ -675,7 +690,10 @@ impl Link {
             update["cost"] = json!({ "amount": cost, "currency": "USD" });
         }
         if !self.limit.borrow().is_null() {
-            update["_meta"] = json!({ "_claude/rateLimit": self.limit.borrow().clone() });
+            update["_meta"]["_claude/rateLimit"] = self.limit.borrow().clone();
+        }
+        if !self.parts.borrow().is_null() {
+            update["_meta"]["loom/context"] = self.parts.borrow().clone();
         }
         self.send(None, update);
     }

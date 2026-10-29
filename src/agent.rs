@@ -2229,6 +2229,11 @@ impl Agent {
             "usage_update" => {
                 self.chat.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
                 self.chat.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
+                let context = &update["_meta"]["loom/context"];
+                if !context.is_null() {
+                    let parts = context["parts"].as_array().into_iter().flatten().filter_map(|p| Some((p["name"].as_str()?.to_owned(), p["tokens"].as_u64()?))).collect();
+                    self.chat.set_context_parts(parts, context["autoCompactAt"].as_u64());
+                }
             }
             _ => {}
         }
