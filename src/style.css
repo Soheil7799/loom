@@ -107,6 +107,9 @@ button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
 .notice.error { color: @loom_err; opacity: 1; font-style: normal; }
 box.notice.error { padding: 10px 14px; border-radius: 10px; border: 1px solid alpha(@loom_err, 0.45); background: alpha(@loom_err, 0.07); }
 box.notice.error label { font-style: normal; color: @window_fg_color; }
+/* A question with one way on (Undo file changes?): like an error card, without the alarm. */
+box.notice.choice { padding: 10px 14px; border-radius: 10px; border: 1px solid alpha(@window_fg_color, 0.14); background: alpha(@window_fg_color, 0.04); }
+box.notice.choice label { font-style: normal; color: @window_fg_color; }
 .starting-note { padding: 40px 0; opacity: 0.68; }
 .code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 10px; font-size: 0.9em; }
 .md-table { border-radius: 8px; border: 1px solid @loom_line; }
@@ -135,6 +138,11 @@ button.suggested { background: alpha(@accent_color, 0.85); color: @accent_fg_col
 .plan .done { opacity: 0.5; }
 .plan .current { font-weight: 700; }
 .turn-footer { font-size: 0.8em; opacity: 0.6; margin: -4px 0 4px 2px; }
+/* A footer with its Undo file changes beside it. */
+.turn-footer-line { margin: -4px 0 4px 2px; }
+.turn-footer-line .turn-footer { margin: 0; }
+button.undo-files { min-height: 0; padding: 0 8px; font-size: 0.8em; opacity: 0.7; }
+button.undo-files:hover { opacity: 1; }
 button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
 .msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.8em; opacity: 0; border-radius: 6px; }
 .code-wrap button.copy { margin: 4px; background: alpha(@window_bg_color, 0.8); }

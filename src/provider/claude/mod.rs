@@ -127,6 +127,8 @@ pub struct Link {
     skip: Cell<u32>,
     cost: Cell<Option<f64>>,
     limit: RefCell<Value>,
+    /// The message the running turn started from.
+    turn_message: RefCell<Option<String>>,
     /// What fills the context, as Claude Code last counted it.
     parts: RefCell<Value>,
     /// A new conversation, not named yet: its first prompt names it.
@@ -206,6 +208,7 @@ impl Link {
             cost: Cell::new(None),
             limit: RefCell::new(Value::Null),
             parts: RefCell::new(Value::Null),
+            turn_message: RefCell::default(),
             untitled: Cell::new(false),
             tasks: RefCell::default(),
             task_types: RefCell::default(),
@@ -305,7 +308,7 @@ impl Link {
             "session/prompt" => self.prompt(&params, reply),
             "_session/steering" => {
                 if self.prompt.borrow().is_some() {
-                    self.write_user(&params["prompt"]);
+                    let _ = self.write_user(&params["prompt"]);
                     reply(Ok(json!({ "outcome": "steered" })));
                 } else {
                     reply(Ok(json!({ "outcome": "promptRequired" })));
@@ -332,6 +335,11 @@ impl Link {
             }
             // What runs in the foreground (commands, subagents) goes on in the background.
             "_session/background" => self.control(json!({ "subtype": "background_tasks" }), move |result| reply(result.map(|_| json!({})))),
+            // Files as they were at a message (Claude's edits since then undone); dryRun: what would change.
+            "_session/rewind_files" => {
+                let request = json!({ "subtype": "rewind_files", "user_message_id": params["userMessageId"], "dry_run": params["dryRun"].as_bool() == Some(true) });
+                self.control(request, reply);
+            }
             "_session/stop_task" => {
                 let task = params["taskId"].as_str().unwrap_or("").to_owned();
                 self.control(json!({ "subtype": "stop_task", "task_id": task }), move |result| reply(result.map(|_| json!({}))));
@@ -468,7 +476,9 @@ impl Link {
         self.generation.set(generation);
         *self.params.borrow_mut() = params.clone();
         let me = self.me.clone();
-        let process = match Process::spawn(&program, &self.cwd, "claude", move |line| {
+        // File checkpoints (to undo Claude's edits back to a message), as the Agent SDK has them.
+        let env = [("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true"), ("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")];
+        let process = match Process::spawn(&program, &self.cwd, &env, "claude", move |line| {
             if let Some(link) = me.upgrade().filter(|l| l.generation.get() == generation) {
                 match line {
                     Some(message) => link.handle(message),
@@ -566,7 +576,8 @@ impl Link {
                     *link.mode.borrow_mut() = mode.to_owned();
                     link.send(None, json!({ "sessionUpdate": "current_mode_update", "currentModeId": mode }));
                     link.send(None, json!({ "sessionUpdate": "config_option_update", "configOptions": answer["configOptions"] }));
-                    link.write_user(&json!([{ "type": "text", "text": format!("Implement the following plan:\n\n{plan}") }]));
+                    let message = link.write_user(&json!([{ "type": "text", "text": format!("Implement the following plan:\n\n{plan}") }]));
+                    *link.turn_message.borrow_mut() = Some(message);
                 }
                 Err(err) => {
                     let prompt = link.prompt.borrow_mut().take();
@@ -580,8 +591,8 @@ impl Link {
 
     // ---- prompts --------------------------------------------------------------------------
 
-    /// ACP prompt blocks as a user message.
-    fn write_user(&self, prompt: &Value) {
+    /// ACP prompt blocks as a user message; its id (what its file checkpoint is under).
+    fn write_user(&self, prompt: &Value) -> String {
         let content: Vec<Value> = prompt
             .as_array()
             .into_iter()
@@ -593,7 +604,9 @@ impl Link {
                 _ => None,
             })
             .collect();
-        self.write(&json!({ "type": "user", "message": { "role": "user", "content": content }, "parent_tool_use_id": null, "session_id": self.session_id() }));
+        let id = glib::uuid_string_random().to_string();
+        self.write(&json!({ "type": "user", "uuid": id, "message": { "role": "user", "content": content }, "parent_tool_use_id": null, "session_id": self.session_id() }));
+        id
     }
 
     fn prompt(&self, params: &Value, reply: Reply) {
@@ -610,7 +623,8 @@ impl Link {
         if let Some(old) = old {
             old(Ok(json!({ "stopReason": "cancelled" })));
         }
-        self.write_user(&params["prompt"]);
+        let message = self.write_user(&params["prompt"]);
+        *self.turn_message.borrow_mut() = Some(message);
         // A new conversation is named after its first prompt (Claude Code's own title).
         if self.untitled.replace(false) {
             let text: String = params["prompt"].as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n");
@@ -659,7 +673,9 @@ impl Link {
                     Some("refusal") => "refusal",
                     _ => "end_turn",
                 };
-                reply(Ok(json!({ "stopReason": reason })));
+                // The message the turn started from: its file changes can be undone to it.
+                let message = self.turn_message.borrow_mut().take();
+                reply(Ok(json!({ "stopReason": reason, "_meta": { "loom": { "userMessageId": message } } })));
             }
             Some("error_max_turns") => reply(Ok(json!({ "stopReason": "max_turn_requests" }))),
             _ => {

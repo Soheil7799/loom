@@ -188,6 +188,8 @@ pub struct Agent {
     can_resume: Cell<bool>,
     /// The provider tells when a background task ends, and stops one when asked.
     tasks: Cell<bool>,
+    /// The running turn changed files (its footer offers to undo them).
+    wrote: Cell<bool>,
     /// Commands running in the background, shown in the strip: key → (what it does, since).
     commands: RefCell<HashMap<String, (String, Instant)>>,
     /// Folders beyond `cwd` it may work in.
@@ -271,6 +273,7 @@ impl Agent {
             can_resume: Cell::new(false),
             tasks: Cell::new(false),
             commands: RefCell::default(),
+            wrote: Cell::new(false),
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
             quiet_timer: RefCell::default(),
@@ -1461,6 +1464,7 @@ impl Agent {
         let prompt = self.prompt_blocks(&text, &images);
         self.context.borrow_mut().clear();
         self.reply.borrow_mut().clear();
+        self.wrote.set(false);
         // Compacting before resting is loom's doing, not the conversation's.
         let quiet = self.resting.get();
         if !quiet {
@@ -1486,6 +1490,9 @@ impl Agent {
                     return;
                 }
                 agent.last_active.set(Instant::now());
+                // Files it changed can be undone back to its message (a provider that keeps
+                // file checkpoints says which).
+                let undo = result.as_ref().ok().and_then(|r| r["_meta"]["loom"]["userMessageId"].as_str().map(str::to_owned)).filter(|_| agent.wrote.get());
                 match result {
                     Ok(result) => {
                         agent.last_cancelled.set(result["stopReason"].as_str() == Some("cancelled"));
@@ -1513,6 +1520,14 @@ impl Agent {
                     return;
                 }
                 agent.chat.turn_done(started.elapsed().as_secs());
+                if let Some(message) = undo {
+                    let weak = Rc::downgrade(&agent);
+                    agent.chat.turn_undo(Rc::new(move || {
+                        if let Some(agent) = weak.upgrade() {
+                            agent.undo_files(message.clone());
+                        }
+                    }));
+                }
                 agent.last_turn.set(Instant::now());
                 if !agent.focused.get() {
                     agent.unseen.set(true);
@@ -1955,6 +1970,59 @@ impl Agent {
         running.iter().for_each(|w| w.stopped());
     }
 
+    /// Undoes Claude's file changes made from `message` on (that turn's and later ones'), once
+    /// the user has seen what would change. The conversation stays as it is.
+    pub fn undo_files(self: &Rc<Self>, message: String) {
+        if self.turn.get() {
+            self.chat.notice("File changes can be undone once this turn is over.", "dim");
+            return;
+        }
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
+        let weak = Rc::downgrade(self);
+        conn.request("_session/rewind_files", json!({ "sessionId": session, "userMessageId": message, "dryRun": true }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            let preview = match result {
+                Ok(preview) if preview["canRewind"].as_bool() == Some(true) => preview,
+                Ok(preview) => return agent.chat.notice(&format!("Can't undo these changes: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
+                Err(err) => return agent.chat.notice(&format!("Can't undo these changes: {}", message_of(&err)), "error"),
+            };
+            let files: Vec<String> = preview["filesChanged"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_owned)).collect();
+            if files.is_empty() {
+                agent.chat.notice("Nothing to undo: the files Claude changed from here on are as they were.", "dim");
+                return;
+            }
+            let what = match files.as_slice() {
+                [one] => Path::new(one).file_name().map_or_else(|| one.clone(), |n| n.to_string_lossy().into_owned()),
+                more => format!("{} files", more.len()),
+            };
+            let (plus, minus) = (preview["insertions"].as_u64().unwrap_or(0), preview["deletions"].as_u64().unwrap_or(0));
+            let text = format!("Undo the changes to {what} (+{plus} −{minus}) Claude made from this message on? The conversation stays as it is.");
+            let (weak, message) = (Rc::downgrade(&agent), message.clone());
+            agent.chat.notice_choice(&text, "Undo", Rc::new(move || {
+                if let Some(agent) = weak.upgrade() {
+                    agent.rewind_files(message.clone(), files.len());
+                }
+            }));
+        });
+    }
+
+    fn rewind_files(self: &Rc<Self>, message: String, count: usize) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
+        let weak = Rc::downgrade(self);
+        conn.request("_session/rewind_files", json!({ "sessionId": session, "userMessageId": message }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            match result {
+                Ok(done) if done["canRewind"].as_bool() == Some(true) => {
+                    let files = if count == 1 { "1 file is".to_owned() } else { format!("{count} files are") };
+                    agent.chat.notice(&format!("Undone: {files} back as they were at that message."), "dim");
+                    agent.repo_changed();
+                }
+                Ok(done) => agent.chat.notice(&format!("Could not undo: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
+                Err(err) => agent.chat.notice(&format!("Could not undo: {}", message_of(&err)), "error"),
+            }
+        });
+    }
+
     /// Ctrl+B D: what runs in the foreground (a command, a subagent) goes on in the background,
     /// and the turn goes on.
     pub fn background_now(self: &Rc<Self>) {
@@ -2335,6 +2403,7 @@ impl Agent {
                     }
                     drop(files);
                     if !self.replaying.get() {
+                        self.wrote.set(true);
                         self.emit(Event::Files);
                     }
                 }
@@ -2410,5 +2479,10 @@ fn own_program() -> Option<PathBuf> {
 }
 
 fn message(error: &Value) -> String {
+    message_of(error)
+}
+
+/// An error's message (a name the undo code can use where `message` is a variable).
+fn message_of(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
 }

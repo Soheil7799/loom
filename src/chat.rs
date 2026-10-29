@@ -1804,6 +1804,23 @@ impl Chat {
         *self.last.borrow_mut() = Last::None;
     }
 
+    /// The last turn's footer offers to undo the file changes it made (`undo`).
+    pub fn turn_undo(&self, undo: Rc<dyn Fn()>) {
+        let Some(footer) = self.list.last_child().and_downcast::<gtk::Label>().filter(|l| l.has_css_class("turn-footer")) else { return };
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.add_css_class("turn-footer-line");
+        self.list.remove(&footer);
+        line.append(&footer);
+        let button = gtk::Button::with_label("Undo file changes");
+        button.add_css_class("flat");
+        button.add_css_class("small");
+        button.add_css_class("undo-files");
+        button.set_tooltip_text(Some("Put the files Claude changed from this turn on back as they were (asks first; the conversation stays)"));
+        button.connect_clicked(move |_| undo());
+        line.append(&button);
+        self.list.append(&line);
+    }
+
     pub fn set_show_thinking(&self, show: bool) {
         self.show_thinking.set(show);
         self.thoughts.borrow_mut().retain(|weak| match weak.upgrade() {
@@ -2097,6 +2114,15 @@ impl Chat {
 
     /// A notice with a button that does something about it.
     pub fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
+        self.notice_button(text, button, "error", action);
+    }
+
+    /// A question with one way on (not an error): `button` does it.
+    pub fn notice_choice(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
+        self.notice_button(text, button, "choice", action);
+    }
+
+    fn notice_button(&self, text: &str, button: &str, class: &str, action: Rc<dyn Fn()>) {
         // A retry that failed again replaces its card rather than stacking another.
         if let Some(last) = self.list.last_child()
             && last.has_css_class("notice")
@@ -2106,7 +2132,7 @@ impl Chat {
         }
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         line.add_css_class("notice");
-        line.add_css_class("error");
+        line.add_css_class(class);
         let label = text_label(&glib::markup_escape_text(text));
         label.set_hexpand(true);
         let go = gtk::Button::with_label(button);

@@ -42,7 +42,7 @@ impl Link {
     pub fn spawn(program: &[String], cwd: &Path, on_incoming: Rc<dyn Fn(Incoming)>) -> std::io::Result<Rc<Link>> {
         let slot: Rc<RefCell<std::rc::Weak<Link>>> = Rc::default();
         let reader = slot.clone();
-        let process = Process::spawn(program, cwd, "acp", move |line| {
+        let process = Process::spawn(program, cwd, &[], "acp", move |line| {
             let Some(link) = reader.borrow().upgrade() else { return };
             match line {
                 Some(value) => link.dispatch(value, &*on_incoming),

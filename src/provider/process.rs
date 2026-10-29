@@ -28,8 +28,9 @@ pub fn log_path() -> PathBuf {
 }
 
 impl Process {
-    /// Starts `program` in `cwd`; `on_line` gets each line read (None: the output ended).
-    pub fn spawn(program: &[String], cwd: &Path, name: &str, on_line: impl Fn(Option<Value>) + 'static) -> std::io::Result<Rc<Process>> {
+    /// Starts `program` in `cwd` (with `env` set); `on_line` gets each line read (None: the
+    /// output ended).
+    pub fn spawn(program: &[String], cwd: &Path, env: &[(&str, &str)], name: &str, on_line: impl Fn(Option<Value>) + 'static) -> std::io::Result<Rc<Process>> {
         let log = log_path();
         if let Some(dir) = log.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -44,6 +45,7 @@ impl Process {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(stderr)
+            .envs(env.iter().copied())
             .process_group(0);
         // loom started from a herdr pane: its agents are not in that pane (herdr's hooks would
         // report them there, and CLAUDE.md's herdr rules would apply).
