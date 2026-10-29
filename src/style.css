@@ -494,6 +494,7 @@ button.compact-alert:hover { background: alpha(@loom_warn, 0.22); }
 /* A workflow's card in the conversation (workflow.rs). */
 .workflow-card { padding: 10px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); margin: 4px 0; }
 .workflow-title { font-weight: 700; }
+button.workflow-stop { min-height: 0; padding: 1px 10px; font-size: 0.85em; }
 label.workflow-status { font-size: 0.85em; padding: 1px 8px; border-radius: 999px; background: alpha(@accent_color, 0.16); color: @accent_color; }
 label.workflow-status.done { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.7); }
 label.workflow-status.stopped { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.5); }

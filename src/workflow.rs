@@ -59,6 +59,18 @@ pub fn launch_of(update: &Value) -> Option<Launch> {
     Some(Launch { task: field("Workflow launched in background. Task ID:")?, summary: field("Summary:").unwrap_or_default(), name: named.unwrap_or(run), dir })
 }
 
+/// The workflow task a TaskStop call stopped, if `update` is that call's result: from the
+/// structured response, else from its text (a conversation read back).
+pub fn stopped_task(update: &Value) -> Option<String> {
+    let response = &update["_meta"]["claudeCode"]["toolResponse"];
+    if response["task_type"].as_str() == Some("local_workflow") && response["message"].as_str().is_some_and(|m| m.starts_with("Successfully stopped")) {
+        return response["task_id"].as_str().map(str::to_owned);
+    }
+    let text = update["rawOutput"].as_str()?;
+    let id = text.split("Successfully stopped task: ").nth(1)?.split(|c: char| c.is_whitespace() || c == '"').next()?;
+    (!id.is_empty()).then(|| id.to_owned())
+}
+
 /// "decision-council" from the script's name, else the run's folder name.
 fn name_of(dir: &Path) -> String {
     dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "workflow".to_owned())
@@ -159,9 +171,10 @@ pub struct Run {
     pub tool_id: String,
     pub name: String,
     dir: PathBuf,
-    task: String,
+    pub task: String,
     pub root: gtk::Box,
     status: gtk::Label,
+    stop: gtk::Button,
     progress: gtk::Label,
     finished: gtk::Label,
     agents: gtk::Expander,
@@ -180,6 +193,8 @@ pub struct Run {
     pub on_open: RefCell<Option<Rc<dyn Fn(PathBuf, String)>>>,
     /// Its progress changed (the strip under the conversation says it).
     pub on_changed: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Its Stop pressed.
+    pub on_stop: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl Run {
@@ -192,7 +207,13 @@ impl Run {
         title.add_css_class("workflow-title");
         let status = gtk::Label::new(Some("running"));
         status.add_css_class("workflow-status");
+        let stop = gtk::Button::with_label("Stop");
+        stop.add_css_class("flat");
+        stop.add_css_class("workflow-stop");
+        stop.set_valign(gtk::Align::Center);
+        stop.set_tooltip_text(Some("Stop this workflow (its agents' answers so far stay)"));
         head.append(&title);
+        head.append(&stop);
         head.append(&status);
         root.append(&head);
         if !launch.summary.is_empty() {
@@ -219,6 +240,7 @@ impl Run {
             dir: launch.dir,
             root,
             status,
+            stop: stop.clone(),
             progress,
             finished,
             agents: agents.clone(),
@@ -231,6 +253,17 @@ impl Run {
             alive: Box::new(alive),
             on_open: RefCell::default(),
             on_changed: RefCell::default(),
+            on_stop: RefCell::default(),
+        });
+        let weak = Rc::downgrade(&run);
+        stop.connect_clicked(move |stop| {
+            let Some(run) = weak.upgrade() else { return };
+            let on_stop = run.on_stop.borrow().clone();
+            if let Some(on_stop) = on_stop {
+                stop.set_sensitive(false);
+                stop.set_label("Stopping…");
+                on_stop();
+            }
         });
         // Opening the list fills it (a long one is only made when wanted).
         let weak = Rc::downgrade(&run);
@@ -281,7 +314,8 @@ impl Run {
             read_journal(&String::from_utf8_lossy(&bytes[..end]), &mut self.members.borrow_mut());
             self.read.set(self.read.get() + end as u64);
         }
-        // Over once its output is written whole (one half written does not read yet).
+        // Over once its output is written whole (the file is there, empty, from its launch on;
+        // one stopped stays so: that is told by the stop, see stopped_task).
         let output = find_output(&temporary(), &self.dir, &self.task).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
         if let Some(output) = output {
             self.done.set(true);
@@ -313,6 +347,7 @@ impl Run {
             self.status.set_label("ended");
             self.status.add_css_class("done");
         }
+        self.stop.set_visible(!self.done.get());
         let (done, all) = self.counts();
         let text = phases(&self.members.borrow());
         self.progress.set_label(if all == 0 { "Starting…" } else { &text });
@@ -320,6 +355,17 @@ impl Run {
         if self.agents.is_expanded() {
             self.fill_list();
         }
+        if let Some(changed) = self.on_changed.borrow().clone() {
+            changed();
+        }
+    }
+
+    /// Stopped from loom: over, whatever its files say later.
+    pub fn stopped(&self) {
+        self.done.set(true);
+        self.status.set_label("stopped");
+        self.status.add_css_class("stopped");
+        self.stop.set_visible(false);
         if let Some(changed) = self.on_changed.borrow().clone() {
             changed();
         }
@@ -442,6 +488,10 @@ mod tests {
         std::fs::write(root.join("-p/s0/tasks/wf1.output"), "{}").unwrap();
         assert!(find_output(&root, &launch.dir, "wf1").unwrap().ends_with("-p/s0/tasks/wf1.output"));
         std::fs::remove_dir_all(&root).unwrap();
+        let stop = json!({ "_meta": { "claudeCode": { "toolResponse": { "message": "Successfully stopped task: wdx9 (x)", "task_id": "wdx9", "task_type": "local_workflow" } } } });
+        assert_eq!(stopped_task(&stop).as_deref(), Some("wdx9"));
+        assert_eq!(stopped_task(&json!({ "rawOutput": "{\"message\":\"Successfully stopped task: wdx9 (x)\"}" })).as_deref(), Some("wdx9"));
+        assert!(stopped_task(&json!({ "rawOutput": "Done." })).is_none());
         let empty_first = json!({ "content": [{ "content": { "text": "" } }, { "content": { "text": raw } }] });
         assert_eq!(launch_of(&empty_first).unwrap().task, "wf1");
         let structured = json!({ "_meta": { "claudeCode": { "toolResponse": { "taskType": "local_workflow", "taskId": "t", "workflowName": "council", "transcriptDir": "/d/s/subagents/workflows/r" } } } });

@@ -1566,6 +1566,7 @@ impl Agent {
         }
         if let (Some(conn), Some(session)) = (conn, self.session_id.borrow().clone()) {
             conn.notify("session/cancel", json!({ "sessionId": session }));
+            self.workflows_ended_by_cancel();
         }
         self.refresh_status();
     }
@@ -1909,9 +1910,31 @@ impl Agent {
                 agent.workflow_note();
             }
         }));
+        let (weak, card) = (Rc::downgrade(self), Rc::downgrade(&run));
+        *run.on_stop.borrow_mut() = Some(Rc::new(move || {
+            if let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) {
+                agent.stop_workflow(&run);
+            }
+        }));
         self.chat.block(&run.root);
         self.workflows.borrow_mut().push(run);
         self.workflow_note();
+    }
+
+    /// Stops one of its workflows (its card's Stop): Claude is asked to stop just that task
+    /// (its TaskStop tool; its result marks the card). Claude Code's interrupt is no way: it
+    /// ends every workflow when it stops a turn, and none when there is no turn.
+    fn stop_workflow(self: &Rc<Self>, run: &crate::workflow::Run) {
+        crate::log::debug!(format!("agent {}", self.id), "stop workflow {}", run.task);
+        self.submit_with(format!("Stop the background workflow {} (task {}) with TaskStop. Nothing else.", run.name, run.task), Vec::new());
+    }
+
+    /// Claude Code's interrupt (Esc during a turn) ends every workflow running in the
+    /// background (loom does not ask it to spare them, which only clients that can stop each
+    /// one may).
+    fn workflows_ended_by_cancel(&self) {
+        let running: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done.get()).cloned().collect();
+        running.iter().for_each(|w| w.stopped());
     }
 
     /// One of its workflows still runs (its agent must not be suspended meanwhile).
@@ -1921,17 +1944,14 @@ impl Agent {
 
     /// The strip under the conversation: what its running workflows are at.
     fn workflow_note(&self) {
-        let running: Vec<String> = self
-            .workflows
-            .borrow()
-            .iter()
-            .filter(|w| !w.done.get())
-            .map(|w| {
-                let (done, all) = w.counts();
-                format!("Workflow {}: {done} of {all} agents done", w.name)
-            })
-            .collect();
-        self.chat.set_workflow_note((!running.is_empty()).then(|| running.join(" · ")));
+        let workflows = self.workflows.borrow();
+        let running: Vec<_> = workflows.iter().filter(|w| !w.done.get()).collect();
+        let (done, all) = running.iter().map(|w| w.counts()).fold((0, 0), |(d, a), (dw, aw)| (d + dw, a + aw));
+        self.chat.set_workflow_note(match running.as_slice() {
+            [] => None,
+            [one] => Some(format!("Workflow {}: {done} of {all} agents done", one.name)),
+            more => Some(format!("{} workflows: {done} of {all} agents done", more.len())),
+        });
     }
 
     /// Thinking shown or hidden, in its subagents' conversations too.
@@ -2129,6 +2149,10 @@ impl Agent {
                 self.note_activity();
                 self.tool(update);
                 self.workflow_launched(update);
+                if let Some(task) = crate::workflow::stopped_task(update) {
+                    let stopped: Vec<_> = self.workflows.borrow().iter().filter(|w| w.task == task && !w.done.get()).cloned().collect();
+                    stopped.iter().for_each(|w| w.stopped());
+                }
             }
             "plan" => self.chat.set_plan(&update["entries"]),
             "subagent_update" => self.subagent_update(update),

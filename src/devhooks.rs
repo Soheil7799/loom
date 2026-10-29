@@ -125,6 +125,12 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let row = found.first().and_then(|l| l.downcast_ref::<gtk::ListBox>()).and_then(|l| l.row_at_index(argument.parse().unwrap_or(0)));
             row.ok_or("no workflow agent there")?.emit_activate();
         }
+        // The Stop of the first workflow card that has one showing.
+        "wfstop" => {
+            let mut found = Vec::new();
+            collect(app.window.upcast_ref(), &|w| w.has_css_class("workflow-stop") && w.is_visible(), &mut found);
+            found.first().and_then(|b| b.downcast_ref::<gtk::Button>()).ok_or("no workflow to stop")?.emit_clicked();
+        }
         // A comment on the newest written change (Scribe changes the note as it says).
         "fixnewest" => app.hub.fix_newest(argument),
         // Every folded row unfolded (their buttons exist only then).
