@@ -106,6 +106,27 @@ pub struct Link {
     tasks: RefCell<Vec<(String, Value)>>,
 }
 
+/// A background subagent's report, from its output file: its conversation's last reply (a
+/// file of JSON lines), else the file's text. Only the file's end is read.
+fn final_report(path: &Path) -> Option<String> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(256 * 1024))).ok()?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).ok()?;
+    let reply = text.lines().rev().filter_map(|l| serde_json::from_str::<Value>(l).ok()).find_map(|v| {
+        (v["type"] == "assistant").then(|| tools::result_text(&v["message"]["content"])).filter(|t| !t.trim().is_empty())
+    });
+    let report = match reply {
+        Some(reply) => reply,
+        None if text.lines().any(|l| l.trim_start().starts_with('{')) => return None,
+        None => text,
+    };
+    let report = tools::agent_report(report.trim());
+    (!report.is_empty()).then_some(report)
+}
+
 fn error(message: &str) -> Value {
     json!({ "message": message })
 }
@@ -744,7 +765,8 @@ impl Link {
                 let background = self.subs.borrow().iter().any(|s| s.key == key && s.background);
                 if background {
                     let summary = message["summary"].as_str().unwrap_or("").to_owned();
-                    self.sub_done(&key, status == "failed", (!summary.is_empty()).then_some(summary));
+                    let report = message["output_file"].as_str().and_then(|f| final_report(Path::new(f))).or((!summary.is_empty()).then_some(summary));
+                    self.sub_done(&key, status == "failed", report);
                 }
             }
             _ => {}
