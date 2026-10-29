@@ -381,6 +381,12 @@ impl Link {
         self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": true }), move |result| {
             let Some(link) = me.upgrade() else { return };
             match result {
+                // No login (and no API key): said when the session opens, as loom offers its
+                // Log in then.
+                Ok(init) if init["account"]["tokenSource"] == "none" && init["account"]["apiKeySource"].is_null() => {
+                    link.stop();
+                    reply(Err(error("Not logged in · Please run /login")));
+                }
                 Ok(init) => {
                     if let Some(mode) = init["current_permission_mode"].as_str() {
                         *link.mode.borrow_mut() = mode.to_owned();
