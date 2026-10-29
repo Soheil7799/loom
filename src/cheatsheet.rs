@@ -89,6 +89,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("X", "Close the agent"),
             ("Z", "Zoom"),
             ("B", "Sidebar"),
+            ("D", "Send what runs to the background"),
             ("F", "Files"),
             ("T", "Scratch terminal"),
             ("R", "Run a command"),

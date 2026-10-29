@@ -2220,6 +2220,12 @@ impl Chat {
         self.show_crew();
     }
 
+    /// A row of the strip gone (a background command that ended: its card stays).
+    pub fn crew_remove(&self, key: &str) {
+        self.crew.borrow_mut().retain(|c| c.key != key);
+        self.show_crew();
+    }
+
     /// A subagent with a session of its own, as it now stands.
     pub fn crew_set(&self, entry: Crew) {
         {
@@ -2238,23 +2244,31 @@ impl Chat {
         if self.working_since.get().is_some() {
             return;
         }
-        let running = self
+        let (commands, running): (Vec<bool>, Vec<bool>) = self
             .crew
             .borrow()
             .iter()
             .filter(|c| c.ended.is_none() && c.state.as_deref().unwrap_or("running") == "running" && (!c.guessed || c.at.elapsed().as_secs() < 90))
-            .count();
+            .map(|c| c.key.starts_with("task:"))
+            .partition(|command| *command);
+        let (commands, running) = (commands.len(), running.len());
         let workflow = self.workflow_note.borrow().clone();
-        if running == 0 && workflow.is_none() {
+        if running == 0 && commands == 0 && workflow.is_none() {
             self.working.set_label("");
             self.working.set_tooltip_text(None);
-        } else if running == 0 {
+        } else if running == 0 && commands == 0 {
             self.working.set_markup(&format!("✻ {}", glib::markup_escape_text(&workflow.unwrap_or_default())));
             self.working.set_tooltip_text(Some("Claude goes on when it is done; its card in the conversation shows each agent."));
         } else {
-            let plural = if running == 1 { "agent" } else { "agents" };
+            let mut what = Vec::new();
+            if running > 0 {
+                what.push(format!("<b>{running}</b> background {}", if running == 1 { "agent" } else { "agents" }));
+            }
+            if commands > 0 {
+                what.push(format!("<b>{commands}</b> {}", if commands == 1 { "command" } else { "commands" }));
+            }
             let also = workflow.map(|w| format!(" · {}", glib::markup_escape_text(&w))).unwrap_or_default();
-            self.working.set_markup(&format!("✻ Waiting for <b>{running}</b> background {plural} to finish{also}"));
+            self.working.set_markup(&format!("✻ Waiting for {} to finish{also}", what.join(" and ")));
             self.working.set_tooltip_text(Some("Claude goes on when they are done; the strip above shows each."));
         }
     }

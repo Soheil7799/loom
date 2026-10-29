@@ -133,6 +133,8 @@ pub struct Link {
     untitled: Cell<bool>,
     /// Background tasks running: their kind (local_workflow, local_agent, local_bash…).
     task_types: RefCell<HashMap<String, String>>,
+    /// Background tasks running: the tool call that started each.
+    task_calls: RefCell<HashMap<String, String>>,
     /// The task list (TaskCreate / TaskUpdate) as plan entries: (task id, entry).
     tasks: RefCell<Vec<(String, Value)>>,
 }
@@ -207,6 +209,7 @@ impl Link {
             untitled: Cell::new(false),
             tasks: RefCell::default(),
             task_types: RefCell::default(),
+            task_calls: RefCell::default(),
         }))
     }
 
@@ -327,6 +330,8 @@ impl Link {
                     reply(result.map(|id| json!({ "sessionId": id })).map_err(|e| error(&e)));
                 });
             }
+            // What runs in the foreground (commands, subagents) goes on in the background.
+            "_session/background" => self.control(json!({ "subtype": "background_tasks" }), move |result| reply(result.map(|_| json!({})))),
             "_session/stop_task" => {
                 let task = params["taskId"].as_str().unwrap_or("").to_owned();
                 self.control(json!({ "subtype": "stop_task", "task_id": task }), move |result| reply(result.map(|_| json!({}))));
@@ -351,6 +356,12 @@ impl Link {
             return;
         }
         let session = params["sessionId"].as_str().unwrap_or("");
+        // A background task's Stop (its row in the strip): that task only.
+        if let Some(rest) = session.strip_prefix("task:") {
+            let task = rest.split(':').next().unwrap_or("").to_owned();
+            self.control(json!({ "subtype": "stop_task", "task_id": task }), |_| {});
+            return;
+        }
         // A subagent's Stop: that task only.
         let task = self.subs.borrow_mut().iter_mut().find(|s| s.key == session).and_then(|s| {
             s.stopped = true;
@@ -472,7 +483,7 @@ impl Link {
         *self.session.borrow_mut() = Some(id.clone());
         let me = self.me.clone();
         let suggestions = options["promptSuggestions"].as_bool().unwrap_or(true);
-        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": suggestions }), move |result| {
+        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": suggestions, "perTaskStopAffordance": true }), move |result| {
             let Some(link) = me.upgrade() else { return };
             match result {
                 // No login (and no API key): said when the session opens, as loom offers its
@@ -840,6 +851,21 @@ impl Link {
             }
             "compact_boundary" => self.send(None, json!({ "sessionUpdate": "compaction_update", "status": "completed" })),
             "commands_changed" => self.commands(&message["commands"]),
+            // What runs in the background now (all of it: the list replaces the last one).
+            "background_tasks_changed" => {
+                let calls = self.task_calls.borrow();
+                let tasks: Vec<Value> = message["tasks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .map(|t| {
+                        let id = t["task_id"].as_str().unwrap_or("");
+                        json!({ "taskId": id, "taskType": t["task_type"], "description": t["description"], "toolCallId": calls.get(id) })
+                    })
+                    .collect();
+                drop(calls);
+                self.send(None, json!({ "sessionUpdate": "background_tasks", "tasks": tasks }));
+            }
             "api_retry" => {
                 let attempt = message["attempt"].as_u64().map(|a| format!(" (attempt {a})")).unwrap_or_default();
                 self.send(None, json!({ "sessionUpdate": "notice", "title": format!("Retrying the request{attempt}"), "description": message["error"].as_str(), "severity": "info" }));
@@ -848,6 +874,7 @@ impl Link {
                 let (task, tool) = (message["task_id"].as_str(), message["tool_use_id"].as_str());
                 if let Some(task) = task {
                     self.task_types.borrow_mut().insert(task.to_owned(), message["task_type"].as_str().unwrap_or("").to_owned());
+                    self.task_calls.borrow_mut().insert(task.to_owned(), tool.unwrap_or("").to_owned());
                 }
                 if let (Some(task), Some(tool)) = (task, tool)
                     && let Some(sub) = self.subs.borrow_mut().iter_mut().find(|s| s.key == tool)
@@ -869,6 +896,9 @@ impl Link {
                 let tool = message["tool_use_id"].as_str();
                 // Any background task's end, for loom (a workflow's card follows it).
                 let kind = task.and_then(|t| self.task_types.borrow_mut().remove(t)).unwrap_or_default();
+                if let Some(task) = task {
+                    self.task_calls.borrow_mut().remove(task);
+                }
                 self.send(None, json!({
                     "sessionUpdate": "task_update", "taskId": task, "toolCallId": tool, "taskType": kind,
                     "status": message["status"], "outputFile": message["output_file"], "summary": message["summary"],

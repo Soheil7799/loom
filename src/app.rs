@@ -834,6 +834,11 @@ impl App {
             (_, gdk::Key::x) => self.close_focused(),
             (_, gdk::Key::z) => self.zoom(),
             (_, gdk::Key::b) => self.sidebar.set_visible(!self.sidebar.is_visible()),
+            (_, gdk::Key::d) => {
+                if let Some(agent) = self.focused_agent() {
+                    agent.background_now();
+                }
+            }
             (_, gdk::Key::f | gdk::Key::e) => self.files.root.set_visible(!self.files.root.is_visible()),
             (_, gdk::Key::o) => {
                 self.files.root.set_visible(true);

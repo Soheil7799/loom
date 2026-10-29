@@ -188,6 +188,8 @@ pub struct Agent {
     can_resume: Cell<bool>,
     /// The provider tells when a background task ends, and stops one when asked.
     tasks: Cell<bool>,
+    /// Commands running in the background, shown in the strip: key → (what it does, since).
+    commands: RefCell<HashMap<String, (String, Instant)>>,
     /// Folders beyond `cwd` it may work in.
     dirs: RefCell<Vec<PathBuf>>,
     /// A turn Claude started by itself (a background task ended): since when, and the timer
@@ -268,6 +270,7 @@ impl Agent {
             shell_pid: Cell::new(None),
             can_resume: Cell::new(false),
             tasks: Cell::new(false),
+            commands: RefCell::default(),
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
             quiet_timer: RefCell::default(),
@@ -299,7 +302,9 @@ impl Agent {
         *agent.chat.on_crew_open.borrow_mut() = Some(Rc::new(move |key: String| {
             let Some(agent) = weak.upgrade() else { return };
             if !agent.open_sub(&key) {
-                agent.chat.go_to_tool(&key);
+                // A background command's row goes to its tool call ("task:<id>:<call>").
+                let call = key.strip_prefix("task:").and_then(|rest| rest.split_once(':')).map_or(key.as_str(), |(_, call)| call);
+                agent.chat.go_to_tool(call);
             }
         }));
         let weak = Rc::downgrade(&agent);
@@ -1950,6 +1955,21 @@ impl Agent {
         running.iter().for_each(|w| w.stopped());
     }
 
+    /// Ctrl+B D: what runs in the foreground (a command, a subagent) goes on in the background,
+    /// and the turn goes on.
+    pub fn background_now(self: &Rc<Self>) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
+        if !self.turn.get() {
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        conn.request("_session/background", json!({ "sessionId": session }), move |result| {
+            if let (Err(_), Some(agent)) = (result, weak.upgrade()) {
+                agent.chat.notice("Sending to the background is not available with this agent program.", "dim");
+            }
+        });
+    }
+
     /// One of its workflows still runs (its agent must not be suspended meanwhile).
     pub fn workflow_running(&self) -> bool {
         self.workflows.borrow().iter().any(|w| !w.done.get())
@@ -2190,6 +2210,27 @@ impl Agent {
                 }
             }
             "config_option_update" => self.set_config(&update["configOptions"]),
+            // What runs in the background: its commands get a row in the strip (each with its
+            // Stop) while they run.
+            "background_tasks" => {
+                let live: Vec<(String, String)> = update["tasks"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter(|t| t["taskType"] == "local_bash")
+                    .filter_map(|t| Some((format!("task:{}:{}", t["taskId"].as_str()?, t["toolCallId"].as_str().unwrap_or("")), t["description"].as_str().unwrap_or("command").to_owned())))
+                    .collect();
+                let gone: Vec<String> = self.commands.borrow().keys().filter(|k| !live.iter().any(|(l, _)| l == *k)).cloned().collect();
+                for key in gone {
+                    self.commands.borrow_mut().remove(&key);
+                    self.chat.crew_remove(&key);
+                }
+                for (key, name) in live {
+                    let started = self.commands.borrow_mut().entry(key.clone()).or_insert_with(|| (name.clone(), Instant::now())).1;
+                    self.chat.crew_set(crate::chat::Crew { key, name, step: "command".to_owned(), at: Instant::now(), started, state: Some("running".to_owned()), ended: None, guessed: false });
+                }
+                self.emit(Event::Changed);
+            }
             // A background task ended (done, failed, stopped): a workflow's card says so.
             "task_update" => {
                 let task = update["taskId"].as_str().unwrap_or("");
