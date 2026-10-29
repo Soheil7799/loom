@@ -1919,9 +1919,10 @@ impl Chat {
         let starts = !matches!(&*self.last.borrow(), Last::User(_));
         if starts && text.trim_start().starts_with(SUMMARY_START) {
             let message = self.summary();
-            *self.last.borrow_mut() = Last::User(message.clone());
             message.text.borrow_mut().push_str(text);
             message.render_soon();
+            // A replay gives a message in one piece: the next one is the user's own words.
+            *self.last.borrow_mut() = Last::None;
             return;
         }
         self.chunk(Kind::User, text);

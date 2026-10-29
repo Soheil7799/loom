@@ -712,17 +712,22 @@ impl Agent {
             self.chat.clear();
             self.forget_subs();
             self.workflows.borrow_mut().clear();
+            self.chat.set_workflow_note(None);
             self.files.borrow_mut().clear();
             self.replaying.set(true);
             // A compacted conversation is replayed from its summary on: what came before is
             // read from Claude Code's own file of it and shown first (off the main thread).
-            let (weak, id) = (Rc::downgrade(self), session.clone());
+            let (weak, id, asked) = (Rc::downgrade(self), session.clone(), Rc::downgrade(&conn));
             glib::spawn_future_local(async move {
                 let earlier = gio::spawn_blocking(move || crate::compacted::earlier(&id, EARLIER)).await.unwrap_or_default();
-                if let Some(agent) = weak.upgrade() {
-                    agent.show_earlier(earlier);
-                    agent.load_session(session);
+                let Some(agent) = weak.upgrade() else { return };
+                // Restarted meanwhile, or another conversation opened: not this one's any more.
+                let same = asked.upgrade().is_some_and(|c| agent.conn.borrow().as_ref().is_some_and(|now| Rc::ptr_eq(now, &c)));
+                if !same || agent.session_id().as_deref() != Some(session.as_str()) {
+                    return;
                 }
+                agent.show_earlier(earlier);
+                agent.load_session(session);
             });
             return;
         }
@@ -1005,6 +1010,7 @@ impl Agent {
         self.chat.clear();
         self.forget_subs();
         self.workflows.borrow_mut().clear();
+        self.chat.set_workflow_note(None);
         self.chat.set_plan(&Value::Null);
         self.emit(Event::Session);
         self.start();
@@ -1858,7 +1864,7 @@ impl Agent {
         }
         let Some(launch) = crate::workflow::launch_of(update) else { return };
         let weak = Rc::downgrade(self);
-        let run = crate::workflow::Run::new(tool_id, launch, move || weak.upgrade().is_some_and(|a| a.conn.borrow().is_some()));
+        let run = crate::workflow::Run::new(tool_id, launch, !self.replaying.get(), move || weak.upgrade().is_some_and(|a| a.conn.borrow().is_some()));
         let weak = Rc::downgrade(self);
         *run.on_open.borrow_mut() = Some(Rc::new(move |path: PathBuf, label: String| {
             let Some(agent) = weak.upgrade() else { return };
@@ -1876,6 +1882,11 @@ impl Agent {
         self.chat.block(&run.root);
         self.workflows.borrow_mut().push(run);
         self.workflow_note();
+    }
+
+    /// One of its workflows still runs (its agent must not be suspended meanwhile).
+    pub fn workflow_running(&self) -> bool {
+        self.workflows.borrow().iter().any(|w| !w.done.get())
     }
 
     /// The strip under the conversation: what its running workflows are at.

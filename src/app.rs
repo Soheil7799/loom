@@ -2340,7 +2340,8 @@ impl App {
         let agents = self.agents.borrow().clone();
         for agent in agents {
             let in_view = agent.focused.get() || self.is_pinned(&agent);
-            if agent.status() == Status::Idle && !in_view && !agent.awake.get() && agent.last_active.get().elapsed() > limit {
+            // A workflow it launched still runs: suspending it would stop the workflow.
+            if agent.status() == Status::Idle && !in_view && !agent.awake.get() && !agent.workflow_running() && agent.last_active.get().elapsed() > limit {
                 // A draft in its input: something is still being said to it, nothing changes.
                 // A command's output waiting for the next message would go in front of /compact.
                 if s.rest_compact && agent.chat.context_used() >= s.rest_compact_tokens && agent.chat.draft().trim().is_empty() && !agent.has_pending() {
@@ -2379,7 +2380,7 @@ impl App {
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let busy: Vec<String> =
-            self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked)).map(|a| a.title()).collect();
+            self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.workflow_running()).map(|a| a.title()).collect();
         let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
         let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {

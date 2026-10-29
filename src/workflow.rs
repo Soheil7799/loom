@@ -114,6 +114,16 @@ pub fn phases(members: &[Member]) -> String {
         .join(" · ")
 }
 
+/// What a file has from byte `from` on.
+fn read_from(path: &Path, from: u64) -> Option<Vec<u8>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut file = std::fs::File::open(path).ok()?;
+    file.seek(SeekFrom::Start(from)).ok()?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).ok()?;
+    Some(bytes)
+}
+
 /// Where Claude Code puts a background task's output: its temporary folder, the project's
 /// and the conversation's folders (as in its projects folder), then tasks/<task>.output.
 fn output_path(dir: &Path, task: &str) -> Option<PathBuf> {
@@ -145,6 +155,8 @@ pub struct Run {
     /// The members the list shows (it is filled again only when they change).
     shown: RefCell<Vec<Member>>,
     pub done: Cell<bool>,
+    /// Launched in this run of the agent (not read back from an older one).
+    live: bool,
     /// The agent of the conversation still runs (a workflow ends with it).
     alive: Box<dyn Fn() -> bool>,
     /// An agent of it opened (its transcript file and label).
@@ -154,7 +166,8 @@ pub struct Run {
 }
 
 impl Run {
-    pub fn new(tool_id: &str, launch: Launch, alive: impl Fn() -> bool + 'static) -> Rc<Run> {
+    /// `live`: launched now (a conversation read back has only workflows that are over).
+    pub fn new(tool_id: &str, launch: Launch, live: bool, alive: impl Fn() -> bool + 'static) -> Rc<Run> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.add_css_class("workflow-card");
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -197,6 +210,7 @@ impl Run {
             read: Cell::new(0),
             shown: RefCell::default(),
             done: Cell::new(false),
+            live,
             alive: Box::new(alive),
             on_open: RefCell::default(),
             on_changed: RefCell::default(),
@@ -243,13 +257,12 @@ impl Run {
         let journal = self.dir.join("journal.jsonl");
         let length = std::fs::metadata(&journal).map_or(0, |m| m.len());
         if length > self.read.get()
-            && let Ok(bytes) = std::fs::read(&journal)
+            && let Some(bytes) = read_from(&journal, self.read.get())
         {
             // Up to the last whole line (one may be half written).
             let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-            let from = (self.read.get() as usize).min(end);
-            read_journal(&String::from_utf8_lossy(&bytes[from..end]), &mut self.members.borrow_mut());
-            self.read.set(end as u64);
+            read_journal(&String::from_utf8_lossy(&bytes[..end]), &mut self.members.borrow_mut());
+            self.read.set(self.read.get() + end as u64);
         }
         let output = self.output.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
         if let Some(output) = output {
@@ -275,6 +288,12 @@ impl Run {
             self.done.set(true);
             self.status.set_label("stopped");
             self.status.add_css_class("stopped");
+        } else if !self.live {
+            // Read back from an earlier run of the agent: over, its output not kept (Claude
+            // Code keeps it in a temporary folder).
+            self.done.set(true);
+            self.status.set_label("ended");
+            self.status.add_css_class("done");
         }
         let (done, all) = self.counts();
         let text = phases(&self.members.borrow());

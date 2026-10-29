@@ -1115,7 +1115,7 @@ impl Files {
                 return;
             }
             IGNORED.with(|i| *i.borrow_mut() = ignored);
-            tree.set_model(Some(&tree_model(&project)));
+            dim_ignored(tree.upcast_ref());
         });
     }
 
@@ -1865,6 +1865,27 @@ fn ignored_in(project: &Path) -> std::collections::HashSet<PathBuf> {
         return Default::default();
     }
     String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(|p| project.join(p.trim_end_matches('/'))).collect()
+}
+
+/// The tree's rows shown now, dimmed where git ignores them (the rows made later are, as
+/// they are made).
+fn dim_ignored(widget: &gtk::Widget) {
+    if let Some(expander) = widget.downcast_ref::<gtk::TreeExpander>() {
+        let info = expander.list_row().and_then(|r| r.item()).and_downcast::<gio::FileInfo>();
+        if let (Some(info), Some(line)) = (info, expander.child()) {
+            let ignored = file_of(&info).and_then(|f| f.path()).is_some_and(|p| is_ignored(&p));
+            if ignored {
+                line.add_css_class("ignored");
+                line.set_tooltip_text(Some("Ignored by git"));
+            }
+        }
+        return;
+    }
+    let mut child = widget.first_child();
+    while let Some(w) = child {
+        dim_ignored(&w);
+        child = w.next_sibling();
+    }
 }
 
 /// Whether git ignores `path` (or a folder it is in).

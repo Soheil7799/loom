@@ -73,7 +73,15 @@ impl Store {
             pending: list("pending"),
             questions: list("questions"),
             recent,
-            teach: list("teach"),
+            teach: list("teach")
+                .into_iter()
+                .map(|mut t| {
+                    if t["stage"].as_str() == Some("drafting") {
+                        t["stage"] = "ask".into();
+                    }
+                    t
+                })
+                .collect(),
             day: v["day"].as_str().unwrap_or("").to_owned(),
             calls: v["calls"].as_u64().unwrap_or(0),
             next_id: v["nextId"].as_u64().unwrap_or(1),
@@ -621,7 +629,7 @@ impl Hub {
             self.body.remove(&child);
         }
         let store = self.store.borrow();
-        if store.questions.is_empty() && store.pending.is_empty() && store.recent.is_empty() {
+        if store.questions.is_empty() && store.pending.is_empty() && store.recent.is_empty() && store.teach.is_empty() {
             let empty = gtk::Label::builder()
                 .label("Questions Scribe has, changes waiting for your OK, and what it wrote in your notes show up here.")
                 .wrap(true)
@@ -828,8 +836,11 @@ impl Hub {
         let Some(vault) = self.on() else { return };
         let Some(t) = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).cloned() else { return };
         let Some(proposal) = scribe::proposal_from(&t) else { return };
-        if let Some(case) = scribe::correction_case(&proposal, t["noteBefore"].as_str(), said, &today()) {
+        if t["caseSaved"].as_bool() != Some(true)
+            && let Some(case) = scribe::correction_case(&proposal, t["noteBefore"].as_str(), said, &today())
+        {
             append_line(&corrections_path(), &case);
+            self.set_teaching(id, |t| t["caseSaved"] = true.into());
         }
         if self.store.borrow_mut().calls_left() == 0 {
             self.say("Kept as a test. Today's limit of note checks is reached (Settings → Notes), so no rule is drafted.", true);
@@ -838,6 +849,7 @@ impl Hub {
         }
         self.set_teaching(id, |t| t["stage"] = "drafting".into());
         self.store.borrow_mut().calls += 1;
+        self.store.borrow().save();
         self.refresh();
         let said = said.to_owned();
         let weak = Rc::downgrade(self);
@@ -1099,6 +1111,7 @@ impl Hub {
                 if let Some(fields) = v.as_object_mut() {
                     fields.remove("before");
                     fields.remove("after");
+                    fields.remove("excerpt");
                 }
                 v
             })

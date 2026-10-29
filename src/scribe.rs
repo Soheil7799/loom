@@ -339,9 +339,10 @@ pub fn fix(vault: &Path, done: &Proposal, comment: &str) -> Report {
         done.excerpt,
         done.change.diff()
     );
+    // Made, answered or not.
+    report.calls = 1;
     match edit(&topic, &notes, &excerpt) {
         Ok((proposals, _)) => {
-            report.calls = 1;
             let proposals = proposals.into_iter().map(|p| Proposal { reason: format!("You asked: {comment}"), ..p }).collect();
             let id = format!("fix@{}", crate::state::now());
             record_as(vault, &topic, proposals, &id, &mut report, true);

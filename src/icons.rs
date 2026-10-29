@@ -191,14 +191,22 @@ fn name_for(path: &Path, is_dir: bool) -> String {
     if let Some((_, icon)) = NAMES.iter().find(|(n, _)| *n == name) {
         return (*icon).to_owned();
     }
-    // README.md, LICENSE-MIT, CHANGELOG.txt, .env.local: by what the name starts with.
+    let extension = name.rsplit_once('.').map(|(_, e)| e).filter(|_| !name.starts_with('.') || name.matches('.').count() > 1).unwrap_or("");
+    // .env, .env.local: settings, whatever comes after.
+    if name == ".env" || name.starts_with(".env.") {
+        return "env".to_owned();
+    }
+    // README.md, LICENSE-MIT, CHANGELOG.txt, Dockerfile.dev: by what the name starts with, for
+    // prose and names without an extension (licenses.rs stays Rust).
+    let prose = matches!(extension, "" | "md" | "markdown" | "txt" | "rst" | "adoc" | "org") || name.starts_with("dockerfile");
     let stem = name.split('.').find(|s| !s.is_empty()).unwrap_or("");
-    for (start, icon) in [("readme", "readme"), ("license", "license"), ("licence", "license"), ("changelog", "changelog"), ("contributing", "contributing"), ("dockerfile", "docker"), ("env", "env")] {
-        if stem == start || (start != "env" && stem.starts_with(start)) {
-            return icon.to_owned();
+    if prose {
+        for (start, icon) in [("readme", "readme"), ("license", "license"), ("licence", "license"), ("changelog", "changelog"), ("contributing", "contributing"), ("dockerfile", "docker")] {
+            if stem.starts_with(start) {
+                return icon.to_owned();
+            }
         }
     }
-    let extension = name.rsplit_once('.').map(|(_, e)| e).unwrap_or("");
     if let Some((_, icon)) = EXTENSIONS.iter().find(|(e, _)| *e == extension) {
         return (*icon).to_owned();
     }
@@ -242,6 +250,11 @@ mod tests {
         assert_eq!(icon("x.go"), "go");
         assert_eq!(icon("photo.JPG"), "image");
         assert_eq!(icon("mystery.qqq"), "file");
+        assert_eq!(icon("env.d.ts"), "typescript");
+        assert_eq!(icon("licenses.rs"), "rust");
+        assert_eq!(icon("readme_parser.py"), "python");
+        assert_eq!(icon("CHANGELOG.md"), "changelog");
+        assert_eq!(icon("Dockerfile.dev"), "docker");
         assert_eq!(name_for(Path::new("src"), true), "folder");
         // Every icon named in the tables is in the set.
         for (_, name) in NAMES.iter().chain(EXTENSIONS) {
