@@ -1858,7 +1858,7 @@ impl Chat {
         // Another message of the agent's in the same bubble (a read-back conversation has no
         // tool call between two replies): a paragraph of its own, not run into the last line.
         let another = match (&*self.last.borrow(), id) {
-            (Last::Agent(message), Some(id)) => message.id.borrow().as_deref().is_some_and(|old| old != id) && !message.text.borrow().ends_with('\n'),
+            (Last::Agent(message), Some(id)) => message.id.borrow().as_deref().is_some_and(|old| old != id) && !message.text.borrow().ends_with("\n\n"),
             _ => false,
         };
         if another {

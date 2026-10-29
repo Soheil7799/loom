@@ -198,10 +198,13 @@ fn name_for(path: &Path, is_dir: bool) -> String {
     }
     // README.md, LICENSE-MIT, CHANGELOG.txt, Dockerfile.dev: by what the name starts with, for
     // prose and names without an extension (licenses.rs stays Rust).
-    let prose = matches!(extension, "" | "md" | "markdown" | "txt" | "rst" | "adoc" | "org") || name.starts_with("dockerfile");
     let stem = name.split('.').find(|s| !s.is_empty()).unwrap_or("");
+    if stem == "dockerfile" || stem == "containerfile" {
+        return "docker".to_owned();
+    }
+    let prose = matches!(extension, "" | "md" | "markdown" | "txt" | "rst" | "adoc" | "org");
     if prose {
-        for (start, icon) in [("readme", "readme"), ("license", "license"), ("licence", "license"), ("changelog", "changelog"), ("contributing", "contributing"), ("dockerfile", "docker")] {
+        for (start, icon) in [("readme", "readme"), ("license", "license"), ("licence", "license"), ("changelog", "changelog"), ("contributing", "contributing")] {
             if stem.starts_with(start) {
                 return icon.to_owned();
             }
@@ -255,6 +258,7 @@ mod tests {
         assert_eq!(icon("readme_parser.py"), "python");
         assert_eq!(icon("CHANGELOG.md"), "changelog");
         assert_eq!(icon("Dockerfile.dev"), "docker");
+        assert_eq!(icon("dockerfile_gen.py"), "python");
         assert_eq!(name_for(Path::new("src"), true), "folder");
         // Every icon named in the tables is in the set.
         for (_, name) in NAMES.iter().chain(EXTENSIONS) {

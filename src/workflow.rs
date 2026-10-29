@@ -36,13 +36,18 @@ pub fn launch_of(update: &Value) -> Option<Launch> {
             dir,
         });
     }
-    let text = update["rawOutput"].as_str().map(str::to_owned).or_else(|| {
-        let parts = update["content"].as_array()?;
-        Some(parts.iter().filter_map(|c| c["content"]["text"].as_str()).collect::<Vec<_>>().join("\n"))
-    })?;
-    if !text.starts_with("Workflow launched in background.") {
-        return None;
-    }
+    const LAUNCHED: &str = "Workflow launched in background.";
+    let text = match update["rawOutput"].as_str() {
+        Some(raw) if raw.starts_with(LAUNCHED) => raw.to_owned(),
+        Some(_) => return None,
+        None => {
+            let parts = update["content"].as_array()?;
+            if !parts.first().and_then(|c| c["content"]["text"].as_str()).is_some_and(|t| t.starts_with(LAUNCHED)) {
+                return None;
+            }
+            parts.iter().filter_map(|c| c["content"]["text"].as_str()).collect::<Vec<_>>().join("\n")
+        }
+    };
     let field = |key: &str| text.lines().find_map(|l| l.strip_prefix(key)).map(|v| v.trim().to_owned());
     let dir = PathBuf::from(field("Transcript dir:")?);
     // "decision-council-wf_afecaff2-414.js": the name the script gave it.
@@ -152,6 +157,8 @@ pub struct Run {
     members: RefCell<Vec<Member>>,
     /// How much of the journal is read.
     read: Cell<u64>,
+    /// When the journal last had something new.
+    news: Cell<std::time::Instant>,
     /// The members the list shows (it is filled again only when they change).
     shown: RefCell<Vec<Member>>,
     pub done: Cell<bool>,
@@ -208,6 +215,7 @@ impl Run {
             list: list.clone(),
             members: RefCell::default(),
             read: Cell::new(0),
+            news: Cell::new(std::time::Instant::now()),
             shown: RefCell::default(),
             done: Cell::new(false),
             live,
@@ -263,6 +271,7 @@ impl Run {
             let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
             read_journal(&String::from_utf8_lossy(&bytes[..end]), &mut self.members.borrow_mut());
             self.read.set(self.read.get() + end as u64);
+            self.news.set(std::time::Instant::now());
         }
         let output = self.output.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
         if let Some(output) = output {
@@ -288,6 +297,10 @@ impl Run {
             self.done.set(true);
             self.status.set_label("stopped");
             self.status.add_css_class("stopped");
+        } else if self.all_answered_a_while_ago() {
+            self.done.set(true);
+            self.status.set_label("done");
+            self.status.add_css_class("done");
         } else if !self.live {
             // Read back from an earlier run of the agent: over, its output not kept (Claude
             // Code keeps it in a temporary folder).
@@ -305,6 +318,13 @@ impl Run {
         if let Some(changed) = self.on_changed.borrow().clone() {
             changed();
         }
+    }
+
+    /// Its output is not where loom looks (another temporary folder), yet every agent has
+    /// answered and a minute went by with nothing new: over.
+    fn all_answered_a_while_ago(&self) -> bool {
+        let members = self.members.borrow();
+        !members.is_empty() && members.iter().all(|m| m.result.is_some()) && self.news.get().elapsed() > Duration::from_secs(60)
     }
 
     fn fill_list(&self) {

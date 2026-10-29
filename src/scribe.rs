@@ -343,7 +343,7 @@ pub fn fix(vault: &Path, done: &Proposal, comment: &str) -> Report {
     report.calls = 1;
     match edit(&topic, &notes, &excerpt) {
         Ok((proposals, _)) => {
-            let proposals = proposals.into_iter().map(|p| Proposal { reason: format!("You asked: {comment}"), ..p }).collect();
+            let proposals = proposals.into_iter().map(|p| Proposal { reason: format!("You asked: {comment}"), excerpt: done.excerpt.clone(), ..p }).collect();
             let id = format!("fix@{}", crate::state::now());
             record_as(vault, &topic, proposals, &id, &mut report, true);
         }

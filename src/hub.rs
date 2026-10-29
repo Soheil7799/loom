@@ -833,9 +833,16 @@ impl Hub {
 
     /// The user said why: kept as a test, and a rule drafted from it (one call to Claude).
     fn teach(self: &Rc<Self>, id: u64, said: &str) {
-        let Some(vault) = self.on() else { return };
-        let Some(t) = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).cloned() else { return };
-        let Some(proposal) = scribe::proposal_from(&t) else { return };
+        let Some(vault) = self.on() else {
+            self.say("Not kept: the Notes add-on is off (Settings → Notes).", true);
+            self.refresh();
+            return;
+        };
+        let t = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).cloned();
+        let Some((t, proposal)) = t.and_then(|t| scribe::proposal_from(&t).map(|p| (t, p))) else {
+            self.refresh();
+            return;
+        };
         if t["caseSaved"].as_bool() != Some(true)
             && let Some(case) = scribe::correction_case(&proposal, t["noteBefore"].as_str(), said, &today())
         {
@@ -875,8 +882,15 @@ impl Hub {
     }
 
     fn keep_rule(self: &Rc<Self>, id: u64, rule: &str) {
-        let Some(vault) = self.on() else { return };
-        let Some(topic) = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).and_then(|t| t["topic"].as_str().map(str::to_owned)) else { return };
+        let Some(vault) = self.on() else {
+            self.say("Not kept: the Notes add-on is off (Settings → Notes).", true);
+            self.refresh();
+            return;
+        };
+        let Some(topic) = self.store.borrow().teach.iter().find(|t| t["id"].as_u64() == Some(id)).and_then(|t| t["topic"].as_str().map(str::to_owned)) else {
+            self.refresh();
+            return;
+        };
         match scribe::add_rule(&vault, &topic, rule) {
             Ok(()) => {
                 self.say(&format!("Kept as a rule for {topic} (in its topic file, under Rules learned)."), false);
@@ -1055,8 +1069,16 @@ impl Hub {
     }
 
     fn fix_now(self: &Rc<Self>, v: &Value, comment: &str) {
-        let Some(vault) = self.on() else { return };
+        let Some(vault) = self.on() else {
+            self.say("Not changed: the Notes add-on is off (Settings → Notes).", true);
+            self.refresh();
+            return;
+        };
+        // A row of the history page is kept without its conversation: the history has it.
+        let full = if v.get("excerpt").is_none() && v["id"].is_u64() { history().into_iter().find(|h| h["id"] == v["id"] && h.get("excerpt").is_some()) } else { None };
+        let v = full.as_ref().unwrap_or(v);
         let Some(done) = scribe::proposal_from(v) else {
+            self.refresh();
             self.run_next();
             return;
         };
@@ -1077,7 +1099,7 @@ impl Hub {
             hub.running.set(false);
             match report {
                 Ok(mut report) => {
-                    let (failed, nothing) = (report.failed.clone(), report.applied.is_empty() && report.held.is_empty());
+                    let (failed, nothing, held) = (report.failed.clone(), report.applied.is_empty() && report.held.is_empty(), report.applied.is_empty() && !report.held.is_empty());
                     report.session = session;
                     report.title = title;
                     hub.take(report);
@@ -1085,6 +1107,8 @@ impl Hub {
                         hub.say(&format!("Not changed: {why}"), true);
                     } else if nothing {
                         hub.say(&format!("Scribe found nothing to change in {note} for that."), true);
+                    } else if held {
+                        hub.say(&format!("Scribe's change to {note} did not fit the note as it is: it waits for your OK above."), true);
                     } else {
                         hub.say(&format!("Changed {note} as you asked."), false);
                     }

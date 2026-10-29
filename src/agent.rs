@@ -731,6 +731,7 @@ impl Agent {
             });
             return;
         }
+        self.replaying.set(false);
         conn.request("session/new", self.session_params(), move |result| {
             let Some(agent) = weak.upgrade() else { return };
             match result {
@@ -787,7 +788,12 @@ impl Agent {
                         agent.open_session();
                     }
                     // Anything else keeps the session, to try again later.
-                    Err(err) => agent.fail(&format!("Could not resume this conversation: {}", message(&err))),
+                    Err(err) => {
+                        // What was shown (from before a compaction) is not all of it: the next
+                        // start must read it back whole, not resume over it.
+                        agent.chat.clear();
+                        agent.fail(&format!("Could not resume this conversation: {}", message(&err)));
+                    }
                 }
             });
         }
@@ -1074,6 +1080,7 @@ impl Agent {
         if let Some(conn) = self.conn.borrow_mut().take() {
             conn.stop();
         }
+        self.replaying.set(false);
         self.end_autonomous(false);
         self.ready.set(false);
         self.turn.set(false);
@@ -1864,7 +1871,11 @@ impl Agent {
         }
         let Some(launch) = crate::workflow::launch_of(update) else { return };
         let weak = Rc::downgrade(self);
-        let run = crate::workflow::Run::new(tool_id, launch, !self.replaying.get(), move || weak.upgrade().is_some_and(|a| a.conn.borrow().is_some()));
+        let launched = self.conn.borrow().as_ref().map(Rc::downgrade);
+        let run = crate::workflow::Run::new(tool_id, launch, !self.replaying.get(), move || {
+            let (Some(agent), Some(launched)) = (weak.upgrade(), launched.as_ref().and_then(|c| c.upgrade())) else { return false };
+            agent.conn.borrow().as_ref().is_some_and(|now| Rc::ptr_eq(now, &launched))
+        });
         let weak = Rc::downgrade(self);
         *run.on_open.borrow_mut() = Some(Rc::new(move |path: PathBuf, label: String| {
             let Some(agent) = weak.upgrade() else { return };
