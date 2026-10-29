@@ -198,6 +198,24 @@ fn write_new(path: &Path, text: &str) -> std::io::Result<()> {
     std::fs::write(path, text)
 }
 
+thread_local! {
+    static CHANGED: std::cell::RefCell<Vec<std::rc::Rc<dyn Fn()>>> = std::cell::RefCell::default();
+}
+
+/// `f` runs whenever loom's Claude folder changed (an item switched, made, put back, a file of
+/// it saved in loom's editor).
+pub fn on_changed(f: impl Fn() + 'static) {
+    CHANGED.with(|c| c.borrow_mut().push(std::rc::Rc::new(f)));
+}
+
+/// loom's Claude folder changed: running agents read it again.
+pub fn changed() {
+    let all: Vec<std::rc::Rc<dyn Fn()>> = CHANGED.with(|c| c.borrow().clone());
+    for f in all {
+        f();
+    }
+}
+
 /// The plugin as session/new's `_meta.claudeCode.options.plugins` wants it.
 pub fn session_plugins() -> serde_json::Value {
     serde_json::json!([{ "type": "local", "path": dir().to_string_lossy() }])

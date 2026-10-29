@@ -143,6 +143,29 @@ pub fn fork(session: &str, at: Option<&str>) -> Result<String, String> {
     Ok(id)
 }
 
+/// The id of the message the user sent after agent message `after` (its message id) in
+/// conversation `session`: what file checkpoints are kept under.
+pub fn user_after(session: &str, after: &str) -> Option<String> {
+    let text = std::fs::read_to_string(file(session)?).ok()?;
+    let mut past = false;
+    for line in text.lines() {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v["message"]["id"].as_str() == Some(after) || v["uuid"].as_str() == Some(after) {
+            past = true;
+            continue;
+        }
+        let words = match &v["message"]["content"] {
+            Value::String(_) => true,
+            Value::Array(blocks) => blocks.iter().any(|b| b["type"] == "text"),
+            _ => false,
+        };
+        if past && v["type"] == "user" && v["isMeta"].as_bool() != Some(true) && v["isSidechain"].as_bool() != Some(true) && words {
+            return v["uuid"].as_str().map(str::to_owned);
+        }
+    }
+    None
+}
+
 /// A conversation read back as session updates, from its latest compaction on (what came
 /// before is loom's to show, from the same file), following the chain of the conversation
 /// that is current (a rewound branch is left out). None: no such conversation.
@@ -270,6 +293,25 @@ mod tests {
         let updates = replay("s1", Path::new("/home/me/p")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
         updates
+    }
+
+    #[test]
+    fn the_message_after_an_answer_is_found() {
+        let dir = std::env::temp_dir().join(format!("loom-after-{}", std::process::id()));
+        let projects = dir.join("projects").join("p");
+        std::fs::create_dir_all(&projects).unwrap();
+        let lines = [
+            r#"{"type":"user","uuid":"u1","message":{"content":"first"}}"#,
+            r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}"#,
+            r#"{"type":"user","uuid":"t1","message":{"content":[{"type":"tool_result","content":"x"}]}}"#,
+            r#"{"type":"user","uuid":"u2","message":{"content":[{"type":"text","text":"second"}]}}"#,
+        ];
+        std::fs::write(projects.join("s2.jsonl"), lines.join("\n")).unwrap();
+        // SAFETY: as in the test below (the config folder is this test's own).
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
+        assert_eq!(user_after("s2", "m1").as_deref(), Some("u2"));
+        assert_eq!(user_after("s2", "nope"), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

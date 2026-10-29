@@ -172,6 +172,27 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
             }, "required": ["query"] }
         }));
         list.push(json!({
+            "name": "loom_note_topics",
+            "description": "The user's note topics: each with its folder in the vault, what belongs in it, and how many notes it has. Start here to see what the notes cover.",
+            "inputSchema": { "type": "object", "properties": {} }
+        }));
+        list.push(json!({
+            "name": "loom_note_list",
+            "description": "The notes in one folder of the vault (a topic's), newest first, with their titles and when each last changed.",
+            "inputSchema": { "type": "object", "properties": {
+                "folder": { "type": "string", "description": "The folder, e.g. Finances (empty: the whole vault)" },
+                "limit": { "type": "integer", "description": "How many (default 30, max 200)" }
+            } }
+        }));
+        list.push(json!({
+            "name": "loom_note_recent",
+            "description": "The notes changed lately (what the user noted this week, say), newest first.",
+            "inputSchema": { "type": "object", "properties": {
+                "days": { "type": "integer", "description": "How many days back (default 7)" },
+                "limit": { "type": "integer", "description": "How many (default 30, max 200)" }
+            } }
+        }));
+        list.push(json!({
             "name": "loom_note_read",
             "description": "Read one of the user's notes in full, by its path in the vault or its [[name]], with its links and backlinks.",
             "inputSchema": { "type": "object", "properties": {
@@ -211,6 +232,86 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
         .join("\n\n"))
 }
 
+/// loom_note_topics / loom_note_list / loom_note_recent: what the vault holds, read from its
+/// files (loom's own folder and git's left out).
+fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<String, String> {
+    let vault = vault(socket, agent).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
+    let notes = all_notes(&vault);
+    let limit = args["limit"].as_u64().unwrap_or(30).clamp(1, 200) as usize;
+    match tool {
+        "loom_note_topics" => {
+            let topics = crate::topics::list(&vault);
+            if topics.is_empty() {
+                return Ok("No topics yet.".to_owned());
+            }
+            Ok(topics
+                .iter()
+                .map(|t| {
+                    let count = notes.iter().filter(|n| !t.folder.is_empty() && n.0.starts_with(&format!("{}/", t.folder.trim_end_matches('/')))).count();
+                    let about = if t.listens_for.is_empty() { String::new() } else { format!(" · about: {}", t.listens_for.join(", ")) };
+                    format!("{} (folder {}, {count} notes{}){about}", t.name, if t.folder.is_empty() { "none" } else { &t.folder }, if t.enabled { "" } else { ", off" })
+                })
+                .collect::<Vec<_>>()
+                .join("\n"))
+        }
+        "loom_note_list" => {
+            let folder = args["folder"].as_str().unwrap_or("").trim_matches('/');
+            let found: Vec<&(String, String, u64)> = notes.iter().filter(|n| folder.is_empty() || n.0.starts_with(&format!("{folder}/"))).take(limit).collect();
+            if found.is_empty() {
+                return Ok(format!("No notes in {}.", if folder.is_empty() { "the vault" } else { folder }));
+            }
+            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", ago(*when))).collect::<Vec<_>>().join("\n"))
+        }
+        _ => {
+            let days = args["days"].as_u64().unwrap_or(7).max(1);
+            let since = crate::state::now().saturating_sub(days * 86_400);
+            let found: Vec<&(String, String, u64)> = notes.iter().filter(|n| n.2 >= since).take(limit).collect();
+            if found.is_empty() {
+                return Ok(format!("No note changed in the last {days} days."));
+            }
+            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", ago(*when))).collect::<Vec<_>>().join("\n"))
+        }
+    }
+}
+
+/// Every note of the vault: (path in it, title, last change in Unix seconds), newest first.
+fn all_notes(vault: &std::path::Path) -> Vec<(String, String, u64)> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String, u64)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // loom's and git's folders, and the topics' own descriptions, are not notes.
+            if name.starts_with('.') || (dir == root && name == crate::vault::TOPICS) {
+                continue;
+            }
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else if name.ends_with(".md") {
+                let Ok(relative) = path.strip_prefix(root) else { continue };
+                let when = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                let text = std::fs::read_to_string(&path).unwrap_or_default();
+                let title = text.lines().find_map(|l| l.strip_prefix("# ")).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).unwrap_or_else(|| name.trim_end_matches(".md").to_owned());
+                out.push((relative.to_string_lossy().into_owned(), title, when));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(vault, vault, &mut out);
+    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out
+}
+
+/// "3h ago", "2d ago" from Unix seconds.
+fn ago(when: u64) -> String {
+    let seconds = crate::state::now().saturating_sub(when);
+    match seconds {
+        ..3600 => format!("{}m ago", seconds / 60),
+        3600..86_400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
 fn list_or_none(items: &[String]) -> String {
     if items.is_empty() { "none".to_owned() } else { items.join(", ") }
 }
@@ -230,6 +331,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_notify" => control::call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
         "loom_agents" => control::call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
         tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
+        tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, agent, tool, args),
         other => Err(format!("unknown tool {other}")),
     };
     match result {

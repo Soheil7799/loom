@@ -73,6 +73,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // A message sent without the input (a "/command" typed there opens its popup, which an
         // unseen test window can hang on).
         "submit" => app.active_agent().ok_or("no agent")?.chat.submit_direct(argument),
+        // loom's Claude folder changed (as when an item is switched in Settings).
+        "pluginchanged" => crate::plugin::changed(),
         // Ctrl+Enter: what waits goes into the running turn.
         "sendnow" => app.active_agent().ok_or("no agent")?.send_waiting_now(),
         "latest" => {

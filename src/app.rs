@@ -2263,6 +2263,15 @@ impl App {
     /// Scribe's news shown: the Notes tab marked, and switched to when the user isn't working
     /// in the panel; a question's conversation opened from it.
     fn wire_hub(self: &Rc<Self>) {
+        // loom's Claude folder changed: every running session reads its skills and plugins again.
+        let weak = Rc::downgrade(self);
+        crate::plugin::on_changed(move || {
+            if let Some(app) = weak.upgrade() {
+                for agent in app.agents.borrow().iter().chain(app.notes_chat.current().as_ref()) {
+                    agent.reload_extensions();
+                }
+            }
+        });
         let weak = Rc::downgrade(self);
         *self.notes_chat.on_edits.borrow_mut() = Some(Rc::new(move |edits, session, title| {
             if let Some(app) = weak.upgrade() {

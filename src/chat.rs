@@ -83,6 +83,10 @@ pub struct Chat {
     /// The agent's folder, and its files once listed (for @ mentions).
     cwd: RefCell<std::path::PathBuf>,
     project_files: RefCell<Option<Vec<String>>>,
+    /// The account's limits as Claude Code tells them ({plan, windows}).
+    limits: RefCell<serde_json::Value>,
+    /// The usage popover's MCP section (filled when the list comes).
+    mcp_box: RefCell<Option<gtk::Box>>,
     /// What the open completion list offers: (text to insert, shown name, detail).
     offered: RefCell<Vec<(String, String, String)>>,
     thoughts: RefCell<Vec<glib::WeakRef<gtk::Expander>>>,
@@ -131,6 +135,10 @@ pub struct Chat {
     /// "Rewind to here" on a message you sent: the id of the agent's message before it (None:
     /// from the start) and the text, to fork the conversation there.
     pub on_rewind: Callback<(Option<String>, bool, String)>,
+    /// "Rewind to here, files too": the same, Claude's file changes from there on undone.
+    pub on_rewind_files: Callback<(Option<String>, bool, String)>,
+    /// MCP servers: ("status" | "toggle" | "reconnect", server, on).
+    pub on_mcp: Callback<(String, String, bool)>,
     /// What was typed, and the images attached (PNG).
     pub on_submit: Callback<(String, Vec<glib::Bytes>)>,
     /// Find in the conversation (Ctrl+F): the bar, what is typed, how many, which one.
@@ -526,6 +534,10 @@ impl Chat {
             latest: latest.clone(),
             cwd: RefCell::default(),
             project_files: RefCell::default(),
+            on_rewind_files: RefCell::default(),
+            on_mcp: RefCell::default(),
+            limits: RefCell::new(serde_json::Value::Null),
+            mcp_box: RefCell::default(),
             offered: RefCell::default(),
             thoughts: RefCell::default(),
             scroller,
@@ -574,13 +586,36 @@ impl Chat {
         // /compact sent on its own: what is being typed, and images attached, stay for the next
         // message. Only between turns (the button is not shown during one).
         let weak = Rc::downgrade(&chat);
+        // It asks what the summary should keep (optional), then compacts.
+        let keep = gtk::Entry::builder().placeholder_text("What the summary should keep (optional)").width_chars(36).build();
+        let go = gtk::Button::with_label("Compact");
+        go.add_css_class("suggested");
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        line.append(&keep);
+        line.append(&go);
+        let ask = gtk::Popover::builder().child(&line).position(gtk::PositionType::Top).build();
+        ask.set_parent(&compact);
+        let compact_now = {
+            let (weak, keep, ask) = (weak.clone(), keep.clone(), ask.clone());
+            Rc::new(move || {
+                let Some(chat) = weak.upgrade() else { return };
+                ask.popdown();
+                if chat.working_since.get().is_some() {
+                    return;
+                }
+                let what = keep.text().trim().to_owned();
+                keep.set_text("");
+                chat.compact.set_visible(false);
+                let command = if what.is_empty() { "/compact".to_owned() } else { format!("/compact {what}") };
+                chat.call(&chat.on_submit, (command, Vec::new()));
+            })
+        };
+        let again = compact_now.clone();
+        go.connect_clicked(move |_| again());
+        keep.connect_activate(move |_| compact_now());
         compact.connect_clicked(move |_| {
-            let Some(chat) = weak.upgrade() else { return };
-            if chat.working_since.get().is_some() {
-                return;
-            }
-            chat.compact.set_visible(false);
-            chat.call(&chat.on_submit, ("/compact".to_owned(), Vec::new()));
+            ask.popup();
+            keep.grab_focus();
         });
         let weak = Rc::downgrade(&chat);
         // Until the chat goes (a viewer's goes once it is closed).
@@ -1260,13 +1295,43 @@ impl Chat {
         }
         let account = gtk::Box::new(gtk::Orientation::Vertical, 6);
         account.append(&usage_heading("Account"));
-        account.append(&usage_note("Loading…"));
         body.append(&account);
+        // Its MCP servers (asked for now; shown when they come).
+        let mcp = gtk::Box::new(gtk::Orientation::Vertical, 6);
+        mcp.append(&usage_heading("MCP servers"));
+        mcp.append(&usage_note("Loading…"));
+        body.append(&mcp);
+        *self.mcp_box.borrow_mut() = Some(mcp);
+        self.call(&self.on_mcp, ("status".to_owned(), String::new(), false));
+        // The account's limits as Claude Code tells them; else from ai-usagebar, if installed.
+        let limits = self.limits.borrow().clone();
+        if let Some(windows) = limits["windows"].as_array().filter(|w| !w.is_empty()) {
+            if let Some(plan) = limits["plan"].as_str().filter(|p| !p.is_empty())
+                && let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
+            {
+                heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
+            }
+            for window in windows {
+                let used = window["utilization"].as_f64().unwrap_or(0.0);
+                let share = if used <= 1.0 { used } else { used / 100.0 };
+                let name = match window["kind"].as_str().unwrap_or("") {
+                    "five_hour" => "5-hour".to_owned(),
+                    "seven_day" => "Weekly".to_owned(),
+                    "seven_day_opus" => "Weekly Opus".to_owned(),
+                    "seven_day_sonnet" => "Weekly Sonnet".to_owned(),
+                    other => other.replace('_', " "),
+                };
+                let resets = window["resetsAt"].as_i64().and_then(|t| glib::DateTime::from_unix_local(t).ok()).and_then(|t| t.format("%a %H:%M").ok()).map(|t| format!("Resets {t}")).unwrap_or_default();
+                account.append(&usage_row(&name, share, &format!("{:.0}%", share * 100.0), &resets));
+            }
+            return;
+        }
+        account.append(&usage_note("Loading…"));
         glib::spawn_future_local(async move {
             let found = gio::spawn_blocking(account_usage).await.ok().flatten();
             account.first_child().and_then(|h| h.next_sibling()).inspect(|loading| account.remove(loading));
             let Some(found) = found else {
-                account.append(&usage_note(&limit.unwrap_or_else(|| "No limits reported yet (ai-usagebar not available).".into())));
+                account.append(&usage_note(&limit.unwrap_or_else(|| "No limits reported yet: they come with Claude's first answer.".into())));
                 return;
             };
             if let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
@@ -1832,6 +1897,67 @@ impl Chat {
         });
     }
 
+    /// The account's limits as Claude Code tells them, for the usage popover.
+    pub fn set_limits(&self, limits: serde_json::Value) {
+        *self.limits.borrow_mut() = limits;
+    }
+
+    /// The agent's MCP servers in the usage popover: (name, status, error); None: not known
+    /// (the agent is not running).
+    pub fn show_mcp(&self, servers: Option<Vec<(String, String, Option<String>)>>) {
+        let Some(holder) = self.mcp_box.borrow().clone() else { return };
+        while let Some(child) = holder.first_child() {
+            holder.remove(&child);
+        }
+        holder.append(&usage_heading("MCP servers"));
+        let Some(servers) = servers else {
+            holder.append(&usage_note("Shown while the agent runs."));
+            return;
+        };
+        if servers.is_empty() {
+            holder.append(&usage_note("None."));
+        }
+        for (name, status, error) in servers {
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let label = gtk::Label::builder().label(&name).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+            label.add_css_class("small");
+            let state = gtk::Label::new(Some(match status.as_str() {
+                "connected" => "connected",
+                "failed" => "failed",
+                "needs-auth" => "needs sign-in",
+                "pending" => "connecting…",
+                "disabled" => "off",
+                other => other,
+            }));
+            state.add_css_class("small");
+            state.add_css_class(if status == "connected" { "dim" } else { "mcp-trouble" });
+            if let Some(error) = &error {
+                state.set_tooltip_text(Some(error));
+            }
+            line.append(&label);
+            line.append(&state);
+            let mut buttons = Vec::new();
+            if matches!(status.as_str(), "failed" | "needs-auth" | "pending") {
+                buttons.push(("Reconnect", "reconnect", true));
+            }
+            buttons.push(if status == "disabled" { ("On", "toggle", true) } else { ("Off", "toggle", false) });
+            for (text, action, on) in buttons {
+                let button = gtk::Button::with_label(text);
+                button.add_css_class("flat");
+                button.add_css_class("small");
+                let (callback, server) = (self.on_mcp.borrow().clone(), name.clone());
+                button.connect_clicked(move |button| {
+                    button.set_sensitive(false);
+                    if let Some(callback) = &callback {
+                        callback((action.to_owned(), server.clone(), on));
+                    }
+                });
+                line.append(&button);
+            }
+            holder.append(&line);
+        }
+    }
+
     /// What fills the context, for the usage popover.
     pub fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {
         *self.context_parts.borrow_mut() = (parts, compacts_at);
@@ -2043,6 +2169,8 @@ impl Chat {
                 let copy = gtk::Button::with_label("copy");
                 let edit = gtk::Button::with_label("edit");
                 edit.set_tooltip_text(Some("Put it back in the input to change and send again"));
+                // Its files too: in the menu only.
+                let rewind_files = gtk::Button::with_label("rewind with files");
                 let rewind = gtk::Button::with_label("rewind");
                 rewind.set_tooltip_text(Some("A copy of the conversation from just before this message, with it in the input to change (this one is kept)"));
                 for button in [&copy, &edit, &rewind] {
@@ -2057,7 +2185,7 @@ impl Chat {
                     &wrap,
                     &message,
                     &self.input,
-                    vec![("Copy the whole message", copy.clone()), ("Edit and send again", edit.clone()), ("Rewind to here", rewind.clone())],
+                    vec![("Copy the whole message", copy.clone()), ("Edit and send again", edit.clone()), ("Rewind to here", rewind.clone()), ("Rewind to here, files too", rewind_files.clone())],
                 );
                 let weak = Rc::downgrade(&message);
                 copy.connect_clicked(move |button| {
@@ -2065,9 +2193,10 @@ impl Chat {
                         button.clipboard().set_text(message.text.borrow().trim());
                     }
                 });
-                let (weak, callback) = (Rc::downgrade(&message), self.on_rewind.borrow().clone());
+                for (button, callback) in [(&rewind, &self.on_rewind), (&rewind_files, &self.on_rewind_files)] {
+                let (weak, callback) = (Rc::downgrade(&message), callback.borrow().clone());
                 let messages = Rc::downgrade(&self.messages);
-                rewind.connect_clicked(move |_| {
+                button.connect_clicked(move |_| {
                     let (Some(message), Some(callback), Some(messages)) = (weak.upgrade(), callback.clone(), messages.upgrade()) else { return };
                     let messages = messages.borrow();
                     let position = messages.iter().position(|m| Rc::ptr_eq(m, &message)).unwrap_or(0);
@@ -2076,6 +2205,7 @@ impl Chat {
                     let (_, rest) = split_shell_runs(&message.text.borrow());
                     callback((before, previous.is_some(), rest.trim().to_owned()));
                 });
+                }
                 let (weak, input) = (Rc::downgrade(&message), self.input.clone());
                 edit.connect_clicked(move |_| {
                     if let Some(message) = weak.upgrade() {

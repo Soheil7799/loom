@@ -373,6 +373,21 @@ impl Agent {
             }
         }));
         let weak = Rc::downgrade(&agent);
+        *agent.chat.on_rewind_files.borrow_mut() = Some(Rc::new(move |(at, before, text): (Option<String>, bool, String)| {
+            let Some(agent) = weak.upgrade() else { return };
+            match at {
+                Some(at) => agent.rewind_with_files(at, text),
+                None if before => agent.chat.notice("Can't rewind to here: the agent gave no id for its message before it.", "dim"),
+                None => agent.chat.notice("Nothing to rewind before the first message: start a new conversation instead.", "dim"),
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
+        *agent.chat.on_mcp.borrow_mut() = Some(Rc::new(move |(action, server, enabled): (String, String, bool)| {
+            if let Some(agent) = weak.upgrade() {
+                agent.mcp(&action, &server, enabled);
+            }
+        }));
+        let weak = Rc::downgrade(&agent);
         *agent.chat.on_cancel.borrow_mut() = Some(Rc::new(move |()| {
             if let Some(agent) = weak.upgrade() {
                 agent.cancel();
@@ -1408,9 +1423,19 @@ impl Agent {
                     agent.queue.borrow_mut().push_back((text, images));
                     agent.send_next();
                 }
-                Ok(_) => {
+                Ok(answer) => {
                     agent.context.borrow_mut().clear();
                     agent.journal("user", &text);
+                    // Claude may not have taken it yet: it can be taken back until then.
+                    if let Some(message) = answer["messageId"].as_str().map(str::to_owned) {
+                        let weak = Rc::downgrade(&agent);
+                        let back = text.clone();
+                        agent.chat.notice_choice("Sent into the running turn.", "Take back", Rc::new(move || {
+                            if let Some(agent) = weak.upgrade() {
+                                agent.take_back(message.clone(), back.clone());
+                            }
+                        }));
+                    }
                 }
                 Err(_) => {
                     agent.chat.notice("Queued: sent when this turn ends.", "dim");
@@ -1994,6 +2019,107 @@ impl Agent {
         running.iter().for_each(|w| w.stopped());
     }
 
+    /// A message sent into the running turn, taken back (back into the input) if Claude has not
+    /// taken it yet.
+    fn take_back(self: &Rc<Self>, message_id: String, text: String) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
+        let weak = Rc::downgrade(self);
+        conn.request("_session/take_back", json!({ "sessionId": session, "messageId": message_id }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            match result {
+                // Back in the input (restore_unsent says so).
+                Ok(answer) if answer["cancelled"].as_bool() == Some(true) => agent.restore_unsent(vec![(text.clone(), Vec::new())]),
+                Ok(_) => agent.chat.notice("Too late to take back: Claude has it already.", "dim"),
+                Err(err) => agent.chat.notice(&format!("Could not take it back: {}", message(&err)), "error"),
+            }
+        });
+    }
+
+    /// Skills and plugins read again by the session that runs (changed in loom's Claude folder).
+    pub fn reload_extensions(&self) {
+        if let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) {
+            conn.request("_session/reload", json!({ "sessionId": session }), |_| {});
+        }
+    }
+
+    /// MCP servers: their status (`action` "status"), or one switched on/off or connected
+    /// again; the usage popover shows the list after.
+    fn mcp(self: &Rc<Self>, action: &str, server: &str, enabled: bool) {
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else {
+            self.chat.show_mcp(None);
+            return;
+        };
+        let weak = Rc::downgrade(self);
+        let refresh = action != "status";
+        conn.request("_session/mcp", json!({ "sessionId": session, "action": action, "server": server, "enabled": enabled }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            if refresh {
+                if let Err(err) = &result {
+                    agent.chat.notice(&format!("MCP: {}", message(err)), "error");
+                }
+                agent.mcp("status", "", false);
+                return;
+            }
+            let servers = result.ok().map(|r| {
+                r["mcpServers"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|s| Some((s["name"].as_str()?.to_owned(), s["status"].as_str().unwrap_or("").to_owned(), s["error"].as_str().map(str::to_owned))))
+                    .collect()
+            });
+            agent.chat.show_mcp(servers);
+        });
+    }
+
+    /// "Rewind to here, files too": the files Claude changed from that message on go back as
+    /// they were (once the user has seen which), then the conversation is copied from there.
+    fn rewind_with_files(self: &Rc<Self>, at: String, text: String) {
+        if self.turn.get() || self.autonomous.get().is_some() {
+            self.chat.notice("Rewind once this turn is over.", "dim");
+            return;
+        }
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
+        let weak = Rc::downgrade(self);
+        conn.request("_session/rewind_files", json!({ "sessionId": session, "afterMessageId": at, "dryRun": true }), move |result| {
+            let Some(agent) = weak.upgrade() else { return };
+            let files: Vec<String> = match &result {
+                Ok(preview) if preview["canRewind"].as_bool() == Some(true) => preview["filesChanged"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_owned)).collect(),
+                Ok(preview) => return agent.chat.notice(&format!("Can't put the files back: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
+                Err(err) => return agent.chat.notice(&format!("Can't put the files back: {}", message(err)), "error"),
+            };
+            if files.is_empty() {
+                agent.chat.notice("No file Claude changed from there on differs: only the conversation is rewound.", "dim");
+                agent.fork(Some(at.clone()), text.clone());
+                return;
+            }
+            let preview = result.unwrap_or_default();
+            let what = match files.as_slice() {
+                [one] => Path::new(one).file_name().map_or_else(|| one.clone(), |n| n.to_string_lossy().into_owned()),
+                more => format!("{} files", more.len()),
+            };
+            let (plus, minus) = (preview["insertions"].as_u64().unwrap_or(0), preview["deletions"].as_u64().unwrap_or(0));
+            let ask = format!("Rewinding here also puts {what} back as it was (+{plus} −{minus} of Claude's changes go). Rewind with the files?");
+            let (weak, at, text) = (Rc::downgrade(&agent), at.clone(), text.clone());
+            agent.chat.notice_choice(&ask, "Rewind", Rc::new(move || {
+                let Some(agent) = weak.upgrade() else { return };
+                let (Some(conn), Some(session)) = (agent.conn.borrow().clone(), agent.session_id()) else { return };
+                let (weak, at, text) = (Rc::downgrade(&agent), at.clone(), text.clone());
+                conn.request("_session/rewind_files", json!({ "sessionId": session, "afterMessageId": at }), move |result| {
+                    let Some(agent) = weak.upgrade() else { return };
+                    match result {
+                        Ok(done) if done["canRewind"].as_bool() == Some(true) => {
+                            agent.repo_changed();
+                            agent.fork(Some(at.clone()), text.clone());
+                        }
+                        Ok(done) => agent.chat.notice(&format!("Could not put the files back: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
+                        Err(err) => agent.chat.notice(&format!("Could not put the files back: {}", message(&err)), "error"),
+                    }
+                });
+            }));
+        });
+    }
+
     /// Undoes Claude's file changes made from `message` on (that turn's and later ones'), once
     /// the user has seen what would change. The conversation stays as it is.
     pub fn undo_files(self: &Rc<Self>, message_id: String) {
@@ -2173,6 +2299,10 @@ impl Agent {
     fn subagent_update(self: &Rc<Self>, update: &Value) {
         let Some(id) = update["sessionId"].as_str() else { return };
         let sub = self.sub(id);
+        if let Some(step) = update["step"].as_str() {
+            *sub.step.borrow_mut() = step.to_owned();
+            sub.at.set(Instant::now());
+        }
         if let Some(title) = update["description"].as_str().or(update["title"].as_str()).filter(|t| !t.is_empty()) {
             *sub.title.borrow_mut() = title.to_owned();
         }
@@ -2404,6 +2534,9 @@ impl Agent {
             "usage_update" => {
                 self.chat.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
                 self.chat.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
+                if !update["_meta"]["loom/limits"].is_null() {
+                    self.chat.set_limits(update["_meta"]["loom/limits"].clone());
+                }
                 let context = &update["_meta"]["loom/context"];
                 let parts = context["parts"].as_array().into_iter().flatten().filter_map(|p| Some((p["name"].as_str()?.to_owned(), p["tokens"].as_u64()?))).collect();
                 self.chat.set_context_parts(parts, context["autoCompactAt"].as_u64());

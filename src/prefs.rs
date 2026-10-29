@@ -1025,6 +1025,7 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
                 let (name, refill) = (item.name.clone(), refill.clone());
                 restore.connect_clicked(move |_| {
                     if crate::plugin::restore(&name).is_ok() {
+                        crate::plugin::changed();
                         refill();
                     }
                 });
@@ -1038,6 +1039,7 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
             let (item_now, refill) = (item.clone(), refill.clone());
             on.connect_active_notify(move |on| {
                 if on.is_active() != item_now.enabled && crate::plugin::set_enabled(&item_now, on.is_active()).is_ok() {
+                    crate::plugin::changed();
                     // Rebuilt after the switch has finished moving.
                     let refill = refill.clone();
                     glib::idle_add_local_once(move || refill());
@@ -1057,6 +1059,7 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
             let (name, problem, w) = (name.clone(), problem.clone(), window.clone());
             move || match crate::plugin::create(kind, &name.text()) {
                 Ok(file) => {
+                    crate::plugin::changed();
                     let _ = w.activate_action("app.open-file", Some(&file.to_string_lossy().to_variant()));
                     w.close();
                 }
@@ -1082,6 +1085,58 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
     edit_hooks.connect_clicked(edit(crate::plugin::hooks_file()));
     row(&hooks, "hooks.json", "Commands run on Claude Code's events (a tool used, a turn ended), for loom's agents only.", &edit_hooks);
     holder.append(&hooks);
+
+    // What Claude Code does without asking: the rules "Yes, and don't ask again" added.
+    let rules = section("Allowed without asking");
+    let found = allow_rules();
+    if found.is_empty() {
+        caption(&rules, "No rules yet. \"Yes, and don't ask again\" on a question adds one.");
+    }
+    for (file, place, rule) in found {
+        let remove = flat_button("Remove");
+        remove.set_tooltip_text(Some(&format!("Claude asks again before this ({})", file.display())));
+        let (file_now, rule_now, holder_now, window_now) = (file.clone(), rule.clone(), holder.clone(), window.clone());
+        remove.connect_clicked(move |_| {
+            if remove_allow_rule(&file_now, &rule_now).is_ok() {
+                fill_claude(&holder_now, &window_now);
+            }
+        });
+        row(&rules, &rule, &place, &remove);
+    }
+    holder.append(&rules);
+}
+
+/// Claude Code's settings files with rules: the user's, and each of loom's projects' local one.
+fn rule_files() -> Vec<(std::path::PathBuf, String)> {
+    let mut files = vec![(crate::state::claude_dir().join("settings.json"), "Everywhere (your Claude Code settings)".to_owned())];
+    let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| "dev.shirvani.Loom".to_owned());
+    for project in crate::state::load(&app_id).projects {
+        let name = project.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        files.push((project.path.join(".claude/settings.local.json"), format!("In {name}")));
+    }
+    files
+}
+
+/// Every allow rule: (its file, where it applies, the rule).
+fn allow_rules() -> Vec<(std::path::PathBuf, String, String)> {
+    let mut all = Vec::new();
+    for (file, place) in rule_files() {
+        let Some(settings) = std::fs::read_to_string(&file).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok()) else { continue };
+        for rule in settings["permissions"]["allow"].as_array().into_iter().flatten().filter_map(|r| r.as_str()) {
+            all.push((file.clone(), place.clone(), rule.to_owned()));
+        }
+    }
+    all
+}
+
+/// Takes `rule` out of the file's allow list (nothing else of the file is touched).
+fn remove_allow_rule(file: &std::path::Path, rule: &str) -> Result<(), String> {
+    let text = std::fs::read_to_string(file).map_err(|e| e.to_string())?;
+    let mut settings: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let Some(allow) = settings["permissions"]["allow"].as_array_mut() else { return Ok(()) };
+    allow.retain(|r| r.as_str() != Some(rule));
+    let out = serde_json::to_string_pretty(&settings).map_err(|e| e.to_string())?;
+    std::fs::write(file, out + "\n").map_err(|e| e.to_string())
 }
 
 /// A description as a row shows it: the first sentence, at most two lines' worth.

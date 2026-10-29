@@ -1008,7 +1008,11 @@ impl Files {
     /// changed on disk since it was opened (the agent rewrote it) is overwritten only by a
     /// second Save of that same version.
     pub fn save(&self) -> bool {
-        self.write(true)
+        let saved = self.write(true);
+        if saved && self.open.borrow().as_ref().is_some_and(|p| p.starts_with(crate::plugin::dir())) {
+            crate::plugin::changed();
+        }
+        saved
     }
 
     /// Saving on the way to something else (opening another file, closing): never

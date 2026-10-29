@@ -127,6 +127,8 @@ pub struct Link {
     skip: Cell<u32>,
     cost: Cell<Option<f64>>,
     limit: RefCell<Value>,
+    /// The account's limits as Claude Code last told them: {plan, windows}.
+    limits: RefCell<Value>,
     /// The message the running turn started from.
     turn_message: RefCell<Option<String>>,
     /// What fills the context, as Claude Code last counted it.
@@ -207,6 +209,7 @@ impl Link {
             limit: RefCell::new(Value::Null),
             parts: RefCell::new(Value::Null),
             turn_message: RefCell::default(),
+            limits: RefCell::new(Value::Null),
             untitled: Cell::new(false),
             tasks: RefCell::default(),
             task_calls: RefCell::default(),
@@ -306,8 +309,8 @@ impl Link {
             "session/prompt" => self.prompt(&params, reply),
             "_session/steering" => {
                 if self.prompt.borrow().is_some() {
-                    let _ = self.write_user(&params["prompt"]);
-                    reply(Ok(json!({ "outcome": "steered" })));
+                    let message = self.write_user(&params["prompt"]);
+                    reply(Ok(json!({ "outcome": "steered", "messageId": message })));
                 } else {
                     reply(Ok(json!({ "outcome": "promptRequired" })));
                 }
@@ -335,7 +338,13 @@ impl Link {
             "_session/background" => self.control(json!({ "subtype": "background_tasks" }), move |result| reply(result.map(|_| json!({})))),
             // Files as they were at a message (Claude's edits since then undone); dryRun: what would change.
             "_session/rewind_files" => {
-                let request = json!({ "subtype": "rewind_files", "user_message_id": params["userMessageId"], "dry_run": params["dryRun"].as_bool() == Some(true) });
+                // By the message itself, or as the message you sent after agent message `afterMessageId`.
+                let message = match params["afterMessageId"].as_str() {
+                    Some(after) => transcripts::user_after(&self.session_id(), after),
+                    None => params["userMessageId"].as_str().map(str::to_owned),
+                };
+                let Some(message) = message else { return reply(Err(error("That message is not in Claude Code's file of this conversation"))) };
+                let request = json!({ "subtype": "rewind_files", "user_message_id": message, "dry_run": params["dryRun"].as_bool() == Some(true) });
                 self.control(request, reply);
             }
             // Claude Code's next-message suggestions on or off, in a session that runs.
@@ -343,6 +352,27 @@ impl Link {
                 let on = params["enabled"].as_bool().unwrap_or(true);
                 self.control(json!({ "subtype": "apply_flag_settings", "settings": { "promptSuggestionEnabled": on } }), move |result| reply(result.map(|_| json!({}))));
             }
+            // Skills and plugins read again (changed in loom's Claude folder).
+            "_session/reload" => {
+                let me = self.me.clone();
+                self.control(json!({ "subtype": "reload_plugins" }), move |_| {
+                    if let Some(link) = me.upgrade() {
+                        link.control(json!({ "subtype": "reload_skills" }), move |result| reply(result.map(|_| json!({}))));
+                    }
+                });
+            }
+            // MCP servers: their status, one switched on or off, one connected again.
+            "_session/mcp" => {
+                let server = params["server"].clone();
+                let request = match params["action"].as_str() {
+                    Some("toggle") => json!({ "subtype": "mcp_toggle", "serverName": server, "enabled": params["enabled"].as_bool() == Some(true) }),
+                    Some("reconnect") => json!({ "subtype": "mcp_reconnect", "serverName": server }),
+                    _ => json!({ "subtype": "mcp_status" }),
+                };
+                self.control(request, reply);
+            }
+            // A message sent into the running turn, taken back if Claude has not taken it yet.
+            "_session/take_back" => self.control(json!({ "subtype": "cancel_async_message", "message_uuid": params["messageId"] }), reply),
             "_session/stop_task" => {
                 let task = params["taskId"].as_str().unwrap_or("").to_owned();
                 self.control(json!({ "subtype": "stop_task", "task_id": task }), move |result| reply(result.map(|_| json!({}))));
@@ -507,7 +537,7 @@ impl Link {
         *self.session.borrow_mut() = Some(id.clone());
         let me = self.me.clone();
         let suggestions = options["promptSuggestions"].as_bool().unwrap_or(true);
-        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": suggestions, "perTaskStopAffordance": true }), move |result| {
+        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": suggestions, "perTaskStopAffordance": true, "agentProgressSummaries": true }), move |result| {
             let Some(link) = me.upgrade() else { return };
             match result {
                 // No login (and no API key): said when the session opens, as loom offers its
@@ -751,6 +781,9 @@ impl Link {
         if !self.parts.borrow().is_null() {
             update["_meta"]["loom/context"] = self.parts.borrow().clone();
         }
+        if !self.limits.borrow().is_null() {
+            update["_meta"]["loom/limits"] = self.limits.borrow().clone();
+        }
         self.send(None, update);
     }
 
@@ -872,8 +905,19 @@ impl Link {
                 let utilization = window["utilization"].as_f64().or_else(|| info["utilization"].as_f64());
                 if let Some(utilization) = utilization {
                     *self.limit.borrow_mut() = json!({ "utilization": utilization, "rateLimitType": kind, "resetsAt": window["resetsAt"].as_i64().or_else(|| info["resetsAt"].as_i64()) });
-                    self.usage();
                 }
+                // Every window it reports, for the usage popover.
+                let windows: Vec<Value> = info["unifiedWindows"]
+                    .as_object()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|(kind, w)| Some(json!({ "kind": kind, "utilization": w["utilization"].as_f64()?, "resetsAt": w["resetsAt"] })))
+                    .collect();
+                if !windows.is_empty() {
+                    let plan = self.init.borrow()["account"]["subscriptionType"].clone();
+                    *self.limits.borrow_mut() = json!({ "plan": plan, "windows": windows });
+                }
+                self.usage();
             }
             "prompt_suggestion" => {
                 let text = message["suggestion"].as_str().unwrap_or("");
@@ -925,6 +969,14 @@ impl Link {
                 {
                     sub.task = Some(task.to_owned());
                     sub.background |= message["is_backgrounded"].as_bool() == Some(true);
+                }
+            }
+            // What a subagent is at, in a line (its progress summary).
+            "task_progress" => {
+                let (task, tool) = (message["task_id"].as_str(), message["tool_use_id"].as_str());
+                let key = self.subs.borrow().iter().find(|s| s.task.as_deref() == task || tool == Some(s.key.as_str())).map(|s| s.key.clone());
+                if let (Some(key), Some(summary)) = (key, message["summary"].as_str().filter(|s| !s.is_empty())) {
+                    self.send(None, json!({ "sessionUpdate": "subagent_update", "sessionId": key, "step": summary }));
                 }
             }
             "task_updated" => {
