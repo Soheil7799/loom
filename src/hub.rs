@@ -1299,7 +1299,10 @@ impl Hub {
             match undone {
                 Ok((v, note, before)) => {
                     log_line(&json!({ "undo": id, "at": crate::state::now() }));
-                    hub.offer_teaching(&v, before);
+                    // A change the Notes chat made is not Scribe's to learn from.
+                    if v["reason"] != "From the Notes chat" {
+                        hub.offer_teaching(&v, before);
+                    }
                     let mut store = hub.store.borrow_mut();
                     store.recent.retain(|r| r["id"].as_u64() != Some(id));
                     store.save();

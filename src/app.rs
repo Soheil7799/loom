@@ -449,7 +449,7 @@ impl App {
         let weak = Rc::downgrade(&this);
         *this.files.on_ask.borrow_mut() = Some(Rc::new(move |text: String| {
             let Some(app) = weak.upgrade() else { return };
-            let Some(agent) = app.focused_agent() else { return };
+            let Some(agent) = app.active_agent() else { return };
             let buffer = agent.chat.input.buffer();
             buffer.place_cursor(&buffer.end_iter());
             buffer.insert_at_cursor(&text);
@@ -706,22 +706,22 @@ impl App {
             // Alt+Enter sends a form.
             (false, false, true, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 let option = k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1;
-                if !self.focused_agent().is_some_and(|a| a.answer(0, option)) {
+                if !self.active_agent().is_some_and(|a| a.answer(0, option)) {
                     return glib::Propagation::Proceed;
                 }
             }
             (false, false, true, gdk::Key::y) => {
-                if !self.focused_agent().is_some_and(|a| a.answer_kind("allow")) {
+                if !self.active_agent().is_some_and(|a| a.answer_kind("allow")) {
                     return glib::Propagation::Proceed;
                 }
             }
             (false, false, true, gdk::Key::n) => {
-                if !self.focused_agent().is_some_and(|a| a.answer_kind("reject")) {
+                if !self.active_agent().is_some_and(|a| a.answer_kind("reject")) {
                     return glib::Propagation::Proceed;
                 }
             }
             (false, false, true, gdk::Key::Return | gdk::Key::KP_Enter) => {
-                if !self.focused_agent().is_some_and(|a| a.send_form()) {
+                if !self.active_agent().is_some_and(|a| a.send_form()) {
                     return glib::Propagation::Proceed;
                 }
             }
@@ -734,7 +734,7 @@ impl App {
                 // In a terminal, Ctrl+C is its own (an interrupt).
                 let in_terminal = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some());
                 let copied = !in_terminal
-                    && self.focused_agent().is_some_and(|agent| !agent.chat.input.buffer().has_selection() && agent.chat.copy_selection());
+                    && self.active_agent().is_some_and(|agent| !agent.chat.input.buffer().has_selection() && agent.chat.copy_selection());
                 if !copied {
                     return glib::Propagation::Proceed;
                 }
@@ -745,7 +745,7 @@ impl App {
                 if !(in_files && self.files.find()) {
                     if self.showing_project().is_some() {
                         self.history.focus_filter();
-                    } else if let Some(agent) = self.focused_agent() {
+                    } else if let Some(agent) = self.active_agent() {
                         agent.chat.find();
                     }
                 }
@@ -784,7 +784,7 @@ impl App {
     /// still press what has focus.
     fn type_into_chat(&self, key: gdk::Key) -> glib::Propagation {
         let Some(c) = key.to_unicode().filter(|c| !c.is_control() && *c != ' ') else { return glib::Propagation::Proceed };
-        let Some(agent) = self.focused_agent() else {
+        let Some(agent) = self.active_agent() else {
             // On a project's page, typing filters its conversations.
             let focus = GtkWindowExt::focus(&self.window);
             let typing = focus.as_ref().is_some_and(|w| w.is::<gtk::Text>() || w.is::<gtk::TextView>());
@@ -1758,7 +1758,6 @@ impl App {
         self.overview.grab_focus();
     }
 
-    /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
     /// The Notes chat, in place of the agent shown.
     pub fn show_notes_chat(self: &Rc<Self>) {
         if let Some(old) = self.focused.borrow_mut().take() {
@@ -1772,6 +1771,7 @@ impl App {
         self.notes_chat.focus();
     }
 
+    /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
     pub fn show_notes_history(self: &Rc<Self>) {
         if let Some(old) = self.focused.borrow_mut().take() {
             old.focused.set(false);
@@ -2269,6 +2269,18 @@ impl App {
                 app.hub.record_external(edits, &session, &title);
             }
         }));
+        let chat = Rc::downgrade(&self.notes_chat);
+        self.chat_stack.connect_visible_child_name_notify(move |stack| {
+            if let Some(chat) = chat.upgrade() {
+                chat.shown(stack.visible_child_name().as_deref() == Some("notes-chat"));
+            }
+        });
+        let entry = self.notes_entry.downgrade();
+        *self.notes_chat.on_attention.borrow_mut() = Some(Rc::new(move |waiting: bool| {
+            if let Some(label) = entry.upgrade().and_then(|e| e.child()).and_downcast::<gtk::Label>() {
+                label.set_label(if waiting { "✎  Notes chat  ⚑" } else { "✎  Notes chat" });
+            }
+        }));
         let weak = Rc::downgrade(self);
         self.notes_entry.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -2451,7 +2463,7 @@ impl App {
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let busy: Vec<String> =
-            self.agents.borrow().iter().filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
+            self.agents.borrow().iter().chain(self.notes_chat.current().as_ref()).filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
         let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
         let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {
@@ -2487,6 +2499,7 @@ impl App {
         for agent in self.agents.borrow().iter() {
             agent.stop();
         }
+        self.notes_chat.shutdown();
         self.save();
         for tray in self.trays.borrow().values() {
             tray.stop_all();

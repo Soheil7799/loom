@@ -467,8 +467,9 @@ impl Link {
             program.push("--permission-mode".to_owned());
             program.push(mode.to_owned());
         }
-        // A model of its own (the Notes chat's), and words added to Claude Code's instructions.
-        if let Some(model) = options["model"].as_str() {
+        // A model of its own (the Notes chat's) for a new conversation (one picked since stays),
+        // and words added to Claude Code's instructions.
+        if let Some(model) = options["model"].as_str().filter(|_| !resume) {
             program.push("--model".to_owned());
             program.push(model.to_owned());
             *self.model.borrow_mut() = model.to_owned();
@@ -581,6 +582,11 @@ impl Link {
         *self.parts.borrow_mut() = Value::Null;
         let mut params = self.params.borrow().clone();
         params["_meta"]["claudeCode"]["options"]["permissionMode"] = mode.into();
+        // The model in use goes on with the plan (not the one the conversation was opened on).
+        let model = self.model.borrow().clone();
+        if model != "default" {
+            params["_meta"]["claudeCode"]["options"]["model"] = model.into();
+        }
         let me = self.me.clone();
         self.start(id, false, &params, Box::new(move |result| {
             let Some(link) = me.upgrade() else { return };

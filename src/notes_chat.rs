@@ -6,13 +6,14 @@
 //! folder, editable).
 
 use std::cell::{Cell, RefCell};
-use std::path::PathBuf;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gtk::{glib, pango, prelude::*};
 use serde_json::json;
 
-use crate::agent::{Agent, Event};
+use crate::agent::{Agent, Event, Status};
 use crate::history::{self, Past};
 use crate::jobs::Tray;
 use crate::state::Saved;
@@ -38,6 +39,38 @@ pub struct NotesChat {
     /// The notes a turn changed, for the Notes history: (note, before, after), the session and
     /// the chat's title.
     pub on_edits: RefCell<Option<Rc<dyn Fn(Vec<(String, Option<String>, String)>, String, String)>>>,
+    /// The chat waits for an answer (true) or no longer does: for the sidebar's entry.
+    pub on_attention: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// The notes the chat is changing in this turn, as they were before (None: new): read when
+    /// its edit is asked for, so what it records is its own change, against what was there.
+    before: Rc<RefCell<HashMap<PathBuf, Option<String>>>>,
+}
+
+/// The vault's own list of its Notes chats (`.loom/chats.json`): only those are listed.
+fn chats_file(vault: &Path) -> PathBuf {
+    vault.join(crate::vault::OWN).join("chats.json")
+}
+
+fn chats(vault: &Path) -> Vec<String> {
+    std::fs::read_to_string(chats_file(vault)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+}
+
+fn remember_chat(vault: &Path, session: &str) {
+    let mut all = chats(vault);
+    if all.iter().any(|s| s == session) {
+        return;
+    }
+    all.push(session.to_owned());
+    let _ = std::fs::create_dir_all(vault.join(crate::vault::OWN));
+    let _ = std::fs::write(chats_file(vault), serde_json::to_string(&all).unwrap_or_default());
+}
+
+/// `path` with its folder's links resolved (the vault may be reached through a link).
+fn resolved(path: &Path) -> PathBuf {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => history::real(parent).join(name),
+        _ => history::real(path),
+    }
 }
 
 impl NotesChat {
@@ -70,6 +103,8 @@ impl NotesChat {
             pasts: RefCell::default(),
             listing: RefCell::default(),
             on_edits: RefCell::default(),
+            on_attention: RefCell::default(),
+            before: Rc::default(),
         });
         let weak = Rc::downgrade(&chat);
         chat.list.connect_row_activated(move |_, row| {
@@ -118,8 +153,11 @@ impl NotesChat {
     /// An agent for chat `session` (None: a new chat), shown.
     fn chat_for(self: &Rc<Self>, session: Option<String>) {
         let Some(vault) = crate::vault::current() else { return };
-        // One chat runs at a time: the one left goes (its conversation is kept by Claude Code).
-        if let Some(old) = self.current.borrow_mut().take() {
+        // One chat runs at a time: the one left goes (its conversation is kept by Claude Code;
+        // what it changed so far is recorded).
+        let old = self.current.borrow_mut().take();
+        if let Some(old) = old {
+            self.record(&old);
             old.stop();
             self.stack.remove(&old.chat.root);
         }
@@ -139,15 +177,43 @@ impl NotesChat {
         agent.no_journal.set(true);
         *agent.extra_options.borrow_mut() = json!({ "model": "sonnet", "appendSystemPrompt": PROMPT });
         agent.set_show_thinking(crate::settings::get().show_thinking);
+        // A note it is about to edit, read as it is first.
+        let (before, root) = (self.before.clone(), history::real(&vault));
+        *agent.on_tool.borrow_mut() = Some(Rc::new(move |update: &serde_json::Value| {
+            if update["sessionUpdate"] != "tool_call" || update["kind"] != "edit" {
+                return;
+            }
+            let paths = update["locations"].as_array().into_iter().flatten().filter_map(|l| l["path"].as_str());
+            for path in paths {
+                let path = resolved(Path::new(path));
+                if path.starts_with(&root) && !before.borrow().contains_key(&path) {
+                    let was = std::fs::read_to_string(&path).ok();
+                    before.borrow_mut().insert(path, was);
+                }
+            }
+        }));
         let weak = Rc::downgrade(self);
         agent.on_event(move |agent, event| {
             let Some(chat) = weak.upgrade() else { return };
+            let current = chat.current.borrow().as_ref().is_some_and(|c| Rc::ptr_eq(c, agent));
             // A chat's first message makes it one of the vault's past chats.
-            if matches!(event, Event::Session | Event::Done) && chat.current.borrow().as_ref().is_some_and(|c| Rc::ptr_eq(c, agent)) {
+            if matches!(event, Event::Session) && current
+                && let (Some(session), Some(vault)) = (agent.session_id(), crate::vault::current())
+            {
+                remember_chat(&vault, &session);
                 chat.refresh();
             }
             if matches!(event, Event::Done) {
                 chat.record(agent);
+                if current {
+                    chat.refresh();
+                }
+            }
+            if matches!(event, Event::Changed | Event::Asked(_) | Event::Done) && current {
+                let waiting = agent.status() == Status::Blocked;
+                if let Some(attention) = chat.on_attention.borrow().clone() {
+                    attention(waiting);
+                }
             }
         });
         self.stack.add_child(&agent.chat.root);
@@ -159,29 +225,28 @@ impl NotesChat {
         self.show(&agent);
     }
 
-    /// The notes the chat's agent changed and the vault's git does not have yet (each against
-    /// its last commit), told to the Notes history (read off the main loop).
+    /// The notes the chat changed since the last time (each against how it was just before
+    /// the chat's edit), told to the Notes history. Only its own edits: a note changed only by
+    /// someone else is not among them.
     fn record(&self, agent: &Rc<Agent>) {
+        let taken: Vec<(PathBuf, Option<String>)> = self.before.borrow_mut().drain().collect();
         let Some(vault) = crate::vault::current() else { return };
         let Some(on_edits) = self.on_edits.borrow().clone() else { return };
-        let notes: Vec<String> = agent
-            .written()
-            .into_iter()
-            .filter_map(|p| p.strip_prefix(&vault).ok().map(|r| r.to_string_lossy().into_owned()))
-            .filter(|r| r.ends_with(".md") && !r.starts_with(".loom/") && !r.starts_with(".git/"))
-            .collect();
-        if notes.is_empty() {
+        if taken.is_empty() {
             return;
         }
+        let root = history::real(&vault);
         let (session, title) = (agent.session_id().unwrap_or_default(), agent.title());
         glib::spawn_future_local(async move {
             let edits = gtk::gio::spawn_blocking(move || {
-                notes
+                taken
                     .into_iter()
-                    .filter_map(|note| {
-                        let after = std::fs::read_to_string(vault.join(&note)).ok()?;
-                        let shown = std::process::Command::new("git").arg("-C").arg(&vault).args(["show", &format!("HEAD:{note}")]).output().ok();
-                        let before = shown.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+                    .filter_map(|(path, before)| {
+                        let note = path.strip_prefix(&root).ok()?.to_string_lossy().into_owned();
+                        if !note.ends_with(".md") || note.starts_with(".loom/") || note.starts_with(".git/") {
+                            return None;
+                        }
+                        let after = std::fs::read_to_string(&path).ok()?;
                         (before.as_deref() != Some(after.as_str())).then_some((note, before, after))
                     })
                     .collect::<Vec<_>>()
@@ -195,7 +260,35 @@ impl NotesChat {
     }
 
     fn new_chat(self: &Rc<Self>) {
+        // The new chat open is still empty: it is the one.
+        let empty = self.current.borrow().as_ref().is_some_and(|a| a.session_id().is_none() && !a.is_busy());
+        if empty {
+            let current = self.current.borrow().clone();
+            if let Some(agent) = current {
+                self.show(&agent);
+            }
+            return;
+        }
         self.chat_for(None);
+    }
+
+    /// The page shown (true) or left: its chat is watched only while it is shown.
+    pub fn shown(&self, shown: bool) {
+        if let Some(agent) = self.current.borrow().as_ref() {
+            agent.focused.set(shown);
+        }
+    }
+
+    /// loom quits: what the chat changed is recorded, and it stops.
+    pub fn shutdown(&self) {
+        let current = self.current.borrow().clone();
+        if let Some(agent) = current {
+            self.record(&agent);
+            agent.stop();
+        }
+        if let Some(tray) = self.tray.borrow().as_ref() {
+            tray.stop_all();
+        }
     }
 
     fn show(&self, agent: &Rc<Agent>) {
@@ -230,8 +323,8 @@ impl NotesChat {
             chat.listing.borrow_mut().take();
             match result {
                 Ok(all) => {
-                    let vault = history::real(&vault);
-                    let pasts: Vec<Past> = all.into_iter().filter(|p| history::real(&p.cwd) == vault).collect();
+                    let ours = chats(&vault);
+                    let pasts: Vec<Past> = all.into_iter().filter(|p| ours.contains(&p.session_id)).collect();
                     *chat.pasts.borrow_mut() = pasts;
                     chat.fill();
                 }

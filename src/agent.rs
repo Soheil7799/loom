@@ -194,6 +194,8 @@ pub struct Agent {
     pub no_journal: Cell<bool>,
     /// Session options of its own (a model, instructions), beside loom's.
     pub extra_options: RefCell<Value>,
+    /// Told of every tool call, its own and its subagents' (before it runs, then its updates).
+    pub on_tool: RefCell<Option<Rc<dyn Fn(&Value)>>>,
     /// Its subagents' edit calls not finished yet.
     sub_edits: RefCell<std::collections::HashSet<String>>,
     /// Commands running in the background, shown in the strip: key → since when.
@@ -282,6 +284,7 @@ impl Agent {
             wrote: Cell::new(false),
             no_journal: Cell::new(false),
             extra_options: RefCell::new(Value::Null),
+            on_tool: RefCell::default(),
             sub_edits: RefCell::default(),
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
@@ -2074,11 +2077,6 @@ impl Agent {
         });
     }
 
-    /// The files it wrote or made (newest first).
-    pub fn written(&self) -> Vec<PathBuf> {
-        self.files.borrow().iter().map(|(path, _)| path.clone()).collect()
-    }
-
     /// One of its workflows still runs (its agent must not be suspended meanwhile).
     pub fn workflow_running(&self) -> bool {
         self.workflows.borrow().iter().any(|w| !w.done.get())
@@ -2240,6 +2238,10 @@ impl Agent {
             "agent_message_chunk" => sub.chat.agent_text_with(text, update["messageId"].as_str()),
             "agent_thought_chunk" => sub.chat.thought(text),
             "tool_call" | "tool_call_update" => {
+                let hook = self.on_tool.borrow().clone().filter(|_| !self.replaying.get());
+                if let Some(hook) = hook {
+                    hook(update);
+                }
                 sub.chat.tool(update);
                 // Its edits are the turn's too (they are undone with it): an edit call that
                 // completes.
@@ -2411,6 +2413,10 @@ impl Agent {
     }
 
     fn tool(self: &Rc<Self>, update: &Value) {
+        let hook = self.on_tool.borrow().clone().filter(|_| !self.replaying.get());
+        if let Some(hook) = hook {
+            hook(update);
+        }
         self.chat.tool(update);
         let id = update["toolCallId"].as_str().unwrap_or("").to_owned();
 
