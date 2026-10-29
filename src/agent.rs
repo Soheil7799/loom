@@ -2074,6 +2074,11 @@ impl Agent {
         });
     }
 
+    /// The files it wrote or made (newest first).
+    pub fn written(&self) -> Vec<PathBuf> {
+        self.files.borrow().iter().map(|(path, _)| path.clone()).collect()
+    }
+
     /// One of its workflows still runs (its agent must not be suspended meanwhile).
     pub fn workflow_running(&self) -> bool {
         self.workflows.borrow().iter().any(|w| !w.done.get())

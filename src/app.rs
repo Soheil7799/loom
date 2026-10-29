@@ -2264,6 +2264,12 @@ impl App {
     /// in the panel; a question's conversation opened from it.
     fn wire_hub(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
+        *self.notes_chat.on_edits.borrow_mut() = Some(Rc::new(move |edits, session, title| {
+            if let Some(app) = weak.upgrade() {
+                app.hub.record_external(edits, &session, &title);
+            }
+        }));
+        let weak = Rc::downgrade(self);
         self.notes_entry.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
                 app.show_notes_chat();

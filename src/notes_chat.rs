@@ -35,6 +35,9 @@ pub struct NotesChat {
     /// The vault's past chats, newest first (the list's rows after "New chat").
     pasts: RefCell<Vec<Past>>,
     listing: RefCell<Option<std::rc::Weak<crate::provider::Conn>>>,
+    /// The notes a turn changed, for the Notes history: (note, before, after), the session and
+    /// the chat's title.
+    pub on_edits: RefCell<Option<Rc<dyn Fn(Vec<(String, Option<String>, String)>, String, String)>>>,
 }
 
 impl NotesChat {
@@ -66,6 +69,7 @@ impl NotesChat {
             next_id: Cell::new(FIRST_ID),
             pasts: RefCell::default(),
             listing: RefCell::default(),
+            on_edits: RefCell::default(),
         });
         let weak = Rc::downgrade(&chat);
         chat.list.connect_row_activated(move |_, row| {
@@ -142,6 +146,9 @@ impl NotesChat {
             if matches!(event, Event::Session | Event::Done) && chat.current.borrow().as_ref().is_some_and(|c| Rc::ptr_eq(c, agent)) {
                 chat.refresh();
             }
+            if matches!(event, Event::Done) {
+                chat.record(agent);
+            }
         });
         self.stack.add_child(&agent.chat.root);
         *self.current.borrow_mut() = Some(agent.clone());
@@ -150,6 +157,41 @@ impl NotesChat {
             agent.start();
         }
         self.show(&agent);
+    }
+
+    /// The notes the chat's agent changed and the vault's git does not have yet (each against
+    /// its last commit), told to the Notes history (read off the main loop).
+    fn record(&self, agent: &Rc<Agent>) {
+        let Some(vault) = crate::vault::current() else { return };
+        let Some(on_edits) = self.on_edits.borrow().clone() else { return };
+        let notes: Vec<String> = agent
+            .written()
+            .into_iter()
+            .filter_map(|p| p.strip_prefix(&vault).ok().map(|r| r.to_string_lossy().into_owned()))
+            .filter(|r| r.ends_with(".md") && !r.starts_with(".loom/") && !r.starts_with(".git/"))
+            .collect();
+        if notes.is_empty() {
+            return;
+        }
+        let (session, title) = (agent.session_id().unwrap_or_default(), agent.title());
+        glib::spawn_future_local(async move {
+            let edits = gtk::gio::spawn_blocking(move || {
+                notes
+                    .into_iter()
+                    .filter_map(|note| {
+                        let after = std::fs::read_to_string(vault.join(&note)).ok()?;
+                        let shown = std::process::Command::new("git").arg("-C").arg(&vault).args(["show", &format!("HEAD:{note}")]).output().ok();
+                        let before = shown.filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned());
+                        (before.as_deref() != Some(after.as_str())).then_some((note, before, after))
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .await
+            .unwrap_or_default();
+            if !edits.is_empty() {
+                on_edits(edits, session, title);
+            }
+        });
     }
 
     fn new_chat(self: &Rc<Self>) {

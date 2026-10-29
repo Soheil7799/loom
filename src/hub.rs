@@ -279,7 +279,7 @@ impl Hub {
         let title = gtk::Label::builder().label("Notes history").xalign(0.0).build();
         title.add_css_class("overview-title");
         let about = gtk::Label::builder()
-            .label("Everything Scribe wrote in your notes, newest first. Undo puts a note back as it was; if it changed since, only that change's lines are taken out.")
+            .label("Everything Scribe and the Notes chat wrote in your notes, newest first. Undo puts a note back as it was; if it changed since, only that change's lines are taken out.")
             .xalign(0.0)
             .wrap(true)
             .build();
@@ -524,6 +524,41 @@ impl Hub {
         });
     }
 
+    /// Notes changed elsewhere (the Notes chat): each in the history beside Scribe's, with its
+    /// Undo, and committed. `edits`: (note, relative to the vault; before, None if new; after).
+    pub fn record_external(self: &Rc<Self>, edits: Vec<(String, Option<String>, String)>, session: &str, title: &str) {
+        let Some(vault) = crate::vault::current() else { return };
+        if edits.is_empty() {
+            return;
+        }
+        let topics = crate::topics::list(&vault);
+        {
+            let mut store = self.store.borrow_mut();
+            for (note, before, after) in &edits {
+                // The topic whose folder holds it, else none.
+                let topic = topics.iter().filter(|t| !t.folder.is_empty() && note.starts_with(&format!("{}/", t.folder.trim_end_matches('/')))).map(|t| t.name.clone()).next().unwrap_or_default();
+                let change = match before {
+                    None => json!({ "op": "create", "note": note, "text": after }),
+                    Some(old) => json!({ "op": "replace", "note": note, "old": old, "new": after }),
+                };
+                let mut v = json!({ "topic": topic, "reason": "From the Notes chat", "change": change, "why": "", "session": session, "title": title, "at": crate::state::now(), "excerpt": "" });
+                v["id"] = store.id().into();
+                log_change(&v, "written", Some(&scribe::Written { before: before.clone(), after: after.clone() }));
+                v["undoable"] = true.into();
+                store.recent.insert(0, v);
+            }
+            store.recent.truncate(RECENT);
+            store.save();
+        }
+        let files: Vec<String> = edits.iter().map(|(note, ..)| note.clone()).collect();
+        let message = format!("loom: from the Notes chat ({title})");
+        let committed = vault.clone();
+        glib::spawn_future_local(async move {
+            let _ = gio::spawn_blocking(move || scribe::commit(&committed, &files, &message)).await;
+        });
+        self.refresh();
+    }
+
     /// A check's results: the journal marked as read, questions and held changes kept.
     fn take(self: &Rc<Self>, report: Report) {
         if report.upto > 0 {
@@ -669,7 +704,7 @@ impl Hub {
         if log_path().exists() {
             let all = gtk::Button::builder().label("Full history").halign(gtk::Align::Start).build();
             all.add_css_class("prefs-button");
-            all.set_tooltip_text(Some("Everything Scribe wrote, searched and undone, in the main area"));
+            all.set_tooltip_text(Some("Everything Scribe and the Notes chat wrote, searched and undone, in the main area"));
             let weak = Rc::downgrade(self);
             all.connect_clicked(move |_| {
                 if let Some(hub) = weak.upgrade()

@@ -744,7 +744,7 @@ fn set_property(text: &str, key: &str, value: &str) -> Result<String, String> {
 }
 
 /// Commits the notes written, alone (other changes in the vault are the user's to commit).
-fn commit(vault: &Path, files: &[String], message: &str) {
+pub fn commit(vault: &Path, files: &[String], message: &str) {
     let git = |args: &[&str]| Command::new("git").arg("-C").arg(vault).args(args).output();
     let in_repo = git(&["rev-parse", "--is-inside-work-tree"]).is_ok_and(|o| o.status.success());
     if !in_repo {
