@@ -458,7 +458,8 @@ impl Link {
         *self.process.borrow_mut() = Some(process);
         *self.session.borrow_mut() = Some(id.clone());
         let me = self.me.clone();
-        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": true }), move |result| {
+        let suggestions = options["promptSuggestions"].as_bool().unwrap_or(true);
+        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": suggestions }), move |result| {
             let Some(link) = me.upgrade() else { return };
             match result {
                 // No login (and no API key): said when the session opens, as loom offers its

@@ -28,7 +28,7 @@ pub struct Settings {
     pub scratch_autohide: bool,
     /// The sidebar puts agents that need you first (else in the order they started).
     pub sort_by_urgency: bool,
-    /// After a turn, guess the next message (Claude Haiku; a little usage each turn).
+    /// After a turn, show Claude Code's suggestion of the next message.
     pub suggest_prompts: bool,
     /// Launched, loom shows the overview (no agent resumed until one is opened).
     pub start_on_overview: bool,

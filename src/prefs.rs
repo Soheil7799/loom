@@ -362,7 +362,7 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     row(
         &chat,
         "Suggest your next message",
-        "After a turn, Claude Haiku guesses what you'll write next; → or Tab fills it in. A little usage each turn.",
+        "After a turn, Claude Code suggests what you'll write next; → or Tab fills it in.",
         &switch(s.suggest_prompts, |s, on| s.suggest_prompts = on),
     );
     // How full, then on or off.

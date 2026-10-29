@@ -231,8 +231,6 @@ pub struct Agent {
     pub last_cancelled: Cell<bool>,
     /// The last turn ended on an error (what it said).
     pub last_error: RefCell<Option<String>>,
-    /// The adapter sends its own next-message guesses: none of loom's then.
-    adapter_suggests: Cell<bool>,
     pub focused: Cell<bool>,
     on_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, Event)>>>,
 }
@@ -290,7 +288,6 @@ impl Agent {
             resting: Cell::new(false),
             last_cancelled: Cell::new(false),
             last_error: RefCell::default(),
-            adapter_suggests: Cell::new(false),
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
@@ -398,24 +395,6 @@ impl Agent {
     pub fn title(&self) -> String {
         let title = self.title.borrow();
         if title.is_empty() { "New agent".to_owned() } else { title.clone() }
-    }
-
-    /// After a finished turn: what the user will likely write next, in the empty input (if
-    /// still empty and nothing new started meanwhile).
-    fn guess_next(self: &Rc<Self>) {
-        let more = !self.queue.borrow().is_empty() || !self.waiting.borrow().is_empty();
-        if !crate::settings::get().suggest_prompts || self.replaying.get() || more || self.adapter_suggests.get() {
-            return;
-        }
-        let (Some(user), Some(reply)) = (self.chat.last_user(), self.chat.last_reply()) else { return };
-        let turn = self.last_turn.get();
-        let weak = Rc::downgrade(self);
-        crate::suggest::guess(user, reply, move |text| {
-            let Some(agent) = weak.upgrade() else { return };
-            if agent.last_turn.get() == turn && !agent.turn.get() && agent.chat.input_empty() {
-                agent.chat.set_suggestion(text);
-            }
-        });
     }
 
     /// Messages that never went out: back in the input, and told (the phone, if they came from it).
@@ -678,6 +657,8 @@ impl Agent {
             "_meta": { "claudeCode": { "options": {
                 "plugins": crate::plugin::session_plugins(),
                 "settings": { "idleCompaction": false },
+                // Claude Code's guess of the next message, only when it is to be shown.
+                "promptSuggestions": crate::settings::get().suggest_prompts,
             } } },
         });
         let dirs = self.dirs.borrow();
@@ -986,7 +967,6 @@ impl Agent {
                 self.unseen.set(true);
             }
             self.emit(Event::Done);
-            self.guess_next();
         }
         self.refresh_status();
     }
@@ -1532,9 +1512,6 @@ impl Agent {
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.mark_used();
                 agent.emit(Event::Done);
-                if !agent.last_cancelled.get() && agent.last_error.borrow().is_none() {
-                    agent.guess_next();
-                }
                 agent.send_next();
             },
         );
@@ -2201,11 +2178,12 @@ impl Agent {
                 }
             }
             "session_info_update" => {
-                // The prompt Claude Code predicts next (an empty list: none this turn).
+                // The prompt Claude Code predicts next (an empty list: none this turn), shown
+                // while suggestions are on.
                 if let Some(suggestions) = update["_meta"]["promptSuggestions"]["suggestions"].as_array()
                     && !self.replaying.get()
+                    && crate::settings::get().suggest_prompts
                 {
-                    self.adapter_suggests.set(true);
                     let text = suggestions.iter().filter_map(|s| s["text"].as_str()).find(|t| !t.trim().is_empty());
                     crate::log::debug!(format!("agent {}", self.id), "prompt suggestion: {text:?}");
                     self.chat.set_suggestion(text.map(str::to_owned));
