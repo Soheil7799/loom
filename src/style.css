@@ -524,3 +524,11 @@ popover.context-menu button.menu-item:disabled label { opacity: 0.45; }
 popover.context-menu button.menu-item:focus-visible { outline: none; background: alpha(@accent_color, 0.14); }
 /* Claude Code is not the version loom was built for (by the usage meter, and in its popover). */
 .version-warn, label.dim.version-warn { color: @loom_warn; }
+
+/* The Notes chat: its entry atop the sidebar, and its list of chats. */
+button.notes-entry { margin: 2px 8px 6px; padding: 6px 10px; border-radius: 8px; }
+button.notes-entry label { font-weight: 500; }
+.notes-chat-side { padding: 14px 10px; }
+list.notes-chats { background: transparent; }
+list.notes-chats row { padding: 6px 8px; border-radius: 8px; }
+.notes-chat-new { font-weight: 600; }

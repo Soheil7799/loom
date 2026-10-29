@@ -22,7 +22,10 @@ use gtk::glib;
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// The skills loom ships: (name, SKILL.md).
-const DEFAULT_SKILLS: &[(&str, &str)] = &[("loom", include_str!("../data/skill/SKILL.md"))];
+const DEFAULT_SKILLS: &[(&str, &str)] = &[
+    ("loom", include_str!("../data/skill/SKILL.md")),
+    ("notes-chat", include_str!("../data/skill-notes-chat/SKILL.md")),
+];
 
 const MANIFEST: &str = r#"{
   "name": "loom",

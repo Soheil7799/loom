@@ -56,6 +56,11 @@ pub struct Tray {
 }
 
 impl Tray {
+    /// The folder its jobs run in.
+    pub fn cwd(&self) -> &std::path::Path {
+        &self.cwd
+    }
+
     pub fn new(cwd: PathBuf) -> Rc<Tray> {
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         bar.add_css_class("tray");

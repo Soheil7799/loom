@@ -67,6 +67,9 @@ pub struct App {
     /// The project being renamed (None: the focused agent).
     renaming: RefCell<Option<PathBuf>>,
     quitting: Cell<bool>,
+    /// The Notes chat (its page, and its entry atop the sidebar while Notes is on).
+    notes_chat: Rc<crate::notes_chat::NotesChat>,
+    notes_entry: gtk::Button,
     /// Next-message suggestions were on (agents are told when that changes).
     suggestions: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
@@ -170,6 +173,12 @@ impl App {
                 crate::about::open(&window);
             }
         });
+        // The Notes chat: talking with the notes (only while Notes is on).
+        let notes_entry = gtk::Button::builder().child(&gtk::Label::builder().label("✎  Notes chat").xalign(0.0).build()).visible(crate::vault::current().is_some()).build();
+        notes_entry.add_css_class("flat");
+        notes_entry.add_css_class("notes-entry");
+        notes_entry.set_tooltip_text(Some("Talk with your notes: ask what they say, tell them what to keep"));
+        sidebar.append(&notes_entry);
         let list = gtk::ListBox::new();
         list.add_css_class("agents");
         let menu = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).build();
@@ -229,6 +238,8 @@ impl App {
         chat_stack.add_named(&overview.root, Some("overview"));
         let hub = crate::hub::Hub::new();
         chat_stack.add_named(&hub.page, Some("notes"));
+        let notes_chat = crate::notes_chat::NotesChat::new();
+        chat_stack.add_named(&notes_chat.root, Some("notes-chat"));
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
@@ -399,6 +410,8 @@ impl App {
             rename_entry,
             renaming: RefCell::default(),
             quitting: Cell::new(false),
+            notes_chat,
+            notes_entry,
             suggestions: Cell::new(settings::get().suggest_prompts),
             bot: crate::telegram::Bot::new(),
             prefix: Cell::new(false),
@@ -886,6 +899,11 @@ impl App {
         self.focused.borrow().clone()
     }
 
+    /// The agent on screen: the focused one, else the Notes chat's while its page is shown.
+    pub fn active_agent(&self) -> Option<Rc<Agent>> {
+        self.focused_agent().or_else(|| (self.chat_stack.visible_child_name().as_deref() == Some("notes-chat")).then(|| self.notes_chat.current()).flatten())
+    }
+
     pub fn focus_nth(self: &Rc<Self>, index: usize) {
         // The Running list's numbers, when it is shown; else the sidebar's order.
         let list = if settings::get().show_running && !self.running_agents().is_empty() { self.running_agents() } else { self.agents_in_order() };
@@ -909,6 +927,7 @@ impl App {
             "inbox" => self.open_inbox(),
             "help" => crate::cheatsheet::open(&self.window),
             "settings" => crate::prefs::open(&self.window),
+            "notes-chat" if crate::vault::current().is_some() => self.show_notes_chat(),
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
             "find" => self.find_file(),
@@ -1740,6 +1759,19 @@ impl App {
     }
 
     /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
+    /// The Notes chat, in place of the agent shown.
+    pub fn show_notes_chat(self: &Rc<Self>) {
+        if let Some(old) = self.focused.borrow_mut().take() {
+            old.focused.set(false);
+            *self.previous.borrow_mut() = Some(old);
+        }
+        self.chat_stack.set_visible_child_name("notes-chat");
+        self.notes_chat.open();
+        self.mark_active();
+        self.refresh_sidebar();
+        self.notes_chat.focus();
+    }
+
     pub fn show_notes_history(self: &Rc<Self>) {
         if let Some(old) = self.focused.borrow_mut().take() {
             old.focused.set(false);
@@ -2231,6 +2263,19 @@ impl App {
     /// Scribe's news shown: the Notes tab marked, and switched to when the user isn't working
     /// in the panel; a question's conversation opened from it.
     fn wire_hub(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.notes_entry.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.show_notes_chat();
+            }
+        });
+        // Shown while Notes is on (with a vault).
+        let entry = self.notes_entry.downgrade();
+        crate::settings::on_change(move |_| {
+            if let Some(entry) = entry.upgrade() {
+                entry.set_visible(crate::vault::current().is_some());
+            }
+        });
         let weak = Rc::downgrade(self);
         *self.hub.on_attention.borrow_mut() = Some(Box::new(move || {
             let Some(app) = weak.upgrade() else { return };

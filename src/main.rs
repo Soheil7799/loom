@@ -25,6 +25,7 @@ mod logo;
 mod markdown;
 mod overview;
 mod notes;
+mod notes_chat;
 mod plugin;
 mod topics;
 mod vault;

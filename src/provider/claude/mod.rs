@@ -467,6 +467,16 @@ impl Link {
             program.push("--permission-mode".to_owned());
             program.push(mode.to_owned());
         }
+        // A model of its own (the Notes chat's), and words added to Claude Code's instructions.
+        if let Some(model) = options["model"].as_str() {
+            program.push("--model".to_owned());
+            program.push(model.to_owned());
+            *self.model.borrow_mut() = model.to_owned();
+        }
+        if let Some(prompt) = options["appendSystemPrompt"].as_str() {
+            program.push("--append-system-prompt".to_owned());
+            program.push(prompt.to_owned());
+        }
         if options["settings"].is_object() {
             program.push("--settings".to_owned());
             program.push(options["settings"].to_string());

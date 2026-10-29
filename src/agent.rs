@@ -190,6 +190,10 @@ pub struct Agent {
     tasks: Cell<bool>,
     /// The running turn changed files (its footer offers to undo them).
     wrote: Cell<bool>,
+    /// Kept out of Scribe's journal (the Notes chat changes the notes itself).
+    pub no_journal: Cell<bool>,
+    /// Session options of its own (a model, instructions), beside loom's.
+    pub extra_options: RefCell<Value>,
     /// Its subagents' edit calls not finished yet.
     sub_edits: RefCell<std::collections::HashSet<String>>,
     /// Commands running in the background, shown in the strip: key → since when.
@@ -276,6 +280,8 @@ impl Agent {
             tasks: Cell::new(false),
             commands: RefCell::default(),
             wrote: Cell::new(false),
+            no_journal: Cell::new(false),
+            extra_options: RefCell::new(Value::Null),
             sub_edits: RefCell::default(),
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
@@ -589,7 +595,8 @@ impl Agent {
         };
         let status = self.status.get();
         self.chat.set_title(&self.title(), &place, &full.replace(&*gtk::glib::home_dir().to_string_lossy(), "~"));
-        self.chat.set_state(status.describe(), status.css());
+        let state = if status == Status::Suspended && self.session_id().is_none() { "" } else { status.describe() };
+        self.chat.set_state(state, status.css());
         self.chat.set_mode(&self.mode.borrow());
         let note = format!("Starting Claude in {place}…");
         self.chat.set_starting((status == Status::Starting).then_some(note.as_str()));
@@ -676,6 +683,11 @@ impl Agent {
                 "promptSuggestions": crate::settings::get().suggest_prompts,
             } } },
         });
+        if let Some(extra) = self.extra_options.borrow().as_object() {
+            for (key, value) in extra {
+                params["_meta"]["claudeCode"]["options"][key] = value.clone();
+            }
+        }
         let dirs = self.dirs.borrow();
         if !dirs.is_empty() {
             params["additionalDirectories"] = dirs.iter().map(|d| d.to_string_lossy().into_owned()).collect::<Vec<_>>().into();
@@ -1369,6 +1381,9 @@ impl Agent {
     /// a prompt of its own; if steering fails, it waits for the turn's end (nothing is lost).
     /// A message of this conversation, for the note agent (only with Notes on).
     fn journal(&self, role: &str, text: &str) {
+        if self.no_journal.get() {
+            return;
+        }
         if let Some(session) = self.session_id.borrow().as_deref() {
             crate::journal::append(session, role, text, &self.title(), &self.cwd);
         }

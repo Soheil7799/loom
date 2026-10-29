@@ -69,30 +69,30 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
         // As if typed and sent: attachments waiting in the composer go with it.
-        "prompt" => app.focused_agent().ok_or("no agent")?.chat.send_text(&argument.replace("\\n", "\n")),
+        "prompt" => app.active_agent().ok_or("no agent")?.chat.send_text(&argument.replace("\\n", "\n")),
         // A message sent without the input (a "/command" typed there opens its popup, which an
         // unseen test window can hang on).
-        "submit" => app.focused_agent().ok_or("no agent")?.chat.submit_direct(argument),
+        "submit" => app.active_agent().ok_or("no agent")?.chat.submit_direct(argument),
         // Ctrl+Enter: what waits goes into the running turn.
-        "sendnow" => app.focused_agent().ok_or("no agent")?.send_waiting_now(),
+        "sendnow" => app.active_agent().ok_or("no agent")?.send_waiting_now(),
         "latest" => {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;
-            app.focused_agent().ok_or("no agent")?.chat.scroll_to_latest();
+            app.active_agent().ok_or("no agent")?.chat.scroll_to_latest();
         }
         "send" => {
-            if !app.focused_agent().ok_or("no agent")?.send_form() {
+            if !app.active_agent().ok_or("no agent")?.send_form() {
                 return Err("no question form open".into());
             }
         }
         "attach" => {
             let texture = gtk::gdk::Texture::from_filename(argument).map_err(|e| e.to_string())?;
-            app.focused_agent().ok_or("no agent")?.chat.attach(&texture);
+            app.active_agent().ok_or("no agent")?.chat.attach(&texture);
         }
-        "usage" => print_labels(&app.focused_agent().ok_or("no agent")?.chat.usage_content(argument != "read")),
+        "usage" => print_labels(&app.active_agent().ok_or("no agent")?.chat.usage_content(argument != "read")),
         // Two subagents at work (for the strip over the input).
         "fakecrew" => {
-            let chat = app.focused_agent().ok_or("no agent")?.chat.clone();
+            let chat = app.active_agent().ok_or("no agent")?.chat.clone();
             chat.set_working(Some(std::time::Instant::now()));
             for (id, name, step) in [("t1", "Convert batch 1", "Edit HandoverPage.tsx"), ("t2", "Convert batch 2", "grep -rn \"آزاد\" web/src")] {
                 chat.tool(&serde_json::json!({ "toolCallId": id, "title": name, "kind": "think", "status": "completed" }));
@@ -104,7 +104,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // A subagent left running in the background after the turn (a reported one).
         "fakebg" => {
-            let chat = app.focused_agent().ok_or("no agent")?.chat.clone();
+            let chat = app.active_agent().ok_or("no agent")?.chat.clone();
             chat.set_working(None);
             let now = std::time::Instant::now();
             chat.crew_set(crate::chat::Crew {
@@ -186,7 +186,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // A plan to review: "fakeplan", then "plancomment:<text>" (on its first part) and
         // "planchanges" (Request changes).
         "fakeplan" => {
-            let chat = app.focused_agent().ok_or("no agent")?.chat.clone();
+            let chat = app.active_agent().ok_or("no agent")?.chat.clone();
             let plan = "## Plan\n\nAdd a **price estimate** column to the purchase form.\n\n```sql\nALTER TABLE items ADD estimate numeric;\n```\n\nThen show the sum under the table.";
             let options = [("go".to_owned(), "Yes, start".to_owned(), "allow_once".to_owned()), ("keep".to_owned(), "No, keep planning".to_owned(), "reject_once".to_owned())];
             chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
@@ -203,7 +203,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
         }
         // "\n" in it: a line break (the control file is a line each).
-        "type" => app.focused_agent().ok_or("no agent")?.chat.input.buffer().set_text(&argument.replace("\\n", "\n")),
+        "type" => app.active_agent().ok_or("no agent")?.chat.input.buffer().set_text(&argument.replace("\\n", "\n")),
         "plancomment" => {
             let entry = find(app.window.upcast_ref(), &|w| w.has_css_class("plan-comment")).and_downcast::<gtk::Entry>().ok_or("no comment field")?;
             entry.set_text(argument);
@@ -216,10 +216,10 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             button.emit_clicked();
         }
         // Scrolls the chat by <px> as a reader would (negative: up).
-        "scrollby" => app.focused_agent().ok_or("no agent")?.chat.scroll_by_for_tests(argument.parse().map_err(|_| "scrollby:<px>")?),
+        "scrollby" => app.active_agent().ok_or("no agent")?.chat.scroll_by_for_tests(argument.parse().map_err(|_| "scrollby:<px>")?),
         // Labels whose text is taller than the room they were given (drawn past their end).
         "overflow" => {
-            let list = app.focused_agent().ok_or("no agent")?.chat.messages();
+            let list = app.active_agent().ok_or("no agent")?.chat.messages();
             let mut found = Vec::new();
             collect(list.upcast_ref(), &|w| w.is::<gtk::Label>(), &mut found);
             let mut n = 0;
@@ -242,7 +242,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // The last items of the conversation: where each sits and how tall it is.
         "tail" => {
-            let list = app.focused_agent().ok_or("no agent")?.chat.messages();
+            let list = app.active_agent().ok_or("no agent")?.chat.messages();
             let mut items = Vec::new();
             let mut child = list.last_child();
             while let Some(w) = child {
@@ -271,11 +271,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             }
         }
         "maximize" => app.window.maximize(),
-        "scrollinfo" => eprintln!("SCROLL {}", app.focused_agent().ok_or("no agent")?.chat.scroll_info()),
-        "toast" => app.show_toast(&app.focused_agent().ok_or("no agent")?, argument, false),
+        "scrollinfo" => eprintln!("SCROLL {}", app.active_agent().ok_or("no agent")?.chat.scroll_info()),
+        "toast" => app.show_toast(&app.active_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
         "snapchat" => {
-            let list = app.focused_agent().ok_or("no agent")?.chat.messages();
+            let list = app.active_agent().ok_or("no agent")?.chat.messages();
             lay_out(app.window.upcast_ref())?;
             let snap = gtk::Snapshot::new();
             list.parent().ok_or("no parent")?.snapshot_child(&list, &snap);
@@ -318,11 +318,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             eprintln!("{}", crate::memory::snapshot(&app.memory_agents(), None).0);
         }
         // What Esc does: stops the turn, or a ! command.
-        "cancel" => app.focused_agent().ok_or("no agent")?.cancel(),
+        "cancel" => app.active_agent().ok_or("no agent")?.cancel(),
         // A view over the focused conversation (as a subagent's), and back.
-        "aside" => app.focused_agent().ok_or("no agent")?.chat.show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
+        "aside" => app.active_agent().ok_or("no agent")?.chat.show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
         "main" => {
-            app.focused_agent().ok_or("no agent")?.chat.show_main();
+            app.active_agent().ok_or("no agent")?.chat.show_main();
         }
         // Widgets given less room than they need (with their ancestors), and every paned.
         "squeezed" => squeezed(app.window.upcast_ref(), 0),
@@ -339,7 +339,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "answer" => {
             let n: usize = argument.parse().map_err(|_| "answer:<n>")?;
-            if !app.focused_agent().ok_or("no agent")?.answer(0, n.saturating_sub(1)) {
+            if !app.active_agent().ok_or("no agent")?.answer(0, n.saturating_sub(1)) {
                 return Err("no such question or option".into());
             }
         }
