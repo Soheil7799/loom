@@ -513,3 +513,5 @@ popover.context-menu button.menu-item:disabled label { opacity: 0.45; }
 
 /* The keyboard lands on the same highlight as the pointer, not the focus ring. */
 popover.context-menu button.menu-item:focus-visible { outline: none; background: alpha(@accent_color, 0.14); }
+/* Claude Code is not the version loom was built for (by the usage meter, and in its popover). */
+.version-warn, label.dim.version-warn { color: @loom_warn; }

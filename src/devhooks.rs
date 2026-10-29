@@ -70,6 +70,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     match command {
         // As if typed and sent: attachments waiting in the composer go with it.
         "prompt" => app.focused_agent().ok_or("no agent")?.chat.send_text(&argument.replace("\\n", "\n")),
+        // A message sent without the input (a "/command" typed there opens its popup, which an
+        // unseen test window can hang on).
+        "submit" => app.focused_agent().ok_or("no agent")?.chat.submit_direct(argument),
+        // Ctrl+Enter: what waits goes into the running turn.
+        "sendnow" => app.focused_agent().ok_or("no agent")?.send_waiting_now(),
         "latest" => {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;

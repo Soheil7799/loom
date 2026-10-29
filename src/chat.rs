@@ -48,6 +48,8 @@ pub struct Chat {
     compact: gtk::Button,
     /// The conversation's cost and the account's limit, from the agent.
     spend: gtk::Label,
+    /// Claude Code is not the version loom was built for (the note, None: it is).
+    version_note: Rc<RefCell<Option<String>>>,
     /// What the usage popover shows of this conversation: (used, size) tokens, its cost, the
     /// account limit the agent last reported.
     spent: RefCell<(Option<(u64, u64)>, Option<String>, Option<String>)>,
@@ -287,6 +289,22 @@ impl Chat {
         meter.append(&context);
         meter.append(&usage);
         meter.append(&spend);
+        // Claude Code is not the version loom was built for: a mark here, the note in the popover.
+        let version_warn = gtk::Label::new(Some("⚠"));
+        version_warn.add_css_class("version-warn");
+        version_warn.set_visible(false);
+        meter.append(&version_warn);
+        let version_note: Rc<RefCell<Option<String>>> = Rc::default();
+        {
+            let (warn, note) = (version_warn.downgrade(), version_note.clone());
+            glib::spawn_future_local(async move {
+                let found = gio::spawn_blocking(crate::provider::version_note).await.ok().flatten();
+                let Some(warn) = warn.upgrade() else { return };
+                warn.set_tooltip_text(found.as_deref());
+                warn.set_visible(found.is_some());
+                *note.borrow_mut() = found;
+            });
+        }
         let usage_body = gtk::Box::new(gtk::Orientation::Vertical, 6);
         usage_body.add_css_class("usage-pop");
         let usage_pop = gtk::Popover::builder().child(&usage_body).build();
@@ -484,6 +502,7 @@ impl Chat {
             usage,
             compact: compact.clone(),
             spend,
+            version_note,
             spent: RefCell::default(),
             usage_body: usage_body.clone(),
             history: RefCell::default(),
@@ -1224,6 +1243,11 @@ impl Chat {
         if let Some(cost) = cost {
             body.append(&usage_note(&format!("Cost: {cost}")));
         }
+        if let Some(note) = self.version_note.borrow().as_deref() {
+            let warn = usage_note(&format!("⚠ {note}"));
+            warn.add_css_class("version-warn");
+            body.append(&warn);
+        }
         let account = gtk::Box::new(gtk::Orientation::Vertical, 6);
         account.append(&usage_heading("Account"));
         account.append(&usage_note("Loading…"));
@@ -1395,6 +1419,11 @@ impl Chat {
     }
 
     /// Sends `text` as if typed and sent (with any images attached).
+    /// Sends `text` as the Compact button does: never through the input (test hook).
+    pub fn submit_direct(&self, text: &str) {
+        self.call(&self.on_submit, (text.to_owned(), Vec::new()));
+    }
+
     pub fn send_text(self: &Rc<Self>, text: &str) {
         self.input.buffer().set_text(text);
         self.submit();
