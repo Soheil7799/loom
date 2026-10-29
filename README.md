@@ -28,11 +28,13 @@ a project may hold several git repos.
 - **Files.** A project tree and an editor, with images shown, a git graph, and drag and drop.
 - **A scratch terminal**, one key away (Ctrl+\`).
 - **Schedules.** Run a prompt at a time or on a repeat ("weekdays 9:30", "every 2h").
-- **Speech to text** (optional). Talk to an agent through any OpenAI-style transcription
-  endpoint you set: Groq, OpenAI, or a local Whisper server.
-- **A Telegram bot** (optional, off by default). It lists your agents, relays their replies,
-  and takes your messages, voice, photos and answers. It talks only to the one Telegram
-  account you link.
+- **Add-ons**, each off until you switch it on in Settings → Add-ons:
+  - **Notes.** Keeps what you tell your agents in a vault of notes, by topic. The vault opens
+    in Obsidian too.
+  - **Telegram.** Your agents in a Telegram bot of your own: it relays their replies and takes
+    your messages, voice, photos and answers. It talks only to the one account you link.
+  - **Speech to text.** Talk instead of typing, through any OpenAI-style transcription
+    endpoint you set: Groq, OpenAI, or a local Whisper server.
 - **Themes** follow your GTK colours. Persian and right-to-left text work.
 
 ## Agents know about loom

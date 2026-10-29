@@ -1,6 +1,6 @@
 [package]
 name = "loom"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "A light, keyboard-first home for coding agents (GTK4 + ACP)"
 license = "MIT"
