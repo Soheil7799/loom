@@ -1074,10 +1074,7 @@ impl Hub {
             self.refresh();
             return;
         };
-        // A row of the history page is kept without its conversation: the history has it.
-        let full = if v.get("excerpt").is_none() && v["id"].is_u64() { history().into_iter().find(|h| h["id"] == v["id"] && h.get("excerpt").is_some()) } else { None };
-        let v = full.as_ref().unwrap_or(v);
-        let Some(done) = scribe::proposal_from(v) else {
+        let Some(mut done) = scribe::proposal_from(v) else {
             self.refresh();
             self.run_next();
             return;
@@ -1092,23 +1089,35 @@ impl Hub {
         self.status.set_label(&format!("Changing {} as you say…", done.change.note()));
         let (session, title) = (v["session"].as_str().unwrap_or("").to_owned(), v["title"].as_str().unwrap_or("").to_owned());
         let (comment, note) = (comment.to_owned(), done.change.note().to_owned());
+        // A row of the history page is kept without its conversation: the history has it.
+        let look_up = v["id"].as_u64().filter(|_| v.get("excerpt").is_none());
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let report = gio::spawn_blocking(move || scribe::fix(&vault, &done, &comment)).await;
+            let report = gio::spawn_blocking(move || {
+                if let Some(id) = look_up
+                    && let Some(excerpt) = history().into_iter().find(|h| h["id"].as_u64() == Some(id)).and_then(|h| h["excerpt"].as_str().map(str::to_owned))
+                {
+                    done.excerpt = excerpt;
+                }
+                scribe::fix(&vault, &done, &comment)
+            })
+            .await;
             let Some(hub) = weak.upgrade() else { return };
             hub.running.set(false);
             match report {
                 Ok(mut report) => {
-                    let (failed, nothing, held) = (report.failed.clone(), report.applied.is_empty() && report.held.is_empty(), report.applied.is_empty() && !report.held.is_empty());
+                    let (failed, applied, held) = (report.failed.clone(), report.applied.len(), report.held.len());
                     report.session = session;
                     report.title = title;
                     hub.take(report);
                     if let Some(why) = failed {
                         hub.say(&format!("Not changed: {why}"), true);
-                    } else if nothing {
+                    } else if applied == 0 && held == 0 {
                         hub.say(&format!("Scribe found nothing to change in {note} for that."), true);
-                    } else if held {
-                        hub.say(&format!("Scribe's change to {note} did not fit the note as it is: it waits for your OK above."), true);
+                    } else if applied == 0 {
+                        hub.say(&format!("Scribe's change to {note} did not fit the note as it is: it waits for your OK in the Notes panel."), true);
+                    } else if held > 0 {
+                        hub.say(&format!("Changed {note} as you asked; {held} more waiting for your OK in the Notes panel."), true);
                     } else {
                         hub.say(&format!("Changed {note} as you asked."), false);
                     }

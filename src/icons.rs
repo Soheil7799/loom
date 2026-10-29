@@ -196,12 +196,9 @@ fn name_for(path: &Path, is_dir: bool) -> String {
     if name == ".env" || name.starts_with(".env.") {
         return "env".to_owned();
     }
-    // README.md, LICENSE-MIT, CHANGELOG.txt, Dockerfile.dev: by what the name starts with, for
-    // prose and names without an extension (licenses.rs stays Rust).
+    // README.md, LICENSE-MIT, CHANGELOG.txt: by what the name starts with, for prose and names
+    // without an extension (licenses.rs stays Rust).
     let stem = name.split('.').find(|s| !s.is_empty()).unwrap_or("");
-    if stem == "dockerfile" || stem == "containerfile" {
-        return "docker".to_owned();
-    }
     let prose = matches!(extension, "" | "md" | "markdown" | "txt" | "rst" | "adoc" | "org");
     if prose {
         for (start, icon) in [("readme", "readme"), ("license", "license"), ("licence", "license"), ("changelog", "changelog"), ("contributing", "contributing")] {
@@ -216,6 +213,10 @@ fn name_for(path: &Path, is_dir: bool) -> String {
     // Many icons are named as their extension (go, lua, toml, json, zig…).
     if !extension.is_empty() && BODIES.with(|b| b.contains_key(extension)) {
         return extension.to_owned();
+    }
+    // Dockerfile.dev, Dockerfile-prod: Docker, unless its extension says otherwise (Dockerfile.md).
+    if stem.starts_with("dockerfile") || stem.starts_with("containerfile") {
+        return "docker".to_owned();
     }
     "file".to_owned()
 }
@@ -259,6 +260,9 @@ mod tests {
         assert_eq!(icon("CHANGELOG.md"), "changelog");
         assert_eq!(icon("Dockerfile.dev"), "docker");
         assert_eq!(icon("dockerfile_gen.py"), "python");
+        assert_eq!(icon("Dockerfile-prod"), "docker");
+        assert_eq!(icon("Containerfile.prod"), "docker");
+        assert_eq!(icon("Dockerfile.md"), "markdown");
         assert_eq!(name_for(Path::new("src"), true), "folder");
         // Every icon named in the tables is in the set.
         for (_, name) in NAMES.iter().chain(EXTENSIONS) {

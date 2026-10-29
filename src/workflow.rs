@@ -42,7 +42,8 @@ pub fn launch_of(update: &Value) -> Option<Launch> {
         Some(_) => return None,
         None => {
             let parts = update["content"].as_array()?;
-            if !parts.first().and_then(|c| c["content"]["text"].as_str()).is_some_and(|t| t.starts_with(LAUNCHED)) {
+            let first = parts.iter().filter_map(|c| c["content"]["text"].as_str()).find(|t| !t.trim().is_empty());
+            if !first.is_some_and(|t| t.starts_with(LAUNCHED)) {
                 return None;
             }
             parts.iter().filter_map(|c| c["content"]["text"].as_str()).collect::<Vec<_>>().join("\n")
@@ -129,17 +130,28 @@ fn read_from(path: &Path, from: u64) -> Option<Vec<u8>> {
     Some(bytes)
 }
 
-/// Where Claude Code puts a background task's output: its temporary folder, the project's
-/// and the conversation's folders (as in its projects folder), then tasks/<task>.output.
-fn output_path(dir: &Path, task: &str) -> Option<PathBuf> {
-    // dir: …/projects/<project>/<session>/subagents/workflows/<run>
-    let session = dir.parent()?.parent()?.parent()?;
-    let project = session.parent()?;
-    let root = std::env::var_os("CLAUDE_CODE_TMPDIR").map(PathBuf::from).unwrap_or_else(|| {
+/// Claude Code's temporary folder (the agents run with loom's environment).
+fn temporary() -> PathBuf {
+    std::env::var_os("CLAUDE_CODE_TMPDIR").map(PathBuf::from).unwrap_or_else(|| {
         // SAFETY: getuid cannot fail.
         std::env::temp_dir().join(format!("claude-{}", unsafe { libc::getuid() }))
-    });
-    Some(root.join(project.file_name()?).join(session.file_name()?).join("tasks").join(format!("{task}.output")))
+    })
+}
+
+/// A background task's output, once Claude Code has written it: in its temporary folder
+/// (`root`), the project's folder (named as in its projects folder), a conversation's folder,
+/// then tasks/<task>.output. That conversation is the one its process started with, not
+/// always the workflow's own (one resumed in another), so each of the project's is looked in.
+fn find_output(root: &Path, dir: &Path, task: &str) -> Option<PathBuf> {
+    // dir: …/projects/<project>/<session>/subagents/workflows/<run>
+    let session = dir.parent()?.parent()?.parent()?;
+    let project = root.join(session.parent()?.file_name()?);
+    let file = format!("{task}.output");
+    let own = project.join(session.file_name()?).join("tasks").join(&file);
+    if own.is_file() {
+        return Some(own);
+    }
+    std::fs::read_dir(&project).ok()?.flatten().map(|e| e.path().join("tasks").join(&file)).find(|p| p.is_file())
 }
 
 /// A workflow's card in the conversation, kept up to date while it runs.
@@ -147,7 +159,7 @@ pub struct Run {
     pub tool_id: String,
     pub name: String,
     dir: PathBuf,
-    output: Option<PathBuf>,
+    task: String,
     pub root: gtk::Box,
     status: gtk::Label,
     progress: gtk::Label,
@@ -157,8 +169,6 @@ pub struct Run {
     members: RefCell<Vec<Member>>,
     /// How much of the journal is read.
     read: Cell<u64>,
-    /// When the journal last had something new.
-    news: Cell<std::time::Instant>,
     /// The members the list shows (it is filled again only when they change).
     shown: RefCell<Vec<Member>>,
     pub done: Cell<bool>,
@@ -205,7 +215,7 @@ impl Run {
         let run = Rc::new(Run {
             tool_id: tool_id.to_owned(),
             name: launch.name.clone(),
-            output: output_path(&launch.dir, &launch.task),
+            task: launch.task,
             dir: launch.dir,
             root,
             status,
@@ -215,7 +225,6 @@ impl Run {
             list: list.clone(),
             members: RefCell::default(),
             read: Cell::new(0),
-            news: Cell::new(std::time::Instant::now()),
             shown: RefCell::default(),
             done: Cell::new(false),
             live,
@@ -271,9 +280,9 @@ impl Run {
             let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
             read_journal(&String::from_utf8_lossy(&bytes[..end]), &mut self.members.borrow_mut());
             self.read.set(self.read.get() + end as u64);
-            self.news.set(std::time::Instant::now());
         }
-        let output = self.output.as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
+        // Over once its output is written whole (one half written does not read yet).
+        let output = find_output(&temporary(), &self.dir, &self.task).and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
         if let Some(output) = output {
             self.done.set(true);
             self.status.set_label("done");
@@ -297,10 +306,6 @@ impl Run {
             self.done.set(true);
             self.status.set_label("stopped");
             self.status.add_css_class("stopped");
-        } else if self.all_answered_a_while_ago() {
-            self.done.set(true);
-            self.status.set_label("done");
-            self.status.add_css_class("done");
         } else if !self.live {
             // Read back from an earlier run of the agent: over, its output not kept (Claude
             // Code keeps it in a temporary folder).
@@ -318,13 +323,6 @@ impl Run {
         if let Some(changed) = self.on_changed.borrow().clone() {
             changed();
         }
-    }
-
-    /// Its output is not where loom looks (another temporary folder), yet every agent has
-    /// answered and a minute went by with nothing new: over.
-    fn all_answered_a_while_ago(&self) -> bool {
-        let members = self.members.borrow();
-        !members.is_empty() && members.iter().all(|m| m.result.is_some()) && self.news.get().elapsed() > Duration::from_secs(60)
     }
 
     fn fill_list(&self) {
@@ -437,7 +435,15 @@ mod tests {
         let raw = "Workflow launched in background. Task ID: wf1\nSummary: Ask a council\nTranscript dir: /home/me/.claude/projects/-p/s1/subagents/workflows/wf_9\nScript file: /s/council-wf_9.js";
         let launch = launch_of(&json!({ "rawOutput": raw })).unwrap();
         assert_eq!((launch.task.as_str(), launch.summary.as_str(), launch.name.as_str()), ("wf1", "Ask a council", "council"));
-        assert!(output_path(&launch.dir, "wf1").unwrap().ends_with("-p/s1/tasks/wf1.output"));
+        // The output is looked for in each of the project's conversations (s0 started the process).
+        let root = std::env::temp_dir().join(format!("loom-test-workflow-{}", std::process::id()));
+        assert!(find_output(&root, &launch.dir, "wf1").is_none());
+        std::fs::create_dir_all(root.join("-p/s0/tasks")).unwrap();
+        std::fs::write(root.join("-p/s0/tasks/wf1.output"), "{}").unwrap();
+        assert!(find_output(&root, &launch.dir, "wf1").unwrap().ends_with("-p/s0/tasks/wf1.output"));
+        std::fs::remove_dir_all(&root).unwrap();
+        let empty_first = json!({ "content": [{ "content": { "text": "" } }, { "content": { "text": raw } }] });
+        assert_eq!(launch_of(&empty_first).unwrap().task, "wf1");
         let structured = json!({ "_meta": { "claudeCode": { "toolResponse": { "taskType": "local_workflow", "taskId": "t", "workflowName": "council", "transcriptDir": "/d/s/subagents/workflows/r" } } } });
         assert_eq!(launch_of(&structured).unwrap().name, "council");
         assert!(launch_of(&json!({ "rawOutput": "something else" })).is_none());

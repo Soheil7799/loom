@@ -709,11 +709,7 @@ impl Agent {
         }
         if let Some(session) = session {
             // The conversation comes back as updates; start from an empty view.
-            self.chat.clear();
-            self.forget_subs();
-            self.workflows.borrow_mut().clear();
-            self.chat.set_workflow_note(None);
-            self.files.borrow_mut().clear();
+            self.empty_view();
             self.replaying.set(true);
             // A compacted conversation is replayed from its summary on: what came before is
             // read from Claude Code's own file of it and shown first (off the main thread).
@@ -767,12 +763,26 @@ impl Agent {
 
     fn load_session(self: &Rc<Self>, session: String) {
         let Some(conn) = self.conn.borrow().clone() else { return };
-        let weak = Rc::downgrade(self);
+        let (weak, asked) = (Rc::downgrade(self), Rc::downgrade(&conn));
         {
             let mut params = self.session_params();
             params["sessionId"] = session.into();
             conn.request("session/load", params, move |result| {
                 let Some(agent) = weak.upgrade() else { return };
+                // Stopped meanwhile (or its process ended): that already dealt with the view.
+                if !asked.upgrade().is_some_and(|c| agent.conn.borrow().as_ref().is_some_and(|now| Rc::ptr_eq(now, &c))) {
+                    return;
+                }
+                let result = match result {
+                    // A session that never got a prompt is never saved: nothing was lost.
+                    Err(err) if !message(&err).contains("not found") => {
+                        // Anything else keeps the session, to try again later (fail drops what
+                        // was read back, so that start reads it back whole).
+                        agent.fail(&format!("Could not resume this conversation: {}", message(&err)));
+                        return;
+                    }
+                    other => other,
+                };
                 agent.replaying.set(false);
                 agent.emit(Event::Files);
                 // The view was cleared for the replay: what was typed meanwhile goes back.
@@ -782,17 +792,9 @@ impl Agent {
                 }
                 match result {
                     Ok(result) => agent.session_ready(&result),
-                    // A session that never got a prompt is never saved: nothing was lost.
-                    Err(err) if message(&err).contains("not found") => {
+                    Err(_) => {
                         *agent.session_id.borrow_mut() = None;
                         agent.open_session();
-                    }
-                    // Anything else keeps the session, to try again later.
-                    Err(err) => {
-                        // What was shown (from before a compaction) is not all of it: the next
-                        // start must read it back whole, not resume over it.
-                        agent.chat.clear();
-                        agent.fail(&format!("Could not resume this conversation: {}", message(&err)));
                     }
                 }
             });
@@ -891,8 +893,28 @@ impl Agent {
         );
     }
 
+    /// An empty conversation view: nothing of the one shown before stays (its subagents,
+    /// workflows and files neither).
+    fn empty_view(&self) {
+        self.chat.clear();
+        self.forget_subs();
+        self.workflows.borrow_mut().clear();
+        self.chat.set_workflow_note(None);
+        self.files.borrow_mut().clear();
+    }
+
+    /// A replay cut short (stopped, failed): what was read back is only part of the
+    /// conversation, so it goes; the next start reads it back whole instead of resuming over it.
+    fn drop_partial_replay(self: &Rc<Self>) {
+        if self.replaying.replace(false) {
+            self.empty_view();
+            self.emit(Event::Files);
+        }
+    }
+
     fn fail(self: &Rc<Self>, text: &str) {
         crate::log::debug!(format!("agent {}", self.id), "failed: {text}");
+        self.drop_partial_replay();
         self.end_autonomous(false);
         self.offer_retry(text);
         if let Some(conn) = self.conn.borrow_mut().take() {
@@ -1013,10 +1035,7 @@ impl Agent {
         if !self.named.get() {
             self.title.borrow_mut().clear();
         }
-        self.chat.clear();
-        self.forget_subs();
-        self.workflows.borrow_mut().clear();
-        self.chat.set_workflow_note(None);
+        self.empty_view();
         self.chat.set_plan(&Value::Null);
         self.emit(Event::Session);
         self.start();
@@ -1080,7 +1099,7 @@ impl Agent {
         if let Some(conn) = self.conn.borrow_mut().take() {
             conn.stop();
         }
-        self.replaying.set(false);
+        self.drop_partial_replay();
         self.end_autonomous(false);
         self.ready.set(false);
         self.turn.set(false);
