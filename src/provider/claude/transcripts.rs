@@ -197,7 +197,9 @@ pub fn replay(session: &str, cwd: &Path) -> Option<Vec<Value>> {
                         }
                     }
                     Value::Array(blocks) => {
-                        for block in blocks {
+                        // Its words first, then its pictures (as it was shown when sent).
+                        let (words, rest): (Vec<&Value>, Vec<&Value>) = blocks.iter().partition(|b| b["type"] == "text");
+                        for block in words.into_iter().chain(rest) {
                             match block["type"].as_str() {
                                 Some("text") => {
                                     if let Some(text) = prompt_text(&json!([block])) {
@@ -225,6 +227,17 @@ pub fn replay(session: &str, cwd: &Path) -> Option<Vec<Value>> {
                     _ => {}
                 }
             }
+            // A message sent into a running turn (Ctrl+Enter).
+            Some("attachment") if v["attachment"]["type"] == "queued_command" => {
+                let prompt = &v["attachment"]["prompt"];
+                let text = match prompt {
+                    Value::String(text) => text.clone(),
+                    _ => prompt.as_array().into_iter().flatten().filter_map(|b| b["text"].as_str()).collect::<Vec<_>>().join("\n"),
+                };
+                if !text.trim().is_empty() {
+                    updates.push(json!({ "sessionUpdate": "user_message_chunk", "content": { "type": "text", "text": text } }));
+                }
+            }
             Some("assistant") => {
                 let id = v["message"]["id"].as_str().unwrap_or("");
                 for block in content.as_array().into_iter().flatten() {
@@ -246,4 +259,37 @@ pub fn replay(session: &str, cwd: &Path) -> Option<Vec<Value>> {
         }
     }
     Some(updates)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn read_back(lines: &[&str]) -> Vec<Value> {
+        let dir = std::env::temp_dir().join(format!("loom-replay-{}", std::process::id()));
+        let projects = dir.join("projects").join("p");
+        std::fs::create_dir_all(&projects).unwrap();
+        std::fs::write(projects.join("s1.jsonl"), lines.join("\n")).unwrap();
+        // SAFETY: tests that read Claude Code's files run in this one test only.
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
+        let updates = replay("s1", Path::new("/home/me/p")).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+        updates
+    }
+
+    #[test]
+    fn a_conversation_reads_back_from_its_last_compaction() {
+        let updates = read_back(&[
+            r#"{"type":"user","uuid":"a","parentUuid":null,"message":{"content":"before"}}"#,
+            r#"{"type":"system","subtype":"compact_boundary","uuid":"b","parentUuid":null,"logicalParentUuid":"a"}"#,
+            r#"{"type":"user","uuid":"c","parentUuid":"b","message":{"content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AA"}},{"type":"text","text":"what is this?"}]}}"#,
+            r#"{"type":"attachment","uuid":"d","parentUuid":"c","attachment":{"type":"queued_command","prompt":[{"type":"text","text":"and BANANA"}]}}"#,
+            r#"{"type":"assistant","uuid":"e","parentUuid":"d","message":{"id":"m1","content":[{"type":"text","text":"A picture. BANANA"}]}}"#,
+        ]);
+        let kinds: Vec<String> = updates.iter().map(|u| format!("{}:{}", u["sessionUpdate"].as_str().unwrap(), u["content"]["type"].as_str().unwrap_or(""))).collect();
+        assert_eq!(kinds, ["user_message_chunk:text", "user_message_chunk:image", "user_message_chunk:text", "agent_message_chunk:text"]);
+        assert_eq!(updates[0]["content"]["text"], "what is this?");
+        assert_eq!(updates[2]["content"]["text"], "and BANANA");
+        assert_eq!(updates[3]["messageId"], "m1");
+    }
 }

@@ -579,18 +579,43 @@ const EXIT_PLAN_AUTO: &str = "exit-plan-auto";
 const EXIT_PLAN_BYPASS: &str = "exit-plan-bypass";
 const EXIT_PLAN_ACCEPT_EDITS: &str = "exit-plan-accept-edits";
 const EXIT_PLAN_DEFAULT: &str = "exit-plan-default";
+const EXIT_PLAN_CLEAR_AUTO: &str = "exit-plan-clear-auto";
+const EXIT_PLAN_CLEAR_BYPASS: &str = "exit-plan-clear-bypass";
+const EXIT_PLAN_CLEAR_ACCEPT_EDITS: &str = "exit-plan-clear-accept-edits";
+
+/// The mode a "clear context" choice on leaving plan mode carries the plan out in (None: the
+/// choice keeps the context).
+pub fn plan_clear_mode(option: &str) -> Option<&'static str> {
+    match option {
+        EXIT_PLAN_CLEAR_AUTO => Some("auto"),
+        EXIT_PLAN_CLEAR_BYPASS => Some("bypassPermissions"),
+        EXIT_PLAN_CLEAR_ACCEPT_EDITS => Some("acceptEdits"),
+        _ => None,
+    }
+}
 
 fn option(id: &str, name: &str, kind: &str) -> Value {
     json!({ "optionId": id, "name": name, "kind": kind })
 }
 
 /// The choices for a permission question about `tool` (`suggestions`: the rules Claude Code
-/// proposes for "don't ask again"; `modes`: the modes there are, for leaving plan mode).
-pub fn permission_options(tool: &str, input: &Value, suggestions: &Value, modes: &[String]) -> Vec<Value> {
+/// proposes for "don't ask again"; `modes`: the modes there are, for leaving plan mode;
+/// `used`: how full the context is, in percent, for its "clear context" choice).
+pub fn permission_options(tool: &str, input: &Value, suggestions: &Value, modes: &[String], used: Option<u64>) -> Vec<Value> {
     match tool {
         "ExitPlanMode" => {
             let mut options = Vec::new();
-            for mode in ["auto", "bypassPermissions"].iter().filter(|m| modes.iter().any(|x| x == *m)) {
+            let elevated: Vec<&str> = ["auto", "bypassPermissions"].into_iter().filter(|m| modes.iter().any(|x| x == m)).collect();
+            // A plan carried out in a fresh context (only the plan goes with it).
+            if input["plan"].as_str().is_some_and(|p| !p.trim().is_empty()) {
+                let usage = used.map(|u| format!(" ({u}% used)")).unwrap_or_default();
+                options.push(match elevated.first() {
+                    Some(&"auto") => option(EXIT_PLAN_CLEAR_AUTO, &format!("Yes, clear context{usage} and use auto mode"), "allow_always"),
+                    Some(_) => option(EXIT_PLAN_CLEAR_BYPASS, &format!("Yes, clear context{usage} and bypass permissions"), "allow_always"),
+                    None => option(EXIT_PLAN_CLEAR_ACCEPT_EDITS, &format!("Yes, clear context{usage} and auto-accept edits"), "allow_always"),
+                });
+            }
+            for mode in &elevated {
                 options.push(match *mode {
                     "auto" => option(EXIT_PLAN_AUTO, "Yes, and use auto mode", "allow_always"),
                     _ => option(EXIT_PLAN_BYPASS, "Yes, and bypass permissions", "allow_always"),
@@ -823,7 +848,7 @@ mod tests {
     #[test]
     fn permission_choices_and_results() {
         let suggestions = json!([{ "type": "addRules", "rules": [{ "toolName": "Bash", "ruleContent": "ls:*" }], "behavior": "allow", "destination": "localSettings" }]);
-        let options = permission_options("Bash", &json!({ "command": "ls" }), &suggestions, &[]);
+        let options = permission_options("Bash", &json!({ "command": "ls" }), &suggestions, &[], None);
         assert_eq!(options.len(), 3);
         assert_eq!(options[1]["name"], "Yes, and don't ask again for ls:* commands");
         let (result, _) = permission_result(Some(ALLOW_ALWAYS), "Bash", &json!({ "command": "ls" }), &suggestions, "t1");
@@ -832,6 +857,17 @@ mod tests {
         let (result, mode) = permission_result(Some("exit-plan-default"), "ExitPlanMode", &json!({}), &Value::Null, "t1");
         assert_eq!(result["behavior"], "allow");
         assert_eq!(mode, Some("default"));
+    }
+
+    #[test]
+    fn a_plan_can_go_on_in_a_fresh_context() {
+        let modes = vec!["default".to_owned(), "auto".to_owned(), "bypassPermissions".to_owned()];
+        let options = permission_options("ExitPlanMode", &json!({ "plan": "1. do it" }), &Value::Null, &modes, Some(12));
+        assert_eq!(options[0]["name"], "Yes, clear context (12% used) and use auto mode");
+        assert_eq!(plan_clear_mode(options[0]["optionId"].as_str().unwrap()), Some("auto"));
+        assert_eq!(options.last().unwrap()["name"], "No, keep planning");
+        let none = permission_options("ExitPlanMode", &json!({}), &Value::Null, &modes, None);
+        assert!(none.iter().all(|o| plan_clear_mode(o["optionId"].as_str().unwrap()).is_none()));
     }
 
     #[test]

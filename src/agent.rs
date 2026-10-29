@@ -2191,6 +2191,14 @@ impl Agent {
                 }
             }
             "config_option_update" => self.set_config(&update["configOptions"]),
+            // The provider goes on in a new conversation (a plan carried out in a fresh
+            // context): reopened later, that one is read back.
+            "session_replaced" => {
+                if let Some(id) = update["sessionId"].as_str() {
+                    *self.session_id.borrow_mut() = Some(id.to_owned());
+                    self.emit(Event::Session);
+                }
+            }
             "session_info_update" => {
                 // The prompt Claude Code predicts next (an empty list: none this turn).
                 if let Some(suggestions) = update["_meta"]["promptSuggestions"]["suggestions"].as_array()

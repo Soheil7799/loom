@@ -73,6 +73,11 @@ pub struct Link {
     cwd: PathBuf,
     on_incoming: Rc<dyn Fn(Incoming)>,
     process: RefCell<Option<Rc<Process>>>,
+    /// Which process is the current one (what an older one says after it is replaced is not
+    /// heard).
+    generation: Cell<u64>,
+    /// The session's parameters from loom (to start Claude Code again with them).
+    params: RefCell<Value>,
     session: RefCell<Option<String>>,
     next: Cell<u64>,
     controls: RefCell<HashMap<String, Reply>>,
@@ -117,6 +122,8 @@ impl Link {
             cwd: cwd.to_owned(),
             on_incoming,
             process: RefCell::default(),
+            generation: Cell::new(0),
+            params: RefCell::new(Value::Null),
             session: RefCell::default(),
             next: Cell::new(0),
             controls: RefCell::default(),
@@ -278,6 +285,15 @@ impl Link {
             self.answer_control(&ask.request, response);
             return;
         }
+        // The plan carried out in a fresh context: this conversation ends here.
+        let option = result["outcome"]["optionId"].as_str().unwrap_or("");
+        if !ask.form && ask.tool.name == "ExitPlanMode" && result["outcome"]["outcome"] == "selected"
+            && let Some(mode) = tools::plan_clear_mode(option)
+        {
+            self.answer_control(&ask.request, json!({ "behavior": "deny", "message": "User accepted the plan and requested a fresh context", "interrupt": true, "toolUseID": ask.tool.id }));
+            self.fresh_context(mode, ask.tool.input["plan"].as_str().unwrap_or("").to_owned());
+            return;
+        }
         let (response, mode) = if ask.form {
             match tools::question_answers(&ask.tool.input, &result) {
                 Some(input) => (json!({ "behavior": "allow", "updatedInput": input, "toolUseID": ask.tool.id }), None),
@@ -332,6 +348,10 @@ impl Link {
             program.push(dir.to_owned());
         }
         let options = &params["_meta"]["claudeCode"]["options"];
+        if let Some(mode) = options["permissionMode"].as_str() {
+            program.push("--permission-mode".to_owned());
+            program.push(mode.to_owned());
+        }
         if options["settings"].is_object() {
             program.push("--settings".to_owned());
             program.push(options["settings"].to_string());
@@ -340,9 +360,12 @@ impl Link {
             program.push("--plugin-dir".to_owned());
             program.push(plugin.to_owned());
         }
+        let generation = self.generation.get() + 1;
+        self.generation.set(generation);
+        *self.params.borrow_mut() = params.clone();
         let me = self.me.clone();
         let process = match Process::spawn(&program, &self.cwd, "claude", move |line| {
-            if let Some(link) = me.upgrade() {
+            if let Some(link) = me.upgrade().filter(|l| l.generation.get() == generation) {
                 match line {
                     Some(message) => link.handle(message),
                     None => link.ended(),
@@ -402,6 +425,41 @@ impl Link {
         if self.process.borrow_mut().take().is_some() {
             (self.on_incoming)(Incoming::Exited);
         }
+    }
+
+    /// Carries the plan out in a new conversation, in `mode`, within the turn that is running
+    /// (its answer comes from the new one). loom is told the new conversation's id.
+    fn fresh_context(&self, mode: &'static str, plan: String) {
+        let id = glib::uuid_string_random().to_string();
+        let old = self.session_id();
+        (self.on_incoming)(Incoming::Call {
+            id: None,
+            method: "session/update".to_owned(),
+            params: json!({ "sessionId": old, "update": { "sessionUpdate": "session_replaced", "sessionId": id } }),
+        });
+        self.subs.borrow_mut().clear();
+        self.tools.borrow_mut().clear();
+        self.tasks.borrow_mut().clear();
+        self.used.set(0);
+        let mut params = self.params.borrow().clone();
+        params["_meta"]["claudeCode"]["options"]["permissionMode"] = mode.into();
+        let me = self.me.clone();
+        self.start(id, false, &params, Box::new(move |result| {
+            let Some(link) = me.upgrade() else { return };
+            match result {
+                Ok(answer) => {
+                    *link.mode.borrow_mut() = mode.to_owned();
+                    link.send(None, json!({ "sessionUpdate": "current_mode_update", "currentModeId": mode }));
+                    link.send(None, json!({ "sessionUpdate": "config_option_update", "configOptions": answer["configOptions"] }));
+                    link.write_user(&json!([{ "type": "text", "text": format!("Implement the following plan:\n\n{plan}") }]));
+                }
+                Err(err) => {
+                    if let Some(reply) = link.prompt.borrow_mut().take() {
+                        reply(Err(err));
+                    }
+                }
+            }
+        }));
     }
 
     // ---- prompts --------------------------------------------------------------------------
@@ -885,7 +943,8 @@ impl Link {
                 }
                 let suggestions = request["permission_suggestions"].clone();
                 let modes: Vec<String> = MODES.iter().map(|m| m.0.to_owned()).collect();
-                let options = tools::permission_options(&tool.name, &tool.input, &suggestions, &modes);
+                let used = (self.size.get() > 0).then(|| self.used.get() * 100 / self.size.get());
+                let options = tools::permission_options(&tool.name, &tool.input, &suggestions, &modes, used);
                 let mut call = tools::permission_call(&tool, &self.cwd);
                 if let Some(title) = request["title"].as_str() {
                     call["title"] = title.into();
