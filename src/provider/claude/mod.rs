@@ -338,14 +338,36 @@ impl Link {
             "_session/background" => self.control(json!({ "subtype": "background_tasks" }), move |result| reply(result.map(|_| json!({})))),
             // Files as they were at a message (Claude's edits since then undone); dryRun: what would change.
             "_session/rewind_files" => {
-                // By the message itself, or as the message you sent after agent message `afterMessageId`.
-                let message = match params["afterMessageId"].as_str() {
-                    Some(after) => transcripts::user_after(&self.session_id(), after),
-                    None => params["userMessageId"].as_str().map(str::to_owned),
+                let dry = params["dryRun"].as_bool() == Some(true);
+                let rewind = move |link: &Link, message: String, reply: Reply| {
+                    let request = json!({ "subtype": "rewind_files", "user_message_id": message, "dry_run": dry });
+                    link.control(request, move |result| {
+                        // The message it went by, for the request that follows a preview.
+                        reply(result.map(|mut r| {
+                            r["userMessageId"] = message.into();
+                            r
+                        }))
+                    });
                 };
-                let Some(message) = message else { return reply(Err(error("That message is not in Claude Code's file of this conversation"))) };
-                let request = json!({ "subtype": "rewind_files", "user_message_id": message, "dry_run": params["dryRun"].as_bool() == Some(true) });
-                self.control(request, reply);
+                // By the message itself, or as the one sent after agent message `afterMessageId`
+                // (looked up in the conversation's file, off the main loop).
+                match params["afterMessageId"].as_str().map(str::to_owned) {
+                    None => match params["userMessageId"].as_str() {
+                        Some(message) => rewind(self, message.to_owned(), reply),
+                        None => reply(Err(error("no message"))),
+                    },
+                    Some(after) => {
+                        let (me, session) = (self.me.clone(), self.session_id());
+                        glib::spawn_future_local(async move {
+                            let found = gio::spawn_blocking(move || transcripts::user_after(&session, &after)).await.ok().flatten();
+                            let Some(link) = me.upgrade() else { return };
+                            match found {
+                                Some(message) => rewind(&link, message, reply),
+                                None => reply(Err(error("That message is not in Claude Code's file of this conversation"))),
+                            }
+                        });
+                    }
+                }
             }
             // Claude Code's next-message suggestions on or off, in a session that runs.
             "_session/suggestions" => {
@@ -974,7 +996,7 @@ impl Link {
             // What a subagent is at, in a line (its progress summary).
             "task_progress" => {
                 let (task, tool) = (message["task_id"].as_str(), message["tool_use_id"].as_str());
-                let key = self.subs.borrow().iter().find(|s| s.task.as_deref() == task || tool == Some(s.key.as_str())).map(|s| s.key.clone());
+                let key = self.subs.borrow().iter().find(|s| (task.is_some() && s.task.as_deref() == task) || tool == Some(s.key.as_str())).map(|s| s.key.clone());
                 if let (Some(key), Some(summary)) = (key, message["summary"].as_str().filter(|s| !s.is_empty())) {
                     self.send(None, json!({ "sessionUpdate": "subagent_update", "sessionId": key, "step": summary }));
                 }

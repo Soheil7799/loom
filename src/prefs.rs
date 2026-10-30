@@ -1109,10 +1109,17 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
 /// Claude Code's settings files with rules: the user's, and each of loom's projects' local one.
 fn rule_files() -> Vec<(std::path::PathBuf, String)> {
     let mut files = vec![(crate::state::claude_dir().join("settings.json"), "Everywhere (your Claude Code settings)".to_owned())];
-    let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| "dev.shirvani.Loom".to_owned());
-    for project in crate::state::load(&app_id).projects {
-        let name = project.path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        files.push((project.path.join(".claude/settings.local.json"), format!("In {name}")));
+    let app_id = gtk::gio::Application::default().and_then(|a| a.application_id()).map(|id| id.to_string()).unwrap_or_default();
+    let layout = crate::state::load(&app_id);
+    // The projects' folders and the agents' (one may work in a repo or folder inside a project).
+    let mut folders: Vec<std::path::PathBuf> = layout.projects.iter().map(|p| p.path.clone()).collect();
+    folders.extend(layout.agents.iter().map(|a| a.cwd.clone()));
+    folders.sort();
+    folders.dedup();
+    for folder in folders {
+        let name = folder.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        files.push((folder.join(".claude/settings.local.json"), format!("In {name} (yours)")));
+        files.push((folder.join(".claude/settings.json"), format!("In {name} (shared)")));
     }
     files
 }

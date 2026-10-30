@@ -1424,12 +1424,13 @@ impl Agent {
                     agent.send_next();
                 }
                 Ok(answer) => {
-                    agent.context.borrow_mut().clear();
+                    let sent_context = std::mem::take(&mut *agent.context.borrow_mut());
                     agent.journal("user", &text);
-                    // Claude may not have taken it yet: it can be taken back until then.
+                    // Claude may not have taken it yet: it can be taken back until then (with
+                    // its pictures and the command outputs that went with it).
                     if let Some(message) = answer["messageId"].as_str().map(str::to_owned) {
                         let weak = Rc::downgrade(&agent);
-                        let back = text.clone();
+                        let back = (text.clone(), images.clone(), sent_context);
                         agent.chat.notice_choice("Sent into the running turn.", "Take back", Rc::new(move || {
                             if let Some(agent) = weak.upgrade() {
                                 agent.take_back(message.clone(), back.clone());
@@ -2021,14 +2022,19 @@ impl Agent {
 
     /// A message sent into the running turn, taken back (back into the input) if Claude has not
     /// taken it yet.
-    fn take_back(self: &Rc<Self>, message_id: String, text: String) {
+    fn take_back(self: &Rc<Self>, message_id: String, (text, images, context): (String, Vec<glib::Bytes>, Vec<String>)) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
         let weak = Rc::downgrade(self);
         conn.request("_session/take_back", json!({ "sessionId": session, "messageId": message_id }), move |result| {
             let Some(agent) = weak.upgrade() else { return };
             match result {
-                // Back in the input (restore_unsent says so).
-                Ok(answer) if answer["cancelled"].as_bool() == Some(true) => agent.restore_unsent(vec![(text.clone(), Vec::new())]),
+                // Back in the input (restore_unsent says so), and what went with it.
+                Ok(answer) if answer["cancelled"].as_bool() == Some(true) => {
+                    let mut kept = context.clone();
+                    kept.append(&mut agent.context.borrow_mut());
+                    *agent.context.borrow_mut() = kept;
+                    agent.restore_unsent(vec![(text.clone(), images.clone())]);
+                }
                 Ok(_) => agent.chat.notice("Too late to take back: Claude has it already.", "dim"),
                 Err(err) => agent.chat.notice(&format!("Could not take it back: {}", message(&err)), "error"),
             }
@@ -2101,11 +2107,21 @@ impl Agent {
             let (plus, minus) = (preview["insertions"].as_u64().unwrap_or(0), preview["deletions"].as_u64().unwrap_or(0));
             let ask = format!("Rewinding here also puts {what} back as it was (+{plus} −{minus} of Claude's changes go). Rewind with the files?");
             let (weak, at, text) = (Rc::downgrade(&agent), at.clone(), text.clone());
+            let message_id = preview["userMessageId"].as_str().map(str::to_owned);
             agent.chat.notice_choice(&ask, "Rewind", Rc::new(move || {
                 let Some(agent) = weak.upgrade() else { return };
+                // Claude went back to work since it asked: not under its edits.
+                if agent.turn.get() || agent.autonomous.get().is_some() {
+                    agent.chat.notice("Not rewound: Claude is working. Rewind once this turn is over.", "dim");
+                    return;
+                }
                 let (Some(conn), Some(session)) = (agent.conn.borrow().clone(), agent.session_id()) else { return };
+                let request = match &message_id {
+                    Some(id) => json!({ "sessionId": session, "userMessageId": id }),
+                    None => json!({ "sessionId": session, "afterMessageId": at }),
+                };
                 let (weak, at, text) = (Rc::downgrade(&agent), at.clone(), text.clone());
-                conn.request("_session/rewind_files", json!({ "sessionId": session, "afterMessageId": at }), move |result| {
+                conn.request("_session/rewind_files", request, move |result| {
                     let Some(agent) = weak.upgrade() else { return };
                     match result {
                         Ok(done) if done["canRewind"].as_bool() == Some(true) => {
@@ -2299,7 +2315,7 @@ impl Agent {
     fn subagent_update(self: &Rc<Self>, update: &Value) {
         let Some(id) = update["sessionId"].as_str() else { return };
         let sub = self.sub(id);
-        if let Some(step) = update["step"].as_str() {
+        if let Some(step) = update["step"].as_str().filter(|_| sub.ended.get().is_none()) {
             *sub.step.borrow_mut() = step.to_owned();
             sub.at.set(Instant::now());
         }
@@ -2650,7 +2666,8 @@ fn cost(cost: &Value) -> Option<String> {
 /// ("5h 38%", "5-hour limit: 38% used, resets 14:00") from the account's rate limit.
 fn limit(info: &Value) -> Option<(String, String)> {
     let used = info["utilization"].as_f64()?;
-    let percent = if used <= 1.0 { used * 100.0 } else { used };
+    // Claude Code gives a share (0.33 = 33%), over 1 when a window is overrun.
+    let percent = used * 100.0;
     let (short, long) = match info["rateLimitType"].as_str() {
         Some("five_hour") => ("5h", "5-hour limit"),
         Some("seven_day") => ("week", "Weekly limit"),

@@ -154,12 +154,10 @@ pub fn user_after(session: &str, after: &str) -> Option<String> {
             past = true;
             continue;
         }
-        let words = match &v["message"]["content"] {
-            Value::String(_) => true,
-            Value::Array(blocks) => blocks.iter().any(|b| b["type"] == "text"),
-            _ => false,
-        };
-        if past && v["type"] == "user" && v["isMeta"].as_bool() != Some(true) && v["isSidechain"].as_bool() != Some(true) && words {
+        let content = &v["message"]["content"];
+        let said = prompt_text(content).is_some() || content.as_array().is_some_and(|b| b.iter().any(|b| b["type"] == "image"));
+        let theirs = v["isMeta"].as_bool() != Some(true) && v["isSidechain"].as_bool() != Some(true) && v["isCompactSummary"].as_bool() != Some(true);
+        if past && v["type"] == "user" && theirs && said {
             return v["uuid"].as_str().map(str::to_owned);
         }
     }
@@ -283,12 +281,16 @@ pub fn replay(session: &str, cwd: &Path) -> Option<Vec<Value>> {
 mod tests {
     use super::*;
 
+    /// Tests that point CLAUDE_CONFIG_DIR at a folder of their own, one at a time.
+    static CONFIG: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
     fn read_back(lines: &[&str]) -> Vec<Value> {
+        let _one = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("loom-replay-{}", std::process::id()));
         let projects = dir.join("projects").join("p");
         std::fs::create_dir_all(&projects).unwrap();
         std::fs::write(projects.join("s1.jsonl"), lines.join("\n")).unwrap();
-        // SAFETY: tests that read Claude Code's files run in this one test only.
+        // SAFETY: the tests that set it hold CONFIG.
         unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
         let updates = replay("s1", Path::new("/home/me/p")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
@@ -297,6 +299,7 @@ mod tests {
 
     #[test]
     fn the_message_after_an_answer_is_found() {
+        let _one = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("loom-after-{}", std::process::id()));
         let projects = dir.join("projects").join("p");
         std::fs::create_dir_all(&projects).unwrap();
@@ -304,10 +307,11 @@ mod tests {
             r#"{"type":"user","uuid":"u1","message":{"content":"first"}}"#,
             r#"{"type":"assistant","uuid":"a1","message":{"id":"m1","content":[{"type":"text","text":"ok"}]}}"#,
             r#"{"type":"user","uuid":"t1","message":{"content":[{"type":"tool_result","content":"x"}]}}"#,
+            r#"{"type":"user","uuid":"c1","message":{"content":"<command-name>/compact</command-name>"}}"#,
             r#"{"type":"user","uuid":"u2","message":{"content":[{"type":"text","text":"second"}]}}"#,
         ];
         std::fs::write(projects.join("s2.jsonl"), lines.join("\n")).unwrap();
-        // SAFETY: as in the test below (the config folder is this test's own).
+        // SAFETY: the tests that set it hold CONFIG.
         unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
         assert_eq!(user_after("s2", "m1").as_deref(), Some("u2"));
         assert_eq!(user_after("s2", "nope"), None);

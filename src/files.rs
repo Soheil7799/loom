@@ -1008,11 +1008,7 @@ impl Files {
     /// changed on disk since it was opened (the agent rewrote it) is overwritten only by a
     /// second Save of that same version.
     pub fn save(&self) -> bool {
-        let saved = self.write(true);
-        if saved && self.open.borrow().as_ref().is_some_and(|p| p.starts_with(crate::plugin::dir())) {
-            crate::plugin::changed();
-        }
-        saved
+        self.write(true)
     }
 
     /// Saving on the way to something else (opening another file, closing): never
@@ -1040,6 +1036,10 @@ impl Files {
         let text = self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), false);
         match std::fs::write(&path, text.as_bytes()) {
             Ok(()) => {
+                // A file of loom's Claude folder: running sessions read it again.
+                if path.starts_with(crate::plugin::dir()) {
+                    crate::plugin::changed();
+                }
                 self.buffer.set_modified(false);
                 self.opened_at.set(modified_time(&path));
                 self.warned.set(None);

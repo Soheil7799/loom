@@ -281,17 +281,21 @@ fn all_notes(vault: &std::path::Path) -> Vec<(String, String, u64)> {
         for entry in entries.flatten() {
             let path = entry.path();
             let name = entry.file_name().to_string_lossy().into_owned();
+            // A link is not followed (one to a folder above would never end).
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_symlink() {
+                continue;
+            }
             // loom's and git's folders, and the topics' own descriptions, are not notes.
             if name.starts_with('.') || (dir == root && name == crate::vault::TOPICS) {
                 continue;
             }
-            if path.is_dir() {
+            if kind.is_dir() {
                 walk(root, &path, out);
             } else if name.ends_with(".md") {
                 let Ok(relative) = path.strip_prefix(root) else { continue };
                 let when = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-                let text = std::fs::read_to_string(&path).unwrap_or_default();
-                let title = text.lines().find_map(|l| l.strip_prefix("# ")).map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned).unwrap_or_else(|| name.trim_end_matches(".md").to_owned());
+                let title = name.trim_end_matches(".md").to_owned();
                 out.push((relative.to_string_lossy().into_owned(), title, when));
             }
         }

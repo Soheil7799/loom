@@ -1312,8 +1312,7 @@ impl Chat {
                 heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
             }
             for window in windows {
-                let used = window["utilization"].as_f64().unwrap_or(0.0);
-                let share = if used <= 1.0 { used } else { used / 100.0 };
+                let share = window["utilization"].as_f64().unwrap_or(0.0);
                 let name = match window["kind"].as_str().unwrap_or("") {
                     "five_hour" => "5-hour".to_owned(),
                     "seven_day" => "Weekly".to_owned(),
