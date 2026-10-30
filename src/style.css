@@ -165,7 +165,7 @@ textview.input, textview.input text { background: transparent; }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
 button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
 button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
-.working { font-size: 0.9em; opacity: 0.75; margin-left: 6px; }
+.working { font-size: 0.9em; opacity: 0.85; margin-left: 6px; color: @accent_color; font-variant-numeric: tabular-nums; }
 .completion row { padding: 3px 8px; }
 .option-list { padding: 4px; min-width: 240px; }
 .option-heading { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }

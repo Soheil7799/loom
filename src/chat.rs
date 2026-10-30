@@ -15,6 +15,16 @@ use crate::markdown::{self, Segment};
 
 type Callback<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 
+/// The word of a turn while Claude works, one picked each turn (a loom's, mostly).
+const VERBS: &[&str] = &[
+    "Weaving", "Threading", "Spinning", "Unspooling", "Knitting", "Stitching", "Braiding", "Looming",
+    "Untangling", "Warping", "Shuttling", "Darning", "Embroidering", "Crocheting", "Quilting", "Felting",
+    "Pondering", "Mulling", "Tinkering", "Brewing", "Simmering", "Musing", "Whittling", "Conjuring",
+];
+
+/// The star by the word, turning.
+const STARS: &[&str] = &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
+
 /// The input's hint while it is empty.
 const HINT: &str = "Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images";
 
@@ -84,6 +94,8 @@ pub struct Chat {
     composer: gtk::Box,
     shell_badge: gtk::Label,
     working_since: Cell<Option<std::time::Instant>>,
+    /// The turn's word ("Weaving…").
+    verb: Cell<&'static str>,
     latest: gtk::Button,
     /// The agent's folder, and its files once listed (for @ mentions).
     cwd: RefCell<std::path::PathBuf>,
@@ -537,6 +549,7 @@ impl Chat {
             composer: composer.clone(),
             shell_badge,
             working_since: Cell::new(None),
+            verb: Cell::new(VERBS[0]),
             latest: latest.clone(),
             cwd: RefCell::default(),
             project_files: RefCell::default(),
@@ -1852,10 +1865,15 @@ impl Chat {
             self.crew.borrow_mut().retain(|c| !c.guessed && c.ended.is_none());
             self.show_crew();
         }
+        // A new word each turn (one after another too: a message that waited for it).
+        if since.is_some() && since != was {
+            let pick = (glib::random_int() as usize) % VERBS.len();
+            self.verb.set(VERBS[pick]);
+        }
         if since.is_some() && was.is_none() {
             self.tick_working();
             let weak = Rc::downgrade(self);
-            glib::timeout_add_seconds_local(1, move || {
+            glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
                 let Some(chat) = weak.upgrade() else { return glib::ControlFlow::Break };
                 if chat.working_since.get().is_none() {
                     return glib::ControlFlow::Break;
@@ -1866,9 +1884,14 @@ impl Chat {
         }
     }
 
+    /// "✻ Weaving… (1m 12s)", its star turning (only while it is on screen).
     fn tick_working(&self) {
-        if let Some(since) = self.working_since.get() {
-            self.working.set_label(&format!("Working {}", elapsed(since.elapsed().as_secs())));
+        if let Some(since) = self.working_since.get()
+            && (self.working.is_mapped() || self.working.label().is_empty())
+        {
+            let time = since.elapsed();
+            let star = STARS[(time.as_millis() / 250) as usize % STARS.len()];
+            self.working.set_label(&format!("{star} {}… ({})", self.verb.get(), elapsed(time.as_secs())));
             self.working.set_tooltip_text(Some("Esc stops it"));
         }
     }
