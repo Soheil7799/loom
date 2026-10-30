@@ -22,6 +22,15 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
+        "Notes (while Notes is on)",
+        &[
+            ("Ctrl+Shift+M", "The Notes view, and back to the agents"),
+            ("Ctrl+N", "New chat (in the Notes view)"),
+            ("Alt+↑ / Alt+↓", "Previous or next chat (in the Notes view)"),
+            ("Ctrl+E", "Topics and history panel (in the Notes view)"),
+        ],
+    ),
+    (
         "Chat",
         &[
             ("Enter", "Send (while Claude works: queued for when it finishes)"),
@@ -96,6 +105,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("G", "Find a file"),
             ("S", "Go to an agent"),
             ("I", "Questions"),
+            ("M", "Notes view"),
         ],
     ),
     (

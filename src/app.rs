@@ -67,9 +67,22 @@ pub struct App {
     /// The project being renamed (None: the focused agent).
     renaming: RefCell<Option<PathBuf>>,
     quitting: Cell<bool>,
-    /// The Notes chat (its page, and its entry atop the sidebar while Notes is on).
+    /// The Notes view: its chats (the sidebar's page and the middle), its panel on the right,
+    /// its button beside Overview (a dot on it: a chat waits for you), and the way back.
     notes_chat: Rc<crate::notes_chat::NotesChat>,
-    notes_entry: gtk::Button,
+    notes_panel: Rc<crate::notes_panel::NotesPanel>,
+    notes_button: gtk::ToggleButton,
+    notes_dot: gtk::Box,
+    notes_back: gtk::Button,
+    notes_mode: Cell<bool>,
+    /// The agents' side as the Notes view found it (put back when leaving), and the note open
+    /// in the Notes view (back when it is shown again).
+    agents_side: RefCell<AgentsSide>,
+    notes_file: RefCell<(Option<PathBuf>, bool)>,
+    notes_tabs: RefCell<Vec<PathBuf>>,
+    /// The sidebar's list: the agents', or the Notes chats'.
+    side_stack: gtk::Stack,
+    split: gtk::Paned,
     /// Next-message suggestions were on (agents are told when that changes).
     suggestions: Cell<bool>,
     /// Ctrl+B was pressed: the next key is a command (herdr's prefix).
@@ -109,6 +122,20 @@ pub struct App {
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// The Telegram bot (off unless switched on).
     bot: Rc<crate::telegram::Bot>,
+}
+
+/// What the agents' side showed when the Notes view opened.
+#[derive(Default)]
+struct AgentsSide {
+    /// An agent was in view (else the overview or a page).
+    agent: bool,
+    files: bool,
+    pinned: bool,
+    bar: bool,
+    dock: bool,
+    /// The file open, and whether the editor showed; the editor's tabs.
+    file: (Option<PathBuf>, bool),
+    tabs: Vec<PathBuf>,
 }
 
 impl App {
@@ -160,9 +187,19 @@ impl App {
         overview_button.add_css_class("flat");
         overview_button.add_css_class("overview-button");
         overview_button.set_tooltip_text(Some("Overview: every agent, and scheduled prompts (Ctrl+Shift+A)"));
+        // The Notes view (while Notes is on): a dot on it when a chat waits for you.
+        let notes_button = gtk::ToggleButton::builder().icon_name("accessories-text-editor-symbolic").tooltip_text("Notes: chat with your notes, their topics and history (Ctrl+Shift+M)").build();
+        notes_button.update_property(&[gtk::accessible::Property::Label("Notes")]);
+        notes_button.add_css_class("flat");
+        notes_button.add_css_class("overview-button");
+        let notes_dot = gtk::Box::builder().halign(gtk::Align::End).valign(gtk::Align::Start).can_target(false).visible(false).build();
+        notes_dot.add_css_class("notes-dot");
+        let notes_place = gtk::Overlay::builder().child(&notes_button).valign(gtk::Align::Center).visible(crate::vault::current().is_some()).build();
+        notes_place.add_overlay(&notes_dot);
         top.append(&brand);
         top.append(&spacer);
         // Waiting for you: a band under the lockup (shown only then); it opens the questions.
+        top.append(&notes_place);
         top.append(&overview_button);
         sidebar.append(&top);
         inbox.set_hexpand(true);
@@ -173,19 +210,22 @@ impl App {
                 crate::about::open(&window);
             }
         });
-        // The Notes chat: talking with the notes (only while Notes is on).
-        let notes_entry = gtk::Button::builder().child(&gtk::Label::builder().label("✎  Notes chat").xalign(0.0).build()).visible(crate::vault::current().is_some()).build();
-        notes_entry.add_css_class("flat");
-        notes_entry.add_css_class("notes-entry");
-        notes_entry.set_tooltip_text(Some("Talk with your notes: ask what they say, tell them what to keep"));
-        sidebar.append(&notes_entry);
         let list = gtk::ListBox::new();
         list.add_css_class("agents");
         let menu = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).build();
         menu.add_css_class("menu");
         menu.set_parent(&list);
         let list_scroller = gtk::ScrolledWindow::builder().child(&list).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
-        sidebar.append(&list_scroller);
+        let notes_chat = crate::notes_chat::NotesChat::new();
+        // Back to the agents, with how many work and wait meanwhile.
+        let notes_back = gtk::Button::builder().child(&gtk::Label::builder().label("←  Agents").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build()).tooltip_text("Back to the agents (Ctrl+Shift+M)").build();
+        notes_back.add_css_class("flat");
+        notes_back.add_css_class("notes-back");
+        notes_chat.side.append(&notes_back);
+        let side_stack = gtk::Stack::builder().vexpand(true).build();
+        side_stack.add_named(&list_scroller, Some("agents"));
+        side_stack.add_named(&notes_chat.side, Some("notes"));
+        sidebar.append(&side_stack);
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         bottom.add_css_class("sidebar-bottom");
         // Small buttons, each with its key in the tooltip: new project, the scratch terminal and
@@ -238,8 +278,9 @@ impl App {
         chat_stack.add_named(&overview.root, Some("overview"));
         let hub = crate::hub::Hub::new();
         chat_stack.add_named(&hub.page, Some("notes"));
-        let notes_chat = crate::notes_chat::NotesChat::new();
-        chat_stack.add_named(&notes_chat.root, Some("notes-chat"));
+        chat_stack.add_named(&notes_chat.stack, Some("notes-chat"));
+        let notes_panel = crate::notes_panel::NotesPanel::new();
+        notes_panel.root.set_size_request(340, -1);
         let dock_stack = gtk::Stack::new();
         let bar_stack = gtk::Stack::new();
         bar_stack.add_css_class("tray-stack");
@@ -411,7 +452,16 @@ impl App {
             renaming: RefCell::default(),
             quitting: Cell::new(false),
             notes_chat,
-            notes_entry,
+            notes_panel,
+            notes_button,
+            notes_dot,
+            notes_back,
+            notes_mode: Cell::new(false),
+            agents_side: RefCell::default(),
+            notes_file: RefCell::default(),
+            notes_tabs: RefCell::default(),
+            side_stack,
+            split: split.clone(),
             suggestions: Cell::new(settings::get().suggest_prompts),
             bot: crate::telegram::Bot::new(),
             prefix: Cell::new(false),
@@ -457,6 +507,19 @@ impl App {
         }));
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
+        let (weak, place) = (Rc::downgrade(&this), notes_place.downgrade());
+        settings::on_change(move |_| {
+            let on = crate::vault::current().is_some();
+            if let Some(place) = place.upgrade() {
+                place.set_visible(on);
+            }
+            if let Some(app) = weak.upgrade()
+                && !on
+                && app.notes_mode.get()
+            {
+                app.show_agents();
+            }
+        });
         let weak = Rc::downgrade(&this);
         overview_button.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -692,6 +755,11 @@ impl App {
 
         match (ctrl, shift, alt, base) {
             (true, false, false, gdk::Key::grave) => self.toggle_scratch(),
+            (true, true, false, gdk::Key::m) => self.toggle_notes(),
+            // In the Notes view: its chats.
+            (false, false, true, gdk::Key::Up) if self.notes_mode.get() => self.notes_chat.step(-1),
+            (false, false, true, gdk::Key::Down) if self.notes_mode.get() => self.notes_chat.step(1),
+            (true, false, false, gdk::Key::n) if self.notes_mode.get() => self.new_notes_chat(),
             (false, true, true, gdk::Key::Up) => self.move_agent(-1),
             (false, true, true, gdk::Key::Down) => self.move_agent(1),
             (false, false, true, gdk::Key::Up) => self.step(-1),
@@ -742,7 +810,10 @@ impl App {
             (true, false, false, gdk::Key::f) => {
                 // The editor when it has the keyboard, the page of a project, else the chat.
                 let in_files = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is_ancestor(&self.files.root) || w.is_ancestor(&self.files.editor_box));
-                if !(in_files && self.files.find()) {
+                let in_notes = self.notes_mode.get() && GtkWindowExt::focus(&self.window).is_some_and(|w| w.is_ancestor(&self.notes_panel.root));
+                if in_notes {
+                    self.notes_panel.focus_filter();
+                } else if !(in_files && self.files.find()) {
                     if self.showing_project().is_some() {
                         self.history.focus_filter();
                     } else if let Some(agent) = self.active_agent() {
@@ -757,7 +828,7 @@ impl App {
             (true, false, false, gdk::Key::j) => self.ask_command(),
             (true, true, false, gdk::Key::j) => self.current_tray().peek_latest(),
             (true, true, false, gdk::Key::x) => self.current_tray().clear_finished(),
-            (true, false, false, gdk::Key::e) => self.files.root.set_visible(!self.files.root.is_visible()),
+            (true, false, false, gdk::Key::e) => self.toggle_panel(),
             (true, false, false, gdk::Key::o) => {
                 self.files.root.set_visible(true);
                 self.files.choose();
@@ -859,7 +930,8 @@ impl App {
                     agent.background_now();
                 }
             }
-            (_, gdk::Key::f | gdk::Key::e) => self.files.root.set_visible(!self.files.root.is_visible()),
+            (_, gdk::Key::f | gdk::Key::e) => self.toggle_panel(),
+            (_, gdk::Key::m) => self.toggle_notes(),
             (_, gdk::Key::o) => {
                 self.files.root.set_visible(true);
                 self.files.choose();
@@ -901,7 +973,7 @@ impl App {
 
     /// The agent on screen: the focused one, else the Notes chat's while its page is shown.
     pub fn active_agent(&self) -> Option<Rc<Agent>> {
-        self.focused_agent().or_else(|| (self.chat_stack.visible_child_name().as_deref() == Some("notes-chat")).then(|| self.notes_chat.current()).flatten())
+        self.focused_agent().or_else(|| (self.notes_mode.get() && self.chat_stack.visible_child_name().as_deref() == Some("notes-chat")).then(|| self.notes_chat.current()).flatten())
     }
 
     pub fn focus_nth(self: &Rc<Self>, index: usize) {
@@ -927,7 +999,15 @@ impl App {
             "inbox" => self.open_inbox(),
             "help" => crate::cheatsheet::open(&self.window),
             "settings" => crate::prefs::open(&self.window),
-            "notes-chat" if crate::vault::current().is_some() => self.show_notes_chat(),
+            "notes-chat" | "notes" if crate::vault::current().is_some() => self.show_notes(),
+            "agents" => self.show_agents(),
+            "topic-chat" => {
+                let topic = crate::vault::current().and_then(|v| crate::topics::list(&v).into_iter().find(|t| t.name == argument));
+                if let Some(topic) = topic {
+                    self.show_notes();
+                    self.notes_chat.topic_chat(&topic.name, &topic.folder);
+                }
+            }
             "peek" => self.current_tray().peek_latest(),
             "split" => self.toggle_split(),
             "find" => self.find_file(),
@@ -1104,6 +1184,7 @@ impl App {
             act("Clear finished jobs", "Ctrl+Shift+X", |a| a.current_tray().clear_finished()),
             act("Questions waiting", "Ctrl+I", |a| a.open_inbox()),
             act("Overview of all agents", "Ctrl+Shift+A", |a| a.show_overview()),
+            act("Notes: chat with your notes", "Ctrl+Shift+M", |a| a.show_notes()),
             act("Notes history", "", |a| a.show_notes_history()),
             act("Schedule a prompt for this agent…", "", |a| {
                 if let Some(agent) = a.focused_agent() {
@@ -1315,6 +1396,7 @@ impl App {
 
     pub fn focus(self: &Rc<Self>, agent: &Rc<Agent>) {
         crate::log::debug!("app", "focus agent {} ({})", agent.id, agent.title());
+        self.leave_notes();
         agent.mark_used();
         if self.files_hidden_for_overview.take() {
             self.files.root.set_visible(true);
@@ -1742,6 +1824,7 @@ impl App {
 
     /// Every agent on one page (no agent has the keyboard meanwhile).
     pub fn show_overview(self: &Rc<Self>) {
+        self.leave_notes();
         if let Some(old) = self.focused.borrow_mut().take() {
             old.focused.set(false);
             *self.previous.borrow_mut() = Some(old);
@@ -1758,17 +1841,108 @@ impl App {
         self.overview.grab_focus();
     }
 
-    /// The Notes chat, in place of the agent shown.
-    pub fn show_notes_chat(self: &Rc<Self>) {
-        if let Some(old) = self.focused.borrow_mut().take() {
-            old.focused.set(false);
-            *self.previous.borrow_mut() = Some(old);
+    // ---- the Notes view --------------------------------------------------------------------
+
+    /// The Notes view: its chats in the sidebar, a chat in the middle, its topics and history
+    /// on the right. The agents' side is kept as it was, for the way back.
+    pub fn show_notes(self: &Rc<Self>) {
+        if crate::vault::current().is_none() {
+            self.notes_button.set_active(false);
+            return;
+        }
+        if !self.notes_mode.replace(true) {
+            let had = self.focused.borrow_mut().take();
+            if let Some(old) = &had {
+                old.focused.set(false);
+                *self.previous.borrow_mut() = Some(old.clone());
+            }
+            *self.agents_side.borrow_mut() = AgentsSide {
+                agent: had.is_some(),
+                files: self.files.root.is_visible(),
+                pinned: self.pinned_box.is_visible(),
+                bar: self.bar_stack.is_visible(),
+                dock: self.dock_stack.is_visible(),
+                file: (self.files.open_path(), self.files.editor_box.is_visible()),
+                tabs: self.files.swap_tabs(self.notes_tabs.take()),
+            };
+            self.side_stack.set_visible_child_name("notes");
+            self.split.set_end_child(Some(&self.notes_panel.root));
+            self.files.lend_notes(&self.hub.panel);
+            self.notes_panel.history.append(&self.hub.panel);
+            self.pinned_box.set_visible(false);
+            self.bar_stack.set_visible(false);
+            self.dock_stack.set_visible(false);
+            let (file, open) = self.notes_file.borrow().clone();
+            match file.filter(|_| open) {
+                Some(path) => self.files.open_file(&path),
+                None => self.files.editor_box.set_visible(false),
+            }
+            self.notes_dot.set_visible(false);
+            self.notes_button.set_active(true);
+            self.notes_button.add_css_class("on");
+            self.notes_panel.refresh();
+            self.mark_active();
         }
         self.chat_stack.set_visible_child_name("notes-chat");
         self.notes_chat.open();
-        self.mark_active();
         self.refresh_sidebar();
         self.notes_chat.focus();
+    }
+
+    /// Out of the Notes view, the agents' side put back as it was (the view kept as it is, for
+    /// next time). False: not in it.
+    fn leave_notes(self: &Rc<Self>) -> bool {
+        if !self.notes_mode.replace(false) {
+            return false;
+        }
+        let side = self.agents_side.take();
+        *self.notes_file.borrow_mut() = (self.files.open_path(), self.files.editor_box.is_visible());
+        *self.notes_tabs.borrow_mut() = self.files.swap_tabs(side.tabs);
+        self.notes_chat.shown(false);
+        self.side_stack.set_visible_child_name("agents");
+        self.notes_panel.history.remove(&self.hub.panel);
+        self.files.take_back_notes(&self.hub.panel);
+        self.split.set_end_child(Some(&self.files.root));
+        self.files.root.set_visible(side.files);
+        self.pinned_box.set_visible(side.pinned);
+        self.bar_stack.set_visible(side.bar);
+        self.dock_stack.set_visible(side.dock);
+        match side.file.0.filter(|_| side.file.1) {
+            Some(path) => self.files.open_file(&path),
+            None => self.files.editor_box.set_visible(false),
+        }
+        self.notes_button.set_active(false);
+        self.notes_button.remove_css_class("on");
+        self.refresh_sidebar();
+        true
+    }
+
+    /// Back to the agents: the one that was in view, else the overview.
+    pub fn show_agents(self: &Rc<Self>) {
+        let had = self.agents_side.borrow().agent;
+        if !self.leave_notes() {
+            return;
+        }
+        let previous = self.previous.borrow().clone().filter(|p| had && self.agents.borrow().iter().any(|a| Rc::ptr_eq(a, p)));
+        match previous {
+            Some(agent) => self.focus(&agent),
+            None => self.show_overview(),
+        }
+    }
+
+    fn toggle_notes(self: &Rc<Self>) {
+        if self.notes_mode.get() { self.show_agents() } else { self.show_notes() }
+    }
+
+    fn new_notes_chat(self: &Rc<Self>) {
+        self.chat_stack.set_visible_child_name("notes-chat");
+        self.notes_chat.new_chat();
+    }
+
+    /// Ctrl+E: the files panel, or in the Notes view its own.
+    fn toggle_panel(&self) {
+        let panel: &gtk::Widget = if self.notes_mode.get() { self.notes_panel.root.upcast_ref() } else { self.files.root.upcast_ref() };
+        panel.set_visible(!panel.is_visible());
     }
 
     /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
@@ -1983,6 +2157,7 @@ impl App {
 
     /// Opens `project`'s page: nothing starts until a conversation is picked there.
     pub fn show_project(self: &Rc<Self>, project: &Path, cwd: &Path) {
+        self.leave_notes();
         self.ensure_project(project);
         if let Some(entry) = self.projects.borrow_mut().iter_mut().find(|p| p.path == project) {
             entry.collapsed = false;
@@ -2122,6 +2297,7 @@ impl App {
     }
 
     fn show_welcome(self: &Rc<Self>) {
+        self.leave_notes();
         self.fill_welcome();
         self.chat_stack.set_visible_child_name("empty");
         self.files.show(&glib::home_dir(), &glib::home_dir(), &[]);
@@ -2267,7 +2443,7 @@ impl App {
         let weak = Rc::downgrade(self);
         crate::plugin::on_changed(move || {
             if let Some(app) = weak.upgrade() {
-                for agent in app.agents.borrow().iter().chain(app.notes_chat.current().as_ref()) {
+                for agent in app.agents.borrow().iter().chain(app.notes_chat.agents().iter()) {
                     agent.reload_extensions();
                 }
             }
@@ -2276,6 +2452,7 @@ impl App {
         *self.notes_chat.on_edits.borrow_mut() = Some(Rc::new(move |edits, session, title| {
             if let Some(app) = weak.upgrade() {
                 app.hub.record_external(edits, &session, &title);
+                app.notes_panel.refresh();
             }
         }));
         let chat = Rc::downgrade(&self.notes_chat);
@@ -2284,29 +2461,53 @@ impl App {
                 chat.shown(stack.visible_child_name().as_deref() == Some("notes-chat"));
             }
         });
-        let entry = self.notes_entry.downgrade();
+        let (weak, dot) = (Rc::downgrade(self), self.notes_dot.downgrade());
         *self.notes_chat.on_attention.borrow_mut() = Some(Rc::new(move |waiting: bool| {
-            if let Some(label) = entry.upgrade().and_then(|e| e.child()).and_downcast::<gtk::Label>() {
-                label.set_label(if waiting { "✎  Notes chat  ⚑" } else { "✎  Notes chat" });
+            if let (Some(app), Some(dot)) = (weak.upgrade(), dot.upgrade()) {
+                dot.set_visible(waiting && !app.notes_mode.get());
+            }
+        }));
+        // A chat picked in the Notes view shows in the middle (History's page may be there).
+        let weak = Rc::downgrade(self);
+        *self.notes_chat.on_shown.borrow_mut() = Some(Rc::new(move || {
+            if let Some(app) = weak.upgrade()
+                && app.notes_mode.get()
+            {
+                app.chat_stack.set_visible_child_name("notes-chat");
             }
         }));
         let weak = Rc::downgrade(self);
-        self.notes_entry.connect_clicked(move |_| {
-            if let Some(app) = weak.upgrade() {
-                app.show_notes_chat();
-            }
-        });
-        // Shown while Notes is on (with a vault).
-        let entry = self.notes_entry.downgrade();
-        crate::settings::on_change(move |_| {
-            if let Some(entry) = entry.upgrade() {
-                entry.set_visible(crate::vault::current().is_some());
+        self.notes_button.connect_toggled(move |button| {
+            let Some(app) = weak.upgrade() else { return };
+            if button.is_active() != app.notes_mode.get() {
+                if button.is_active() { app.show_notes() } else { app.show_agents() }
             }
         });
         let weak = Rc::downgrade(self);
+        self.notes_back.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.show_agents();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        *self.notes_panel.on_open.borrow_mut() = Some(Rc::new(move |path: PathBuf| {
+            if let Some(app) = weak.upgrade() {
+                app.files.open_file(&path);
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.notes_panel.on_chat.borrow_mut() = Some(Rc::new(move |(name, folder): (String, String)| {
+            if let Some(app) = weak.upgrade() {
+                app.chat_stack.set_visible_child_name("notes-chat");
+                app.notes_chat.topic_chat(&name, &folder);
+            }
+        }));
+        let weak = Rc::downgrade(self);
         *self.hub.on_attention.borrow_mut() = Some(Box::new(move || {
             let Some(app) = weak.upgrade() else { return };
-            if app.files.root.is_visible() && !app.files.in_use() {
+            if app.notes_mode.get() {
+                app.notes_panel.set_news();
+            } else if app.files.root.is_visible() && !app.files.in_use() {
                 app.files.show_notes();
             } else {
                 app.files.set_notes_news(true);
@@ -2472,7 +2673,7 @@ impl App {
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let busy: Vec<String> =
-            self.agents.borrow().iter().chain(self.notes_chat.current().as_ref()).filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
+            self.agents.borrow().iter().chain(self.notes_chat.agents().iter()).filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
         let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
         let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {
@@ -2810,6 +3011,7 @@ impl App {
     /// "agent — project · loom", for the window list and the taskbar.
     fn refresh_title(&self) {
         let title = match (self.focused_agent(), self.showing_project()) {
+            _ if self.notes_mode.get() => "Notes · loom".to_owned(),
             (Some(agent), _) => format!("{} — {} · loom", agent.title(), self.project_label(&agent.project)),
             (None, Some(project)) => format!("{} · loom", self.project_label(&project)),
             _ => "loom".to_owned(),
@@ -2822,6 +3024,26 @@ impl App {
 
     fn refresh_sidebar(self: &Rc<Self>) {
         self.refresh_title();
+        if self.notes_mode.get() {
+            let (mut working, mut waiting) = (0, 0);
+            for agent in self.agents.borrow().iter() {
+                match agent.status() {
+                    Status::Working => working += 1,
+                    Status::Blocked => waiting += 1,
+                    _ => {}
+                }
+            }
+            let mut text = "←  Agents".to_owned();
+            if working > 0 {
+                text.push_str(&format!(" · {working} working"));
+            }
+            if waiting > 0 {
+                text.push_str(&format!(" · {waiting} waiting"));
+            }
+            if let Some(label) = self.notes_back.child().and_downcast::<gtk::Label>() {
+                label.set_label(&text);
+            }
+        }
         // Rebuilt in place: the list stays scrolled where it was (the projects where they were,
         // whatever the Running list above them gained or lost).
         let scroll = self.list.parent().and_then(|v| v.parent()).and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment());

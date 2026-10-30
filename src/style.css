@@ -525,10 +525,26 @@ popover.context-menu button.menu-item:focus-visible { outline: none; background:
 /* Claude Code is not the version loom was built for (by the usage meter, and in its popover). */
 .version-warn, label.dim.version-warn { color: @loom_warn; }
 
-/* The Notes chat: its entry atop the sidebar, and its list of chats. */
-button.notes-entry { margin: 2px 8px 6px; padding: 6px 10px; border-radius: 8px; }
-button.notes-entry label { font-weight: 500; }
-.notes-chat-side { padding: 14px 10px; }
+/* The Notes view (notes_chat.rs, notes_panel.rs): its button's dot, its chats in the
+   sidebar, the starters over an empty chat, the topics panel. */
+button.overview-button.on { background: alpha(currentColor, 0.14); }
+button.overview-button.on image { opacity: 1; }
+.notes-dot { min-width: 7px; min-height: 7px; border-radius: 99px; background: @loom_wait; margin: 4px 4px 0 0; }
+.notes-side { padding: 14px 10px 6px; }
+button.notes-new { padding: 6px 10px; border-radius: 8px; }
+button.notes-new label { font-weight: 600; }
+label.notes-day { font-size: 0.8em; font-weight: 600; letter-spacing: 0.04em; color: alpha(@window_fg_color, 0.5); margin: 10px 8px 2px; }
 list.notes-chats { background: transparent; }
 list.notes-chats row { padding: 6px 8px; border-radius: 8px; }
-.notes-chat-new { font-weight: 600; }
+button.notes-back { padding: 6px 10px; border-radius: 8px; }
+button.notes-back label { color: alpha(@window_fg_color, 0.75); }
+.notes-starters { padding: 24px; }
+label.notes-starters-title { font-size: 1.25em; font-weight: 700; }
+button.notes-starter { padding: 6px 14px; border-radius: 999px; }
+.notes-panel entry.notes-filter, .notes-panel searchentry.notes-filter { margin: 8px 10px 2px; }
+list.notes-topics { background: transparent; }
+list.notes-topics row { padding: 3px 10px; border-radius: 6px; }
+list.notes-topics row.notes-topic { margin-top: 10px; }
+label.notes-topic-name { font-weight: 700; }
+list.notes-topics row.notes-note { padding-left: 18px; }
+list.notes-topics row.notes-more { padding-left: 18px; }

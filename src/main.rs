@@ -26,6 +26,7 @@ mod markdown;
 mod overview;
 mod notes;
 mod notes_chat;
+mod notes_panel;
 mod plugin;
 mod topics;
 mod vault;

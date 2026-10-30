@@ -1550,6 +1550,13 @@ impl Files {
         self.show_tabs();
     }
 
+    /// The editor's tabs become `tabs` (the Notes view keeps its own); the ones it had back.
+    pub fn swap_tabs(&self, tabs: Vec<PathBuf>) -> Vec<PathBuf> {
+        let old = self.recent.replace(tabs);
+        self.show_tabs();
+        old
+    }
+
     fn show_tabs(&self) {
         while let Some(child) = self.tabs.first_child() {
             self.tabs.remove(&child);
@@ -1669,6 +1676,19 @@ impl Files {
 
     /// The Notes tab's content (the add-on's panel), and whether the tab is offered.
     pub fn add_notes(&self, panel: &gtk::Box) {
+        self.views.add_named(panel, Some("notes"));
+    }
+
+    /// Notes' panel goes to the Notes view (the tab left, if it showed)…
+    pub fn lend_notes(&self, panel: &gtk::Box) {
+        if self.notes_tab.is_active() {
+            self.project_tab.set_active(true);
+        }
+        self.views.remove(panel);
+    }
+
+    /// … and comes back.
+    pub fn take_back_notes(&self, panel: &gtk::Box) {
         self.views.add_named(panel, Some("notes"));
     }
 

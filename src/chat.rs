@@ -15,6 +15,9 @@ use crate::markdown::{self, Segment};
 
 type Callback<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 
+/// The input's hint while it is empty.
+const HINT: &str = "Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images";
+
 thread_local! {
     /// Opens a file link ("loom-file:src/app.rs:42", or a relative or file:// link) clicked
     /// in a chat (the widget it was in, to know whose folder): true if it did.
@@ -65,6 +68,8 @@ pub struct Chat {
     options: gtk::Box,
     show_thinking: Cell<bool>,
     placeholder: gtk::Label,
+    /// The input's hint while empty (and no suggestion shows).
+    hint: RefCell<String>,
     /// The input's Markdown marks are due (they follow typing, after a pause).
     markdown_due: Cell<bool>,
     /// What Claude Code predicts you will send next (shown in the empty input; → or Tab
@@ -414,7 +419,7 @@ impl Chat {
             .build();
         // The hint shown while the input is empty (a text view has none of its own).
         let placeholder = gtk::Label::builder()
-            .label("Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images")
+            .label(HINT)
             .xalign(0.0)
             .valign(gtk::Align::Start)
             .margin_start(14)
@@ -522,6 +527,7 @@ impl Chat {
             options,
             show_thinking: Cell::new(true),
             placeholder,
+            hint: RefCell::new(HINT.to_owned()),
             suggestion: RefCell::default(),
             markdown_due: Cell::new(false),
             send: send.clone(),
@@ -595,6 +601,13 @@ impl Chat {
         line.append(&go);
         let ask = gtk::Popover::builder().child(&line).position(gtk::PositionType::Top).build();
         ask.set_parent(&compact);
+        // Unparented with the button (a closed chat's widgets go: else GTK warns).
+        let popover = ask.downgrade();
+        compact.connect_destroy(move |_| {
+            if let Some(popover) = popover.upgrade() {
+                popover.unparent();
+            }
+        });
         let compact_now = {
             let (weak, keep, ask) = (weak.clone(), keep.clone(), ask.clone());
             Rc::new(move || {
@@ -1470,6 +1483,14 @@ impl Chat {
         }
     }
 
+    /// The input's hint while it is empty.
+    pub fn set_hint(&self, text: &str) {
+        *self.hint.borrow_mut() = text.to_owned();
+        if !self.placeholder.has_css_class("suggesting") {
+            self.placeholder.set_label(text);
+        }
+    }
+
     /// The next prompt Claude Code predicts (None: none, the hint again).
     pub fn set_suggestion(&self, text: Option<String>) {
         let text = text.map(|t| t.trim().to_owned()).filter(|t| !t.is_empty());
@@ -1484,7 +1505,7 @@ impl Chat {
                 self.placeholder.add_css_class("suggesting");
             }
             None => {
-                self.placeholder.set_label("Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images");
+                self.placeholder.set_label(&self.hint.borrow());
                 self.placeholder.set_tooltip_text(None);
                 self.placeholder.remove_css_class("suggesting");
             }

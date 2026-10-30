@@ -236,7 +236,7 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
 /// files (loom's own folder and git's left out).
 fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<String, String> {
     let vault = vault(socket, agent).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
-    let notes = all_notes(&vault);
+    let notes = crate::vault::all_notes(&vault);
     let limit = args["limit"].as_u64().unwrap_or(30).clamp(1, 200) as usize;
     match tool {
         "loom_note_topics" => {
@@ -260,7 +260,7 @@ fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Str
             if found.is_empty() {
                 return Ok(format!("No notes in {}.", if folder.is_empty() { "the vault" } else { folder }));
             }
-            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", ago(*when))).collect::<Vec<_>>().join("\n"))
+            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", crate::vault::ago(*when))).collect::<Vec<_>>().join("\n"))
         }
         _ => {
             let days = args["days"].as_u64().unwrap_or(7).max(1);
@@ -269,50 +269,8 @@ fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Str
             if found.is_empty() {
                 return Ok(format!("No note changed in the last {days} days."));
             }
-            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", ago(*when))).collect::<Vec<_>>().join("\n"))
+            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", crate::vault::ago(*when))).collect::<Vec<_>>().join("\n"))
         }
-    }
-}
-
-/// Every note of the vault: (path in it, title, last change in Unix seconds), newest first.
-fn all_notes(vault: &std::path::Path) -> Vec<(String, String, u64)> {
-    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, String, u64)>) {
-        let Ok(entries) = std::fs::read_dir(dir) else { return };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            let name = entry.file_name().to_string_lossy().into_owned();
-            // A link is not followed (one to a folder above would never end).
-            let Ok(kind) = entry.file_type() else { continue };
-            if kind.is_symlink() {
-                continue;
-            }
-            // loom's and git's folders, and the topics' own descriptions, are not notes.
-            if name.starts_with('.') || (dir == root && name == crate::vault::TOPICS) {
-                continue;
-            }
-            if kind.is_dir() {
-                walk(root, &path, out);
-            } else if name.ends_with(".md") {
-                let Ok(relative) = path.strip_prefix(root) else { continue };
-                let when = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-                let title = name.trim_end_matches(".md").to_owned();
-                out.push((relative.to_string_lossy().into_owned(), title, when));
-            }
-        }
-    }
-    let mut out = Vec::new();
-    walk(vault, vault, &mut out);
-    out.sort_by(|a, b| b.2.cmp(&a.2));
-    out
-}
-
-/// "3h ago", "2d ago" from Unix seconds.
-fn ago(when: u64) -> String {
-    let seconds = crate::state::now().saturating_sub(when);
-    match seconds {
-        ..3600 => format!("{}m ago", seconds / 60),
-        3600..86_400 => format!("{}h ago", seconds / 3600),
-        _ => format!("{}d ago", seconds / 86_400),
     }
 }
 

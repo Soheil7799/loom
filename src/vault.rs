@@ -27,6 +27,49 @@ pub const TOPICS: &str = "Topics";
 /// loom's own folder in the vault (hidden from Obsidian's file list).
 pub const OWN: &str = ".loom";
 
+/// Every note of the vault: (path in it, title, last change in Unix seconds), newest first.
+pub fn all_notes(vault: &Path) -> Vec<(String, String, u64)> {
+    fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String, u64)>) {
+        let Ok(entries) = std::fs::read_dir(dir) else { return };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            // A link is not followed (one to a folder above would never end).
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_symlink() {
+                continue;
+            }
+            // loom's and git's folders, and the topics' own descriptions, are not notes.
+            if name.starts_with('.') || (dir == root && name == TOPICS) {
+                continue;
+            }
+            if kind.is_dir() {
+                walk(root, &path, out);
+            } else if name.ends_with(".md") {
+                let Ok(relative) = path.strip_prefix(root) else { continue };
+                let when = entry.metadata().ok().and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
+                let title = name.trim_end_matches(".md").to_owned();
+                out.push((relative.to_string_lossy().into_owned(), title, when));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(vault, vault, &mut out);
+    out.sort_by(|a, b| b.2.cmp(&a.2));
+    out
+}
+
+/// "3h ago", "2d ago" from Unix seconds.
+pub fn ago(when: u64) -> String {
+    let seconds = crate::state::now().saturating_sub(when);
+    match seconds {
+        ..60 => "just now".to_owned(),
+        60..3600 => format!("{}m ago", seconds / 60),
+        3600..86_400 => format!("{}h ago", seconds / 3600),
+        _ => format!("{}d ago", seconds / 86_400),
+    }
+}
+
 pub fn inspect(path: &Path) -> Folder {
     let Ok(mut entries) = std::fs::read_dir(path) else { return Folder::Missing };
     if entries.next().is_none() {
