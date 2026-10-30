@@ -1550,6 +1550,19 @@ impl Files {
         self.show_tabs();
     }
 
+    /// The editor as a side left it: `path` open (shown or not), else nothing open. A file
+    /// that cannot be opened any more is not shown instead of another.
+    pub fn restore(&self, path: Option<&Path>, shown: bool) {
+        if let Some(path) = path {
+            self.open_file(path);
+        }
+        if path.is_none() || self.open.borrow().as_deref() != path {
+            self.close();
+        } else if !shown {
+            self.editor_box.set_visible(false);
+        }
+    }
+
     /// The editor's tabs become `tabs` (the Notes view keeps its own); the ones it had back.
     pub fn swap_tabs(&self, tabs: Vec<PathBuf>) -> Vec<PathBuf> {
         let old = self.recent.replace(tabs);

@@ -108,6 +108,11 @@ fn resolved(path: &Path) -> PathBuf {
     }
 }
 
+/// Working, or waiting for an answer: a chat left like that keeps going.
+fn at_work(agent: &Agent) -> bool {
+    matches!(agent.status(), Status::Working | Status::Blocked)
+}
+
 /// "Today", "Yesterday" or "Earlier", for an ISO 8601 time.
 fn day_of(iso: &str, today: &glib::DateTime) -> &'static str {
     let Some(then) = glib::DateTime::from_iso8601(iso, None).ok().and_then(|t| t.to_local().ok()) else { return "Earlier" };
@@ -229,14 +234,32 @@ impl NotesChat {
         })
     }
 
-    /// The chat shown is left: one at work keeps working (it goes once done); else what it
-    /// changed is recorded and it goes.
+    /// The chat shown is left: one at work (or waiting for you) keeps going, and goes once it
+    /// is neither; else what it changed is recorded and it goes.
     fn set_aside(&self) {
         let Some(agent) = self.current.borrow_mut().take() else { return };
         agent.focused.set(false);
-        if !agent.is_busy() {
+        if !at_work(&agent) {
             self.close(&agent);
         }
+    }
+
+    /// A chat left while at work, at work no more (done, stopped, failed): it goes. Looked at
+    /// once the event is over, so a message it had waiting is sent first (and keeps it).
+    fn close_if_done(self: &Rc<Self>, agent: &Rc<Agent>) {
+        let (weak, agent) = (Rc::downgrade(self), Rc::downgrade(agent));
+        glib::idle_add_local_once(move || {
+            let (Some(chat), Some(agent)) = (weak.upgrade(), agent.upgrade()) else { return };
+            let current = chat.current.borrow().as_ref().is_some_and(|c| Rc::ptr_eq(c, &agent));
+            if !current && !at_work(&agent) && !agent.has_waiting() {
+                chat.close(&agent);
+            }
+        });
+    }
+
+    /// A chat waits for an answer.
+    pub fn waiting(&self) -> bool {
+        self.open.borrow().iter().any(|o| o.agent.status() == Status::Blocked)
     }
 
     fn close(&self, agent: &Rc<Agent>) {
@@ -334,16 +357,15 @@ impl NotesChat {
                 chat.refresh();
             }
             let current = chat.current.borrow().as_ref().is_some_and(|c| Rc::ptr_eq(c, agent));
-            if matches!(event, Event::Done) {
-                if current {
-                    if let Some(open) = chat.open.borrow().iter().find(|o| Rc::ptr_eq(&o.agent, agent)) {
-                        chat.record(open);
-                    }
-                    chat.refresh();
-                } else {
-                    // Left while it worked: done now, it goes.
-                    chat.close(agent);
+            if matches!(event, Event::Done) && current {
+                if let Some(open) = chat.open.borrow().iter().find(|o| Rc::ptr_eq(&o.agent, agent)) {
+                    chat.record(open);
                 }
+                chat.refresh();
+            }
+            // Left while it worked: once done (or stopped, or failed), it goes.
+            if !current && !at_work(agent) {
+                chat.close_if_done(agent);
             }
             if matches!(event, Event::Changed | Event::Asked(_) | Event::Done) {
                 chat.attention();
@@ -442,7 +464,7 @@ impl NotesChat {
 
     /// A chat waits for an answer (or none does): told on; the list marks who works or waits.
     fn attention(&self) {
-        let waiting = self.open.borrow().iter().any(|o| o.agent.status() == Status::Blocked);
+        let waiting = self.waiting();
         if let Some(attention) = self.on_attention.borrow().clone() {
             attention(waiting);
         }
@@ -521,9 +543,11 @@ impl NotesChat {
     /// Past chat `index` of the list.
     fn pick(self: &Rc<Self>, index: usize) {
         let Some(past) = self.pasts.borrow().get(index).cloned() else { return };
-        let open = self.current.borrow().as_ref().and_then(|a| a.session_id()) == Some(past.session_id.clone());
-        if !open {
-            self.chat_for(Some(past.session_id), None);
+        let current = self.current.borrow().clone().filter(|a| a.session_id().as_deref() == Some(past.session_id.as_str()));
+        match current {
+            // Shown again (another page may be in its place).
+            Some(agent) => self.show(&agent),
+            None => self.chat_for(Some(past.session_id), None),
         }
     }
 

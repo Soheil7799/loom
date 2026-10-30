@@ -61,13 +61,7 @@ pub fn all_notes(vault: &Path) -> Vec<(String, String, u64)> {
 
 /// "3h ago", "2d ago" from Unix seconds.
 pub fn ago(when: u64) -> String {
-    let seconds = crate::state::now().saturating_sub(when);
-    match seconds {
-        ..60 => "just now".to_owned(),
-        60..3600 => format!("{}m ago", seconds / 60),
-        3600..86_400 => format!("{}h ago", seconds / 3600),
-        _ => format!("{}d ago", seconds / 86_400),
-    }
+    crate::overview::ago(crate::state::now().saturating_sub(when))
 }
 
 pub fn inspect(path: &Path) -> Folder {

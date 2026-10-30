@@ -1453,6 +1453,11 @@ impl Agent {
         self.chat.show_queued(&texts);
     }
 
+    /// A message waits for the turn to end.
+    pub fn has_waiting(&self) -> bool {
+        !self.waiting.borrow().is_empty()
+    }
+
     /// What waited for the turn, as one message: (text, images).
     fn take_waiting(self: &Rc<Self>) -> Option<(String, Vec<glib::Bytes>)> {
         let waiting: Vec<_> = self.waiting.borrow_mut().drain(..).collect();

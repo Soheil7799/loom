@@ -830,6 +830,7 @@ impl App {
             (true, true, false, gdk::Key::x) => self.current_tray().clear_finished(),
             (true, false, false, gdk::Key::e) => self.toggle_panel(),
             (true, false, false, gdk::Key::o) => {
+                self.leave_for_files();
                 self.files.root.set_visible(true);
                 self.files.choose();
             }
@@ -933,6 +934,7 @@ impl App {
             (_, gdk::Key::f | gdk::Key::e) => self.toggle_panel(),
             (_, gdk::Key::m) => self.toggle_notes(),
             (_, gdk::Key::o) => {
+                self.leave_for_files();
                 self.files.root.set_visible(true);
                 self.files.choose();
             }
@@ -993,7 +995,7 @@ impl App {
     pub fn act(self: &Rc<Self>, name: &str, argument: &str) {
         match name {
             "scratch" => self.toggle_scratch(),
-            "files" => self.files.root.set_visible(!self.files.root.is_visible()),
+            "files" => self.toggle_panel(),
             "switcher" => self.open_switcher(),
             "palette" => self.palette(),
             "inbox" => self.open_inbox(),
@@ -1012,14 +1014,23 @@ impl App {
             "split" => self.toggle_split(),
             "find" => self.find_file(),
             "elsewhere" => self.files.open_elsewhere(),
-            "tree" => self.files.show_project(),
-            "graph" => self.files.show_graph_view(),
+            "tree" => {
+                self.leave_for_files();
+                self.files.show_project();
+            }
+            "graph" => {
+                self.leave_for_files();
+                self.files.show_graph_view();
+            }
             "fork" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.fork(None, String::new());
                 }
             }
-            "changes" => self.files.show_changes(),
+            "changes" => {
+                self.leave_for_files();
+                self.files.show_changes();
+            }
             "close" => self.close_focused(),
             "reopen" => self.reopen_closed(),
             "rename" => {
@@ -1172,11 +1183,18 @@ impl App {
             act("Toggle the files panel", "Ctrl+E", |a| a.files.root.set_visible(!a.files.root.is_visible())),
             act("Find a file in the project", "Ctrl+P", |a| a.find_file()),
             act("Open a file…", "Ctrl+O", |a| {
+                a.leave_for_files();
                 a.files.root.set_visible(true);
                 a.files.choose();
             }),
-            act("Project files (tree)", "", |a| a.files.show_project()),
-            act("Git changes in this project", "", |a| a.files.show_changes()),
+            act("Project files (tree)", "", |a| {
+                a.leave_for_files();
+                a.files.show_project();
+            }),
+            act("Git changes in this project", "", |a| {
+                a.leave_for_files();
+                a.files.show_changes();
+            }),
             act("Open the file in another editor", "Ctrl+Shift+O", |a| a.files.open_elsewhere()),
             act("Scratch terminal", "Ctrl+`", |a| a.toggle_scratch()),
             act("Run a command in the tray…", "Ctrl+J", |a| a.ask_command()),
@@ -1523,16 +1541,17 @@ impl App {
 
     /// Hides the sidebar and the files panel (and brings them back).
     fn zoom(&self) {
-        let zoomed = !self.sidebar.is_visible() && !self.files.root.is_visible();
+        let panel = self.side_panel();
+        let zoomed = !self.sidebar.is_visible() && !panel.is_visible();
         if zoomed {
             self.sidebar.set_visible(true);
-            self.files.root.set_visible(self.files_were_open.get());
+            panel.set_visible(self.files_were_open.get());
             self.files.editor_box.set_visible(self.editor_was_open.get() && self.files.open_path().is_some());
         } else {
-            self.files_were_open.set(self.files.root.is_visible());
+            self.files_were_open.set(panel.is_visible());
             self.editor_was_open.set(self.files.editor_box.is_visible());
             self.sidebar.set_visible(false);
-            self.files.root.set_visible(false);
+            panel.set_visible(false);
             self.files.editor_box.set_visible(false);
         }
     }
@@ -1873,10 +1892,7 @@ impl App {
             self.bar_stack.set_visible(false);
             self.dock_stack.set_visible(false);
             let (file, open) = self.notes_file.borrow().clone();
-            match file.filter(|_| open) {
-                Some(path) => self.files.open_file(&path),
-                None => self.files.editor_box.set_visible(false),
-            }
+            self.files.restore(file.as_deref(), open);
             self.notes_dot.set_visible(false);
             self.notes_button.set_active(true);
             self.notes_button.add_css_class("on");
@@ -1907,10 +1923,9 @@ impl App {
         self.pinned_box.set_visible(side.pinned);
         self.bar_stack.set_visible(side.bar);
         self.dock_stack.set_visible(side.dock);
-        match side.file.0.filter(|_| side.file.1) {
-            Some(path) => self.files.open_file(&path),
-            None => self.files.editor_box.set_visible(false),
-        }
+        self.files.restore(side.file.0.as_deref(), side.file.1);
+        // A chat still waiting for an answer: the button says so.
+        self.notes_dot.set_visible(self.notes_chat.waiting());
         self.notes_button.set_active(false);
         self.notes_button.remove_css_class("on");
         self.refresh_sidebar();
@@ -1939,10 +1954,22 @@ impl App {
         self.notes_chat.new_chat();
     }
 
-    /// Ctrl+E: the files panel, or in the Notes view its own.
+    /// The right panel on screen: the files panel, or in the Notes view its own.
+    fn side_panel(&self) -> gtk::Widget {
+        if self.notes_mode.get() { self.notes_panel.root.clone().upcast() } else { self.files.root.clone().upcast() }
+    }
+
+    /// Ctrl+E: the right panel on screen, shown or hidden.
     fn toggle_panel(&self) {
-        let panel: &gtk::Widget = if self.notes_mode.get() { self.notes_panel.root.upcast_ref() } else { self.files.root.upcast_ref() };
+        let panel = self.side_panel();
         panel.set_visible(!panel.is_visible());
+    }
+
+    /// The files panel (a project's files, its changes…) is the agents' side's.
+    fn leave_for_files(self: &Rc<Self>) {
+        if self.notes_mode.get() {
+            self.show_agents();
+        }
     }
 
     /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
@@ -2507,6 +2534,7 @@ impl App {
             let Some(app) = weak.upgrade() else { return };
             if app.notes_mode.get() {
                 app.notes_panel.set_news();
+                app.files.set_notes_news(true);
             } else if app.files.root.is_visible() && !app.files.in_use() {
                 app.files.show_notes();
             } else {

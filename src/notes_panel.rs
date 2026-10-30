@@ -43,6 +43,8 @@ pub struct NotesPanel {
     /// Topics shown with all their notes (by name; `OTHER` for the notes of none).
     expanded: RefCell<HashSet<String>>,
     reading: Cell<bool>,
+    /// Asked again while reading: read once more after.
+    again: Cell<bool>,
     /// A note to open (its full path).
     pub on_open: Callback<PathBuf>,
     /// A chat about a topic: (its name, its folder).
@@ -102,6 +104,7 @@ impl NotesPanel {
             notes: RefCell::default(),
             expanded: RefCell::default(),
             reading: Cell::new(false),
+            again: Cell::new(false),
             on_open: RefCell::default(),
             on_chat: RefCell::default(),
         });
@@ -143,6 +146,7 @@ impl NotesPanel {
             return;
         };
         if self.reading.replace(true) {
+            self.again.set(true);
             return;
         }
         let weak = Rc::downgrade(self);
@@ -154,6 +158,9 @@ impl NotesPanel {
                 *panel.topics.borrow_mut() = topics;
                 *panel.notes.borrow_mut() = notes;
                 panel.fill();
+            }
+            if panel.again.take() {
+                panel.refresh();
             }
         });
     }
