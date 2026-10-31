@@ -3571,40 +3571,9 @@ impl ToolCard {
     }
 }
 
-/// A row of the subagents strip.
-pub struct Crew {
-    /// The subagent's session id, or (reported inside the main conversation) its task's tool call.
-    pub key: String,
-    pub name: String,
-    /// What it did last.
-    pub step: String,
-    /// When it last did something.
-    pub at: Instant,
-    pub started: Instant,
-    /// "running", "requires_action", "idle".
-    pub state: Option<String>,
-    pub ended: Option<Instant>,
-    /// No session of its own: its state is a guess from its steps.
-    pub guessed: bool,
-}
+pub use loom_core::agent::view::Crew;
 
-/// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
-/// One line: a multi-line command (a heredoc) shows its first line and "…"; the rest
-/// would spill over the card around it.
-pub(crate) fn tool_title(title: &str) -> String {
-    let title = title.replace('`', "");
-    let title = match title.trim().split_once('\n') {
-        Some((first, _)) => format!("{} …", first.trim_end()),
-        None => title.trim().to_owned(),
-    };
-    if let Some(rest) = title.strip_prefix("mcp__")
-        && let Some((server, tool)) = rest.split_once("__")
-    {
-        let tool = tool.strip_prefix(&format!("{server}_")).unwrap_or(tool);
-        return format!("{server} · {}", tool.replace('_', " "));
-    }
-    title
-}
+pub use loom_core::agent::tool_title;
 
 /// "42s", "3m 05s", "1h 02m".
 pub fn elapsed(seconds: u64) -> String {

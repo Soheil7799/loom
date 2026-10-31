@@ -24,6 +24,8 @@ pub type Id = u64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
+    /// A new job (its name and command: `info`).
+    Added(Id),
     /// A run began (the first, or again): what was shown before is gone.
     Started(Id),
     /// Asked to run again while running: stopping the old run first.
@@ -135,6 +137,7 @@ impl Jobs {
             }),
         });
         self.inner.jobs.lock().unwrap().push(job.clone());
+        self.inner.emit(Event::Added(id));
         self.inner.start(&job);
         id
     }
@@ -442,7 +445,7 @@ mod tests {
         let (jobs, rx) = jobs();
         let id = jobs.run_named("hi", "printf 'one\\ntwo\\n'; exit 3", false, None).unwrap();
         let seen = until(&rx, exited);
-        assert_eq!(seen.first(), Some(&Event::Started(id)));
+        assert_eq!(seen[..2], [Event::Added(id), Event::Started(id)]);
         assert_eq!(seen.last(), Some(&Event::Exited(id, Some(3))));
         assert_eq!(jobs.output(id, 10), "one\ntwo");
         assert_eq!(jobs.output(id, 1), "two");

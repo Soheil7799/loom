@@ -12,25 +12,50 @@ use std::os::unix::process::CommandExt;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
-use gtk::prelude::*;
-use gtk::{gio, glib};
 use serde_json::{Value, json};
 
+use crate::jobs::Jobs;
 use crate::provider::{self, Conn, Incoming};
-use crate::chat::{Chat, PermissionCard};
-use crate::files::Mark;
-use crate::jobs::Tray;
+use crate::rt::Timer;
 use crate::state::Saved;
+
+pub mod view;
+
+use view::{Card, Crew, Form, Png, View, Workflow};
+
+/// How a file the agent wrote is marked.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Mark {
+    Created,
+    Changed,
+}
+
+/// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
+/// One line: a multi-line command (a heredoc) shows its first line and "…"; the rest
+/// would spill over the card around it.
+pub fn tool_title(title: &str) -> String {
+    let title = title.replace('`', "");
+    let title = match title.trim().split_once('\n') {
+        Some((first, _)) => format!("{} …", first.trim_end()),
+        None => title.trim().to_owned(),
+    };
+    if let Some(rest) = title.strip_prefix("mcp__")
+        && let Some((server, tool)) = rest.split_once("__")
+    {
+        let tool = tool.strip_prefix(&format!("{server}_")).unwrap_or(tool);
+        return format!("{server} · {}", tool.replace('_', " "));
+    }
+    title
+}
 /// At most this many messages from before a compaction are shown when a conversation is
 /// opened again (the newest).
 const EARLIER: usize = 400;
 
 /// " (28 Oct, 12:15)" for a file's ISO time, in local time; nothing if unreadable.
 fn when_said(iso: &str) -> String {
-    glib::DateTime::from_iso8601(iso, None)
+    iso.parse::<jiff::Timestamp>()
         .ok()
-        .and_then(|t| t.to_local().ok())
-        .and_then(|t| t.format("%e %b, %H:%M").ok())
+        .map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%e %b, %H:%M").to_string())
         .map(|t| format!(" ({})", t.trim()))
         .unwrap_or_default()
 }
@@ -144,7 +169,7 @@ pub struct Sub {
     ended: Cell<Option<Instant>>,
     at: Cell<Instant>,
     step: RefCell<String>,
-    pub chat: Rc<Chat>,
+    pub view: Rc<dyn View>,
     /// Its launches in the main conversation (cards there): each card, what it asked, and
     /// whether its answer came back.
     cards: RefCell<Vec<(String, String, bool)>>,
@@ -154,12 +179,12 @@ struct Pending {
     serial: u64,
     rpc: Value,
     options: Vec<(String, String, String)>,
-    card: PermissionCard,
+    card: Rc<dyn Card>,
     title: String,
     /// What it is about: the command, file, URL or plan.
     detail: Option<String>,
     /// A question form rather than a permission (answered with its content).
-    form: Option<Rc<crate::chat::FormCard>>,
+    form: Option<Rc<dyn Form>>,
     /// A step in the browser rather than a permission (answered accept/decline).
     url: Option<String>,
 }
@@ -169,8 +194,9 @@ pub struct Agent {
     pub cwd: PathBuf,
     /// The repository it works in (see app::project_of).
     pub project: PathBuf,
-    pub chat: Rc<Chat>,
-    pub tray: Rc<Tray>,
+    pub view: Rc<dyn View>,
+    /// Its project's jobs.
+    pub jobs: Jobs,
     session_id: RefCell<Option<String>>,
     title: RefCell<String>,
     /// The title was given by hand.
@@ -187,13 +213,13 @@ pub struct Agent {
     /// What Claude has said this turn (for the journal, written when the turn ends).
     reply: RefCell<String>,
     /// Messages waiting to be sent: text and attached images (PNG).
-    queue: RefCell<VecDeque<(String, Vec<glib::Bytes>)>>,
+    queue: RefCell<VecDeque<(String, Vec<Png>)>>,
     /// `!command` runs and their output, for Claude with the next message (as Claude Code's
     /// own `!` does).
     context: RefCell<Vec<String>>,
     /// Messages typed while a turn runs: sent together when it ends (Ctrl+Enter: now). An
     /// empty one stands for a `!command`'s output, which goes with them.
-    waiting: RefCell<Vec<(String, Vec<glib::Bytes>)>>,
+    waiting: RefCell<Vec<(String, Vec<Png>)>>,
     shells: Cell<u64>,
     /// The running `!command` was stopped by the user.
     shell_stopped: Cell<bool>,
@@ -218,16 +244,16 @@ pub struct Agent {
     /// A turn Claude started by itself (a background task ended): since when, and the timer
     /// that ends it once quiet.
     autonomous: Cell<Option<Instant>>,
-    quiet_timer: RefCell<Option<glib::SourceId>>,
+    quiet_timer: RefCell<Option<Timer>>,
     /// Waiting for a login in the tray to end.
-    login_watch: RefCell<Option<glib::SourceId>>,
+    login_watch: RefCell<Option<Timer>>,
     /// The `!command` running, if one is (its process group).
     shell_pid: Cell<Option<i32>>,
     modes: RefCell<Vec<String>>,
     mode: RefCell<String>,
     pending: RefCell<Vec<Pending>>,
     /// The workflows it launched (their cards in the conversation).
-    workflows: RefCell<Vec<Rc<crate::workflow::Run>>>,
+    workflows: RefCell<Vec<Rc<dyn Workflow>>>,
     /// Subagents met in this conversation (live and replayed).
     subs: RefCell<Vec<Rc<Sub>>>,
     asked: Cell<u64>,
@@ -263,16 +289,16 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(id: u32, saved: Saved, tray: Rc<Tray>) -> Rc<Agent> {
+    pub fn new(id: u32, saved: Saved, jobs: Jobs, view: Rc<dyn View>) -> Rc<Agent> {
         let draft = saved.draft.clone();
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
         let agent = Rc::new(Agent {
             id,
-            project: crate::app::project_of(&saved.cwd),
+            project: crate::repos::project_of(&saved.cwd),
             cwd: saved.cwd,
-            chat: Chat::new(),
-            tray,
+            view,
+            jobs,
             session_id: RefCell::new(saved.session_id),
             title: RefCell::new(saved.title),
             named: Cell::new(saved.named),
@@ -325,111 +351,72 @@ impl Agent {
             focused: Cell::new(false),
             on_event: RefCell::default(),
         });
-        // The subagents strip: a row opens that subagent's conversation; Stop stops it alone.
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_crew_open.borrow_mut() = Some(Rc::new(move |key: String| {
-            let Some(agent) = weak.upgrade() else { return };
-            if !agent.open_sub(&key) {
-                // A background command's row goes to its tool call ("task:<id>:<call>").
-                let call = key.strip_prefix("task:").and_then(|rest| rest.split_once(':')).map_or(key.as_str(), |(_, call)| call);
-                agent.chat.go_to_tool(call);
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_crew_stop.borrow_mut() = Some(Rc::new(move |key: String| {
-            if let Some(agent) = weak.upgrade()
-                && let Some(conn) = agent.conn.borrow().clone()
-            {
-                conn.notify("session/cancel", json!({ "sessionId": key }));
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images)| {
-            if let Some(agent) = weak.upgrade() {
-                agent.submit_with(text, images);
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_unqueue.borrow_mut() = Some(Rc::new(move |index: usize| {
-            let Some(agent) = weak.upgrade() else { return };
-            let taken = {
-                let mut waiting = agent.waiting.borrow_mut();
-                (index < waiting.len()).then(|| waiting.remove(index))
-            };
-            if let Some((text, images)) = taken {
-                agent.chat.unqueue(&text, images);
-                agent.show_waiting();
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_send_now.borrow_mut() = Some(Rc::new(move |()| {
-            if let Some(agent) = weak.upgrade() {
-                agent.send_waiting_now();
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_rewind.borrow_mut() = Some(Rc::new(move |(at, before, text): (Option<String>, bool, String)| {
-            if let Some(agent) = weak.upgrade() {
-                match at {
-                    Some(at) => agent.fork(Some(at), text),
-                    // Claude said something before, but it can't be pointed at: refuse rather
-                    // than drop what came before.
-                    None if before => agent.chat.notice("Can't rewind to here: the agent gave no id for its message before it. Fork the whole conversation instead (palette).", "dim"),
-                    // Before Claude said anything: a fresh conversation with it.
-                    None => {
-                        let mut saved = Saved::new(agent.cwd.clone());
-                        saved.draft = text;
-                        saved.dirs = agent.dirs.borrow().clone();
-                        agent.emit(Event::Forked(saved));
-                    }
-                }
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_rewind_files.borrow_mut() = Some(Rc::new(move |(at, before, text): (Option<String>, bool, String)| {
-            let Some(agent) = weak.upgrade() else { return };
-            match at {
-                Some(at) => agent.rewind_with_files(at, text),
-                None if before => agent.chat.notice("Can't rewind to here: the agent gave no id for its message before it.", "dim"),
-                None => agent.chat.notice("Nothing to rewind before the first message: start a new conversation instead.", "dim"),
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_mcp.borrow_mut() = Some(Rc::new(move |(action, server, enabled): (String, String, bool)| {
-            if let Some(agent) = weak.upgrade() {
-                agent.mcp(&action, &server, enabled);
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_cancel.borrow_mut() = Some(Rc::new(move |()| {
-            if let Some(agent) = weak.upgrade() {
-                agent.cancel();
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_cycle_mode.borrow_mut() = Some(Rc::new(move |()| {
-            if let Some(agent) = weak.upgrade() {
-                agent.cycle_mode();
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_option.borrow_mut() = Some(Rc::new(move |(id, value): (String, String)| {
-            if let Some(agent) = weak.upgrade() {
-                agent.set_option(&id, &value);
-            }
-        }));
-        let weak = Rc::downgrade(&agent);
-        *agent.chat.on_answer.borrow_mut() = Some(Rc::new(move |option| {
-            weak.upgrade().is_some_and(|agent| agent.answer(0, option))
-        }));
-        agent.chat.set_cwd(&agent.cwd);
-        agent.chat.input.buffer().set_text(&draft);
+        agent.view.set_cwd(&agent.cwd);
+        agent.view.set_draft(&draft);
         // Started inside a repo: that is where it works until it touches another.
         if let Some(repo) = crate::repos::repo_of(&agent.cwd) {
             agent.repos.borrow_mut().push(repo);
         }
         agent.refresh_header();
         agent
+    }
+
+    // ---- what the UI asks ----------------------------------------------------------------
+
+    /// A row of the subagents strip opened: that subagent's conversation, or (a background
+    /// command's row) its tool call.
+    pub fn open_crew(self: &Rc<Self>, key: &str) {
+        if !self.open_sub(key) {
+            // "task:<id>:<call>".
+            let call = key.strip_prefix("task:").and_then(|rest| rest.split_once(':')).map_or(key, |(_, call)| call);
+            self.view.go_to_tool(call);
+        }
+    }
+
+    /// A row's Stop: that subagent alone.
+    pub fn stop_crew(&self, key: &str) {
+        if let Some(conn) = self.conn.borrow().clone() {
+            conn.notify("session/cancel", json!({ "sessionId": key }));
+        }
+    }
+
+    /// Message `index` of those waiting for the turn's end, back into the input.
+    pub fn unqueue(self: &Rc<Self>, index: usize) {
+        let taken = {
+            let mut waiting = self.waiting.borrow_mut();
+            (index < waiting.len()).then(|| waiting.remove(index))
+        };
+        if let Some((text, images)) = taken {
+            self.view.unqueue(&text, images);
+            self.show_waiting();
+        }
+    }
+
+    /// Rewind to a message: a copy of the conversation up to `at` (the agent's message before
+    /// it), with `text` in its input. `before`: Claude said something before, without an id.
+    pub fn rewind(self: &Rc<Self>, at: Option<String>, before: bool, text: String) {
+        match at {
+            Some(at) => self.fork(Some(at), text),
+            // Claude said something before, but it can't be pointed at: refuse rather than
+            // drop what came before.
+            None if before => self.view.notice("Can't rewind to here: the agent gave no id for its message before it. Fork the whole conversation instead (palette).", "dim"),
+            // Before Claude said anything: a fresh conversation with it.
+            None => {
+                let mut saved = Saved::new(self.cwd.clone());
+                saved.draft = text;
+                saved.dirs = self.dirs.borrow().clone();
+                self.emit(Event::Forked(saved));
+            }
+        }
+    }
+
+    /// Rewind to a message, the files Claude changed from there on too.
+    pub fn rewind_files_at(self: &Rc<Self>, at: Option<String>, before: bool, text: String) {
+        match at {
+            Some(at) => self.rewind_with_files(at, text),
+            None if before => self.view.notice("Can't rewind to here: the agent gave no id for its message before it.", "dim"),
+            None => self.view.notice("Nothing to rewind before the first message: start a new conversation instead.", "dim"),
+        }
     }
 
     pub fn on_event(&self, f: impl Fn(&Rc<Agent>, Event) + 'static) {
@@ -449,9 +436,9 @@ impl Agent {
     }
 
     /// Messages that never went out: back in the input, and told (the phone, if they came from it).
-    fn restore_unsent(self: &Rc<Self>, unsent: Vec<(String, Vec<glib::Bytes>)>) {
+    fn restore_unsent(self: &Rc<Self>, unsent: Vec<(String, Vec<Png>)>) {
         let count = unsent.iter().filter(|(t, i)| !t.is_empty() || !i.is_empty()).count();
-        self.chat.restore_unsent(unsent);
+        self.view.restore_unsent(unsent);
         if count > 0 {
             self.emit(Event::Unsent(count));
         }
@@ -481,7 +468,7 @@ impl Agent {
             session_id: self.session_id.borrow().clone(),
             title: self.title.borrow().clone(),
             named: self.named.get(),
-            draft: self.chat.draft(),
+            draft: self.view.draft(),
             dirs: self.dirs.borrow().clone(),
             used: self.used.get(),
             awake: self.awake.get(),
@@ -524,8 +511,8 @@ impl Agent {
             self.reading_repo.set(true);
             let weak = Rc::downgrade(self);
             let reading = path.clone();
-            glib::spawn_future_local(async move {
-                let found = gio::spawn_blocking(move || crate::repos::status(&reading)).await.ok().flatten();
+            crate::rt::spawn_local(async move {
+                let found = crate::rt::spawn_blocking(move || crate::repos::status(&reading)).await.ok().flatten();
                 let Some(agent) = weak.upgrade() else { return };
                 agent.reading_repo.set(false);
                 let before = agent.repo_status.borrow().as_ref().filter(|c| c.path == path).map(|c| c.repo.clone());
@@ -625,12 +612,12 @@ impl Agent {
             _ => project,
         };
         let status = self.status.get();
-        self.chat.set_title(&self.title(), &place, &full.replace(&*gtk::glib::home_dir().to_string_lossy(), "~"));
+        self.view.set_title(&self.title(), &place, &full.replace(&*crate::paths::home().to_string_lossy(), "~"));
         let state = if status == Status::Suspended && self.session_id().is_none() { "" } else { status.describe() };
-        self.chat.set_state(state, status.css());
-        self.chat.set_mode(&self.mode.borrow());
+        self.view.set_state(state, status.css());
+        self.view.set_mode(&self.mode.borrow());
         let note = format!("Starting Claude in {place}…");
-        self.chat.set_starting((status == Status::Starting).then_some(note.as_str()));
+        self.view.set_starting((status == Status::Starting).then_some(note.as_str()));
     }
 
     // ---- lifecycle ------------------------------------------------------------------------
@@ -658,7 +645,7 @@ impl Agent {
                 if self.cwd.is_dir() {
                     self.offer_retry(&text);
                 } else {
-                    self.chat.notice(&text, "error");
+                    self.view.notice(&text, "error");
                 }
                 self.set_status(Status::Failed);
                 return;
@@ -732,7 +719,7 @@ impl Agent {
         let weak = Rc::downgrade(self);
         // Woken from an idle suspend, the view still holds the conversation: resume it as it
         // is (no replay, nothing cleared).
-        if let Some(session) = session.clone().filter(|_| self.can_resume.get() && self.chat.has_messages()) {
+        if let Some(session) = session.clone().filter(|_| self.can_resume.get() && self.view.has_messages()) {
             let mut params = self.session_params();
             params["sessionId"] = session.into();
             conn.request("session/resume", params, move |result| {
@@ -754,8 +741,8 @@ impl Agent {
             // A compacted conversation is replayed from its summary on: what came before is
             // read from Claude Code's own file of it and shown first (off the main thread).
             let (weak, id, asked) = (Rc::downgrade(self), session.clone(), Rc::downgrade(&conn));
-            glib::spawn_future_local(async move {
-                let earlier = gio::spawn_blocking(move || crate::compacted::earlier(&id, EARLIER)).await.unwrap_or_default();
+            crate::rt::spawn_local(async move {
+                let earlier = crate::rt::spawn_blocking(move || crate::compacted::earlier(&id, EARLIER)).await.unwrap_or_default();
                 let Some(agent) = weak.upgrade() else { return };
                 // Restarted meanwhile, or another conversation opened: not this one's any more.
                 let same = asked.upgrade().is_some_and(|c| agent.conn.borrow().as_ref().is_some_and(|now| Rc::ptr_eq(now, &c)));
@@ -789,16 +776,16 @@ impl Agent {
             return;
         }
         if left_out > 0 {
-            self.chat.notice(&format!("{left_out} earlier messages are not shown (they are kept in Claude Code's own file of this conversation)."), "dim");
+            self.view.notice(&format!("{left_out} earlier messages are not shown (they are kept in Claude Code's own file of this conversation)."), "dim");
         }
         for said in earlier {
             match said {
-                Said::User(text) => self.chat.user(&text),
-                Said::Agent(text) => self.chat.agent_text_with(&text, None),
-                Said::Compacted(when) => self.chat.notice(&format!("Compacted here{}.", when_said(&when)), "dim"),
+                Said::User(text) => self.view.user(&text),
+                Said::Agent(text) => self.view.agent_text_with(&text, None),
+                Said::Compacted(when) => self.view.notice(&format!("Compacted here{}.", when_said(&when)), "dim"),
             }
         }
-        self.chat.notice("Compacted: Claude carries on with a summary of the above (it does not see the above itself).", "dim");
+        self.view.notice("Compacted: Claude carries on with a summary of the above (it does not see the above itself).", "dim");
     }
 
     fn load_session(self: &Rc<Self>, session: String) {
@@ -827,8 +814,8 @@ impl Agent {
                 agent.emit(Event::Files);
                 // The view was cleared for the replay: what was typed meanwhile goes back.
                 for (text, images) in agent.queue.borrow().iter() {
-                    agent.chat.user(text);
-                    agent.chat.user_images(images);
+                    agent.view.user(text);
+                    agent.view.user_images(images);
                 }
                 match result {
                     Ok(result) => agent.session_ready(&result),
@@ -862,10 +849,10 @@ impl Agent {
             return;
         }
         *self.config.borrow_mut() = options.clone();
-        self.chat.set_options(options);
+        self.view.set_options(options);
     }
 
-    fn set_option(self: &Rc<Self>, id: &str, value: &str) {
+    pub fn set_option(self: &Rc<Self>, id: &str, value: &str) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else { return };
         let weak = Rc::downgrade(self);
         let name = id.to_owned();
@@ -873,7 +860,7 @@ impl Agent {
             let Some(agent) = weak.upgrade() else { return };
             match result {
                 Ok(result) => agent.set_config(&result["configOptions"]),
-                Err(err) => agent.chat.notice(&format!("Could not change {name}: {}", message(&err)), "error"),
+                Err(err) => agent.view.notice(&format!("Could not change {name}: {}", message(&err)), "error"),
             }
         });
     }
@@ -911,7 +898,7 @@ impl Agent {
                     *agent.mode.borrow_mut() = next.clone();
                     agent.refresh_header();
                 }
-                Err(err) => agent.chat.notice(&format!("Could not change mode: {}", message(&err)), "error"),
+                Err(err) => agent.view.notice(&format!("Could not change mode: {}", message(&err)), "error"),
             }
         });
     }
@@ -919,7 +906,7 @@ impl Agent {
     /// An error with a way on: Retry starts the agent again (the conversation is kept).
     fn offer_retry(self: &Rc<Self>, text: &str) {
         let weak = Rc::downgrade(self);
-        self.chat.notice_action(
+        self.view.notice_action(
             text,
             "Retry",
             Rc::new(move || {
@@ -936,10 +923,10 @@ impl Agent {
     /// An empty conversation view: nothing of the one shown before stays (its subagents,
     /// workflows and files neither).
     fn empty_view(&self) {
-        self.chat.clear();
+        self.view.clear();
         self.forget_subs();
         self.workflows.borrow_mut().clear();
-        self.chat.set_workflow_note(None);
+        self.view.set_workflow_note(None);
         self.files.borrow_mut().clear();
     }
 
@@ -968,14 +955,14 @@ impl Agent {
         self.show_waiting();
         self.restore_unsent(unsent);
         self.drop_questions("The agent stopped");
-        self.chat.crew_clear();
-        self.chat.set_working(None);
+        self.view.crew_clear();
+        self.view.set_working(None);
         self.set_status(Status::Failed);
         // Not logged in: a way to log in, in the tray (Claude Code's own login).
         let lower = text.to_lowercase();
         if ["not logged in", "log in", "/login", "authenticat", "unauthorized", "401", "credential", "api key"].iter().any(|w| lower.contains(w)) {
             let weak = Rc::downgrade(self);
-            self.chat.notice_action("Claude Code needs you to log in.", "Log in", Rc::new(move || {
+            self.view.notice_action("Claude Code needs you to log in.", "Log in", Rc::new(move || {
                 if let Some(agent) = weak.upgrade() {
                     agent.login();
                 }
@@ -993,14 +980,14 @@ impl Agent {
         if self.autonomous.get().is_none() {
             let now = Instant::now();
             self.autonomous.set(Some(now));
-            self.chat.set_working(Some(now));
+            self.view.set_working(Some(now));
             self.refresh_status();
         }
         if let Some(timer) = self.quiet_timer.take() {
             timer.remove();
         }
         let weak = Rc::downgrade(self);
-        let timer = glib::timeout_add_local_once(Duration::from_secs(4), move || {
+        let timer = crate::rt::timeout_once(Duration::from_secs(4), move || {
             let Some(agent) = weak.upgrade() else { return };
             agent.quiet_timer.take();
             agent.end_autonomous(true);
@@ -1018,8 +1005,8 @@ impl Agent {
             self.last_took.set(started.elapsed().as_secs());
             self.last_cancelled.set(false);
             self.last_error.borrow_mut().take();
-            self.chat.set_working(None);
-            self.chat.turn_done(started.elapsed().as_secs());
+            self.view.set_working(None);
+            self.view.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
             if !self.focused.get() {
                 self.unseen.set(true);
@@ -1033,7 +1020,7 @@ impl Agent {
     /// announced as Forked with `draft` in its input.
     pub fn fork(self: &Rc<Self>, at: Option<String>, draft: String) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else {
-            self.chat.notice("Nothing to copy yet: send a message first.", "dim");
+            self.view.notice("Nothing to copy yet: send a message first.", "dim");
             return;
         };
         let mut params = self.session_params();
@@ -1057,7 +1044,7 @@ impl Agent {
                     let _ = conn_close(&agent, id);
                     agent.emit(Event::Forked(saved));
                 }
-                Err(err) => agent.chat.notice(&format!("Could not copy the conversation: {}", message(&err)), "error"),
+                Err(err) => agent.view.notice(&format!("Could not copy the conversation: {}", message(&err)), "error"),
             }
         });
     }
@@ -1075,7 +1062,7 @@ impl Agent {
             self.title.borrow_mut().clear();
         }
         self.empty_view();
-        self.chat.set_plan(&Value::Null);
+        self.view.set_plan(&Value::Null);
         self.emit(Event::Session);
         self.start();
     }
@@ -1086,40 +1073,41 @@ impl Agent {
             return;
         }
         self.dirs.borrow_mut().push(dir.clone());
-        self.chat.notice(&format!("Claude may work in {} too.", dir.display()), "dim");
+        self.view.notice(&format!("Claude may work in {} too.", dir.display()), "dim");
         self.emit(Event::Session);
         self.restart();
     }
 
     /// Runs Claude Code's login in the tray, then starts the agent again once it is done.
     fn login(self: &Rc<Self>) {
-        match self.tray.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
+        match self.jobs.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
             Ok(job) => {
-                self.tray.peek(&job);
+                self.view.show_job(job);
                 // Once the login has worked, the agent starts again (one watch at a time).
                 if let Some(old) = self.login_watch.take() {
                     old.remove();
                 }
-                let weak = Rc::downgrade(self);
-                let watch = glib::timeout_add_seconds_local(1, move || {
-                    let Some(agent) = weak.upgrade() else { return glib::ControlFlow::Break };
-                    if job.is_running() {
-                        return glib::ControlFlow::Continue;
+                let (weak, jobs) = (Rc::downgrade(self), self.jobs.clone());
+                let watch = crate::rt::every(Duration::from_secs(1), move || {
+                    let Some(agent) = weak.upgrade() else { return false };
+                    let info = jobs.info(job);
+                    if info.as_ref().is_some_and(|i| i.running) {
+                        return true;
                     }
                     agent.login_watch.take();
-                    // 0, or closed from the tray after logging in (SIGTERM/SIGINT): start again.
-                    // A real failure (1–127) says so instead.
-                    match job.exit_code() {
+                    // 0, or closed from the tray after logging in (killed): start again. A real
+                    // failure (1–127) says so instead.
+                    match info.and_then(|i| i.exit_code) {
                         Some(code) if (1..=127).contains(&code) => {
-                            agent.chat.notice("The login did not finish; Log in again when ready.", "dim");
+                            agent.view.notice("The login did not finish; Log in again when ready.", "dim");
                         }
                         _ => agent.restart(),
                     }
-                    glib::ControlFlow::Break
+                    false
                 });
                 *self.login_watch.borrow_mut() = Some(watch);
             }
-            Err(err) => self.chat.notice(&err, "error"),
+            Err(err) => self.view.notice(&err, "error"),
         }
     }
 
@@ -1148,8 +1136,8 @@ impl Agent {
         self.show_waiting();
         self.restore_unsent(unsent);
         self.drop_questions("Stopped");
-        self.chat.crew_clear();
-        self.chat.set_working(None);
+        self.view.crew_clear();
+        self.view.set_working(None);
         self.status.set(Status::Suspended);
         self.refresh_header();
         self.emit(Event::Changed);
@@ -1165,15 +1153,15 @@ impl Agent {
     /// About to be suspended: first sums up the conversation (the prompt cache is still warm,
     /// so it costs little, and resuming reads the summary instead of everything), then rests.
     pub fn compact_then_rest(self: &Rc<Self>) {
-        crate::log::debug!(format!("agent {}", self.id), "compacts before resting: {} tokens", self.chat.context_used());
+        crate::log::debug!(format!("agent {}", self.id), "compacts before resting: {} tokens", self.view.context_used());
         self.resting.set(true);
-        self.chat.notice("Suspending: compacting the conversation first (open it and press Esc to keep it all).", "dim");
+        self.view.notice("Suspending: compacting the conversation first (open it and press Esc to keep it all).", "dim");
         self.queue.borrow_mut().push_back((REST_COMPACT.to_owned(), Vec::new()));
         self.send_next();
     }
 
     /// A message, with images attached (PNG).
-    pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
+    pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<Png>) {
         self.last_active.set(Instant::now());
         self.mark_used();
         // /clear: a fresh conversation in this place (the old one stays in the history).
@@ -1196,9 +1184,9 @@ impl Agent {
             return;
         }
         if !text.is_empty() {
-            self.chat.user(&text);
+            self.view.user(&text);
         }
-        self.chat.user_images(&images);
+        self.view.user_images(&images);
         if !self.ready.get() {
             self.queue.borrow_mut().push_back((text, images));
             self.start();
@@ -1212,17 +1200,17 @@ impl Agent {
     /// next message.
     fn shell(self: &Rc<Self>, command: String) {
         if self.shell_pid.get().is_some() {
-            self.chat.notice("A command is still running here (Esc stops it).", "dim");
+            self.view.notice("A command is still running here (Esc stops it).", "dim");
             return;
         }
         let n = self.shells.get() + 1;
         self.shells.set(n);
         let id = format!("shell-{n}");
-        self.chat.tool(&json!({
+        self.view.tool(&json!({
             "toolCallId": id, "title": command, "kind": "shell",
             "status": "in_progress", "content": [{ "type": "terminal" }]
         }));
-        self.chat.open_tool(&id);
+        self.view.open_tool(&id);
         let mut shell = std::process::Command::new("bash");
         shell
             .arg("-c")
@@ -1243,8 +1231,8 @@ impl Agent {
         let mut child = match shell.spawn() {
             Ok(child) => child,
             Err(err) => {
-                self.chat.tool_output(&id, &format!("could not run it: {err}"));
-                self.chat.tool(&json!({ "toolCallId": id, "status": "failed" }));
+                self.view.tool_output(&id, &format!("could not run it: {err}"));
+                self.view.tool(&json!({ "toolCallId": id, "status": "failed" }));
                 return;
             }
         };
@@ -1316,27 +1304,27 @@ impl Agent {
             let _ = tx.send_blocking(Out::Done(code));
         });
         let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
+        crate::rt::spawn_local(async move {
             let (mut stdout, mut stderr) = (String::new(), String::new());
             while let Ok(out) = rx.recv().await {
                 let Some(agent) = weak.upgrade() else { return };
                 match out {
                     Out::Stdout(text) | Out::Stderr(text) if text.is_empty() => {}
                     Out::Stdout(text) => {
-                        agent.chat.tool_output(&id, &text.replace('\n', "\r\n"));
+                        agent.view.tool_output(&id, &text.replace('\n', "\r\n"));
                         stdout.push_str(&text);
                     }
                     Out::Stderr(text) => {
-                        agent.chat.tool_output(&id, &text.replace('\n', "\r\n"));
+                        agent.view.tool_output(&id, &text.replace('\n', "\r\n"));
                         stderr.push_str(&text);
                     }
                     Out::Done(code) => {
                         crate::log::debug!(format!("agent {}", agent.id), "! {command} ended: {code:?}, {} + {} bytes", stdout.len(), stderr.len());
                         agent.shell_pid.set(None);
-                        agent.chat.tool_exit(&id, code.map(i64::from));
+                        agent.view.tool_exit(&id, code.map(i64::from));
                         let status = if code == Some(0) { "completed" } else { "failed" };
-                        agent.chat.tool(&json!({ "toolCallId": id, "status": status }));
-                        agent.chat.open_tool(&id);
+                        agent.view.tool(&json!({ "toolCallId": id, "status": status }));
+                        agent.view.open_tool(&id);
                         let clip = |text: &str| -> String {
                             if text.chars().count() > 30_000 {
                                 format!("{}\n[… cut, {} characters in all]", text.chars().take(30_000).collect::<String>(), text.chars().count())
@@ -1345,7 +1333,7 @@ impl Agent {
                             }
                         };
                         if agent.shell_stopped.take() {
-                            agent.chat.notice("Stopped: its output is not sent to Claude.", "dim");
+                            agent.view.notice("Stopped: its output is not sent to Claude.", "dim");
                             return;
                         }
                         let stopped = if code.is_none() { "\n[stopped by the user]" } else { "" };
@@ -1384,7 +1372,7 @@ impl Agent {
         // the shell too (a group id is not reused while any member lives). Not if another `!`
         // command started meanwhile, which could have got the freed pid.
         let (weak, run) = (Rc::downgrade(self), self.shells.get());
-        glib::timeout_add_local_once(Duration::from_secs(3), move || {
+        let _ = crate::rt::timeout_once(Duration::from_secs(3), move || {
             if let Some(agent) = weak.upgrade()
                 && agent.shells.get() == run
             {
@@ -1397,10 +1385,10 @@ impl Agent {
 
     /// A message as ACP content: `!command` runs first (as Claude Code puts them before the
     /// message), then the images, then the text.
-    fn prompt_blocks(&self, text: &str, images: &[glib::Bytes]) -> Vec<Value> {
+    fn prompt_blocks(&self, text: &str, images: &[Png]) -> Vec<Value> {
         let mut prompt: Vec<Value> = self.context.borrow().iter().map(|c| json!({ "type": "text", "text": c })).collect();
         for png in images {
-            prompt.push(json!({ "type": "image", "mimeType": "image/png", "data": glib::base64_encode(png).as_str() }));
+            prompt.push(json!({ "type": "image", "mimeType": "image/png", "data": data_encoding::BASE64.encode(png) }));
         }
         if !text.is_empty() || prompt.is_empty() {
             prompt.push(json!({ "type": "text", "text": text }));
@@ -1420,7 +1408,7 @@ impl Agent {
         }
     }
 
-    fn steer(self: &Rc<Self>, text: String, images: Vec<glib::Bytes>) {
+    fn steer(self: &Rc<Self>, text: String, images: Vec<Png>) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else {
             self.queue.borrow_mut().push_back((text, images));
             return;
@@ -1444,7 +1432,7 @@ impl Agent {
                     if let Some(message) = answer["messageId"].as_str().map(str::to_owned) {
                         let weak = Rc::downgrade(&agent);
                         let back = (text.clone(), images.clone(), sent_context);
-                        agent.chat.notice_choice("Sent into the running turn.", "Take back", Rc::new(move || {
+                        agent.view.notice_choice("Sent into the running turn.", "Take back", Rc::new(move || {
                             if let Some(agent) = weak.upgrade() {
                                 agent.take_back(message.clone(), back.clone());
                             }
@@ -1452,7 +1440,7 @@ impl Agent {
                     }
                 }
                 Err(_) => {
-                    agent.chat.notice("Queued: sent when this turn ends.", "dim");
+                    agent.view.notice("Queued: sent when this turn ends.", "dim");
                     agent.queue.borrow_mut().push_back((text, images));
                     agent.send_next();
                 }
@@ -1463,7 +1451,7 @@ impl Agent {
     /// What waits shown over the input.
     fn show_waiting(self: &Rc<Self>) {
         let texts: Vec<String> = self.waiting.borrow().iter().map(|(t, _)| t.clone()).collect();
-        self.chat.show_queued(&texts);
+        self.view.show_queued(&texts);
     }
 
     /// A message waits for the turn to end.
@@ -1472,23 +1460,23 @@ impl Agent {
     }
 
     /// What waited for the turn, as one message: (text, images).
-    fn take_waiting(self: &Rc<Self>) -> Option<(String, Vec<glib::Bytes>)> {
+    fn take_waiting(self: &Rc<Self>) -> Option<(String, Vec<Png>)> {
         let waiting: Vec<_> = self.waiting.borrow_mut().drain(..).collect();
         if waiting.is_empty() {
             return None;
         }
         self.show_waiting();
         let text = waiting.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
-        let images: Vec<glib::Bytes> = waiting.into_iter().flat_map(|(_, i)| i).collect();
+        let images: Vec<Png> = waiting.into_iter().flat_map(|(_, i)| i).collect();
         if !text.is_empty() {
-            self.chat.user(&text);
+            self.view.user(&text);
         }
-        self.chat.user_images(&images);
+        self.view.user_images(&images);
         Some((text, images))
     }
 
     /// Ctrl+Enter: what waits goes into the running turn now (or as the next prompt).
-    pub(crate) fn send_waiting_now(self: &Rc<Self>) {
+    pub fn send_waiting_now(self: &Rc<Self>) {
         crate::log::debug!(format!("agent {}", self.id), "send now (Ctrl+Enter): {} waiting", self.waiting.borrow().len());
         let Some((text, images)) = self.take_waiting() else { return };
         // Nothing to say (a command output already went with an earlier message).
@@ -1523,7 +1511,7 @@ impl Agent {
         self.turn.set(true);
         crate::log::debug!(format!("agent {}", self.id), "turn starts: {} chars, {} images, {} command outputs", text.len(), images.len(), self.context.borrow().len());
         let started = Instant::now();
-        self.chat.set_working(Some(started));
+        self.view.set_working(Some(started));
         self.refresh_status();
         let weak = Rc::downgrade(self);
         let prompt = self.prompt_blocks(&text, &images);
@@ -1545,7 +1533,7 @@ impl Agent {
                     Err(err) => format!("error {err}"),
                 });
                 agent.turn.set(false);
-                agent.chat.set_working(None);
+                agent.view.set_working(None);
                 let reply = agent.reply.take();
                 if !quiet {
                     agent.journal("assistant", &reply);
@@ -1566,15 +1554,15 @@ impl Agent {
                         agent.last_cancelled.set(result["stopReason"].as_str() == Some("cancelled"));
                         agent.last_error.borrow_mut().take();
                         if result["stopReason"].as_str() == Some("cancelled") {
-                            agent.chat.notice("Stopped.", "dim");
+                            agent.view.notice("Stopped.", "dim");
                         } else if let Some(reason) = result["stopReason"].as_str().filter(|r| *r != "end_turn") {
-                            agent.chat.notice(&format!("Turn ended: {}", reason.replace('_', " ")), "dim");
+                            agent.view.notice(&format!("Turn ended: {}", reason.replace('_', " ")), "dim");
                         }
                     }
                     Err(err) => {
                         agent.last_cancelled.set(false);
                         *agent.last_error.borrow_mut() = Some(message(&err));
-                        agent.chat.notice(&format!("Error: {}", message(&err)), "error");
+                        agent.view.notice(&format!("Error: {}", message(&err)), "error");
                     }
                 }
                 // Compacted (or not: it rests all the same, with the whole conversation),
@@ -1587,10 +1575,10 @@ impl Agent {
                     agent.suspend();
                     return;
                 }
-                agent.chat.turn_done(started.elapsed().as_secs());
+                agent.view.turn_done(started.elapsed().as_secs());
                 if let Some(message) = undo {
                     let weak = Rc::downgrade(&agent);
-                    agent.chat.turn_undo(Rc::new(move || {
+                    agent.view.turn_undo(Rc::new(move || {
                         if let Some(agent) = weak.upgrade() {
                             agent.undo_files(message.clone());
                         }
@@ -1773,7 +1761,7 @@ impl Agent {
         self.last_active.set(Instant::now());
         self.refresh_status();
         self.emit(Event::Changed);
-        self.chat.input.grab_focus();
+        self.view.focus_input();
     }
 
     /// Claude (or an MCP server) asks something: a form in the chat.
@@ -1796,7 +1784,7 @@ impl Agent {
                     agent.choose(index, &id);
                 }
             });
-            let card = self.chat.permission(&message, Some(&url), false, &options, choose);
+            let card = self.view.permission(&message, Some(&url), false, &options, choose);
             self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: message.clone(), detail: Some(url.clone()), form: None, url: Some(url) });
             self.refresh_status();
             self.emit(Event::Asked(message));
@@ -1818,8 +1806,8 @@ impl Agent {
                 agent.reply_form(serial, content);
             }
         });
-        let form = self.chat.form(&message, &params["requestedSchema"], answer);
-        let card = form.card.clone();
+        let form = self.view.form(&message, &params["requestedSchema"], answer);
+        let card = form.card();
         self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), detail: None, form: Some(form), url: None });
         self.refresh_status();
         self.emit(Event::Asked(message));
@@ -1837,7 +1825,7 @@ impl Agent {
         if let Some(conn) = self.conn.borrow().clone() {
             let answer = match &question.url {
                 Some(url) if option_id == "open" => {
-                    gtk::UriLauncher::new(url).launch(None::<&gtk::Window>, None::<&gio::Cancellable>, |_| {});
+                    self.view.open_uri(url);
                     json!({ "action": "accept" })
                 }
                 Some(_) => json!({ "action": "decline" }),
@@ -1850,7 +1838,7 @@ impl Agent {
         self.refresh_status();
         // Still blocked on another question: the status did not change, the inbox did.
         self.emit(Event::Changed);
-        self.chat.input.grab_focus();
+        self.view.focus_input();
     }
 
     fn ask(self: &Rc<Self>, rpc: Value, params: &Value) {
@@ -1890,7 +1878,7 @@ impl Agent {
             Some(sub) => format!("Allow {title}? (asked by the subagent {sub})"),
             None => format!("Allow {title}?"),
         };
-        let card = self.chat.permission(&question, detail.as_deref(), is_plan, &options, choose);
+        let card = self.view.permission(&question, detail.as_deref(), is_plan, &options, choose);
         self.pending.borrow_mut().push(Pending { serial, rpc, options, card, title: title.clone(), detail, form: None, url: None });
         self.refresh_status();
         self.emit(Event::Asked(title));
@@ -1939,8 +1927,8 @@ impl Agent {
         if let Some(sub) = self.subs.borrow().iter().find(|s| s.id == id) {
             return sub.clone();
         }
-        let chat = Chat::viewer();
-        chat.set_show_thinking(crate::settings::get().show_thinking);
+        let view = self.view.sub_view();
+        view.set_show_thinking(crate::settings::get().show_thinking);
         let sub = Rc::new(Sub {
             id: id.to_owned(),
             title: RefCell::new("Subagent".to_owned()),
@@ -1949,7 +1937,7 @@ impl Agent {
             ended: Cell::new(None),
             at: Cell::new(Instant::now()),
             step: RefCell::default(),
-            chat,
+            view,
             cards: RefCell::default(),
         });
         self.subs.borrow_mut().push(sub.clone());
@@ -1959,37 +1947,33 @@ impl Agent {
     /// A Workflow tool call's result: the workflow, followed in a card of its own.
     fn workflow_launched(self: &Rc<Self>, update: &Value) {
         let Some(tool_id) = update["toolCallId"].as_str() else { return };
-        if self.workflows.borrow().iter().any(|w| w.tool_id == tool_id) {
+        if self.workflows.borrow().iter().any(|w| w.tool_id() == tool_id) {
             return;
         }
         let Some(launch) = crate::workflow::launch_of(update) else { return };
         let weak = Rc::downgrade(self);
         let launched = self.conn.borrow().as_ref().map(Rc::downgrade);
-        let run = crate::workflow::Run::new(tool_id, launch, !self.replaying.get(), move || {
+        let alive = Box::new(move || {
             let (Some(agent), Some(launched)) = (weak.upgrade(), launched.as_ref().and_then(|c| c.upgrade())) else { return false };
             agent.conn.borrow().as_ref().is_some_and(|now| Rc::ptr_eq(now, &launched))
         });
         let weak = Rc::downgrade(self);
-        *run.on_open.borrow_mut() = Some(Rc::new(move |path: PathBuf, label: String| {
-            let Some(agent) = weak.upgrade() else { return };
-            let viewer = Chat::viewer();
-            viewer.set_show_thinking(crate::settings::get().show_thinking);
-            crate::workflow::fill_transcript(&viewer, &path);
-            agent.chat.show_aside(viewer.root.upcast_ref(), &format!("Workflow agent · {label}"));
-        }));
-        let weak = Rc::downgrade(self);
-        *run.on_changed.borrow_mut() = Some(Rc::new(move || {
+        let on_changed = Rc::new(move || {
             if let Some(agent) = weak.upgrade() {
                 agent.workflow_note();
             }
-        }));
-        let (weak, card) = (Rc::downgrade(self), Rc::downgrade(&run));
-        *run.on_stop.borrow_mut() = Some(Rc::new(move || {
-            if let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) {
+        });
+        // Its Stop reaches the card made just below.
+        let weak = Rc::downgrade(self);
+        let stop_slot: Rc<RefCell<Option<std::rc::Weak<dyn Workflow>>>> = Rc::default();
+        let stopping = stop_slot.clone();
+        let on_stop = Rc::new(move || {
+            if let (Some(agent), Some(run)) = (weak.upgrade(), stopping.borrow().as_ref().and_then(|w| w.upgrade())) {
                 agent.stop_workflow(&run);
             }
-        }));
-        self.chat.block(&run.root);
+        });
+        let run = self.view.workflow(tool_id, launch, !self.replaying.get(), alive, on_changed, on_stop);
+        *stop_slot.borrow_mut() = Some(Rc::downgrade(&run));
         self.workflows.borrow_mut().push(run);
         self.workflow_note();
     }
@@ -1997,36 +1981,36 @@ impl Agent {
     /// Stops one of its workflows (its card's Stop): Claude is asked to stop just that task
     /// (its TaskStop tool; its result marks the card). Claude Code's interrupt is no way: it
     /// ends every workflow when it stops a turn, and none when there is no turn.
-    fn stop_workflow(self: &Rc<Self>, run: &Rc<crate::workflow::Run>) {
-        crate::log::debug!(format!("agent {}", self.id), "stop workflow {}", run.task);
+    fn stop_workflow(self: &Rc<Self>, run: &Rc<dyn Workflow>) {
+        crate::log::debug!(format!("agent {}", self.id), "stop workflow {}", run.task());
         // The provider stops it itself (no turn of Claude's): its end comes as a task_update.
         if self.tasks.get()
             && let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id())
         {
             let (weak, card) = (Rc::downgrade(self), Rc::downgrade(run));
-            conn.request("_session/stop_task", json!({ "sessionId": session, "taskId": run.task }), move |result| {
+            conn.request("_session/stop_task", json!({ "sessionId": session, "taskId": run.task() }), move |result| {
                 let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) else { return };
                 if let Err(err) = result {
-                    agent.chat.notice(&format!("Could not stop the workflow {}: {}", run.name, message(&err)), "error");
+                    agent.view.notice(&format!("Could not stop the workflow {}: {}", run.name(), message(&err)), "error");
                     run.stop_unanswered();
                 }
             });
             return;
         }
-        self.submit_with(format!("Stop the background workflow {} (task {}) with TaskStop. Nothing else.", run.name, run.task), Vec::new());
+        self.submit_with(format!("Stop the background workflow {} (task {}) with TaskStop. Nothing else.", run.name(), run.task()), Vec::new());
         // Once nothing of that request is left (its turn over, or taken back) and the workflow
         // still runs, Stop is offered again.
         let (weak, card) = (Rc::downgrade(self), Rc::downgrade(run));
-        glib::timeout_add_local(Duration::from_secs(2), move || {
-            let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) else { return glib::ControlFlow::Break };
-            if run.done.get() {
-                return glib::ControlFlow::Break;
+        let _ = crate::rt::every(Duration::from_secs(2), move || {
+            let (Some(agent), Some(run)) = (weak.upgrade(), card.upgrade()) else { return false };
+            if run.done() {
+                return false;
             }
             if agent.turn.get() || !agent.queue.borrow().is_empty() || !agent.waiting.borrow().is_empty() {
-                return glib::ControlFlow::Continue;
+                return true;
             }
             run.stop_unanswered();
-            glib::ControlFlow::Break
+            false
         });
     }
 
@@ -2034,13 +2018,13 @@ impl Agent {
     /// background (loom does not ask it to spare them, which only clients that can stop each
     /// one may).
     fn workflows_ended_by_cancel(&self) {
-        let running: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done.get()).cloned().collect();
+        let running: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done()).cloned().collect();
         running.iter().for_each(|w| w.stopped());
     }
 
     /// A message sent into the running turn, taken back (back into the input) if Claude has not
     /// taken it yet.
-    fn take_back(self: &Rc<Self>, message_id: String, (text, images, context): (String, Vec<glib::Bytes>, Vec<String>)) {
+    fn take_back(self: &Rc<Self>, message_id: String, (text, images, context): (String, Vec<Png>, Vec<String>)) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
         let weak = Rc::downgrade(self);
         conn.request("_session/take_back", json!({ "sessionId": session, "messageId": message_id }), move |result| {
@@ -2053,8 +2037,8 @@ impl Agent {
                     *agent.context.borrow_mut() = kept;
                     agent.restore_unsent(vec![(text.clone(), images.clone())]);
                 }
-                Ok(_) => agent.chat.notice("Too late to take back: Claude has it already.", "dim"),
-                Err(err) => agent.chat.notice(&format!("Could not take it back: {}", message(&err)), "error"),
+                Ok(_) => agent.view.notice("Too late to take back: Claude has it already.", "dim"),
+                Err(err) => agent.view.notice(&format!("Could not take it back: {}", message(&err)), "error"),
             }
         });
     }
@@ -2068,9 +2052,9 @@ impl Agent {
 
     /// MCP servers: their status (`action` "status"), or one switched on/off or connected
     /// again; the usage popover shows the list after.
-    fn mcp(self: &Rc<Self>, action: &str, server: &str, enabled: bool) {
+    pub fn mcp(self: &Rc<Self>, action: &str, server: &str, enabled: bool) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else {
-            self.chat.show_mcp(None);
+            self.view.show_mcp(None);
             return;
         };
         let weak = Rc::downgrade(self);
@@ -2079,7 +2063,7 @@ impl Agent {
             let Some(agent) = weak.upgrade() else { return };
             if refresh {
                 if let Err(err) = &result {
-                    agent.chat.notice(&format!("MCP: {}", message(err)), "error");
+                    agent.view.notice(&format!("MCP: {}", message(err)), "error");
                 }
                 agent.mcp("status", "", false);
                 return;
@@ -2092,7 +2076,7 @@ impl Agent {
                     .filter_map(|s| Some((s["name"].as_str()?.to_owned(), s["status"].as_str().unwrap_or("").to_owned(), s["error"].as_str().map(str::to_owned))))
                     .collect()
             });
-            agent.chat.show_mcp(servers);
+            agent.view.show_mcp(servers);
         });
     }
 
@@ -2100,7 +2084,7 @@ impl Agent {
     /// they were (once the user has seen which), then the conversation is copied from there.
     fn rewind_with_files(self: &Rc<Self>, at: String, text: String) {
         if self.turn.get() || self.autonomous.get().is_some() {
-            self.chat.notice("Rewind once this turn is over.", "dim");
+            self.view.notice("Rewind once this turn is over.", "dim");
             return;
         }
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
@@ -2109,11 +2093,11 @@ impl Agent {
             let Some(agent) = weak.upgrade() else { return };
             let files: Vec<String> = match &result {
                 Ok(preview) if preview["canRewind"].as_bool() == Some(true) => preview["filesChanged"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_owned)).collect(),
-                Ok(preview) => return agent.chat.notice(&format!("Can't put the files back: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
-                Err(err) => return agent.chat.notice(&format!("Can't put the files back: {}", message(err)), "error"),
+                Ok(preview) => return agent.view.notice(&format!("Can't put the files back: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
+                Err(err) => return agent.view.notice(&format!("Can't put the files back: {}", message(err)), "error"),
             };
             if files.is_empty() {
-                agent.chat.notice("No file Claude changed from there on differs: only the conversation is rewound.", "dim");
+                agent.view.notice("No file Claude changed from there on differs: only the conversation is rewound.", "dim");
                 agent.fork(Some(at.clone()), text.clone());
                 return;
             }
@@ -2126,11 +2110,11 @@ impl Agent {
             let ask = format!("Rewinding here also puts {what} back as it was (+{plus} −{minus} of Claude's changes go). Rewind with the files?");
             let (weak, at, text) = (Rc::downgrade(&agent), at.clone(), text.clone());
             let message_id = preview["userMessageId"].as_str().map(str::to_owned);
-            agent.chat.notice_choice(&ask, "Rewind", Rc::new(move || {
+            agent.view.notice_choice(&ask, "Rewind", Rc::new(move || {
                 let Some(agent) = weak.upgrade() else { return };
                 // Claude went back to work since it asked: not under its edits.
                 if agent.turn.get() || agent.autonomous.get().is_some() {
-                    agent.chat.notice("Not rewound: Claude is working. Rewind once this turn is over.", "dim");
+                    agent.view.notice("Not rewound: Claude is working. Rewind once this turn is over.", "dim");
                     return;
                 }
                 let (Some(conn), Some(session)) = (agent.conn.borrow().clone(), agent.session_id()) else { return };
@@ -2146,8 +2130,8 @@ impl Agent {
                             agent.repo_changed();
                             agent.fork(Some(at.clone()), text.clone());
                         }
-                        Ok(done) => agent.chat.notice(&format!("Could not put the files back: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
-                        Err(err) => agent.chat.notice(&format!("Could not put the files back: {}", message(&err)), "error"),
+                        Ok(done) => agent.view.notice(&format!("Could not put the files back: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
+                        Err(err) => agent.view.notice(&format!("Could not put the files back: {}", message(&err)), "error"),
                     }
                 });
             }));
@@ -2158,7 +2142,7 @@ impl Agent {
     /// the user has seen what would change. The conversation stays as it is.
     pub fn undo_files(self: &Rc<Self>, message_id: String) {
         if self.turn.get() || self.autonomous.get().is_some() {
-            self.chat.notice("File changes can be undone once this turn is over.", "dim");
+            self.view.notice("File changes can be undone once this turn is over.", "dim");
             return;
         }
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
@@ -2167,12 +2151,12 @@ impl Agent {
             let Some(agent) = weak.upgrade() else { return };
             let preview = match result {
                 Ok(preview) if preview["canRewind"].as_bool() == Some(true) => preview,
-                Ok(preview) => return agent.chat.notice(&format!("Can't undo these changes: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
-                Err(err) => return agent.chat.notice(&format!("Can't undo these changes: {}", message(&err)), "error"),
+                Ok(preview) => return agent.view.notice(&format!("Can't undo these changes: {}", preview["error"].as_str().unwrap_or("Claude Code has no record of them")), "error"),
+                Err(err) => return agent.view.notice(&format!("Can't undo these changes: {}", message(&err)), "error"),
             };
             let files: Vec<String> = preview["filesChanged"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_owned)).collect();
             if files.is_empty() {
-                agent.chat.notice("Nothing to undo: the files Claude changed from here on are as they were.", "dim");
+                agent.view.notice("Nothing to undo: the files Claude changed from here on are as they were.", "dim");
                 return;
             }
             let what = match files.as_slice() {
@@ -2182,7 +2166,7 @@ impl Agent {
             let (plus, minus) = (preview["insertions"].as_u64().unwrap_or(0), preview["deletions"].as_u64().unwrap_or(0));
             let text = format!("Undo the changes to {what} (+{plus} −{minus}) Claude made from this message on? The conversation stays as it is.");
             let (weak, message_id) = (Rc::downgrade(&agent), message_id.clone());
-            agent.chat.notice_choice(&text, "Undo", Rc::new(move || {
+            agent.view.notice_choice(&text, "Undo", Rc::new(move || {
                 if let Some(agent) = weak.upgrade() {
                     agent.rewind_files(message_id.clone());
                 }
@@ -2193,7 +2177,7 @@ impl Agent {
     fn rewind_files(self: &Rc<Self>, message_id: String) {
         // Claude went back to work since it asked: not under its edits.
         if self.turn.get() || self.autonomous.get().is_some() {
-            self.chat.notice("Not undone: Claude is working. Undo once this turn is over.", "dim");
+            self.view.notice("Not undone: Claude is working. Undo once this turn is over.", "dim");
             return;
         }
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
@@ -2202,11 +2186,11 @@ impl Agent {
             let Some(agent) = weak.upgrade() else { return };
             match result {
                 Ok(done) if done["canRewind"].as_bool() == Some(true) => {
-                    agent.chat.notice("Undone: the files are back as they were at that message.", "dim");
+                    agent.view.notice("Undone: the files are back as they were at that message.", "dim");
                     agent.repo_changed();
                 }
-                Ok(done) => agent.chat.notice(&format!("Could not undo: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
-                Err(err) => agent.chat.notice(&format!("Could not undo: {}", message(&err)), "error"),
+                Ok(done) => agent.view.notice(&format!("Could not undo: {}", done["error"].as_str().unwrap_or("unknown error")), "error"),
+                Err(err) => agent.view.notice(&format!("Could not undo: {}", message(&err)), "error"),
             }
         });
     }
@@ -2218,7 +2202,7 @@ impl Agent {
             conn.request("_session/suggestions", json!({ "sessionId": session, "enabled": on }), |_| {});
         }
         if !on {
-            self.chat.set_suggestion(None);
+            self.view.set_suggestion(None);
         }
     }
 
@@ -2232,14 +2216,14 @@ impl Agent {
         let weak = Rc::downgrade(self);
         conn.request("_session/background", json!({ "sessionId": session }), move |result| {
             if let (Err(_), Some(agent)) = (result, weak.upgrade()) {
-                agent.chat.notice("Sending to the background is not available with this agent program.", "dim");
+                agent.view.notice("Sending to the background is not available with this agent program.", "dim");
             }
         });
     }
 
     /// One of its workflows still runs (its agent must not be suspended meanwhile).
     pub fn workflow_running(&self) -> bool {
-        self.workflows.borrow().iter().any(|w| !w.done.get())
+        self.workflows.borrow().iter().any(|w| !w.done())
     }
 
     /// Work of its own runs in the background (a workflow, a command): suspending or closing
@@ -2251,20 +2235,20 @@ impl Agent {
     /// The strip under the conversation: what its running workflows are at.
     fn workflow_note(&self) {
         let workflows = self.workflows.borrow();
-        let running: Vec<_> = workflows.iter().filter(|w| !w.done.get()).collect();
+        let running: Vec<_> = workflows.iter().filter(|w| !w.done()).collect();
         let (done, all) = running.iter().map(|w| w.counts()).fold((0, 0), |(d, a), (dw, aw)| (d + dw, a + aw));
-        self.chat.set_workflow_note(match running.as_slice() {
+        self.view.set_workflow_note(match running.as_slice() {
             [] => None,
-            [one] => Some(format!("Workflow {}: {done} of {all} agents done", one.name)),
+            [one] => Some(format!("Workflow {}: {done} of {all} agents done", one.name())),
             more => Some(format!("{} workflows: {done} of {all} agents done", more.len())),
         });
     }
 
     /// Thinking shown or hidden, in its subagents' conversations too.
     pub fn set_show_thinking(&self, show: bool) {
-        self.chat.set_show_thinking(show);
+        self.view.set_show_thinking(show);
         for sub in self.subs.borrow().iter() {
-            sub.chat.set_show_thinking(show);
+            sub.view.set_show_thinking(show);
         }
     }
 
@@ -2277,7 +2261,7 @@ impl Agent {
             Some(_) => " · working",
             None => "",
         };
-        self.chat.show_aside(sub.chat.root.upcast_ref(), &format!("Subagent · {}{state}", sub.title.borrow()));
+        self.view.show_aside(&sub.view, &format!("Subagent · {}{state}", sub.title.borrow()));
         true
     }
 
@@ -2287,7 +2271,7 @@ impl Agent {
         if self.replaying.get() || !(self.turn.get() || sub.ended.get().is_none()) {
             return;
         }
-        self.chat.crew_set(crate::chat::Crew {
+        self.view.crew_set(Crew {
             key: sub.id.clone(),
             name: sub.title.borrow().clone(),
             step: sub.step.borrow().clone(),
@@ -2309,14 +2293,14 @@ impl Agent {
         {
             card.2 = true;
             let text = format!("**Asked:** {}\n\n**Answer:** {answer}", card.1);
-            self.chat.tool(&json!({
+            self.view.tool(&json!({
                 "toolCallId": card.0, "status": "completed",
                 "content": [{ "type": "content", "content": { "type": "text", "text": text } }]
             }));
         }
         if ended {
             for card in cards.iter() {
-                self.chat.tool(&json!({ "toolCallId": card.0, "status": "completed" }));
+                self.view.tool(&json!({ "toolCallId": card.0, "status": "completed" }));
             }
         }
     }
@@ -2325,8 +2309,8 @@ impl Agent {
     fn forget_subs(&self) {
         self.subs.borrow_mut().clear();
         self.commands.borrow_mut().clear();
-        self.chat.crew_clear();
-        self.chat.show_main();
+        self.view.crew_clear();
+        self.view.show_main();
     }
 
     /// `subagent_update` on the main session: a subagent announced, or its state changed.
@@ -2375,14 +2359,14 @@ impl Agent {
             if !known {
                 sub.cards.borrow_mut().push((id.clone(), text.clone(), false));
             }
-            self.chat.tool(&json!({
+            self.view.tool(&json!({
                 "toolCallId": id, "title": format!("Subagent · {}", sub.title.borrow()), "kind": "think", "status": "in_progress",
                 "content": [{ "type": "content", "content": { "type": "text", "text": format!("**Asked:** {text}") } }]
             }));
             if !known {
                 let weak = Rc::downgrade(self);
                 let key = sub.id.clone();
-                self.chat.tool_button(&id, "open", "Read this subagent's conversation", Rc::new(move || {
+                self.view.tool_button(&id, "open", "Read this subagent's conversation", Rc::new(move || {
                     if let Some(agent) = weak.upgrade() {
                         agent.open_sub(&key);
                     }
@@ -2399,14 +2383,14 @@ impl Agent {
         let sub = self.sub(id);
         let text = update["content"]["text"].as_str().unwrap_or("");
         match update["sessionUpdate"].as_str().unwrap_or("") {
-            "agent_message_chunk" => sub.chat.agent_text_with(text, update["messageId"].as_str()),
-            "agent_thought_chunk" => sub.chat.thought(text),
+            "agent_message_chunk" => sub.view.agent_text_with(text, update["messageId"].as_str()),
+            "agent_thought_chunk" => sub.view.thought(text),
             "tool_call" | "tool_call_update" => {
                 let hook = self.on_tool.borrow().clone().filter(|_| !self.replaying.get());
                 if let Some(hook) = hook {
                     hook(update);
                 }
-                sub.chat.tool(update);
+                sub.view.tool(update);
                 // Its edits are the turn's too (they are undone with it): an edit call that
                 // completes.
                 if let Some(call) = update["toolCallId"].as_str().filter(|_| !self.replaying.get()) {
@@ -2418,19 +2402,19 @@ impl Agent {
                     }
                 }
                 if let Some(title) = update["title"].as_str() {
-                    *sub.step.borrow_mut() = crate::chat::tool_title(title);
+                    *sub.step.borrow_mut() = tool_title(title);
                 }
                 sub.at.set(Instant::now());
                 self.show_sub(&sub);
             }
-            "plan" => sub.chat.set_plan(&update["entries"]),
+            "plan" => sub.view.set_plan(&update["entries"]),
             "session_message" => {
                 let text: String = update["content"].as_array().into_iter().flatten().filter_map(|c| c["text"].as_str()).collect::<Vec<_>>().join("\n");
                 // What it was asked comes in; what it hands back goes out, as its own words.
                 if update["recipientSessionId"].as_str() == Some(id) {
-                    sub.chat.user(&text);
+                    sub.view.user(&text);
                 } else {
-                    sub.chat.agent_text_with(&text, update["messageId"].as_str());
+                    sub.view.agent_text_with(&text, update["messageId"].as_str());
                 }
             }
             _ => {}
@@ -2445,7 +2429,7 @@ impl Agent {
                 if self.turn.get() && !self.replaying.get() {
                     self.reply.borrow_mut().push_str(text());
                 }
-                self.chat.agent_text_with(text(), update["messageId"].as_str());
+                self.view.agent_text_with(text(), update["messageId"].as_str());
             }
             "notice" => {
                 let line = match update["description"].as_str() {
@@ -2453,33 +2437,33 @@ impl Agent {
                     None => update["title"].as_str().unwrap_or("Notice").to_owned(),
                 };
                 let class = if update["severity"].as_str() == Some("error") { "error" } else { "dim" };
-                self.chat.notice(&line, class);
+                self.view.notice(&line, class);
             }
             "compaction_update" => match update["status"].as_str() {
                 Some("in_progress") => {
-                    self.chat.notice("Compacting the conversation…", "dim");
+                    self.view.notice("Compacting the conversation…", "dim");
                     self.emit(Event::Compacting);
                 }
-                Some("completed") => self.chat.notice("Compacted: Claude carries on with a summary of what came before.", "dim"),
-                Some("failed") => self.chat.notice("Compacting failed.", "error"),
+                Some("completed") => self.view.notice("Compacted: Claude carries on with a summary of what came before.", "dim"),
+                Some("failed") => self.view.notice("Compacting failed.", "error"),
                 _ => {}
             },
-            "agent_thought_chunk" => self.chat.thought(text()),
+            "agent_thought_chunk" => self.view.thought(text()),
             // Only a replay echoes what was typed; live, the chat already shows it.
             "user_message_chunk" if self.replaying.get() => match update["content"]["type"].as_str() {
-                Some("image") => self.chat.user_image_data(update["content"]["data"].as_str().unwrap_or("")),
-                _ => self.chat.user_chunk(text()),
+                Some("image") => self.view.user_image_data(update["content"]["data"].as_str().unwrap_or("")),
+                _ => self.view.user_chunk(text()),
             },
             "tool_call" | "tool_call_update" => {
                 self.note_activity();
                 self.tool(update);
                 self.workflow_launched(update);
                 if let Some(task) = crate::workflow::stopped_task(update) {
-                    let stopped: Vec<_> = self.workflows.borrow().iter().filter(|w| w.task == task && !w.done.get()).cloned().collect();
+                    let stopped: Vec<_> = self.workflows.borrow().iter().filter(|w| w.task() == task && !w.done()).cloned().collect();
                     stopped.iter().for_each(|w| w.stopped());
                 }
             }
-            "plan" => self.chat.set_plan(&update["entries"]),
+            "plan" => self.view.set_plan(&update["entries"]),
             "subagent_update" => self.subagent_update(update),
             "session_message" => self.session_message(update),
             "available_commands_update" => {
@@ -2493,7 +2477,7 @@ impl Agent {
                             .collect()
                     })
                     .unwrap_or_default();
-                self.chat.set_commands(commands);
+                self.view.set_commands(commands);
             }
             "current_mode_update" => {
                 if let Some(mode) = update["currentModeId"].as_str() {
@@ -2514,25 +2498,25 @@ impl Agent {
                     .collect();
                 // A workflow no longer running there, its end never told (an interrupt): over.
                 let running: Vec<&str> = update["tasks"].as_array().into_iter().flatten().filter_map(|t| t["taskId"].as_str()).collect();
-                let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done.get() && !running.contains(&w.task.as_str())).cloned().collect();
+                let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done() && !running.contains(&w.task().as_str())).cloned().collect();
                 for run in ended {
                     run.stopped();
                 }
                 let gone: Vec<String> = self.commands.borrow().keys().filter(|k| !live.iter().any(|(l, _)| l == *k)).cloned().collect();
                 for key in gone {
                     self.commands.borrow_mut().remove(&key);
-                    self.chat.crew_remove(&key);
+                    self.view.crew_remove(&key);
                 }
                 for (key, name) in live {
                     let started = *self.commands.borrow_mut().entry(key.clone()).or_insert_with(Instant::now);
-                    self.chat.crew_set(crate::chat::Crew { key, name, step: "command".to_owned(), at: Instant::now(), started, state: Some("running".to_owned()), ended: None, guessed: false });
+                    self.view.crew_set(Crew { key, name, step: "command".to_owned(), at: Instant::now(), started, state: Some("running".to_owned()), ended: None, guessed: false });
                 }
                 self.emit(Event::Changed);
             }
             // A background task ended (done, failed, stopped): a workflow's card says so.
             "task_update" => {
                 let task = update["taskId"].as_str().unwrap_or("");
-                let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| w.task == task && !w.done.get()).cloned().collect();
+                let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| w.task() == task && !w.done()).cloned().collect();
                 let output = update["outputFile"].as_str().filter(|f| !f.is_empty()).map(PathBuf::from);
                 for run in ended {
                     run.ended(update["status"].as_str().unwrap_or("completed"), output.clone());
@@ -2555,7 +2539,7 @@ impl Agent {
                 {
                     let text = suggestions.iter().filter_map(|s| s["text"].as_str()).find(|t| !t.trim().is_empty());
                     crate::log::debug!(format!("agent {}", self.id), "prompt suggestion: {text:?}");
-                    self.chat.set_suggestion(text.map(str::to_owned));
+                    self.view.set_suggestion(text.map(str::to_owned));
                 }
                 // A name given by hand stays.
                 if let Some(title) = update["title"].as_str().filter(|t| !t.is_empty() && !self.named.get()) {
@@ -2566,14 +2550,14 @@ impl Agent {
                 }
             }
             "usage_update" => {
-                self.chat.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
-                self.chat.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
+                self.view.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
+                self.view.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
                 if !update["_meta"]["loom/limits"].is_null() {
-                    self.chat.set_limits(update["_meta"]["loom/limits"].clone());
+                    self.view.set_limits(update["_meta"]["loom/limits"].clone());
                 }
                 let context = &update["_meta"]["loom/context"];
                 let parts = context["parts"].as_array().into_iter().flatten().filter_map(|p| Some((p["name"].as_str()?.to_owned(), p["tokens"].as_u64()?))).collect();
-                self.chat.set_context_parts(parts, context["autoCompactAt"].as_u64());
+                self.view.set_context_parts(parts, context["autoCompactAt"].as_u64());
             }
             _ => {}
         }
@@ -2584,7 +2568,7 @@ impl Agent {
         if let Some(hook) = hook {
             hook(update);
         }
-        self.chat.tool(update);
+        self.view.tool(update);
         let id = update["toolCallId"].as_str().unwrap_or("").to_owned();
 
         // Where it works: the repos of the files it reads and writes.
@@ -2656,10 +2640,10 @@ impl Agent {
         }
         let meta = &update["_meta"];
         if let Some(data) = meta["terminal_output_delta"]["data"].as_str().or_else(|| meta["terminal_output"]["data"].as_str()) {
-            self.chat.tool_output(&id, data);
+            self.view.tool_output(&id, data);
         }
         if meta.get("terminal_exit").is_some_and(|e| !e.is_null()) {
-            self.chat.tool_exit(&id, meta["terminal_exit"]["exit_code"].as_i64());
+            self.view.tool_exit(&id, meta["terminal_exit"]["exit_code"].as_i64());
         }
     }
 }
@@ -2696,8 +2680,8 @@ fn limit(info: &Value) -> Option<(String, String)> {
     };
     let resets = info["resetsAt"]
         .as_i64()
-        .and_then(|t| glib::DateTime::from_unix_local(t).ok())
-        .and_then(|t| t.format("%a %H:%M").ok())
+        .map(|t| crate::schedule::local(t, "%a %H:%M"))
+        .filter(|t| !t.is_empty())
         .map(|t| format!(", resets {t}"))
         .unwrap_or_default();
     Some((format!("{short} {percent:.0}%"), format!("{long}: {percent:.0}% used{resets}")))

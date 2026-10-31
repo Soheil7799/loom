@@ -29,6 +29,7 @@ use std::time::{Duration, Instant};
 use gtk::{gdk, gio, glib, prelude::*};
 use serde_json::{Value, json};
 
+use crate::chat_view::AgentChat;
 use crate::agent::{Agent, Asking, Event};
 use crate::app::App;
 use crate::settings::Settings;
@@ -374,7 +375,7 @@ impl Host {
             Event::Asked(_) => told["event"] = json!("asked"),
             Event::Done => {
                 told["event"] = json!("done");
-                told["reply"] = json!(agent.chat.last_reply());
+                told["reply"] = json!(agent.chat().last_reply());
                 told["took"] = json!(crate::chat::elapsed(agent.last_took.get()));
                 told["error"] = json!(agent.last_error.borrow().clone());
                 told["cancelled"] = json!(agent.last_cancelled.get());
@@ -426,7 +427,7 @@ impl Host {
                 for data in p["images"].as_array().into_iter().flatten() {
                     let bytes = glib::base64_decode(data.as_str().unwrap_or(""));
                     let png = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map_err(|_| "That picture could not be read.".to_owned())?;
-                    images.push(png.save_to_png_bytes());
+                    images.push(png.save_to_png_bytes().to_vec());
                 }
                 agent.submit_with(p["text"].as_str().unwrap_or("").to_owned(), images);
                 Ok(self.view(&app, &agent))
@@ -463,7 +464,7 @@ impl Host {
                 agent.cancel();
                 self.view(&app, &agent)
             }),
-            "last_reply" => agent().map(|agent| json!(agent.chat.last_reply())),
+            "last_reply" => agent().map(|agent| json!(agent.chat().last_reply())),
             // Speech to text with loom's settings (its key never leaves loom); answered when heard.
             "transcribe" => {
                 if !crate::stt::configured() {

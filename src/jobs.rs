@@ -80,13 +80,28 @@ impl Tray {
         tray
     }
 
+    /// Its jobs (in loom-core).
+    pub fn core(&self) -> Jobs {
+        self.core.clone()
+    }
+
+    /// The chip of job `id`, made if it has none yet (a job started elsewhere: by an agent).
+    pub fn adopt(self: &Rc<Self>, id: Id) -> Option<Rc<Job>> {
+        if let Some(job) = self.by_id(id) {
+            return Some(job);
+        }
+        let info = self.core.info(id)?;
+        Some(self.add(id, &info.name, &info.command))
+    }
+
     /// What a job did, drawn.
-    fn show(&self, event: Event) {
+    fn show(self: &Rc<Self>, event: Event) {
         let id = match &event {
-            Event::Started(id) | Event::Restarting(id) | Event::Output(id, _) | Event::Exited(id, _) => *id,
+            Event::Added(id) | Event::Started(id) | Event::Restarting(id) | Event::Output(id, _) | Event::Exited(id, _) => *id,
         };
-        let Some(job) = self.by_id(id) else { return };
+        let Some(job) = self.adopt(id) else { return };
         match event {
+            Event::Added(_) => {}
             Event::Started(_) => {
                 job.term.reset(true, true);
                 job.dot.remove_css_class("done");

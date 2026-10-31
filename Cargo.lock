@@ -1931,6 +1931,7 @@ name = "loom-core"
 version = "0.3.0"
 dependencies = [
  "async-channel",
+ "data-encoding",
  "jiff",
  "libc",
  "portable-pty",

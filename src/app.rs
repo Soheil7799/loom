@@ -11,6 +11,7 @@ use std::time::Duration;
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
+use crate::chat_view::AgentChat;
 use crate::agent::{Agent, Event, Status};
 use crate::files::Files;
 use crate::jobs::Tray;
@@ -500,10 +501,10 @@ impl App {
         *this.files.on_ask.borrow_mut() = Some(Rc::new(move |text: String| {
             let Some(app) = weak.upgrade() else { return };
             let Some(agent) = app.active_agent() else { return };
-            let buffer = agent.chat.input.buffer();
+            let buffer = agent.chat().input.buffer();
             buffer.place_cursor(&buffer.end_iter());
             buffer.insert_at_cursor(&text);
-            agent.chat.input.grab_focus();
+            agent.chat().input.grab_focus();
         }));
         crate::theme::status_colors(&this.window);
         this.wire(&new_button, &settings_button);
@@ -711,7 +712,7 @@ impl App {
         let suggestions = s.suggest_prompts != self.suggestions.replace(s.suggest_prompts);
         for agent in self.agents.borrow().iter() {
             agent.set_show_thinking(s.show_thinking);
-            agent.chat.set_mic_visible(mic);
+            agent.chat().set_mic_visible(mic);
             if suggestions {
                 agent.set_suggestions(s.suggest_prompts);
             }
@@ -801,7 +802,7 @@ impl App {
                 // In a terminal, Ctrl+C is its own (an interrupt).
                 let in_terminal = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some());
                 let copied = !in_terminal
-                    && self.active_agent().is_some_and(|agent| !agent.chat.input.buffer().has_selection() && agent.chat.copy_selection());
+                    && self.active_agent().is_some_and(|agent| !agent.chat().input.buffer().has_selection() && agent.chat().copy_selection());
                 if !copied {
                     return glib::Propagation::Proceed;
                 }
@@ -816,7 +817,7 @@ impl App {
                     if self.showing_project().is_some() {
                         self.history.focus_filter();
                     } else if let Some(agent) = self.active_agent() {
-                        agent.chat.find();
+                        agent.chat().find();
                     }
                 }
             }
@@ -869,12 +870,12 @@ impl App {
         let takes_text = focus.as_ref().is_some_and(|w| {
             w.is::<gtk::Text>() || w.is::<gtk::TextView>() || w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some()
         });
-        let in_input = focus.as_ref().is_some_and(|w| w == agent.chat.input.upcast_ref::<gtk::Widget>());
+        let in_input = focus.as_ref().is_some_and(|w| w == agent.chat().input.upcast_ref::<gtk::Widget>());
         // A digit with a question open and nothing typed yet answers it: from the chat input or
         // anything that takes no text (never from a field being typed in, like a plan comment).
         if (in_input || !takes_text)
             && let Some(n) = crate::chat::any_digit(c).filter(|n| *n >= 1)
-            && agent.chat.input.buffer().char_count() == 0
+            && agent.chat().input.buffer().char_count() == 0
             && agent.answer(0, n as usize - 1)
         {
             return glib::Propagation::Stop;
@@ -882,7 +883,7 @@ impl App {
         if takes_text {
             return glib::Propagation::Proceed;
         }
-        let input = &agent.chat.input;
+        let input = &agent.chat().input;
         let buffer = input.buffer();
         buffer.place_cursor(&buffer.end_iter());
         buffer.insert_at_cursor(&c.to_string());
@@ -1109,7 +1110,7 @@ impl App {
 
     fn focus_input(&self) {
         if let Some(agent) = self.focused.borrow().as_ref() {
-            agent.chat.input.grab_focus();
+            agent.chat().input.grab_focus();
         }
     }
 
@@ -1329,9 +1330,11 @@ impl App {
         let project = project_of(&saved.cwd);
         self.ensure_project(&project);
         let tray = self.tray_for(&project);
-        let agent = Agent::new(id, saved, tray);
-        agent.chat.set_show_thinking(settings::get().show_thinking);
-        self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{id}")));
+        let chat = crate::chat::Chat::new();
+        let agent = Agent::new(id, saved, tray.core(), crate::chat_view::ChatView::new(chat.clone(), &tray));
+        crate::chat_view::wire(&agent, &chat);
+        agent.chat().set_show_thinking(settings::get().show_thinking);
+        self.chat_stack.add_named(&agent.chat().root, Some(&format!("agent-{id}")));
         let weak = Rc::downgrade(self);
         agent.on_event(move |agent, event| {
             if let Some(app) = weak.upgrade() {
@@ -1443,18 +1446,18 @@ impl App {
             self.unpin();
         }
         if !self.is_pinned(agent) {
-            self.chat_stack.set_visible_child(&agent.chat.root);
+            self.chat_stack.set_visible_child(&agent.chat().root);
         }
         // A collapsed project stays collapsed: the agent is reached from the running list.
-        self.show_tray(&agent.project, &agent.tray);
+        self.show_tray(&agent.project, &self.tray_for(&agent.project));
         self.show_files(&agent);
         if matches!(agent.status(), Status::Suspended | Status::Failed) {
             agent.start();
         }
-        agent.chat.input.grab_focus();
+        agent.chat().input.grab_focus();
         // Again once the click (or key) that chose it is done: a sidebar row takes focus
         // on release.
-        let input = agent.chat.input.downgrade();
+        let input = agent.chat().input.downgrade();
         glib::idle_add_local_once(move || {
             if let Some(input) = input.upgrade() {
                 input.grab_focus();
@@ -1511,8 +1514,8 @@ impl App {
             return;
         }
         self.unpin();
-        self.chat_stack.remove(&agent.chat.root);
-        self.pinned_box.append(&agent.chat.root);
+        self.chat_stack.remove(&agent.chat().root);
+        self.pinned_box.append(&agent.chat().root);
         self.pinned_box.set_visible(true);
         agent.last_active.set(std::time::Instant::now());
         agent.unseen.set(false);
@@ -1527,12 +1530,12 @@ impl App {
     /// Puts the pinned agent back with the others; returns it.
     fn unpin(&self) -> Option<Rc<Agent>> {
         let agent = self.pinned.borrow_mut().take()?;
-        self.pinned_box.remove(&agent.chat.root);
+        self.pinned_box.remove(&agent.chat().root);
         self.pinned_box.set_visible(false);
-        self.chat_stack.add_named(&agent.chat.root, Some(&format!("agent-{}", agent.id)));
+        self.chat_stack.add_named(&agent.chat().root, Some(&format!("agent-{}", agent.id)));
         if agent.focused.get() {
-            self.chat_stack.set_visible_child(&agent.chat.root);
-            agent.chat.input.grab_focus();
+            self.chat_stack.set_visible_child(&agent.chat().root);
+            agent.chat().input.grab_focus();
         }
         self.mark_active();
         Some(agent)
@@ -1667,7 +1670,7 @@ impl App {
         crate::chat::OPEN_LINK.with(|h| {
             *h.borrow_mut() = Some(Rc::new(move |uri: &str, widget: &gtk::Widget| {
                 let Some(app) = weak.upgrade() else { return false };
-                let agent = app.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat.root)).cloned().or_else(|| app.focused_agent());
+                let agent = app.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat().root)).cloned().or_else(|| app.focused_agent());
                 let in_file = widget.is_ancestor(&app.files.editor_box);
                 let file_dir = app.files.open_path().and_then(|p| p.parent().map(Path::to_path_buf)).filter(|_| in_file);
                 let base = file_dir.unwrap_or_else(|| agent.as_ref().map_or_else(glib::home_dir, |a| a.cwd.clone()));
@@ -1687,7 +1690,7 @@ impl App {
                 }
                 if !path.is_file() {
                     if let Some(agent) = agent {
-                        agent.chat.notice(&format!("No such file here: {}", path.display()), "dim");
+                        agent.chat().notice(&format!("No such file here: {}", path.display()), "dim");
                     }
                     return true;
                 }
@@ -1710,10 +1713,10 @@ impl App {
             if let Ok(file) = result
                 && let Some(path) = file.path()
             {
-                let text = format!("# {}\n\n{}", agent.title(), agent.chat.transcript());
+                let text = format!("# {}\n\n{}", agent.title(), agent.chat().transcript());
                 match std::fs::write(&path, text) {
-                    Ok(()) => agent.chat.notice(&format!("Saved to {}", path.display()), "dim"),
-                    Err(err) => agent.chat.notice(&format!("Could not save it: {err}"), "error"),
+                    Ok(()) => agent.chat().notice(&format!("Saved to {}", path.display()), "dim"),
+                    Err(err) => agent.chat().notice(&format!("Could not save it: {err}"), "error"),
                 }
             }
         });
@@ -2008,7 +2011,7 @@ impl App {
                 status: agent.status(),
                 unseen: agent.unseen.get(),
                 waiting: agent.questions().into_iter().map(|(_, title, _)| title).collect(),
-                reply: agent.chat.last_reply(),
+                reply: agent.chat().last_reply(),
                 used: agent.used.get(),
                 scheduled: schedules.iter().filter(|s| s.session_id.is_some() && s.session_id == agent.session_id()).count(),
             })
@@ -2317,7 +2320,7 @@ impl App {
             closed.insert(0, saved);
             closed.truncate(state::CLOSED_KEPT);
         }
-        self.chat_stack.remove(&agent.chat.root);
+        self.chat_stack.remove(&agent.chat().root);
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         if focused_left {
             *self.focused.borrow_mut() = None;
@@ -2693,7 +2696,7 @@ impl App {
             if agent.status() == Status::Idle && !in_view && !agent.awake.get() && !agent.background_running() && agent.last_active.get().elapsed() > limit {
                 // A draft in its input: something is still being said to it, nothing changes.
                 // A command's output waiting for the next message would go in front of /compact.
-                if s.rest_compact && agent.chat.context_used() >= s.rest_compact_tokens && agent.chat.draft().trim().is_empty() && !agent.has_pending() {
+                if s.rest_compact && agent.chat().context_used() >= s.rest_compact_tokens && agent.chat().draft().trim().is_empty() && !agent.has_pending() {
                     agent.compact_then_rest();
                 } else {
                     agent.suspend();
@@ -2780,7 +2783,7 @@ impl App {
 
     fn control(self: &Rc<Self>, id: u32, method: &str, params: &Value) -> Result<Value, String> {
         let agent = self.agent_by_id(id);
-        let tray = || agent.as_ref().map(|a| a.tray.clone()).ok_or_else(|| "this agent is no longer open in loom".to_owned());
+        let tray = || agent.as_ref().map(|a| self.tray_for(&a.project)).ok_or_else(|| "this agent is no longer open in loom".to_owned());
         let name = || params["name"].as_str().filter(|n| !n.is_empty()).map(str::to_owned).ok_or("a job name is needed");
         let job = |name: &str| tray().and_then(|t| t.named(name).ok_or_else(|| format!("no job named {name}")));
         match method {
@@ -2915,7 +2918,7 @@ impl App {
         let focused = self.focused.borrow().clone();
         let pinned = self.pinned.borrow().clone();
         for agent in self.agents.borrow().iter() {
-            let root = &agent.chat.root;
+            let root = &agent.chat().root;
             root.remove_css_class("active");
             root.remove_css_class("inactive");
             if pinned.is_some() {
@@ -3744,7 +3747,7 @@ fn is_modifier(key: gdk::Key) -> bool {
 
 /// The repository a folder belongs to (the nearest parent with .git), else the folder.
 pub fn project_of(cwd: &Path) -> PathBuf {
-    cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd).to_owned()
+    loom_core::repos::project_of(cwd)
 }
 
 fn state_project(cwd: &Path) -> PathBuf {

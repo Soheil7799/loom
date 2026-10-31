@@ -2,6 +2,7 @@
 //! Windows) draw the same thing. Nothing here knows about widgets or a main loop: work runs
 //! on its own threads and reports over channels.
 
+pub mod agent;
 pub mod compacted;
 pub mod control;
 pub mod jobs;
@@ -22,3 +23,4 @@ pub mod settings;
 pub mod state;
 pub mod topics;
 pub mod vault;
+pub mod workflow;

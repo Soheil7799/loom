@@ -10,11 +10,7 @@ use std::time::SystemTime;
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use sourceview::prelude::*;
 
-#[derive(Clone, Copy, PartialEq, Debug)]
-pub enum Mark {
-    Created,
-    Changed,
-}
+pub use loom_core::agent::Mark;
 
 pub struct Files {
     pub root: gtk::Box,

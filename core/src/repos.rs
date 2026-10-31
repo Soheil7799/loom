@@ -146,3 +146,8 @@ mod tests {
         assert_eq!(repo.summary(), "main");
     }
 }
+
+/// The repository a folder belongs to (the nearest parent with .git), else the folder.
+pub fn project_of(cwd: &Path) -> PathBuf {
+    cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd).to_owned()
+}

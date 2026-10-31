@@ -14,6 +14,7 @@ use std::rc::Rc;
 use gtk::{glib, pango, prelude::*};
 use serde_json::json;
 
+use crate::chat_view::AgentChat;
 use crate::agent::{Agent, Event, Status};
 use crate::history::{self, Past};
 use crate::jobs::Tray;
@@ -221,7 +222,7 @@ impl NotesChat {
     /// The input of the chat shown, focused (to type at once).
     pub fn focus(&self) {
         if let Some(agent) = self.current.borrow().as_ref() {
-            agent.chat.input.grab_focus();
+            agent.chat().input.grab_focus();
         }
     }
 
@@ -304,7 +305,10 @@ impl NotesChat {
             used: 0,
             awake: false,
         };
-        let agent = Agent::new(id, saved, self.tray(&vault));
+        let tray = self.tray(&vault);
+        let chat = crate::chat::Chat::new();
+        let agent = Agent::new(id, saved, tray.core(), crate::chat_view::ChatView::new(chat.clone(), &tray));
+        crate::chat_view::wire(&agent, &chat);
         agent.no_journal.set(true);
         let prompt = match &scope {
             Some((name, folder)) => format!(
@@ -314,7 +318,7 @@ impl NotesChat {
         };
         *agent.extra_options.borrow_mut() = json!({ "model": "sonnet", "appendSystemPrompt": prompt });
         agent.set_show_thinking(crate::settings::get().show_thinking);
-        agent.chat.set_hint(&match &scope {
+        agent.chat().set_hint(&match &scope {
             Some((name, _)) => format!("Ask about {name}, or tell it what to keep"),
             None => "Ask your notes, or tell them what to keep".to_owned(),
         });
@@ -336,7 +340,7 @@ impl NotesChat {
         }));
         let starters = self.starters(&agent, &vault, scope.as_ref());
         starters.set_visible(session.is_none());
-        let page = gtk::Overlay::builder().child(&agent.chat.root).build();
+        let page = gtk::Overlay::builder().child(&agent.chat().root).build();
         page.add_overlay(&starters);
         let weak = Rc::downgrade(self);
         let topic = scope.as_ref().map(|(name, _)| name.clone());
@@ -415,7 +419,7 @@ impl NotesChat {
         for (label, text) in lines {
             let button = gtk::Button::with_label(&label);
             button.add_css_class("notes-starter");
-            let input = agent.chat.input.downgrade();
+            let input = agent.chat().input.downgrade();
             button.connect_clicked(move |_| {
                 let Some(input) = input.upgrade() else { return };
                 let buffer = input.buffer();
@@ -494,10 +498,10 @@ impl NotesChat {
         self.new_chat();
         let current = self.current.borrow().clone();
         if let Some(agent) = current {
-            let buffer = agent.chat.input.buffer();
+            let buffer = agent.chat().input.buffer();
             buffer.set_text(text);
             buffer.place_cursor(&buffer.end_iter());
-            agent.chat.input.grab_focus();
+            agent.chat().input.grab_focus();
         }
     }
 
@@ -548,7 +552,7 @@ impl NotesChat {
             open.starters.set_visible(agent.session_id().is_none() && !agent.is_busy());
         }
         agent.focused.set(true);
-        agent.chat.input.grab_focus();
+        agent.chat().input.grab_focus();
         self.mark_selected();
     }
 
