@@ -23,8 +23,7 @@ use crate::state::Saved;
 /// Ids of the chats' agents, apart from the sidebar's.
 const FIRST_ID: u32 = 1_000_000;
 
-/// What the chat's agent is told, besides the skill.
-const PROMPT: &str = "You are in loom's Notes chat: the working folder is the user's notes vault. Follow the notes-chat skill for how to read and change the notes.";
+use loom_core::notes_chat::{PROMPT, chat_topics, chats, remember_chat, remember_topic, resolved};
 
 /// A topic a chat is about: (its name, its folder in the vault).
 type Scope = (String, String);
@@ -66,65 +65,9 @@ pub struct NotesChat {
     pub on_shown: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
-/// The vault's own list of its Notes chats (`.loom/chats.json`): only those are listed.
-fn chats_file(vault: &Path) -> PathBuf {
-    vault.join(crate::vault::OWN).join("chats.json")
-}
-
-fn chats(vault: &Path) -> Vec<String> {
-    std::fs::read_to_string(chats_file(vault)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
-}
-
-fn remember_chat(vault: &Path, session: &str) {
-    let mut all = chats(vault);
-    if all.iter().any(|s| s == session) {
-        return;
-    }
-    all.push(session.to_owned());
-    let _ = std::fs::create_dir_all(vault.join(crate::vault::OWN));
-    let _ = std::fs::write(chats_file(vault), serde_json::to_string(&all).unwrap_or_default());
-}
-
-/// The topics chats are about (`.loom/chat-topics.json`): session → topic name.
-fn topics_file(vault: &Path) -> PathBuf {
-    vault.join(crate::vault::OWN).join("chat-topics.json")
-}
-
-fn chat_topics(vault: &Path) -> HashMap<String, String> {
-    std::fs::read_to_string(topics_file(vault)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
-}
-
-fn remember_topic(vault: &Path, session: &str, topic: &str) {
-    let mut all = chat_topics(vault);
-    all.insert(session.to_owned(), topic.to_owned());
-    let _ = std::fs::create_dir_all(vault.join(crate::vault::OWN));
-    let _ = std::fs::write(topics_file(vault), serde_json::to_string(&all).unwrap_or_default());
-}
-
-/// `path` with its folder's links resolved (the vault may be reached through a link).
-fn resolved(path: &Path) -> PathBuf {
-    match (path.parent(), path.file_name()) {
-        (Some(parent), Some(name)) => history::real(parent).join(name),
-        _ => history::real(path),
-    }
-}
-
 /// Working, or waiting for an answer: a chat left like that keeps going.
 fn at_work(agent: &Agent) -> bool {
     matches!(agent.status(), Status::Working | Status::Blocked)
-}
-
-/// "Today", "Yesterday" or "Earlier", for an ISO 8601 time.
-fn day_of(iso: &str, today: &glib::DateTime) -> &'static str {
-    let Some(then) = glib::DateTime::from_iso8601(iso, None).ok().and_then(|t| t.to_local().ok()) else { return "Earlier" };
-    let same = |a: &glib::DateTime, b: &glib::DateTime| a.ymd() == b.ymd();
-    if same(&then, today) {
-        "Today"
-    } else if today.add_days(-1).is_ok_and(|y| same(&then, &y)) {
-        "Yesterday"
-    } else {
-        "Earlier"
-    }
 }
 
 impl NotesChat {
@@ -594,14 +537,13 @@ impl NotesChat {
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
-        let now = glib::DateTime::now_local().ok();
         let marked = self.marked.borrow();
         for past in self.pasts.borrow().iter() {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             let words = gtk::Box::new(gtk::Orientation::Vertical, 1);
             words.set_hexpand(true);
             let title = gtk::Label::builder().label(past.title.as_deref().unwrap_or("A chat")).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
-            let when = gtk::Label::builder().label(now.as_ref().map(|n| history::ago(&past.updated, n)).unwrap_or_default()).xalign(0.0).build();
+            let when = gtk::Label::builder().label(history::ago(&past.updated)).xalign(0.0).build();
             when.add_css_class("dim");
             when.add_css_class("small");
             words.append(&title);
@@ -615,7 +557,7 @@ impl NotesChat {
                 line.append(&dot);
             }
             let row = gtk::ListBoxRow::builder().child(&line).build();
-            row.set_widget_name(now.as_ref().map_or("Earlier", |n| day_of(&past.updated, n)));
+            row.set_widget_name(history::day_of(&past.updated));
             self.list.append(&row);
         }
         self.note.set_label(if self.pasts.borrow().is_empty() { "Your chats with the notes show here." } else { "" });
