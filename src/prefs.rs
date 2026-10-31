@@ -7,7 +7,7 @@ use std::rc::Rc;
 use gtk::{gdk, gio, glib, pango, prelude::*};
 
 use crate::settings::{self, Settings};
-use crate::telegram::Link;
+use crate::bridges::Link;
 
 const MODES: &[(&str, &str)] = &[
     ("", "Claude Code's default"),
@@ -541,7 +541,7 @@ fn telegram(s: &Settings) -> gtk::Box {
     let names = bot_name.clone();
     let (wd, wt, wdet, wl, wc, wu, wcard) = (dot.downgrade(), title.downgrade(), detail.downgrade(), link.downgrade(), code.downgrade(), user.downgrade(), card.downgrade());
     let (wp, wpl) = (proposal.downgrade(), proposed.downgrade());
-    crate::telegram::watch(move |state| {
+    crate::bridges::watch(move |state| {
         let (Some(dot), Some(title), Some(detail), Some(link), Some(code), Some(user), Some(card), Some(proposal), Some(proposed)) =
             (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wl.upgrade(), wc.upgrade(), wu.upgrade(), wcard.upgrade(), wp.upgrade(), wpl.upgrade())
         else {

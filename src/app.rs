@@ -120,8 +120,8 @@ pub struct App {
     running_rows: RefCell<Vec<gtk::ListBoxRow>>,
     /// Each project's first and last sidebar rows (where a drop line shows).
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
-    /// The Telegram bot (off unless switched on).
-    bot: Rc<crate::telegram::Bot>,
+    /// The bridges (the Telegram bot: off unless switched on), each a process of its own.
+    bridges: Rc<crate::bridges::Host>,
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -418,7 +418,7 @@ impl App {
 
         let this = Rc::new(App {
             app: app.clone(),
-            app_id,
+            app_id: app_id.clone(),
             window,
             projects: RefCell::default(),
             agents: RefCell::default(),
@@ -463,7 +463,7 @@ impl App {
             side_stack,
             split: split.clone(),
             suggestions: Cell::new(settings::get().suggest_prompts),
-            bot: crate::telegram::Bot::new(),
+            bridges: crate::bridges::Host::new(&app_id),
             prefix: Cell::new(false),
             prefix_hint,
             prefix_timeout: RefCell::default(),
@@ -686,11 +686,10 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 app.apply_settings(s);
                 app.refresh_sidebar();
-                app.bot.apply(s);
+                app.bridges.apply(s);
             }
         });
-        self.bot.attach(self);
-        self.bot.apply(&settings::get());
+        self.bridges.attach(self);
     }
 
     /// Opens the control socket the agents' MCP servers talk to.
@@ -2303,7 +2302,7 @@ impl App {
         if self.toast_agent.borrow().upgrade().is_some_and(|a| Rc::ptr_eq(&a, agent)) {
             self.hide_toast();
         }
-        self.bot.forget(agent.id);
+        self.bridges.closed(agent.id);
         agent.stop();
         // Remembered to reopen (a conversation that never started has nothing to reopen).
         let saved = agent.saved();
@@ -2403,7 +2402,7 @@ impl App {
                 Event::Unsent(n) => format!("{n} messages not sent"),
             });
         }
-        self.bot.agent_event(agent, &event, looking);
+        self.bridges.agent_event(agent, &event, looking);
         match event {
             Event::Changed => {
                 self.toast_settled(agent);

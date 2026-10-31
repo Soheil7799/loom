@@ -1,23 +1,25 @@
-//! The Telegram bot, off unless switched on in the settings. It lists the agents, tells their
-//! finished replies and their questions, and takes messages and answers for them: from the
-//! one Telegram account the settings allow, and nobody else.
+//! The Telegram bridge (`loom bridge telegram`), which loom runs while its settings switch it
+//! on. It lists the agents, tells their finished replies and their questions, and takes
+//! messages and answers for them: from the one Telegram account the settings allow, and
+//! nobody else.
 //!
-//! Two threads talk to Telegram (one waits for updates, one sends); everything else happens
-//! here, on the main loop. Nothing listens on this machine: the bot asks Telegram.
+//! Two threads talk to Telegram (one waits for updates, one sends); everything else happens on
+//! this process's main loop. It reaches the agents only through loom's bridge socket, and
+//! nothing listens on this machine: the bot asks Telegram.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::rc::{Rc, Weak};
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
-use gtk::{gdk, gio, glib, prelude::*};
+use gtk::{gio, glib};
 use serde_json::{Value, json};
 
-use crate::agent::{Agent, Asking, Event, Status};
-use crate::app::App;
-use crate::settings::Settings;
+use super::Link;
+use super::client::Client;
+use crate::agent::{Asking, Status};
 
 /// Telegram takes 4096 characters a message; a long reply goes in parts of this many.
 const PART: usize = 3500;
@@ -57,8 +59,61 @@ const STOP: &str = "⏹ Stop";
 const LAST: &str = "📄 Last reply";
 const BACK: &str = "⬅ Back";
 
-pub struct Bot {
-    app: RefCell<Weak<App>>,
+/// An agent as loom last told it.
+#[derive(Clone)]
+struct View {
+    id: u32,
+    /// Newer views have higher ones (an event may arrive after a fresher answer).
+    seq: u64,
+    title: String,
+    project: String,
+    status: Status,
+    unseen: bool,
+    busy: bool,
+    questions: Vec<(u64, Asking)>,
+}
+
+impl View {
+    fn from(v: &Value) -> Option<View> {
+        Some(View {
+            id: v["id"].as_u64()? as u32,
+            seq: v["seq"].as_u64().unwrap_or(0),
+            title: v["title"].as_str().unwrap_or("").to_owned(),
+            project: v["project"].as_str().unwrap_or("").to_owned(),
+            status: Status::from_css(v["status"].as_str().unwrap_or("")),
+            unseen: v["unseen"].as_bool().unwrap_or(false),
+            busy: v["busy"].as_bool().unwrap_or(false),
+            questions: v["questions"].as_array().into_iter().flatten().map(|q| (q["serial"].as_u64().unwrap_or(0), super::asking_from(q))).collect(),
+        })
+    }
+
+    fn title(&self) -> String {
+        self.title.clone()
+    }
+
+    fn status(&self) -> Status {
+        self.status
+    }
+
+    fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    fn open_questions(&self) -> Vec<u64> {
+        self.questions.iter().map(|(serial, _)| *serial).collect()
+    }
+
+    fn asking(&self, serial: u64) -> Option<Asking> {
+        self.questions.iter().find(|(s, _)| *s == serial).map(|(_, a)| a.clone())
+    }
+}
+
+struct Bot {
+    loom: Client,
+    /// The agents as loom last told them, in its sidebar's order.
+    agents: RefCell<Vec<View>>,
+    /// Speech to text is set up in loom.
+    speech: Cell<bool>,
     /// Bumped to stop the running threads (a new token, switched off).
     generation: Arc<AtomicU64>,
     /// The next update to ask for, kept across restarts with the same token (0: not known).
@@ -94,60 +149,12 @@ pub struct Bot {
     stopped_here: Cell<Option<(u32, std::time::Instant)>>,
 }
 
-/// The bot as the settings show it.
-#[derive(Clone, Debug, PartialEq)]
-pub enum Link {
-    Off,
-    NeedsToken,
-    Connecting,
-    /// `code`: no account linked yet, sending it proposes one. `candidate`: who sent it, to be
-    /// linked by the user in loom (never by the bot itself). `problem`: the last message that
-    /// could not be sent.
-    Connected { bot: String, user: i64, code: Option<String>, candidate: Option<(i64, String)>, problem: Option<String> },
-    Failed(String),
-}
-
-thread_local! {
-    static STATE: RefCell<Link> = const { RefCell::new(Link::Off) };
-    static WATCHERS: RefCell<Vec<Box<dyn Fn(&Link) -> bool>>> = RefCell::new(Vec::new());
-}
-
-/// Calls `f` with the bot's state now and on every change, while it returns true.
-pub fn watch(f: impl Fn(&Link) -> bool + 'static) {
-    if STATE.with(|s| f(&s.borrow())) {
-        WATCHERS.with(|w| w.borrow_mut().push(Box::new(f)));
-    }
-}
-
-fn set_state(state: Link) {
-    STATE.with(|s| *s.borrow_mut() = state.clone());
-    let watchers = WATCHERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
-    let kept: Vec<_> = watchers.into_iter().filter(|f| f(&state)).collect();
-    WATCHERS.with(|w| {
-        let mut w = w.borrow_mut();
-        let added = std::mem::take(&mut *w);
-        *w = kept;
-        w.extend(added);
-    });
-}
-
-/// A code nobody can guess, to link the account that sends it.
-fn new_code() -> String {
-    use std::io::Read;
-    let mut bytes = [0u8; 8];
-    let random = std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes));
-    if random.is_err() {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()) ^ u128::from(std::process::id());
-        bytes = (seed as u64).to_le_bytes();
-    }
-    const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    bytes.iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
-}
-
 impl Bot {
-    pub fn new() -> Rc<Bot> {
+    fn new(loom: Client) -> Rc<Bot> {
         Rc::new(Bot {
-            app: RefCell::new(Weak::new()),
+            loom,
+            agents: RefCell::default(),
+            speech: Cell::new(false),
             generation: Arc::new(AtomicU64::new(0)),
             offset: Arc::new(AtomicI64::new(0)),
             calls: RefCell::default(),
@@ -169,14 +176,10 @@ impl Bot {
         })
     }
 
-    pub fn attach(&self, app: &Rc<App>) {
-        *self.app.borrow_mut() = Rc::downgrade(app);
-    }
-
-    /// Starts, stops or restarts it as the settings say.
-    pub fn apply(self: &Rc<Self>, s: &Settings) {
-        let token = s.telegram_token.trim().to_owned();
-        let wanted = (s.telegram_enabled && !token.is_empty()).then(|| (token.clone(), s.telegram_user));
+    /// Starts or restarts it as loom's settings say (loom stops the bridge when it is off).
+    fn apply(self: &Rc<Self>, s: &Value) {
+        let token = s["token"].as_str().unwrap_or("").trim().to_owned();
+        let wanted = (!token.is_empty()).then(|| (token.clone(), s["user"].as_i64().unwrap_or(0)));
         if *self.running.borrow() == wanted {
             return;
         }
@@ -188,7 +191,7 @@ impl Bot {
         }
         *self.running.borrow_mut() = wanted.clone();
         let Some((token, user)) = wanted else {
-            set_state(if s.telegram_enabled { Link::NeedsToken } else { Link::Off });
+            self.set_state(Link::NeedsToken);
             return;
         };
         // Another bot: what was told was told by the old one.
@@ -212,9 +215,9 @@ impl Bot {
         }
         self.candidate.borrow_mut().take();
         self.user.set(user);
-        *self.code.borrow_mut() = (user == 0).then(new_code);
+        *self.code.borrow_mut() = (user == 0).then(|| super::random(8));
         self.online.borrow_mut().take();
-        set_state(Link::Connecting);
+        self.set_state(Link::Connecting);
         let generation = self.generation.load(Ordering::SeqCst);
         let (to_main, from_threads) = async_channel::unbounded::<In>();
         let (calls, to_send) = async_channel::unbounded::<Call>();
@@ -238,6 +241,84 @@ impl Bot {
                 bot.incoming(incoming);
             }
         });
+    }
+
+    /// The settings loom gives this bridge (null: none, loom is stopping it).
+    fn settings(self: &Rc<Self>, s: &Value) {
+        if s.is_null() {
+            return;
+        }
+        crate::log::set(s["debug"].as_bool().unwrap_or(false));
+        self.speech.set(s["speech"].as_bool().unwrap_or(false));
+        self.apply(s);
+    }
+
+    /// How it is, for loom's settings to show.
+    fn set_state(&self, state: Link) {
+        let _ = self.loom("state", state.to_json());
+    }
+
+    /// One request to loom.
+    fn loom(&self, method: &str, params: Value) -> Result<Value, String> {
+        let result = self.loom.call(method, params);
+        if let Err(why) = &result {
+            crate::log::debug!("telegram", "loom said no to {method}: {why}");
+        }
+        result
+    }
+
+    /// An agent's view, if newer than the one kept.
+    fn seen(&self, v: &Value) {
+        let Some(view) = View::from(v) else { return };
+        let mut agents = self.agents.borrow_mut();
+        match agents.iter_mut().find(|a| a.id == view.id) {
+            Some(kept) if kept.seq <= view.seq => *kept = view,
+            Some(_) => {}
+            None => agents.push(view),
+        }
+    }
+
+    /// The agents again, in loom's order.
+    fn refresh(&self) {
+        if let Ok(list) = self.loom("agents", json!({})) {
+            *self.agents.borrow_mut() = list.as_array().into_iter().flatten().filter_map(View::from).collect();
+        }
+    }
+
+    fn last_reply(&self, agent: u32) -> Option<String> {
+        self.loom("last_reply", json!({ "agent": agent })).ok()?.as_str().map(str::to_owned)
+    }
+
+    /// A message for `agent` (pictures as they came: loom reads them).
+    fn send(&self, agent: u32, text: &str, images: Vec<Vec<u8>>) -> Result<(), String> {
+        let images: Vec<String> = images.iter().map(|b| glib::base64_encode(b).to_string()).collect();
+        let view = self.loom("send", json!({ "agent": agent, "text": text, "images": images }))?;
+        self.seen(&view);
+        Ok(())
+    }
+
+    /// Answers permission question `serial` with option `option`: whether it was.
+    fn answer(&self, agent: u32, serial: u64, option: usize) -> bool {
+        match self.loom("answer", json!({ "agent": agent, "serial": serial, "option": option })) {
+            Ok(r) => {
+                self.seen(&r["agent"]);
+                r["answered"].as_bool() == Some(true)
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// A form action (`what`: `{"do": "pick" | "write" | "send" | "skip", …}`): done, and why not.
+    fn form(&self, agent: u32, serial: u64, mut what: Value) -> (bool, Option<String>) {
+        what["agent"] = json!(agent);
+        what["serial"] = json!(serial);
+        match self.loom("form", what) {
+            Ok(r) => {
+                self.seen(&r["agent"]);
+                (r["done"].as_bool() == Some(true), r["problem"].as_str().map(str::to_owned))
+            }
+            Err(why) => (false, Some(why)),
+        }
     }
 
     fn on(&self) -> bool {
@@ -290,7 +371,7 @@ impl Bot {
     /// The menu: agents, what needs you (how many), and for the agent written to: stop it,
     /// its last reply. The input says who a message goes to.
     fn menu(&self) -> Value {
-        let waiting: usize = self.app.borrow().upgrade().map_or(0, |app| app.agents_listed().iter().map(|a| a.open_questions().len()).sum());
+        let waiting: usize = self.agents.borrow().iter().map(|a| a.questions.len()).sum();
         let needs = if waiting > 0 { format!("{NEEDS} ({waiting})") } else { NEEDS.to_owned() };
         let to = match self.talking_to.get().and_then(|id| self.agent(id)) {
             Some(agent) => format!("To {}", agent.title()),
@@ -306,8 +387,8 @@ impl Bot {
 
     /// The agents as the keyboard (state, project, name), and Back.
     fn agents_menu(&self) {
-        let Some(app) = self.app.borrow().upgrade() else { return };
-        let agents = app.agents_listed();
+        self.refresh();
+        let agents = self.agents.borrow().clone();
         if agents.is_empty() {
             self.say("No agents open in loom.", About::Nothing);
             return;
@@ -318,7 +399,7 @@ impl Bot {
         let mut lines = vec!["Tap an agent to talk to it:".to_owned()];
         for agent in &agents {
             let (mark, state) = describe(agent);
-            let project = app.project_label(&agent.project);
+            let project = &agent.project;
             let mut label = clip(&format!("{mark} {project} · {}", agent.title()), 60);
             // Two alike (same project and name): told apart.
             if labels.contains_key(&label) {
@@ -339,12 +420,12 @@ impl Bot {
     }
 
     /// Messages now go to `agent`: who it is, what it said last, what it asks.
-    fn pick(&self, agent: &Rc<Agent>) {
+    fn pick(&self, agent: &View) {
         self.talking_to.set(Some(agent.id));
         let (mark, state) = describe(agent);
-        let project = self.app.borrow().upgrade().map(|app| app.project_label(&agent.project)).unwrap_or_default();
+        let project = &agent.project;
         let header = format!("{mark} {project} · {} — {state}. Your messages go to it.", agent.title());
-        match agent.chat.last_reply() {
+        match self.last_reply(agent.id) {
             Some(last) => self.say_markdown(&format!("{header}\n\nIts last reply:"), &last, About::Agent(agent.id)),
             None => self.say(&header, About::Agent(agent.id)),
         }
@@ -356,9 +437,10 @@ impl Bot {
 
     /// Every open question: those already told pointed at again, the rest told.
     fn needs_me(&self) {
-        let Some(app) = self.app.borrow().upgrade() else { return };
+        self.refresh();
         let mut any = false;
-        for agent in app.agents_listed() {
+        let agents = self.agents.borrow().clone();
+        for agent in agents {
             for serial in agent.open_questions() {
                 any = true;
                 let told = self.told.borrow().get(&(agent.id, serial)).and_then(|(message, _)| *message);
@@ -435,7 +517,7 @@ impl Bot {
     fn incoming(self: &Rc<Self>, incoming: In) {
         match incoming {
             In::Online(name) => {
-                set_state(self.connected(&name, None));
+                self.set_state(self.connected(&name, None));
                 // The menu under the chat replaces slash commands.
                 self.call("deleteMyCommands", json!({}), About::Nothing);
                 *self.online.borrow_mut() = Some(name);
@@ -446,7 +528,7 @@ impl Bot {
             In::Problem(problem) => {
                 crate::log::debug!("telegram", "problem: {problem}");
                 self.online.borrow_mut().take();
-                set_state(Link::Failed(problem));
+                self.set_state(Link::Failed(problem));
             }
             In::Unsent(why, about) => {
                 // A question that never arrived can be told again (tapping its agent does).
@@ -458,7 +540,7 @@ impl Bot {
                     Some(name) => self.connected(name, Some(why)),
                     None => Link::Failed(why),
                 };
-                set_state(state);
+                self.set_state(state);
             }
             In::Sent(about, message) => match about {
                 About::Nothing => {}
@@ -533,7 +615,7 @@ impl Bot {
         if text.split_whitespace().last() == Some(code.as_str()) {
             *self.candidate.borrow_mut() = Some((id, name));
             if let Some(bot) = self.online.borrow().clone() {
-                set_state(self.connected(&bot, None));
+                self.set_state(self.connected(&bot, None));
             }
             return;
         }
@@ -541,8 +623,8 @@ impl Bot {
         // then keep it changing; at 8 characters it is not guessed.)
     }
 
-    fn agent(&self, id: u32) -> Option<Rc<Agent>> {
-        self.app.borrow().upgrade()?.agents_listed().into_iter().find(|a| a.id == id)
+    fn agent(&self, id: u32) -> Option<View> {
+        self.agents.borrow().iter().find(|a| a.id == id).cloned()
     }
 
     fn message(self: &Rc<Self>, message: &Value) {
@@ -597,13 +679,15 @@ impl Bot {
                         if matches!(agent.status(), Status::Working | Status::Blocked) {
                             self.stopped_here.set(Some((agent.id, std::time::Instant::now())));
                         }
-                        agent.cancel();
+                        if let Ok(view) = self.loom("stop", json!({ "agent": agent.id })) {
+                            self.seen(&view);
+                        }
                         self.say(&format!("⏹ Stopped {}.", agent.title()), About::Agent(agent.id));
                     } else {
                         self.say(&format!("{} isn't working.", agent.title()), About::Agent(agent.id));
                     }
                 }
-                Some(agent) => match agent.chat.last_reply() {
+                Some(agent) => match self.last_reply(agent.id) {
                     Some(last) => self.say_markdown(&format!("📄 {}:", agent.title()), &last, About::Agent(agent.id)),
                     None => self.say(&format!("{} hasn't replied yet.", agent.title()), About::Agent(agent.id)),
                 },
@@ -624,7 +708,7 @@ impl Bot {
             && let Some(agent) = self.agent(id)
             && agent.asking(serial).is_some_and(|a| a.is_form)
         {
-            if agent.write_in_form(serial, text) {
+            if self.form(agent.id, serial, json!({ "do": "write", "text": text })).0 {
                 self.react(message);
                 self.say("Written in. Press Send on the question to answer.", About::Nothing);
             } else {
@@ -647,7 +731,10 @@ impl Bot {
             return;
         }
         let new = self.talking_to.replace(Some(agent.id)) != Some(agent.id);
-        agent.submit_with(text.to_owned(), Vec::new());
+        if let Err(why) = self.send(agent.id, text, Vec::new()) {
+            self.say(&format!("Not sent: {why}"), About::Agent(agent.id));
+            return;
+        }
         self.react(message);
         // Written to another agent by replying: the menu says so (who the input goes to).
         if new {
@@ -657,7 +744,7 @@ impl Bot {
     }
 
     /// Who a message goes to: the agent whose message it replies to, else the one written to.
-    fn target_of(&self, message: &Value) -> Option<Rc<Agent>> {
+    fn target_of(&self, message: &Value) -> Option<View> {
         let replied = message["reply_to_message"]["message_id"].as_i64();
         let id = replied.and_then(|m| self.about.borrow().get(&m).copied()).or(self.talking_to.get());
         id.and_then(|id| self.agent(id))
@@ -683,26 +770,21 @@ impl Bot {
         };
         self.fetch(message, &file, move |bot, bytes| {
             bot.talking_to.set(Some(agent.id));
-            if picture {
-                // As a pasted picture: PNG, which the agent sends Claude.
-                let png = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map(|t| t.save_to_png_bytes());
-                match png {
-                    Ok(png) => agent.submit_with(caption, vec![png]),
-                    Err(_) => bot.say("That picture could not be read.", About::Agent(agent.id)),
-                }
+            // A picture as a pasted one; any other file saved in the agent's folder by loom.
+            let sent = if picture {
+                bot.send(agent.id, &caption, vec![bytes])
             } else {
-                let dir = agent.cwd.join("telegram-files");
-                let target = crate::files::free_name(&dir.join(safe_name(&name)));
-                match std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)) {
-                    Ok(()) => {
-                        let note = format!("I sent you a file from Telegram, saved at {}", target.display());
-                        let text = if caption.is_empty() { note } else { format!("{caption}\n\n({note})") };
-                        agent.submit_with(text, Vec::new());
-                    }
-                    Err(err) => bot.say(&format!("Could not save it in the agent's folder: {err}"), About::Agent(agent.id)),
-                }
+                let data = glib::base64_encode(&bytes).to_string();
+                bot.loom("save", json!({ "agent": agent.id, "name": name, "data": data })).and_then(|path| {
+                    let note = format!("I sent you a file from Telegram, saved at {}", path.as_str().unwrap_or(""));
+                    let text = if caption.is_empty() { note } else { format!("{caption}\n\n({note})") };
+                    bot.send(agent.id, &text, Vec::new())
+                })
+            };
+            match sent {
+                Ok(()) => bot.typing(agent.id),
+                Err(why) => bot.say(&why, About::Agent(agent.id)),
             }
-            bot.typing(agent.id);
         });
     }
 
@@ -731,7 +813,7 @@ impl Bot {
     /// A voice message: written down by the speech-to-text service set in loom, shown back
     /// ("Heard: …"), and sent to the agent as text.
     fn voice(self: &Rc<Self>, message: &Value) {
-        if !crate::stt::configured() {
+        if !self.speech.get() {
             self.say("Voice messages need speech to text: set it up in loom, Settings → Advanced.", About::Nothing);
             return;
         }
@@ -747,10 +829,13 @@ impl Bot {
         // The agent is found again when it is heard (a reply to a question may fill it in).
         let message = message.clone();
         self.fetch(&message.clone(), &file, move |bot, audio| {
-            let weak = Rc::downgrade(bot);
-            crate::stt::transcribe(audio, &name, &mime, move |result| {
+            let (weak, loom) = (Rc::downgrade(bot), bot.loom.clone());
+            let audio = glib::base64_encode(&audio).to_string();
+            glib::spawn_future_local(async move {
+                let asked = json!({ "audio": audio, "name": name, "mime": mime });
+                let result = gio::spawn_blocking(move || loom.call("transcribe", asked)).await.unwrap_or_else(|_| Err("the request stopped".into()));
                 let Some(bot) = weak.upgrade() else { return };
-                match result {
+                match result.and_then(|text| text.as_str().map(str::to_owned).ok_or_else(|| "no text came back".to_owned())) {
                     Ok(text) if text.is_empty() => bot.say("Heard nothing in it.", About::Nothing),
                     Ok(text) => {
                         bot.say(&format!("🎙 Heard: {text}"), About::Nothing);
@@ -776,7 +861,7 @@ impl Bot {
 
     /// Answers a question from here: `answer` runs with "answered in loom" held off for it.
     /// True if it was answered (it is then no longer told).
-    fn answer_here(&self, agent: &Agent, serial: u64, answer: impl FnOnce() -> bool) -> bool {
+    fn answer_here(&self, agent: &View, serial: u64, answer: impl FnOnce() -> bool) -> bool {
         self.answering.set(Some((agent.id, serial)));
         let answered = answer();
         self.answering.set(None);
@@ -795,7 +880,7 @@ impl Bot {
         let serial = number(2).unwrap_or(0);
         let mut answer = String::new();
         // The question's message, answered: its buttons go.
-        let done = |agent: &Agent, answered: &str, asking: &Asking| {
+        let done = |agent: &View, answered: &str, asking: &Asking| {
             if let Some(message) = message {
                 self.edit(message, &format!("{}\n\n{answered}", question_text(&agent.title(), asking)), None);
             }
@@ -810,7 +895,7 @@ impl Bot {
                 let picked = asking.as_ref().and_then(|a| a.options.get(option)).cloned();
                 match (asking, picked) {
                     (Some(asking), Some((name, kind))) if kind != "allow_always" => {
-                        if self.answer_here(agent, serial, || agent.answer_serial(serial, option)) {
+                        if self.answer_here(agent, serial, || self.answer(agent.id, serial, option)) {
                             done(agent, &format!("→ {name}"), &asking);
                             answer = name;
                         } else {
@@ -823,12 +908,12 @@ impl Bot {
             }
             (Some("f"), Some(agent)) => {
                 let (field, option) = (number(3).unwrap_or(0) as usize, number(4).unwrap_or(0) as usize);
-                if !agent.pick_in_form(serial, field, option) {
+                if !self.form(agent.id, serial, json!({ "do": "pick", "field": field, "option": option })).0 {
                     answer = "Already answered.".to_owned();
-                } else if let Some(asking) = agent.asking(serial) {
+                } else if let Some(asking) = self.agent(agent.id).and_then(|a| a.asking(serial)) {
                     // One question, one answer: no need for Send.
                     let one = asking.fields.len() == 1 && !asking.fields[0].2;
-                    if one && self.answer_here(agent, serial, || agent.send_form_serial(serial).is_ok()) {
+                    if one && self.answer_here(agent, serial, || self.form(agent.id, serial, json!({ "do": "send" })).0) {
                         done(agent, &asking.summary, &asking);
                     } else if let Some(message) = message {
                         self.edit(message, &question_text(&agent.title(), &asking), Some(keyboard(agent, serial, &asking)));
@@ -841,8 +926,9 @@ impl Bot {
                 Some(asking) => {
                     let mut problem = None;
                     let answered = self.answer_here(agent, serial, || {
-                        let result = if what == "s" { agent.send_form_serial(serial) } else { agent.skip_form(serial) };
-                        result.map_err(|p| problem = Some(p)).is_ok()
+                        let (done, why) = self.form(agent.id, serial, json!({ "do": if what == "s" { "send" } else { "skip" } }));
+                        problem = why;
+                        done
                     });
                     if answered {
                         done(agent, if what == "s" { &asking.summary } else { "→ Skipped" }, &asking);
@@ -862,7 +948,7 @@ impl Bot {
     }
 
     /// Agent question `serial`, with its options as buttons (once).
-    fn tell(&self, agent: &Rc<Agent>, serial: u64) {
+    fn tell(&self, agent: &View, serial: u64) {
         if self.told.borrow().contains_key(&(agent.id, serial)) {
             return;
         }
@@ -872,47 +958,59 @@ impl Bot {
         self.ask(&text, keyboard(agent, serial, &asking), About::Question(agent.id, serial));
     }
 
-    /// What happened to an agent, from the app. `looking`: the user has it in front of them
-    /// in loom (then the phone stays quiet).
-    pub fn agent_event(&self, agent: &Rc<Agent>, event: &Event, looking: bool) {
+    /// An event from loom. `looking`: the user has that agent in front of them in loom (then
+    /// the phone stays quiet).
+    fn event(self: &Rc<Self>, e: &Value) {
+        match e["event"].as_str().unwrap_or("") {
+            "settings" => return self.settings(&e["settings"]),
+            "closed" => {
+                let id = e["agent"].as_u64().unwrap_or(0) as u32;
+                self.agents.borrow_mut().retain(|a| a.id != id);
+                return self.forget(id);
+            }
+            _ => {}
+        }
+        self.seen(&e["agent"]);
+        let Some(agent) = e["agent"]["id"].as_u64().and_then(|id| self.agent(id as u32)) else { return };
         if !self.on() {
             return;
         }
-        match event {
-            Event::Asked(_) if !looking => {
+        let looking = e["looking"].as_bool().unwrap_or(false);
+        match e["event"].as_str().unwrap_or("") {
+            "asked" if !looking => {
                 for serial in agent.open_questions() {
-                    self.tell(agent, serial);
+                    self.tell(&agent, serial);
                 }
             }
-            Event::Done if !looking => {
+            "done" if !looking => {
                 if self.typing.get() == Some(agent.id) {
                     self.stop_typing();
                 }
                 // Stopped: from here it was said already; from loom, said now.
                 let here = self.stopped_here.take().is_some_and(|(id, at)| id == agent.id && at.elapsed().as_secs() < 120);
-                if agent.last_cancelled.get() {
+                if e["cancelled"].as_bool() == Some(true) {
                     if !here {
                         self.say(&format!("⏹ {} was stopped.", agent.title()), About::Agent(agent.id));
                     }
                     return;
                 }
-                if let Some(error) = agent.last_error.borrow().clone() {
+                if let Some(error) = e["error"].as_str() {
                     self.say(&format!("⚠️ {}: the turn ended on an error: {error}", agent.title()), About::Agent(agent.id));
                     return;
                 }
-                let project = self.app.borrow().upgrade().map(|app| app.project_label(&agent.project)).unwrap_or_default();
-                let header = format!("✅ {project} · {} — done in {}", agent.title(), crate::chat::elapsed(agent.last_took.get()));
-                match agent.chat.last_reply() {
-                    Some(reply) => self.say_markdown(&header, &reply, About::Agent(agent.id)),
+                let header = format!("✅ {} · {} — done in {}", agent.project, agent.title(), e["took"].as_str().unwrap_or(""));
+                match e["reply"].as_str() {
+                    Some(reply) => self.say_markdown(&header, reply, About::Agent(agent.id)),
                     None => self.say(&header, About::Agent(agent.id)),
                 }
             }
-            Event::Unsent(count) => {
-                let what = if *count == 1 { "A queued message".to_owned() } else { format!("{count} queued messages") };
+            "unsent" => {
+                let count = e["count"].as_u64().unwrap_or(1);
+                let what = if count == 1 { "A queued message".to_owned() } else { format!("{count} queued messages") };
                 self.say(&format!("⚠️ {what} to {} never went out (the turn stopped first): back in loom's input.", agent.title()), About::Agent(agent.id));
             }
-            Event::Failed(why) if !looking => self.say(&format!("⚠️ {} stopped: {why}", agent.title()), About::Agent(agent.id)),
-            Event::Changed => {
+            "failed" if !looking => self.say(&format!("⚠️ {} stopped: {}", agent.title(), e["why"].as_str().unwrap_or("")), About::Agent(agent.id)),
+            "agent" => {
                 // Questions answered in loom: their buttons go.
                 let open = agent.open_questions();
                 let here = self.answering.get();
@@ -936,7 +1034,7 @@ impl Bot {
     }
 
     /// An agent closed: what was told about it goes.
-    pub fn forget(&self, agent: u32) {
+    fn forget(&self, agent: u32) {
         self.labels.borrow_mut().retain(|_, id| *id != agent);
         self.told.borrow_mut().retain(|(id, _), _| *id != agent);
         self.about.borrow_mut().retain(|_, id| *id != agent);
@@ -951,13 +1049,13 @@ const HELP: &str = "🧭 Agents: pick the agent you write to. A reply to one of 
 ⏹ Stop and 📄 Last reply: for the agent you write to.\n\
 Questions and permission requests come with buttons; \"Always allow\" is only offered in loom.";
 
-fn describe(agent: &Agent) -> (&'static str, &'static str) {
+fn describe(agent: &View) -> (&'static str, &'static str) {
     match agent.status() {
         Status::Blocked => ("🟠", "needs you"),
         Status::Working => ("🔵", "working"),
         Status::Failed => ("🔴", "stopped"),
         Status::Starting => ("🔵", "starting"),
-        Status::Idle if agent.unseen.get() => ("🟢", "finished"),
+        Status::Idle if agent.unseen => ("🟢", "finished"),
         Status::Idle => ("⚪", "idle"),
         Status::Suspended => ("⚫", "suspended"),
     }
@@ -978,7 +1076,7 @@ fn question_text(agent: &str, asking: &Asking) -> String {
     text
 }
 
-fn keyboard(agent: &Agent, serial: u64, asking: &Asking) -> Value {
+fn keyboard(agent: &View, serial: u64, asking: &Asking) -> Value {
     let id = agent.id;
     let mut rows = Vec::new();
     if asking.is_form {
@@ -1116,13 +1214,6 @@ fn audio_extension(mime: &str) -> &'static str {
     }
 }
 
-/// A sent file's name, safe as a file name here (no folders, nothing hidden).
-fn safe_name(name: &str) -> String {
-    let name: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c }).collect();
-    let name = name.trim_start_matches('.').trim();
-    if name.is_empty() { "file".to_owned() } else { name.to_owned() }
-}
-
 fn escape(text: &str) -> String {
     text.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
@@ -1225,6 +1316,51 @@ fn html(markdown: &str) -> String {
         }
     }
     out.trim_end().to_owned()
+}
+
+// ---- the process -----------------------------------------------------------------------------
+
+/// `loom bridge telegram`: started by loom (never by hand), until loom stops it or closes.
+pub fn run() -> i32 {
+    let (loom, app_id) = match Client::from_stdin() {
+        Ok(started) => started,
+        Err(why) => {
+            eprintln!("loom bridge telegram: {why}");
+            return 2;
+        }
+    };
+    crate::log::name_for(&app_id);
+    let context = glib::MainContext::default();
+    let Ok(_owner) = context.acquire() else { return 1 };
+    // Told first, asked second: nothing happens in between unheard.
+    let events = match loom.subscribe() {
+        Ok(events) => events,
+        Err(why) => {
+            eprintln!("loom bridge telegram: {why}");
+            return 1;
+        }
+    };
+    let hello = match loom.call("hello", json!({})) {
+        Ok(hello) => hello,
+        Err(why) => {
+            eprintln!("loom bridge telegram: {why}");
+            return 1;
+        }
+    };
+    let bot = Bot::new(loom);
+    for agent in hello["agents"].as_array().into_iter().flatten() {
+        bot.seen(agent);
+    }
+    bot.settings(&hello["settings"]);
+    let weak = Rc::downgrade(&bot);
+    glib::spawn_future_local(async move {
+        while let Ok(event) = events.recv().await {
+            let Some(bot) = weak.upgrade() else { break };
+            bot.event(&event);
+        }
+    });
+    glib::MainLoop::new(Some(&context), false).run();
+    0
 }
 
 // ---- the threads ---------------------------------------------------------------------------
@@ -1454,14 +1590,6 @@ mod tests {
         let code = "y".repeat(PART - 80) + "\n";
         let parts = split_markdown(&format!("```sh\n{code}```\nafter\n"));
         assert!(parts.iter().all(|p| p.lines().any(|l| !l.trim().is_empty() && !l.starts_with("```"))));
-    }
-
-    #[test]
-    fn sent_file_names_stay_in_their_folder() {
-        assert_eq!(safe_name("../../.bashrc"), "_.._.bashrc");
-        assert_eq!(safe_name(".env"), "env");
-        assert_eq!(safe_name("report final.pdf"), "report final.pdf");
-        assert_eq!(safe_name(""), "file");
     }
 
     #[test]

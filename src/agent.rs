@@ -50,6 +50,18 @@ pub enum Status {
 }
 
 impl Status {
+    /// The status `css` gave (a bridge reads it back).
+    pub fn from_css(css: &str) -> Status {
+        match css {
+            "suspended" => Status::Suspended,
+            "starting" => Status::Starting,
+            "working" => Status::Working,
+            "blocked" => Status::Blocked,
+            "failed" => Status::Failed,
+            _ => Status::Idle,
+        }
+    }
+
     pub fn css(self) -> &'static str {
         match self {
             Status::Suspended => "suspended",
@@ -95,6 +107,7 @@ pub enum Event {
 }
 
 /// An open question, as told outside the window.
+#[derive(Clone)]
 pub struct Asking {
     pub title: String,
     pub detail: Option<String>,

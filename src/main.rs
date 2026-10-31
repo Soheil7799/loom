@@ -3,6 +3,7 @@
 //! files in a side editor, and a scratch terminal is one key away.
 
 mod about;
+mod bridges;
 mod provider;
 mod agent;
 mod app;
@@ -41,7 +42,6 @@ mod scratch;
 mod settings;
 mod state;
 mod stt;
-mod telegram;
 mod term;
 mod theme;
 mod workflow;
@@ -83,6 +83,16 @@ fn main() -> glib::ExitCode {
     // `loom mcp`: the MCP server an agent runs to reach loom (no window).
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);
+    }
+    // `loom bridge <name>`: a bridge, started by loom itself (see bridges.rs).
+    if std::env::args().nth(1).as_deref() == Some("bridge") {
+        return match std::env::args().nth(2).as_deref() {
+            Some("telegram") => glib::ExitCode::from(bridges::telegram::run() as u8),
+            _ => {
+                eprintln!("loom bridge: no such bridge");
+                glib::ExitCode::from(2)
+            }
+        };
     }
     // `loom scribe-eval <cases.jsonl> [vault]`: how well the note agent does on a test set
     // (with that vault's topics, rules learned included; else the default topics).
