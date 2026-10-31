@@ -35,6 +35,7 @@
 //! - `teach:<why>` / `keeprule`: answer the newest "Why not?", keep its drafted rule
 //! - `fixnewest:<comment>`: a comment on the newest written change
 //! - `wfopen:<n>`: open agent n of the first workflow card
+//! - `state:<css class>=<file>`: whether those widgets show, each up to the window
 //! - `remotestate:<file>`: the remote bridge state Settings shows (ticket…), written there
 //! - `quit`
 
@@ -205,6 +206,32 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             }
             collect(app.window.upcast_ref(), &test, &mut found);
             found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
+        }
+        // Whether the widgets of a CSS class are shown, and why not: each one, then every parent
+        // up to the window (visible, mapped, child-visible), into a file.
+        "state" => {
+            let (class, file) = argument.split_once('=').ok_or("state:<class>=<file>")?;
+            let mut found = Vec::new();
+            collect(app.window.upcast_ref(), &|w: &gtk::Widget| w.has_css_class(class), &mut found);
+            let mut out = String::new();
+            for widget in found {
+                let mut at = Some(widget);
+                while let Some(w) = at {
+                    out += &format!(
+                        "{} .{} own={} visible={} mapped={} child_visible={} h={}\n",
+                        w.type_().name(),
+                        w.css_classes().join("."),
+                        w.get_visible(),
+                        w.is_visible(),
+                        w.is_mapped(),
+                        w.is_child_visible(),
+                        w.height()
+                    );
+                    at = w.parent();
+                }
+                out += "--\n";
+            }
+            std::fs::write(file, out).map_err(|_| "not written")?;
         }
         // The remote bridge as Settings sees it (its pairing ticket…), into a file.
         "remotestate" => std::fs::write(&argument, crate::bridges::state_of("remote").to_string()).map_err(|_| "not written")?,

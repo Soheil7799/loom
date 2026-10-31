@@ -1375,13 +1375,16 @@ impl App {
         let name = project.to_string_lossy();
         self.dock_stack.add_named(&tray.dock, Some(&name));
         self.bar_stack.add_named(&tray.bar, Some(&name));
-        // The dock pane shows only while something is pinned in the project in view.
-        let dock_stack = self.dock_stack.clone();
-        tray.dock.connect_visible_notify(move |dock| {
-            if dock_stack.visible_child().as_ref() == Some(dock.upcast_ref()) {
-                dock_stack.set_visible(dock.is_visible());
+        // The dock pane shows only while something is pinned in the project in view. (The dock
+        // itself stays visible: a stack never shows a hidden page.)
+        let (dock_stack, weak) = (self.dock_stack.clone(), Rc::downgrade(&tray));
+        *tray.on_dock.borrow_mut() = Some(Rc::new(move || {
+            if let Some(tray) = weak.upgrade()
+                && dock_stack.visible_child().as_ref() == Some(tray.dock.upcast_ref())
+            {
+                dock_stack.set_visible(tray.pinned());
             }
-        });
+        }));
         // A job ending (a build, the tests) is worth a word when the window is elsewhere.
         let (app, project_name) = (self.window.clone(), self.project_label(project));
         let application = self.app.clone();
@@ -1414,7 +1417,7 @@ impl App {
         let name = project.to_string_lossy();
         self.dock_stack.set_visible_child_name(&name);
         self.bar_stack.set_visible_child_name(&name);
-        self.dock_stack.set_visible(tray.dock.is_visible());
+        self.dock_stack.set_visible(tray.pinned());
     }
 
     pub fn focus(self: &Rc<Self>, agent: &Rc<Agent>) {

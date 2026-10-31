@@ -33,7 +33,7 @@ pub struct Job {
 pub struct Tray {
     /// The chips (and a hint) along the bottom.
     pub bar: gtk::Box,
-    /// Pinned terminals, side by side; hidden when nothing is pinned.
+    /// Pinned terminals, side by side (whoever holds it shows it only while `pinned`).
     pub dock: gtk::Box,
     chips: gtk::Box,
     hint: gtk::Label,
@@ -41,6 +41,8 @@ pub struct Tray {
     core: Jobs,
     /// Told when a job ends: its name and exit code.
     pub on_finish: RefCell<Option<Rc<dyn Fn(&str, Option<i64>)>>>,
+    /// Told when a job is pinned or unpinned.
+    pub on_dock: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl Tray {
@@ -66,9 +68,8 @@ impl Tray {
         let dock = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
-        dock.set_visible(false);
         let (core, events) = Jobs::new(cwd);
-        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default() });
+        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default() });
         let weak = Rc::downgrade(&tray);
         glib::spawn_future_local(async move {
             while let Ok(event) = events.recv().await {
@@ -204,13 +205,11 @@ impl Tray {
         popover.set_child(Some(&job.frame(false)));
         holder.append(&job.term);
 
-        // A pinned job's chip takes it back to the tray, and peeks it there.
         let weak = Rc::downgrade(&job);
         chip.connect_clicked(move |_| {
             if let Some(job) = weak.upgrade()
                 && let Some(tray) = job.tray.upgrade()
             {
-                tray.unpin(&job);
                 tray.peek(&job);
             }
         });
@@ -296,7 +295,7 @@ impl Tray {
         frame.append(&job.term);
         self.dock.append(&frame);
         *job.docked.borrow_mut() = Some(frame);
-        self.dock.set_visible(true);
+        self.docked_changed();
     }
 
     fn unpin(&self, job: &Rc<Job>) {
@@ -304,7 +303,19 @@ impl Tray {
         frame.remove(&job.term);
         self.dock.remove(&frame);
         job.holder.append(&job.term);
-        self.dock.set_visible(self.dock.first_child().is_some());
+        self.docked_changed();
+    }
+
+    /// Whether anything is pinned (the dock worth showing).
+    pub fn pinned(&self) -> bool {
+        self.dock.first_child().is_some()
+    }
+
+    fn docked_changed(&self) {
+        let told = self.on_dock.borrow().clone();
+        if let Some(told) = told {
+            told();
+        }
     }
 
     fn remove(&self, job: &Rc<Job>) {
