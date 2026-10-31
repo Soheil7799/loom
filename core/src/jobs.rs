@@ -83,7 +83,9 @@ struct State {
 struct Run {
     pid: Option<u32>,
     killer: Box<dyn ChildKiller + Send + Sync>,
-    writer: Box<dyn Write + Send>,
+    /// Keys for it, written by a thread of its own: a PTY whose program doesn't read can't
+    /// hold up the caller (the UI's thread), nor the job's lock its output needs.
+    keys: mpsc::Sender<Vec<u8>>,
     master: Box<dyn MasterPty + Send>,
 }
 
@@ -175,9 +177,9 @@ impl Jobs {
     /// Keys typed into its terminal.
     pub fn write(&self, id: Id, bytes: &[u8]) {
         let Some(job) = self.get(id) else { return };
-        let mut state = job.state.lock().unwrap();
-        if let Some(run) = state.run.as_mut() {
-            let _ = run.writer.write_all(bytes).and_then(|()| run.writer.flush());
+        let state = job.state.lock().unwrap();
+        if let Some(run) = state.run.as_ref() {
+            let _ = run.keys.send(bytes.to_vec());
         }
     }
 
@@ -345,8 +347,17 @@ fn spawn(command: &str, cwd: &Path, size: PtySize) -> Result<Spawned, String> {
     // Only the child holds the other end now, so its exit ends the reading.
     drop(pair.slave);
     let reader = pair.master.try_clone_reader().map_err(|e| e.to_string())?;
-    let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
-    let run = Run { pid: child.process_id(), killer: child.clone_killer(), writer, master: pair.master };
+    let mut writer = pair.master.take_writer().map_err(|e| e.to_string())?;
+    // Ends with the run (its sender dropped) or once the PTY is gone.
+    let (keys, typed) = mpsc::channel::<Vec<u8>>();
+    std::thread::spawn(move || {
+        while let Ok(bytes) = typed.recv() {
+            if writer.write_all(&bytes).and_then(|()| writer.flush()).is_err() {
+                break;
+            }
+        }
+    });
+    let run = Run { pid: child.process_id(), killer: child.clone_killer(), keys, master: pair.master };
     Ok((child, reader, run))
 }
 
@@ -391,22 +402,34 @@ fn text(parser: &mut vt100::Parser, lines: usize) -> String {
     let (rows, cols) = screen.size();
     screen.set_scrollback(usize::MAX);
     let kept = screen.scrollback();
-    let mut all = Vec::new();
+    let (mut all, mut joining) = (Vec::new(), false);
     // Page through the scrollback from its oldest line, then the screen itself.
     let mut seen = 0;
     while seen < kept {
         screen.set_scrollback(kept - seen);
         let page = (kept - seen).min(usize::from(rows));
-        all.extend(screen.rows(0, cols).take(page));
+        add_rows(screen, page, cols, &mut all, &mut joining);
         seen += page;
     }
     screen.set_scrollback(0);
-    all.extend(screen.rows(0, cols));
+    add_rows(screen, usize::from(rows), cols, &mut all, &mut joining);
     while all.last().is_some_and(|line: &String| line.trim().is_empty()) {
         all.pop();
     }
     let start = all.len().saturating_sub(lines);
     all[start..].iter().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n")
+}
+
+/// The first `count` rows in view, onto `lines`: a row the terminal wrapped goes on the line
+/// it continues (as it was printed), not as a line of its own.
+fn add_rows(screen: &vt100::Screen, count: usize, cols: u16, lines: &mut Vec<String>, joining: &mut bool) {
+    for (i, row) in screen.rows(0, cols).take(count).enumerate() {
+        match lines.last_mut() {
+            Some(last) if *joining => last.push_str(&row),
+            _ => lines.push(row),
+        }
+        *joining = screen.row_wrapped(i as u16);
+    }
 }
 
 #[cfg(test)]
@@ -508,6 +531,32 @@ mod tests {
         jobs.write(id, b"\r");
         until(&rx, exited);
         assert_eq!(jobs.output(id, 1), "40 120");
+    }
+
+    #[test]
+    fn a_long_line_reads_back_whole() {
+        let (jobs, rx) = jobs();
+        // Wider than the 80 columns it runs in, among enough lines to reach the scrollback.
+        let id = jobs.run_named("wide", "seq 1 40; printf '%0200d\\n' 7; seq 41 80", false, None).unwrap();
+        until(&rx, exited);
+        let text = jobs.output(id, 1000);
+        let wide = format!("{:0200}", 7);
+        assert!(text.lines().any(|l| l == wide), "{text}");
+        assert!(text.ends_with("79\n80"), "{text}");
+    }
+
+    #[test]
+    fn keys_wait_for_a_program_that_does_not_read() {
+        let (jobs, rx) = jobs();
+        // It never reads: a big paste must not hold up the caller.
+        let id = jobs.run_named("deaf", "sleep 3", false, None).unwrap();
+        until(&rx, |e| *e == Event::Started(id));
+        let started = std::time::Instant::now();
+        jobs.write(id, &vec![b'x'; 256 * 1024]);
+        assert!(started.elapsed() < Duration::from_millis(200));
+        assert!(jobs.info(id).is_some());
+        jobs.stop(id);
+        until(&rx, exited);
     }
 
     #[test]

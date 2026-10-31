@@ -153,9 +153,10 @@ impl Run {
 
     /// Where it stands, drawn; the strip told of a change.
     fn show(&self) {
-        let (state, members) = {
+        // Its agents' answers can be long: read where they are, not copied on every poll.
+        let (state, text) = {
             let progress = self.progress.borrow();
-            (progress.state.clone(), progress.members.clone())
+            (progress.state.clone(), phases(&progress.members))
         };
         for class in ["done", "stopped", "failed"] {
             self.status.remove_css_class(class);
@@ -178,7 +179,6 @@ impl Run {
         let over = state != State::Running;
         self.stop.set_visible(!over);
         let (done, all) = self.counts();
-        let text = phases(&members);
         self.progress_label.set_label(if all == 0 { "Starting…" } else { &text });
         self.agents.set_label(Some(&format!("Agents ({done} of {all} done)")));
         if self.agents.is_expanded() {
@@ -215,10 +215,10 @@ impl Run {
     }
 
     fn fill_list(&self) {
-        let members = self.progress.borrow().members.clone();
-        if *self.shown.borrow() == members {
+        if *self.shown.borrow() == self.progress.borrow().members {
             return;
         }
+        let members = self.progress.borrow().members.clone();
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }

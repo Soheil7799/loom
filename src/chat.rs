@@ -2826,12 +2826,6 @@ impl Chat {
                             }
                         }
                         check.set_active(*on);
-                        let model = Rc::downgrade(&model);
-                        check.connect_toggled(move |check| {
-                            if let Some(model) = model.upgrade() {
-                                model.borrow_mut().set_picked(index, i, check.is_active());
-                            }
-                        });
                         box_.append(&check);
                         buttons.push(check);
                     }
@@ -2865,6 +2859,23 @@ impl Chat {
                 }
             }
             controls.append(&box_);
+        }
+        // The choices' boxes tell the model only from now on: ticking one of a group unticks
+        // another, whose handler would reach the model while it was read above. The model
+        // starts as the boxes show it (a default naming two of one choice ticks one).
+        for (index, widget) in widgets.iter().enumerate() {
+            let FieldWidgets::Choice(buttons) = widget else { continue };
+            for (i, check) in buttons.iter().enumerate() {
+                model.borrow_mut().set_picked(index, i, check.is_active());
+            }
+            for (i, check) in buttons.iter().enumerate() {
+                let model = Rc::downgrade(&model);
+                check.connect_toggled(move |check| {
+                    if let Some(model) = model.upgrade() {
+                        model.borrow_mut().set_picked(index, i, check.is_active());
+                    }
+                });
+            }
         }
         let problem = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
         problem.add_css_class("form-problem");

@@ -21,14 +21,14 @@ use super::{Link, random, random_hex};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
-use std::process::{ChildStdin, Command, Stdio};
+use std::process::{Child, ChildStdin, Command, Stdio};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use data_encoding::BASE64;
+use data_encoding::BASE64_NOPAD;
 use serde_json::{Value, json};
 
 use crate::agent::{Agent, Asking, Event};
@@ -59,7 +59,9 @@ struct Request {
 struct Running {
     /// Kept open: the bridge stops when it closes (and loom with it).
     stdin: ChildStdin,
-    pid: u32,
+    /// Waited for and killed under this lock only, so it is never killed once reaped (its pid
+    /// may be another program's by then).
+    child: Arc<Mutex<Child>>,
     secret: String,
     started: Instant,
     /// What it was started with (a change to some of it starts it again).
@@ -260,27 +262,30 @@ impl Host {
         let Some(mut stdin) = process.stdin.take() else { return };
         let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id }).to_string() + "\n";
         let _ = stdin.write_all(hello.as_bytes()).and_then(|()| stdin.flush());
-        let pid = process.id();
-        crate::log::debug!("bridges", "{name} started (pid {pid})");
+        crate::log::debug!("bridges", "{name} started (pid {})", process.id());
         set_state(name, json!({ "state": "connecting" }));
-        let weak = Rc::downgrade(self);
-        let mine = secret.clone();
+        let child = Arc::new(Mutex::new(process));
+        let (weak, mine, waited) = (Rc::downgrade(self), secret.clone(), child.clone());
         crate::rt::spawn_local(async move {
-            let _ = crate::rt::spawn_blocking(move || process.wait()).await;
+            let _ = crate::rt::spawn_blocking(move || {
+                while matches!(waited.lock().unwrap().try_wait(), Ok(None)) {
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            })
+            .await;
             let Some(host) = weak.upgrade() else { return };
             host.ended(name, &mine);
         });
-        self.running.borrow_mut().insert(name, Running { stdin, pid, secret, started: Instant::now(), settings });
+        self.running.borrow_mut().insert(name, Running { stdin, child, secret, started: Instant::now(), settings });
     }
 
     fn stop(&self, name: &str) {
         if let Some(running) = self.running.borrow_mut().remove(name) {
             forget_secret(&running.secret);
             drop(running.stdin);
-            #[cfg(unix)]
-            if let Ok(pid) = i32::try_from(running.pid) {
-                // SAFETY: plain kill(2) on the bridge loom started.
-                unsafe { libc::kill(pid, libc::SIGKILL) };
+            let mut child = running.child.lock().unwrap();
+            if matches!(child.try_wait(), Ok(None)) {
+                let _ = child.kill();
             }
         }
         self.failures.borrow_mut().remove(name);
@@ -411,10 +416,10 @@ impl Host {
             "send" => agent().and_then(|agent| {
                 let mut images = Vec::new();
                 for data in p["images"].as_array().into_iter().flatten() {
-                    let bytes = BASE64.decode(data.as_str().unwrap_or("").as_bytes()).map_err(|_| "That picture could not be read.".to_owned())?;
+                    let bytes = decode(data.as_str().unwrap_or("")).ok_or("That picture could not be read.")?;
                     let to_png = self.to_png.borrow();
                     let png = to_png.as_ref().ok_or("Pictures can't be read here.")?(bytes).map_err(|_| "That picture could not be read.".to_owned())?;
-                    images.push(png);
+                    images.push(png.into());
                 }
                 agent.submit_with(p["text"].as_str().unwrap_or("").to_owned(), images);
                 Ok(self.view(&ws, &agent))
@@ -423,7 +428,7 @@ impl Host {
             "save" => agent().and_then(|agent| {
                 let dir = agent.cwd.join(format!("{bridge}-files"));
                 let target = crate::files::free_name(&dir.join(safe_name(p["name"].as_str().unwrap_or(""))));
-                let bytes = BASE64.decode(p["data"].as_str().unwrap_or("").as_bytes()).map_err(|_| "That file could not be read.".to_owned())?;
+                let bytes = decode(p["data"].as_str().unwrap_or("")).ok_or("That file could not be read.")?;
                 std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
                 Ok(json!(target.to_string_lossy()))
             }),
@@ -457,7 +462,7 @@ impl Host {
                 if !crate::stt::configured() {
                     return answer(Err("Speech to text is not set up in loom.".into()));
                 }
-                let Ok(audio) = BASE64.decode(p["audio"].as_str().unwrap_or("").as_bytes()) else { return answer(Err("That recording could not be read.".into())) };
+                let Some(audio) = decode(p["audio"].as_str().unwrap_or("")) else { return answer(Err("That recording could not be read.".into())) };
                 let reply = reply.clone();
                 crate::stt::transcribe(audio, p["name"].as_str().unwrap_or("voice.ogg"), p["mime"].as_str().unwrap_or("audio/ogg"), move |result| {
                     let _ = reply.try_send(match result {
@@ -561,6 +566,13 @@ fn asking_json(serial: u64, a: &Asking) -> Value {
 }
 
 
+/// Base64 as clients send it: line breaks and missing padding are fine (Android's default
+/// breaks lines; GLib, which read it before, took both).
+fn decode(text: &str) -> Option<Vec<u8>> {
+    let clean: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
+    BASE64_NOPAD.decode(clean.trim_end_matches('=').as_bytes()).ok()
+}
+
 /// A sent file's name, safe as a file name here (no folders, nothing hidden).
 fn safe_name(name: &str) -> String {
     let name: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c }).collect();
@@ -642,6 +654,13 @@ mod tests {
         ] {
             assert_eq!(Link::from_json(&link.to_json()), link);
         }
+    }
+
+    #[test]
+    fn base64_with_line_breaks_or_no_padding_reads() {
+        assert_eq!(decode("aGVsbG8gd29y\nbGQ=\n").as_deref(), Some(&b"hello world"[..]));
+        assert_eq!(decode("aGVsbG8gd29ybGQ").as_deref(), Some(&b"hello world"[..]));
+        assert_eq!(decode("not base64!"), None);
     }
 
     #[test]

@@ -26,6 +26,8 @@ pub struct Job {
     status: gtk::Label,
     /// The rows and columns last told to the job.
     size: Cell<(i64, i64)>,
+    /// Counts the times it was shown: the size watch of an earlier showing stops.
+    size_watch: Cell<u64>,
     docked: RefCell<Option<gtk::Box>>,
     tray: Weak<Tray>,
 }
@@ -186,18 +188,28 @@ impl Tray {
             holder: holder.clone(),
             status: status.clone(),
             size: Cell::new((0, 0)),
+            size_watch: Cell::new(0),
             docked: RefCell::default(),
             tray: Rc::downgrade(self),
         });
-        // And its size: VTE has no signal for it, so it is checked on each frame drawn.
+        // And its size: VTE has no signal for it, so it is looked at twice a second while it is
+        // shown (not on every frame, which would keep the window drawing all the time).
         let weak = Rc::downgrade(&job);
-        job.term.add_tick_callback(move |term, _| {
-            let Some(job) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let size = (term.row_count(), term.column_count());
-            if size != job.size.replace(size) {
-                job.core.resize(job.id, u16::try_from(size.0).unwrap_or(0), u16::try_from(size.1).unwrap_or(0));
-            }
-            glib::ControlFlow::Continue
+        job.term.connect_map(move |_| {
+            let Some(job) = weak.upgrade() else { return };
+            let watch = job.size_watch.get() + 1;
+            job.size_watch.set(watch);
+            job.send_size();
+            let weak = Rc::downgrade(&job);
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                let Some(job) = weak.upgrade() else { return glib::ControlFlow::Break };
+                // Hidden, or shown again since (a newer watch looks).
+                if !job.term.is_mapped() || job.size_watch.get() != watch {
+                    return glib::ControlFlow::Break;
+                }
+                job.send_size();
+                glib::ControlFlow::Continue
+            });
         });
         popover.set_child(Some(&job.frame(false)));
         holder.append(&job.term);
@@ -388,6 +400,14 @@ impl Job {
             frame.append(&self.holder);
         }
         frame
+    }
+
+    /// Its terminal's size, told to the job when it changed.
+    fn send_size(&self) {
+        let size = (self.term.row_count(), self.term.column_count());
+        if size != self.size.replace(size) {
+            self.core.resize(self.id, u16::try_from(size.0).unwrap_or(0), u16::try_from(size.1).unwrap_or(0));
+        }
     }
 
     /// The last `lines` lines it printed, as text.

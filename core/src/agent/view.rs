@@ -11,8 +11,8 @@ use serde_json::Value;
 use crate::jobs::Id;
 use crate::workflow::Launch;
 
-/// An image attached to a message (PNG bytes).
-pub type Png = Vec<u8>;
+/// An image attached to a message (PNG bytes), shared rather than copied as it is passed on.
+pub type Png = std::sync::Arc<[u8]>;
 
 /// A row of the subagents strip.
 pub struct Crew {

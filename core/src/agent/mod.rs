@@ -290,13 +290,14 @@ pub struct Agent {
 }
 
 impl Agent {
-    pub fn new(id: u32, saved: Saved, jobs: Jobs, view: Rc<dyn View>) -> Rc<Agent> {
+    /// Agent `id` from `saved`, in `project` (see repos::project_of).
+    pub fn new(id: u32, saved: Saved, project: PathBuf, jobs: Jobs, view: Rc<dyn View>) -> Rc<Agent> {
         let draft = saved.draft.clone();
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
         let agent = Rc::new(Agent {
             id,
-            project: crate::repos::project_of(&saved.cwd),
+            project,
             cwd: saved.cwd,
             view,
             jobs,

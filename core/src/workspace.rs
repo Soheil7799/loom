@@ -19,7 +19,7 @@ use crate::state::{self, Layout, Project, Saved};
 /// What the workspace needs of the UI.
 pub trait Host {
     /// A new agent's view, and its project's jobs.
-    fn agent_parts(&self, id: u32, project: &Path) -> (Jobs, Rc<dyn View>);
+    fn agent_parts(&self, project: &Path) -> (Jobs, Rc<dyn View>);
     /// A new agent, to place in the UI.
     fn agent_added(&self, agent: &Rc<Agent>);
     /// Something happened to an agent.
@@ -137,8 +137,8 @@ impl Workspace {
         let project = crate::repos::project_of(&saved.cwd);
         self.ensure_project(&project);
         let host = self.host().expect("a workspace with a UI");
-        let (jobs, view) = host.agent_parts(id, &project);
-        let agent = Agent::new(id, saved, jobs, view);
+        let (jobs, view) = host.agent_parts(&project);
+        let agent = Agent::new(id, saved, project, jobs, view);
         agent.view.set_show_thinking(settings::get().show_thinking);
         let weak = Rc::downgrade(&host);
         agent.on_event(move |agent, event| {

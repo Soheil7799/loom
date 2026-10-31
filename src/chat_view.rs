@@ -58,7 +58,7 @@ pub fn wire(agent: &Rc<Agent>, chat: &Rc<Chat>) {
     let weak = Rc::downgrade(agent);
     *chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images): (String, Vec<glib::Bytes>)| {
         if let Some(agent) = weak.upgrade() {
-            agent.submit_with(text, images.iter().map(|b| b.to_vec()).collect());
+            agent.submit_with(text, images.iter().map(|b| Png::from(&b[..])).collect());
         }
     }));
     let weak = Rc::downgrade(agent);

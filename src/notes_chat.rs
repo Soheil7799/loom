@@ -228,7 +228,8 @@ impl NotesChat {
         let saved = saved_for(&vault, session.clone(), scope.as_ref());
         let tray = self.tray(&vault);
         let chat = crate::chat::Chat::new();
-        let agent = Agent::new(id, saved, tray.core(), crate::chat_view::ChatView::new(chat.clone(), &tray));
+        let project = loom_core::repos::project_of(&vault);
+        let agent = Agent::new(id, saved, project, tray.core(), crate::chat_view::ChatView::new(chat.clone(), &tray));
         crate::chat_view::wire(&agent, &chat);
         let before = prepare(&agent, &vault, scope.as_ref());
         agent.set_show_thinking(crate::settings::get().show_thinking);
@@ -331,8 +332,12 @@ impl NotesChat {
     /// before the chat's edit), told to the Notes history. Only its own edits: a note changed
     /// only by someone else is not among them.
     fn record(&self, open: &Open) {
-        let Some(vault) = crate::vault::current() else { return };
-        let Some(on_edits) = self.on_edits.borrow().clone() else { return };
+        // Not recorded (Notes off, no one to tell): what was read before this turn goes all
+        // the same, or a later turn's change would run from it.
+        let (Some(vault), Some(on_edits)) = (crate::vault::current(), self.on_edits.borrow().clone()) else {
+            open.before.borrow_mut().clear();
+            return;
+        };
         let (session, title) = (open.agent.session_id().unwrap_or_default(), open.agent.title());
         collect_edits(&vault, &open.before, move |edits| on_edits(edits, session, title));
     }

@@ -3565,8 +3565,7 @@ impl App {
 }
 
 impl Host for App {
-    fn agent_parts(&self, id: u32, project: &Path) -> (loom_core::jobs::Jobs, Rc<dyn loom_core::agent::view::View>) {
-        let _ = id;
+    fn agent_parts(&self, project: &Path) -> (loom_core::jobs::Jobs, Rc<dyn loom_core::agent::view::View>) {
         let tray = self.tray_for(project);
         (tray.core(), crate::chat_view::ChatView::new(crate::chat::Chat::new(), &tray))
     }
