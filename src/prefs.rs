@@ -960,6 +960,9 @@ fn fill_topics(holder: &gtk::Box, window: &gtk::Window) {
     let make = {
         let (name, describe, create, problem, w, vault) = (name.clone(), describe.clone(), create.clone(), problem.clone(), window.clone(), vault.clone());
         move || {
+            if !create.is_sensitive() {
+                return;
+            }
             let said = describe.text().trim().to_owned();
             let topic = name.text().trim().to_owned();
             if said.is_empty() {

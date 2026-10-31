@@ -189,11 +189,12 @@ impl Host {
                 return;
             }
         };
+        // Known before the bridge can use it.
+        SECRETS.lock().unwrap().push((secret.clone(), name.to_owned()));
         let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id }).to_string() + "\n";
         if let Some(stdin) = process.stdin_pipe() {
             let _ = stdin.write_all(hello.as_bytes(), None::<&gio::Cancellable>);
         }
-        SECRETS.lock().unwrap().push((secret.clone(), name.to_owned()));
         crate::log::debug!("bridges", "{name} started (pid {:?})", process.identifier());
         if name == "telegram" {
             set_state(Link::Connecting);
@@ -238,7 +239,7 @@ impl Host {
             *count += 1;
             *count
         };
-        let wait = (1u64 << failures.min(5)).min(60);
+        let wait = (1u64 << failures.min(6)).min(60);
         crate::log::debug!("bridges", "{name} stopped; again in {wait} s");
         if name == "telegram" {
             set_state(Link::Failed(format!("The Telegram bridge stopped; starting it again in {wait} s.")));
@@ -276,15 +277,18 @@ impl Host {
         }
         let Some(app) = self.app.borrow().upgrade() else { return };
         let view = self.view(&app, agent);
+        // The view but for its seq: a change to the same as last told is not told.
+        let key = {
+            let mut v = view.clone();
+            v["seq"] = Value::Null;
+            v.to_string()
+        };
         let mut told = json!({ "agent": view, "looking": looking });
         match event {
             Event::Changed => {
-                // The same as last told (but for its seq): nothing to tell.
-                let key = { let mut v = view.clone(); v["seq"] = Value::Null; v.to_string() };
                 if self.told.borrow().get(&agent.id) == Some(&key) {
                     return;
                 }
-                self.told.borrow_mut().insert(agent.id, key);
                 told["event"] = json!("agent");
             }
             Event::Asked(_) => told["event"] = json!("asked"),
@@ -305,6 +309,7 @@ impl Host {
             }
             _ => return,
         }
+        self.told.borrow_mut().insert(agent.id, key);
         emit(None, told);
     }
 

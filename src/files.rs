@@ -1676,7 +1676,18 @@ impl Files {
     /// gets what to ask the chat; `done` follows a change.
     pub fn conflict_window(&self, vault: &Path, copy: &str, note: &str, merge: Rc<dyn Fn(String)>, done: Rc<dyn Fn()>) {
         let (copy_path, note_path) = (vault.join(copy), vault.join(note));
-        let (title, shown, ask) = if copy.is_empty() {
+        let gone = !copy.is_empty() && !note_path.exists();
+        let (title, shown, ask) = if gone {
+            (
+                format!("{note} — only this version is left"),
+                // Indented: the view colours lines starting with - or + as a diff's.
+                format!(
+                    "{note} itself is gone (renamed or deleted).\nThis is the only version: {copy}\n\n{}",
+                    std::fs::read_to_string(&copy_path).unwrap_or_default().lines().map(|l| format!("  {l}\n")).collect::<String>()
+                ),
+                String::new(),
+            )
+        } else if copy.is_empty() {
             (
                 format!("{note} — two versions in it"),
                 std::fs::read_to_string(&note_path).unwrap_or_default(),
@@ -1716,7 +1727,10 @@ impl Files {
         window.set_child(Some(&body));
         type Act = Box<dyn Fn() -> std::io::Result<()>>;
         let mut choices: Vec<(&str, &str, Act)> = Vec::new();
-        if copy.is_empty() {
+        if gone {
+            let (c, n) = (copy_path.clone(), note_path.clone());
+            choices.push(("Make it the note", "It takes the note's name again", Box::new(move || std::fs::rename(&c, &n))));
+        } else if copy.is_empty() {
             let (me, path) = (self.me.borrow().clone(), note_path.clone());
             choices.push((
                 "Open it",
@@ -1768,6 +1782,9 @@ impl Files {
                 Err(err) => said.set_label(&format!("Could not: {err}")),
             });
             actions.append(&button);
+        }
+        if gone {
+            return;
         }
         let merging = gtk::Button::with_label("Merge with Claude");
         merging.add_css_class("suggested-action");

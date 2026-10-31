@@ -1521,18 +1521,23 @@ impl Hub {
         let may_redo = self.store.borrow_mut().calls_left() > 0;
         glib::spawn_future_local(async move {
             let note = proposal.change.note().to_owned();
-            let written = gio::spawn_blocking(move || match scribe::approve(&vault, &proposal) {
-                Ok(done) => Ok(Ok(done)),
-                Err(_) if may_redo && scribe::may_redo(&vault, &proposal) => scribe::redo(&vault, &proposal).map(Err),
-                Err(why) => Err(why),
+            // (What came of it, and whether Claude was asked.)
+            let (written, asked) = gio::spawn_blocking(move || match scribe::approve(&vault, &proposal) {
+                Ok(done) => (Ok(Ok(done)), false),
+                Err(why) if may_redo && scribe::may_redo(&vault, &proposal) => {
+                    (scribe::redo(&vault, &proposal).map(Err).map_err(|again| format!("{why} Looking at it again failed: {again}")), true)
+                }
+                Err(why) => (Err(why), false),
             })
             .await
-            .unwrap_or_else(|_| Err("it stopped unexpectedly".to_owned()));
+            .unwrap_or_else(|_| (Err("it stopped unexpectedly".to_owned()), false));
             let Some(hub) = weak.upgrade() else { return };
             hub.running.set(false);
+            if asked {
+                hub.store.borrow_mut().calls += 1;
+            }
             match written {
                 Ok(Err(again)) => {
-                    hub.store.borrow_mut().calls += 1;
                     let mut dropped = p.clone();
                     dropped["at"] = crate::state::now().into();
                     log_change(&dropped, "dropped", None);

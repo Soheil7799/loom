@@ -828,7 +828,10 @@ pub fn approve(vault: &Path, proposal: &Proposal) -> Result<Written, String> {
 /// Whether a change that could not be written may be looked at again: one replacing a line
 /// of a note that is still there (the note changed since, by the user or a sync).
 pub fn may_redo(vault: &Path, proposal: &Proposal) -> bool {
-    matches!(proposal.change, Change::Replace { .. }) && vault.join(proposal.change.note()).is_file()
+    match &proposal.change {
+        Change::Replace { old, .. } => std::fs::read_to_string(vault.join(proposal.change.note())).is_ok_and(|text| !text.contains(old.trim())),
+        _ => false,
+    }
 }
 
 /// A change waiting for the user's OK whose note changed since: looked at again, against the

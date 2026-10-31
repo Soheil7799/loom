@@ -47,7 +47,7 @@ pub fn conflict_of(path: &str) -> Option<String> {
     }
     if lower.ends_with(')')
         && let Some(i) = lower.rfind(" (")
-        && lower[i..].contains("conflict")
+        && lower[i..].contains("conflicted copy")
         && i > 0
     {
         return Some(format!("{dir}{}{extension}", &stem[..i]));
@@ -174,13 +174,14 @@ pub fn prepare(path: &Path) -> Result<(), String> {
     if !own.exists() {
         std::fs::create_dir_all(&own).map_err(|e| fail(OWN, e))?;
         crate::topics::write_defaults(path).map_err(|e| fail("the topics", e))?;
-        std::fs::write(own.join("vault.json"), "{ \"version\": 1 }\n").map_err(|e| fail(".loom/vault.json", e))?;
+        std::fs::write(own.join("vault.json"), "{ \"version\": 2 }\n").map_err(|e| fail(".loom/vault.json", e))?;
     }
-    // Every change loom makes becomes a commit; a vault that is not a repository of its own
-    // gets one (a vault inside another repository, a folder of documents or a project, gets
-    // its own too: loom's commits never go into that one). Only loom's own files go in it:
-    // the user's notes are theirs to add (or not).
-    if !own_repository(path) {
+    forget_old_model_lines(path);
+    // Every change loom makes becomes a commit; a vault in no repository gets one. A vault
+    // inside another one (a notes folder synced with the rest of a repository) uses it: a
+    // repository nested in it would stop it syncing, and loom's commits name only the notes
+    // it wrote. Only loom's own files go in: the user's notes are theirs to add (or not).
+    if !in_repository(path) {
         let ignore = path.join(".gitignore");
         if !ignore.exists() {
             // What Obsidian rewrites as the window changes: not worth a commit each time.
@@ -196,11 +197,27 @@ pub fn prepare(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-/// Whether `path` is the top of a git repository (not only somewhere inside one).
-fn own_repository(path: &Path) -> bool {
-    let Ok(out) = Command::new("git").arg("-C").arg(path).args(["rev-parse", "--show-toplevel"]).output() else { return false };
-    let top = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
-    out.status.success() && top.canonicalize().ok() == path.canonicalize().ok()
+/// Whether `path` is in a git repository (its top, or somewhere inside one).
+fn in_repository(path: &Path) -> bool {
+    Command::new("git").arg("-C").arg(path).args(["rev-parse", "--is-inside-work-tree"]).output().is_ok_and(|o| o.status.success())
+}
+
+/// Topics made before 0.3.0 said `model: haiku` (the default then): taken out once, so the
+/// model chosen in Settings applies. A topic set to another model keeps it.
+fn forget_old_model_lines(path: &Path) {
+    let marker = path.join(OWN).join("vault.json");
+    if std::fs::read_to_string(&marker).is_ok_and(|t| t.contains("\"version\": 2")) {
+        return;
+    }
+    for entry in std::fs::read_dir(path.join(TOPICS)).into_iter().flatten().flatten() {
+        let file = entry.path();
+        let Ok(text) = std::fs::read_to_string(&file) else { continue };
+        if text.lines().any(|l| l.trim() == "model: haiku") {
+            let kept: Vec<&str> = text.split_inclusive('\n').filter(|l| l.trim() != "model: haiku").collect();
+            let _ = std::fs::write(&file, kept.concat());
+        }
+    }
+    let _ = std::fs::write(&marker, "{ \"version\": 2 }\n");
 }
 
 /// Why `path` can't be a vault (None: it can): the home folder itself, or a system folder.
@@ -332,27 +349,47 @@ mod tests {
     }
 
     #[test]
-    fn a_vault_inside_another_repository_gets_its_own() {
+    fn a_vault_inside_another_repository_uses_it() {
         let root = scratch("nested");
         let vault = root.join("Notes");
         std::fs::create_dir_all(&root).unwrap();
         assert!(Command::new("git").arg("-C").arg(&root).args(["init", "-q"]).status().unwrap().success());
-        assert!(!own_repository(&vault));
         prepare(&vault).unwrap();
-        assert!(own_repository(&vault));
-        // Again: the vault's own one is kept.
-        prepare(&vault).unwrap();
-        assert!(own_repository(&vault));
+        assert!(!vault.join(".git").exists());
+        // A vault in no repository gets one.
+        let alone = scratch("alone");
+        prepare(&alone).unwrap();
+        assert!(alone.join(".git").exists());
         let _ = std::fs::remove_dir_all(&root);
+        let _ = std::fs::remove_dir_all(&alone);
+    }
+
+    #[test]
+    fn old_default_model_lines_go_once() {
+        let vault = scratch("models");
+        std::fs::create_dir_all(vault.join(TOPICS)).unwrap();
+        std::fs::create_dir_all(vault.join(OWN)).unwrap();
+        std::fs::write(vault.join(OWN).join("vault.json"), "{ \"version\": 1 }\n").unwrap();
+        std::fs::write(vault.join(TOPICS).join("Work.md"), "---\napply: auto\nmodel: haiku\nenabled: true\n---\nBody\n").unwrap();
+        std::fs::write(vault.join(TOPICS).join("Code.md"), "---\nmodel: sonnet\n---\n").unwrap();
+        forget_old_model_lines(&vault);
+        assert_eq!(std::fs::read_to_string(vault.join(TOPICS).join("Work.md")).unwrap(), "---\napply: auto\nenabled: true\n---\nBody\n");
+        assert!(std::fs::read_to_string(vault.join(TOPICS).join("Code.md")).unwrap().contains("model: sonnet"));
+        // Once: a haiku chosen afterwards stays.
+        std::fs::write(vault.join(TOPICS).join("Work.md"), "---\nmodel: haiku\n---\n").unwrap();
+        forget_old_model_lines(&vault);
+        assert!(std::fs::read_to_string(vault.join(TOPICS).join("Work.md")).unwrap().contains("model: haiku"));
+        let _ = std::fs::remove_dir_all(&vault);
     }
 
     #[test]
     fn conflict_copies_are_told() {
         assert_eq!(conflict_of("Work/Plan.sync-conflict-20261031-021500-ABCDEFG.md").as_deref(), Some("Work/Plan.md"));
-        assert_eq!(conflict_of("Plan (Mostafa's conflicted copy 2026-10-31).md").as_deref(), Some("Plan.md"));
+        assert_eq!(conflict_of("Plan (Alex's conflicted copy 2026-10-31).md").as_deref(), Some("Plan.md"));
         assert_eq!(conflict_of("Finances/2026-10 (conflicted copy 2026-10-31 021500).md").as_deref(), Some("Finances/2026-10.md"));
         assert_eq!(conflict_of("Life/Trip (Conflicted copy laptop 202610310215).md").as_deref(), Some("Life/Trip.md"));
         assert_eq!(conflict_of("Work/Plan (draft).md"), None);
+        assert_eq!(conflict_of("Work/Team (conflict resolution).md"), None);
         assert_eq!(conflict_of("Work/Conflicts at work.md"), None);
         assert_eq!(conflict_of("Work/Plan.md"), None);
         assert!(has_conflict_marks("a\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> phone\n"));
