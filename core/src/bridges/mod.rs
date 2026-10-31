@@ -6,7 +6,10 @@ use serde_json::{Value, json};
 use crate::agent::Asking;
 
 pub mod client;
+pub mod host;
 pub mod telegram;
+
+pub use host::{Host, pair, remote_program, socket_path, state_of, watch};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {

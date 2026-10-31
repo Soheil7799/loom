@@ -40,6 +40,15 @@ pub fn ago(seconds: u64) -> String {
     }
 }
 
+/// "42s", "3m 05s", "1h 02m".
+pub fn elapsed(seconds: u64) -> String {
+    match seconds {
+        s if s < 60 => format!("{s}s"),
+        s if s < 3600 => format!("{}m {:02}s", s / 60, s % 60),
+        s => format!("{}h {:02}m", s / 3600, (s % 3600) / 60),
+    }
+}
+
 /// The local time now in a strftime `format`.
 pub fn local_now(format: &str) -> String {
     jiff::Zoned::now().strftime(format).to_string()

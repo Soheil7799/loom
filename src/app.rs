@@ -690,7 +690,11 @@ impl App {
                 app.bridges.apply(s);
             }
         });
-        self.bridges.attach(self);
+        // Pictures sent to agents, in any format GTK reads, as PNG.
+        self.bridges.attach(&self.ws, Box::new(|bytes| {
+            let texture = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map_err(|e| e.to_string())?;
+            Ok(texture.save_to_png_bytes().to_vec())
+        }));
     }
 
     /// Opens the control socket the agents' MCP servers talk to.
@@ -1752,9 +1756,7 @@ impl App {
 
     /// The project's name: given by hand, else its folder's.
     pub fn project_label(&self, path: &Path) -> String {
-        let projects = self.ws.projects.borrow();
-        let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());
-        named.map_or_else(|| project_name(path), str::to_owned)
+        self.ws.project_label(path)
     }
 
     /// Names a project (empty: back to its folder's name).
@@ -3554,10 +3556,6 @@ fn split_line(target: &str) -> (&str, Option<u32>) {
 /// Chat text a step bigger or smaller (Ctrl+= / Ctrl+-).
 fn zoom(step: f64) {
     settings::update(|s| s.text_scale = ((s.text_scale + step) * 10.0).round().clamp(7.0, 16.0) / 10.0);
-}
-
-fn project_name(project: &Path) -> String {
-    project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| project.to_string_lossy().into_owned())
 }
 
 impl App {

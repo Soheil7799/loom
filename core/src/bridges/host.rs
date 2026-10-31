@@ -14,27 +14,29 @@
 //!
 //! What a bridge can do is the methods in `Host::handle`, nothing else.
 
-pub use loom_core::bridges::{Link, random, telegram};
 #[cfg(test)]
-use loom_core::bridges::asking_from;
-use loom_core::bridges::random_hex;
+use super::asking_from;
+use super::{Link, random, random_hex};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
+use std::process::{ChildStdin, Command, Stdio};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
-use gtk::{gdk, gio, glib, prelude::*};
+use data_encoding::BASE64;
 use serde_json::{Value, json};
 
-use crate::chat_view::AgentChat;
 use crate::agent::{Agent, Asking, Event};
-use crate::app::App;
 use crate::settings::Settings;
+use crate::workspace::Workspace;
+
+/// Pictures sent in any format, as PNG (the UI's toolkit reads them).
+pub type ToPng = Box<dyn Fn(Vec<u8>) -> Result<Vec<u8>, String>>;
 
 /// The bridges loom has: their names (`loom bridge <name>`).
 const BRIDGES: &[&str] = &["telegram", "remote"];
@@ -55,7 +57,9 @@ struct Request {
 }
 
 struct Running {
-    process: gio::Subprocess,
+    /// Kept open: the bridge stops when it closes (and loom with it).
+    stdin: ChildStdin,
+    pid: u32,
     secret: String,
     started: Instant,
     /// What it was started with (a change to some of it starts it again).
@@ -63,7 +67,8 @@ struct Running {
 }
 
 pub struct Host {
-    app: RefCell<Weak<App>>,
+    ws: RefCell<Weak<Workspace>>,
+    to_png: RefCell<Option<ToPng>>,
     app_id: String,
     socket: PathBuf,
     running: RefCell<HashMap<&'static str, Running>>,
@@ -103,7 +108,7 @@ pub fn pair(open: bool) {
     host.apply(&crate::settings::get());
     if let Some(code) = code {
         let weak = Rc::downgrade(&host);
-        glib::timeout_add_local_once(PAIRING, move || {
+        let _ = crate::rt::timeout_once(PAIRING, move || {
             let Some(host) = weak.upgrade() else { return };
             if host.pairing.borrow().as_deref() == Some(code.as_str()) {
                 pair(false);
@@ -115,7 +120,8 @@ pub fn pair(open: bool) {
 impl Host {
     pub fn new(app_id: &str) -> Rc<Host> {
         Rc::new(Host {
-            app: RefCell::new(Weak::new()),
+            ws: RefCell::new(Weak::new()),
+            to_png: RefCell::default(),
             app_id: app_id.to_owned(),
             socket: socket_path(app_id),
             running: RefCell::default(),
@@ -127,8 +133,9 @@ impl Host {
     }
 
     /// Listens on the bridge socket, then starts the bridges the settings switch on.
-    pub fn attach(self: &Rc<Self>, app: &Rc<App>) {
-        *self.app.borrow_mut() = Rc::downgrade(app);
+    pub fn attach(self: &Rc<Self>, ws: &Rc<Workspace>, to_png: ToPng) {
+        *self.ws.borrow_mut() = Rc::downgrade(ws);
+        *self.to_png.borrow_mut() = Some(to_png);
         HOST.with(|h| *h.borrow_mut() = Rc::downgrade(self));
         self.listen();
         self.apply(&crate::settings::get());
@@ -161,7 +168,7 @@ impl Host {
             }
         });
         let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
+        crate::rt::spawn_local(async move {
             while let Ok(request) = rx.recv().await {
                 let Some(host) = weak.upgrade() else { break };
                 host.handle(&request.bridge, &request.method, &request.params, request.reply);
@@ -175,7 +182,7 @@ impl Host {
         if s.remote_enabled && s.remote_key.is_empty()
             && let Some(key) = random_hex(32)
         {
-            glib::idle_add_local_once(move || crate::settings::update(|s| s.remote_key = key));
+            crate::rt::idle_once(move || crate::settings::update(|s| s.remote_key = key));
         }
         if !s.remote_enabled {
             *self.pairing.borrow_mut() = None;
@@ -239,7 +246,7 @@ impl Host {
         let Some(settings) = self.settings_for(name, &crate::settings::get()) else { return };
         let secret = random(32);
         let Ok(exe) = std::env::current_exe() else { return };
-        let process = match gio::Subprocess::newv(&[exe.as_os_str(), "bridge".as_ref(), name.as_ref()], gio::SubprocessFlags::STDIN_PIPE) {
+        let process = match Command::new(exe).args(["bridge", name]).stdin(Stdio::piped()).spawn() {
             Ok(process) => process,
             Err(err) => {
                 crate::log::debug!("bridges", "{name} did not start: {err}");
@@ -249,26 +256,32 @@ impl Host {
         };
         // Known before the bridge can use it.
         SECRETS.lock().unwrap().push((secret.clone(), name.to_owned()));
+        let mut process = process;
+        let Some(mut stdin) = process.stdin.take() else { return };
         let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id }).to_string() + "\n";
-        if let Some(stdin) = process.stdin_pipe() {
-            let _ = stdin.write_all(hello.as_bytes(), None::<&gio::Cancellable>);
-        }
-        crate::log::debug!("bridges", "{name} started (pid {:?})", process.identifier());
+        let _ = stdin.write_all(hello.as_bytes()).and_then(|()| stdin.flush());
+        let pid = process.id();
+        crate::log::debug!("bridges", "{name} started (pid {pid})");
         set_state(name, json!({ "state": "connecting" }));
         let weak = Rc::downgrade(self);
-        let (waited, mine) = (process.clone(), secret.clone());
-        glib::spawn_future_local(async move {
-            let _ = waited.wait_future().await;
+        let mine = secret.clone();
+        crate::rt::spawn_local(async move {
+            let _ = crate::rt::spawn_blocking(move || process.wait()).await;
             let Some(host) = weak.upgrade() else { return };
             host.ended(name, &mine);
         });
-        self.running.borrow_mut().insert(name, Running { process, secret, started: Instant::now(), settings });
+        self.running.borrow_mut().insert(name, Running { stdin, pid, secret, started: Instant::now(), settings });
     }
 
     fn stop(&self, name: &str) {
         if let Some(running) = self.running.borrow_mut().remove(name) {
             forget_secret(&running.secret);
-            running.process.force_exit();
+            drop(running.stdin);
+            #[cfg(unix)]
+            if let Ok(pid) = i32::try_from(running.pid) {
+                // SAFETY: plain kill(2) on the bridge loom started.
+                unsafe { libc::kill(pid, libc::SIGKILL) };
+            }
         }
         self.failures.borrow_mut().remove(name);
     }
@@ -299,7 +312,7 @@ impl Host {
         crate::log::debug!("bridges", "{name} stopped; again in {wait} s");
         set_state(name, json!({ "state": "failed", "why": format!("The {} bridge stopped; starting it again in {wait} s.", title(name)) }));
         let weak = Rc::downgrade(self);
-        glib::timeout_add_seconds_local_once(wait as u32, move || {
+        let _ = crate::rt::timeout_once(Duration::from_secs(wait), move || {
             let Some(host) = weak.upgrade() else { return };
             if !host.running.borrow().contains_key(name) && host.settings_for(name, &crate::settings::get()).is_some() {
                 host.start(name);
@@ -308,14 +321,14 @@ impl Host {
     }
 
     /// An agent as bridges see it.
-    fn view(&self, app: &App, agent: &Agent) -> Value {
+    fn view(&self, ws: &Workspace, agent: &Agent) -> Value {
         self.seq.set(self.seq.get() + 1);
         let questions: Vec<Value> = agent.open_questions().into_iter().filter_map(|serial| agent.asking(serial).map(|a| asking_json(serial, &a))).collect();
         json!({
             "id": agent.id,
             "seq": self.seq.get(),
             "title": agent.title(),
-            "project": app.project_label(&agent.project),
+            "project": ws.project_label(&agent.project),
             "status": agent.status().css(),
             "unseen": agent.unseen.get(),
             "busy": agent.is_busy(),
@@ -329,8 +342,8 @@ impl Host {
         if !subscribed() {
             return;
         }
-        let Some(app) = self.app.borrow().upgrade() else { return };
-        let view = self.view(&app, agent);
+        let Some(ws) = self.ws.borrow().upgrade() else { return };
+        let view = self.view(&ws, agent);
         // The view but for its seq: a change to the same as last told is not told.
         let key = {
             let mut v = view.clone();
@@ -348,8 +361,8 @@ impl Host {
             Event::Asked(_) => told["event"] = json!("asked"),
             Event::Done => {
                 told["event"] = json!("done");
-                told["reply"] = json!(agent.chat().last_reply());
-                told["took"] = json!(crate::chat::elapsed(agent.last_took.get()));
+                told["reply"] = json!(agent.view.last_reply());
+                told["took"] = json!(crate::paths::elapsed(agent.last_took.get()));
                 told["error"] = json!(agent.last_error.borrow().clone());
                 told["cancelled"] = json!(agent.last_cancelled.get());
             }
@@ -381,35 +394,36 @@ impl Host {
                 Err(error) => json!({ "error": error }),
             });
         };
-        let Some(app) = self.app.borrow().upgrade() else { return answer(Err("loom is closing".into())) };
+        let Some(ws) = self.ws.borrow().upgrade() else { return answer(Err("loom is closing".into())) };
         let agent = || {
             let id = p["agent"].as_u64().unwrap_or(0) as u32;
-            app.agents_listed().into_iter().find(|a| a.id == id).ok_or_else(|| "That agent is closed.".to_owned())
+            ws.agent(id).ok_or_else(|| "That agent is closed.".to_owned())
         };
         let serial = p["serial"].as_u64().unwrap_or(0);
-        let agents = || Value::Array(app.agents_listed().iter().map(|a| self.view(&app, a)).collect());
+        let agents = || Value::Array(ws.agents_in_order().iter().map(|a| self.view(&ws, a)).collect());
         crate::log::debug!("bridges", "{bridge} → {method}");
         let result = match method {
             "hello" => Ok(json!({ "settings": self.settings_for(bridge, &crate::settings::get()), "agents": agents() })),
             "agents" => Ok(agents()),
-            // A message: pictures (any format GTK reads) go as pasted ones. A shell command
+            // A message: pictures (any format the UI reads) go as pasted ones. A shell command
             // (`!…`) runs only from loom's own window, never from a bridge.
             "send" if p["text"].as_str().unwrap_or("").trim_start().starts_with('!') => Err("! commands run only from loom itself.".to_owned()),
             "send" => agent().and_then(|agent| {
                 let mut images = Vec::new();
                 for data in p["images"].as_array().into_iter().flatten() {
-                    let bytes = glib::base64_decode(data.as_str().unwrap_or(""));
-                    let png = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map_err(|_| "That picture could not be read.".to_owned())?;
-                    images.push(png.save_to_png_bytes().to_vec());
+                    let bytes = BASE64.decode(data.as_str().unwrap_or("").as_bytes()).map_err(|_| "That picture could not be read.".to_owned())?;
+                    let to_png = self.to_png.borrow();
+                    let png = to_png.as_ref().ok_or("Pictures can't be read here.")?(bytes).map_err(|_| "That picture could not be read.".to_owned())?;
+                    images.push(png);
                 }
                 agent.submit_with(p["text"].as_str().unwrap_or("").to_owned(), images);
-                Ok(self.view(&app, &agent))
+                Ok(self.view(&ws, &agent))
             }),
             // A file for the agent: saved in its folder, under <bridge>-files/. Its path back.
             "save" => agent().and_then(|agent| {
                 let dir = agent.cwd.join(format!("{bridge}-files"));
-                let target = loom_core::files::free_name(&dir.join(safe_name(p["name"].as_str().unwrap_or(""))));
-                let bytes = glib::base64_decode(p["data"].as_str().unwrap_or(""));
+                let target = crate::files::free_name(&dir.join(safe_name(p["name"].as_str().unwrap_or(""))));
+                let bytes = BASE64.decode(p["data"].as_str().unwrap_or("").as_bytes()).map_err(|_| "That file could not be read.".to_owned())?;
                 std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
                 Ok(json!(target.to_string_lossy()))
             }),
@@ -421,7 +435,7 @@ impl Host {
                     return Err("Not from outside loom.".to_owned());
                 }
                 let answered = agent.answer_serial(serial, option);
-                Ok(json!({ "answered": answered, "agent": self.view(&app, &agent) }))
+                Ok(json!({ "answered": answered, "agent": self.view(&ws, &agent) }))
             }),
             "form" => agent().and_then(|agent| {
                 let (done, problem) = match p["do"].as_str().unwrap_or("") {
@@ -431,19 +445,19 @@ impl Host {
                     "skip" => agent.skip_form(serial).map_or_else(|e| (false, Some(e)), |()| (true, None)),
                     other => return Err(format!("no form action {other}")),
                 };
-                Ok(json!({ "done": done, "problem": problem, "agent": self.view(&app, &agent) }))
+                Ok(json!({ "done": done, "problem": problem, "agent": self.view(&ws, &agent) }))
             }),
             "stop" => agent().map(|agent| {
                 agent.cancel();
-                self.view(&app, &agent)
+                self.view(&ws, &agent)
             }),
-            "last_reply" => agent().map(|agent| json!(agent.chat().last_reply())),
+            "last_reply" => agent().map(|agent| json!(agent.view.last_reply())),
             // Speech to text with loom's settings (its key never leaves loom); answered when heard.
             "transcribe" => {
                 if !crate::stt::configured() {
                     return answer(Err("Speech to text is not set up in loom.".into()));
                 }
-                let audio = glib::base64_decode(p["audio"].as_str().unwrap_or(""));
+                let Ok(audio) = BASE64.decode(p["audio"].as_str().unwrap_or("").as_bytes()) else { return answer(Err("That recording could not be read.".into())) };
                 let reply = reply.clone();
                 crate::stt::transcribe(audio, p["name"].as_str().unwrap_or("voice.ogg"), p["mime"].as_str().unwrap_or("audio/ogg"), move |result| {
                     let _ = reply.try_send(match result {

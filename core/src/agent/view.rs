@@ -75,6 +75,8 @@ pub trait View {
     // The conversation.
     fn clear(&self);
     fn has_messages(&self) -> bool;
+    /// What the agent said last (None: nothing yet).
+    fn last_reply(&self) -> Option<String>;
     fn user(&self, text: &str);
     fn user_chunk(&self, text: &str);
     fn user_images(&self, pngs: &[Png]);

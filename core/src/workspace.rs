@@ -116,6 +116,13 @@ impl Workspace {
         }
     }
 
+    /// A project's name: the one given, else its folder's.
+    pub fn project_label(&self, path: &Path) -> String {
+        let projects = self.projects.borrow();
+        let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());
+        named.map_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_string_lossy().into_owned()), str::to_owned)
+    }
+
     pub fn ensure_project(&self, path: &Path) {
         let mut projects = self.projects.borrow_mut();
         if !projects.iter().any(|p| p.path == path) {

@@ -186,6 +186,9 @@ impl View for ChatView {
     fn has_messages(&self) -> bool {
         self.chat.has_messages()
     }
+    fn last_reply(&self) -> Option<String> {
+        self.chat.last_reply()
+    }
     fn user(&self, text: &str) {
         self.chat.user(text);
     }

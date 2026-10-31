@@ -3,7 +3,7 @@
 //! files in a side editor, and a scratch terminal is one key away.
 
 mod about;
-mod bridges;
+use loom_core::bridges;
 use loom_core::provider;
 use loom_core::agent;
 mod app;
