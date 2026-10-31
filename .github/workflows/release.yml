@@ -34,14 +34,14 @@ jobs:
       - name: Test and build
         run: |
           rustup update stable --no-self-update
-          cargo test --release --locked
-          cargo build --release --locked
+          cargo test --release --locked --workspace
+          cargo build --release --locked --workspace
 
       - name: Package
         run: |
           name="loom-${GITHUB_REF_NAME#v}-x86_64-linux"
           mkdir -p "$name/bin"
-          cp target/release/loom "$name/bin/"
+          cp target/release/loom target/release/loom-remote "$name/bin/"
           cp -r data "$name/"
           cp install.sh README.md LICENSE "$name/"
           tar -czf "$name.tar.gz" "$name"

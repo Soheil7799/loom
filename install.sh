@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Install loom for the current user: ~/.local/bin/loom (from a release, its bin/loom; from
-# a checkout, built first), its desktop entry and icon. loom drives Claude Code itself and
+# Install loom for the current user: ~/.local/bin/loom and loom-remote (its remote bridge;
+# from a release, its bin/; from a checkout, built first), its desktop entry and icon. loom drives Claude Code itself and
 # keeps its own skills in ~/.config/loom/claude.
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -10,13 +10,14 @@ apps="$HOME/.local/share/applications"
 icons="$HOME/.local/share/icons/hicolor/scalable/apps"
 
 if [[ -x bin/loom ]]; then
-    binary=bin/loom
+    built=bin
 else
     # Capped parallelism: an all-core build overheats some laptops.
-    cargo build --release -j "${JOBS:-6}"
-    binary=target/release/loom
+    cargo build --release --workspace -j "${JOBS:-6}"
+    built=target/release
 fi
-install -Dm755 "$binary" "$bindir/loom"
+install -Dm755 "$built/loom" "$bindir/loom"
+install -Dm755 "$built/loom-remote" "$bindir/loom-remote"
 install -Dm644 data/dev.shirvani.Loom.svg "$icons/dev.shirvani.Loom.svg"
 mkdir -p "$apps"
 sed "s|@BINDIR@|$bindir|" data/dev.shirvani.Loom.desktop.in > "$apps/dev.shirvani.Loom.desktop"

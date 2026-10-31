@@ -41,6 +41,13 @@ pub struct Settings {
     pub telegram_token: String,
     /// The one Telegram account the bot answers (0: none yet).
     pub telegram_user: i64,
+    /// The remote bridge (your agents on your other devices, over iroh): off unless switched
+    /// on. Its endpoint key (hex, made when first switched on), the relay (empty: n0 public
+    /// ones) and the devices paired, as (endpoint id, name).
+    pub remote_enabled: bool,
+    pub remote_key: String,
+    pub remote_relay: String,
+    pub remote_devices: Vec<(String, String)>,
     /// Everything loom does, written to the debug log.
     pub debug_log: bool,
     /// Speech to text: on, the endpoint (OpenAI-style), its key, model and language.
@@ -90,6 +97,10 @@ impl Default for Settings {
             telegram_enabled: false,
             telegram_token: String::new(),
             telegram_user: 0,
+            remote_enabled: false,
+            remote_key: String::new(),
+            remote_relay: String::new(),
+            remote_devices: Vec::new(),
             debug_log: false,
             stt_enabled: false,
             stt_url: String::new(),
@@ -147,6 +158,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
     crate::log::debug!("settings", "changed: {}", {
         let text = render(&settings).replace('\n', " ");
         let text = if settings.telegram_token.is_empty() { text } else { text.replace(&settings.telegram_token, "…") };
+        let text = if settings.remote_key.is_empty() { text } else { text.replace(&settings.remote_key, "…") };
         if settings.stt_key.is_empty() { text } else { text.replace(&settings.stt_key, "…") }
     });
     if let Some(file) = FILE.with(|f| f.borrow().clone()) {
@@ -154,7 +166,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
             let _ = std::fs::create_dir_all(dir);
         }
         let temporary = file.with_extension("json.tmp");
-        // It may hold the bot token: readable by its owner only.
+        // It may hold the bot token and the remote key: readable by its owner only.
         // A left-over one could be readable by others: made anew.
         let _ = std::fs::remove_file(&temporary);
         let written = {
@@ -215,6 +227,15 @@ fn parse(text: &str) -> Settings {
         telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
         telegram_token: string("telegramToken", &d.telegram_token),
         telegram_user: v["telegramUser"].as_i64().unwrap_or(d.telegram_user),
+        remote_enabled: flag("remoteEnabled", d.remote_enabled),
+        remote_key: string("remoteKey", &d.remote_key),
+        remote_relay: string("remoteRelay", &d.remote_relay),
+        remote_devices: v["remoteDevices"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| Some((d["id"].as_str()?.to_owned(), d["name"].as_str().unwrap_or("").to_owned())))
+            .collect(),
         debug_log: flag("debugLog", d.debug_log),
         stt_enabled: flag("sttEnabled", d.stt_enabled),
         stt_url: string("sttUrl", &d.stt_url),
@@ -254,6 +275,10 @@ fn render(s: &Settings) -> String {
         "telegramEnabled": s.telegram_enabled,
         "telegramToken": s.telegram_token,
         "telegramUser": s.telegram_user,
+        "remoteEnabled": s.remote_enabled,
+        "remoteKey": s.remote_key,
+        "remoteRelay": s.remote_relay,
+        "remoteDevices": s.remote_devices.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
         "debugLog": s.debug_log,
         "sttEnabled": s.stt_enabled,
         "sttUrl": s.stt_url,
@@ -288,6 +313,9 @@ mod tests {
             telegram_enabled: true,
             telegram_token: "1:abc".into(),
             telegram_user: 42,
+            remote_enabled: true,
+            remote_relay: "http://localhost:3340".into(),
+            remote_devices: vec![("ab12".into(), "Phone".into())],
             ..Settings::default()
         };
         assert_eq!(parse(&render(&s)), s);

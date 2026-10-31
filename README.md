@@ -38,6 +38,12 @@ Agents are grouped by project, and a project may hold several git repos. (Any ot
   - **Telegram.** Your agents in a Telegram bot of your own: it relays their replies and takes
     your messages, voice, photos and answers. It talks only to the one account you link, and
     runs as a process of its own (a [bridge](docs/bridges.md)).
+  - **Remote.** Your agents on your other devices, over [iroh](https://iroh.computer):
+    end-to-end encrypted, no account anywhere. A device pairs by scanning a QR code in
+    Settings, and is added only once you confirm it there. On the same network devices connect
+    directly; otherwise through a relay that passes only encrypted traffic (n0's public ones,
+    or your own). For now the device is `loom-remote` on another computer; a phone app comes
+    later.
   - **Speech to text.** Talk instead of typing, through any OpenAI-style transcription
     endpoint you set: Groq, OpenAI, or a local Whisper server.
 - **Themes** follow your GTK colours. Persian and right-to-left text work.

@@ -32,6 +32,7 @@ const PAGES: &[(&str, &str, &str, bool)] = &[
     ("addons", "Add-ons", "application-x-addon-symbolic", false),
     ("notes", "Notes", "accessories-text-editor-symbolic", true),
     ("telegram", "Telegram", "mail-send-symbolic", true),
+    ("remote", "Remote", "phone-symbolic", true),
     ("voice", "Speech to text", "audio-input-microphone-symbolic", true),
 ];
 
@@ -66,6 +67,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     stack.add_named(&page("Add-ons", &addons(&s, &list)), Some("addons"));
     stack.add_named(&page("Notes", &notes(&s, &window)), Some("notes"));
     stack.add_named(&page("Telegram", &telegram(&s)), Some("telegram"));
+    stack.add_named(&page("Remote", &remote(&s)), Some("remote"));
     stack.add_named(&page("Speech to text", &voice(&s)), Some("voice"));
 
     // The pages, as loom's own sidebar lists agents.
@@ -541,7 +543,8 @@ fn telegram(s: &Settings) -> gtk::Box {
     let names = bot_name.clone();
     let (wd, wt, wdet, wl, wc, wu, wcard) = (dot.downgrade(), title.downgrade(), detail.downgrade(), link.downgrade(), code.downgrade(), user.downgrade(), card.downgrade());
     let (wp, wpl) = (proposal.downgrade(), proposed.downgrade());
-    crate::bridges::watch(move |state| {
+    crate::bridges::watch("telegram", move |state| {
+        let state = &Link::from_json(state);
         let (Some(dot), Some(title), Some(detail), Some(link), Some(code), Some(user), Some(card), Some(proposal), Some(proposed)) =
             (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wl.upgrade(), wc.upgrade(), wu.upgrade(), wcard.upgrade(), wp.upgrade(), wpl.upgrade())
         else {
@@ -601,6 +604,232 @@ fn telegram(s: &Settings) -> gtk::Box {
         gtk::UriLauncher::new(&url).launch(window.as_ref(), None::<&gio::Cancellable>, |_| {});
     });
     content
+}
+
+/// The remote bridge: your agents on your other devices, over iroh. Pairing shows a QR code
+/// (this computer's address and a one-time code); a device that uses it is added only when
+/// the user says yes here.
+fn remote(s: &Settings) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    card.add_css_class("prefs-status");
+    let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
+    dot.add_css_class("dot");
+    let title = gtk::Label::builder().xalign(0.0).build();
+    title.add_css_class("prefs-title");
+    let detail = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(52).selectable(true).build();
+    detail.add_css_class("dim");
+    detail.add_css_class("small");
+    let words = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    words.set_hexpand(true);
+    words.append(&title);
+    words.append(&detail);
+    let on = switch(s.remote_enabled, |s, on| s.remote_enabled = on);
+    on.set_valign(gtk::Align::Center);
+    head.append(&dot);
+    head.append(&words);
+    head.append(&on);
+    card.append(&head);
+
+    // Pairing: the code to scan, or the ticket to paste into loom-remote.
+    let pairing = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    let qr = gtk::DrawingArea::builder().content_width(180).content_height(180).valign(gtk::Align::Start).build();
+    let ticket = Rc::new(std::cell::RefCell::new(String::new()));
+    let drawn = ticket.clone();
+    qr.set_draw_func(move |_, cr, width, height| draw_qr(cr, width, height, &drawn.borrow()));
+    let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    side.set_hexpand(true);
+    let how = gtk::Label::builder()
+        .label("Scan this with the loom app, or paste the ticket into: loom-remote pair <ticket>. You confirm the device here before it is added.")
+        .xalign(0.0)
+        .wrap(true)
+        .max_width_chars(40)
+        .build();
+    how.add_css_class("small");
+    let text = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).max_width_chars(30).build();
+    text.add_css_class("mono");
+    text.add_css_class("small");
+    text.add_css_class("dim");
+    let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let copy = flat_button("Copy ticket");
+    let cancel = flat_button("Cancel");
+    buttons.append(&copy);
+    buttons.append(&cancel);
+    side.append(&how);
+    side.append(&text);
+    side.append(&buttons);
+    pairing.append(&qr);
+    pairing.append(&side);
+    pairing.set_visible(false);
+    card.append(&pairing);
+    let shown = ticket.clone();
+    copy.connect_clicked(move |button| button.clipboard().set_text(&shown.borrow()));
+    cancel.connect_clicked(|_| crate::bridges::pair(false));
+
+    // The device that used the code: added only when the user says so, here.
+    let proposal = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let proposed = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
+    proposed.add_css_class("small");
+    let accept = flat_button("Pair it");
+    let refuse = flat_button("Refuse");
+    proposal.append(&proposed);
+    proposal.append(&accept);
+    proposal.append(&refuse);
+    proposal.set_visible(false);
+    card.append(&proposal);
+    let candidate = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
+    let chosen = candidate.clone();
+    accept.connect_clicked(move |_| {
+        let (id, name) = chosen.borrow().clone();
+        if !id.is_empty() {
+            settings::update(|s| {
+                if !s.remote_devices.iter().any(|(d, _)| *d == id) {
+                    s.remote_devices.push((id, name));
+                }
+            });
+            crate::bridges::pair(false);
+        }
+    });
+    refuse.connect_clicked(|_| crate::bridges::pair(false));
+    content.append(&card);
+
+    let devices = section("Devices");
+    let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+    if let Some(rows) = rows_of(&devices) {
+        rows.append(&list);
+    }
+    let pair = flat_button("Pair a device");
+    pair.connect_clicked(|_| crate::bridges::pair(true));
+    row(&devices, "Pair a device", "Shows a code to scan. It stays good for ten minutes.", &pair);
+    caption(&devices, "A paired device can do what the Telegram bot can: read replies, send messages, answer questions. “Always allow” and ! commands stay in loom.");
+    content.append(&devices);
+
+    let connection = section("Connection");
+    let relay = gtk::Entry::builder().text(&s.remote_relay).placeholder_text("empty: n0's public relays").build();
+    relay.add_css_class("mono");
+    on_done(&relay, |text| settings::update(|s| s.remote_relay = text));
+    row_stacked(
+        &connection,
+        "Relay",
+        "Helps your devices find each other, and passes their traffic when they can't connect directly. Your own (iroh-relay) or, empty, the public ones of n0, who make iroh.",
+        &relay,
+    );
+    caption(&connection, "Everything is end-to-end encrypted between your devices: a relay passes it on but can't read it. On the same network, devices connect directly.");
+    content.append(&connection);
+
+    // The devices, with which are connected now: redrawn on every change.
+    let online = Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+    let fill = {
+        let (list, online) = (list.downgrade(), online.clone());
+        Rc::new(move || {
+            let Some(list) = list.upgrade() else { return false };
+            while let Some(child) = list.first_child() {
+                list.remove(&child);
+            }
+            for (id, name) in settings::get().remote_devices {
+                let here = online.borrow().contains(&id);
+                let short: String = id.chars().take(10).collect();
+                let line = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+                line.add_css_class("prefs-row");
+                line.append(&texts(&name, &format!("{short}…{}", if here { " · connected now" } else { "" })));
+                let remove = flat_button("Remove");
+                remove.set_valign(gtk::Align::Center);
+                remove.connect_clicked(move |_| settings::update(|s| s.remote_devices.retain(|(d, _)| *d != id)));
+                line.append(&remove);
+                list.append(&line);
+            }
+            true
+        })
+    };
+    fill();
+    let refill = fill.clone();
+    settings::on_change_while(move |_| refill());
+
+    let (wd, wt, wdet, wp, wq, wtext, wprop, wproposed, wcard, wpair) =
+        (dot.downgrade(), title.downgrade(), detail.downgrade(), pairing.downgrade(), qr.downgrade(), text.downgrade(), proposal.downgrade(), proposed.downgrade(), card.downgrade(), pair.downgrade());
+    crate::bridges::watch("remote", move |state| {
+        let (Some(dot), Some(title), Some(detail), Some(pairing), Some(qr), Some(text), Some(proposal), Some(proposed), Some(card), Some(pair)) =
+            (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wp.upgrade(), wq.upgrade(), wtext.upgrade(), wprop.upgrade(), wproposed.upgrade(), wcard.upgrade(), wpair.upgrade())
+        else {
+            return false;
+        };
+        let str_of = |key: &str| state[key].as_str().unwrap_or("").to_owned();
+        for class in ["suspended", "starting", "done", "failed"] {
+            dot.remove_css_class(class);
+        }
+        card.remove_css_class("ok");
+        card.remove_css_class("failed");
+        let up = state["state"] == "online";
+        let (class, heading, words) = match state["state"].as_str().unwrap_or("off") {
+            "off" => ("suspended", "Off".to_owned(), "Switch it on to reach your agents from your other devices.".to_owned()),
+            "connecting" => ("starting", "Starting…".to_owned(), String::new()),
+            "online" => {
+                card.add_css_class("ok");
+                let relay = state["relay"].as_str().map_or_else(|| "no relay yet".to_owned(), |r| format!("through {r}"));
+                let mut words = format!("This computer is {}…, {relay}.", str_of("id").chars().take(10).collect::<String>());
+                if let Some(problem) = state["problem"].as_str() {
+                    words.push(' ');
+                    words.push_str(problem);
+                }
+                ("done", "Online".to_owned(), words)
+            }
+            _ => {
+                card.add_css_class("failed");
+                ("failed", "Can't start".to_owned(), str_of("why"))
+            }
+        };
+        dot.add_css_class(class);
+        title.set_label(&heading);
+        detail.set_label(&words);
+        detail.set_visible(!words.is_empty());
+        pair.set_sensitive(up);
+
+        let shown = str_of("ticket");
+        pairing.set_visible(up && !shown.is_empty());
+        if *ticket.borrow() != shown {
+            text.set_label(&shown);
+            *ticket.borrow_mut() = shown;
+            qr.queue_draw();
+        }
+        let asking = state["candidate"].is_object();
+        proposal.set_visible(up && asking);
+        if asking {
+            let (id, name) = (state["candidate"]["id"].as_str().unwrap_or("").to_owned(), state["candidate"]["name"].as_str().unwrap_or("").to_owned());
+            proposed.set_label(&format!("“{name}” ({}…) used the code. Pair it if it is yours.", id.chars().take(10).collect::<String>()));
+            *candidate.borrow_mut() = (id, name);
+        }
+        let now: Vec<String> = state["online"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_owned)).collect();
+        if *online.borrow() != now {
+            *online.borrow_mut() = now;
+            fill();
+        }
+        true
+    });
+    content
+}
+
+/// `text` as a QR code, dark on light whatever the theme (scanners want that), centred.
+fn draw_qr(cr: &gtk::cairo::Context, width: i32, height: i32, text: &str) {
+    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else { return };
+    let modules = code.width();
+    // Two modules of quiet zone around it.
+    let size = width.min(height) as f64;
+    let cell = (size / (modules + 4) as f64).floor().max(1.0);
+    let side = cell * (modules + 4) as f64;
+    let (x0, y0) = (((width as f64 - side) / 2.0).floor(), ((height as f64 - side) / 2.0).floor());
+    cr.set_source_rgb(1.0, 1.0, 1.0);
+    cr.rectangle(x0, y0, side, side);
+    let _ = cr.fill();
+    cr.set_source_rgb(0.0, 0.0, 0.0);
+    for (i, color) in code.to_colors().iter().enumerate() {
+        if *color == qrcode::Color::Dark {
+            let (x, y) = ((i % modules + 2) as f64, (i / modules + 2) as f64);
+            cr.rectangle(x0 + x * cell, y0 + y * cell, cell, cell);
+        }
+    }
+    let _ = cr.fill();
 }
 
 fn advanced(s: &Settings) -> gtk::Box {
@@ -703,9 +932,10 @@ fn voice(s: &Settings) -> gtk::Box {
 fn addons(s: &Settings, list: &gtk::ListBox) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
     let all = section("");
-    let entries: [(&str, &str, &str, bool); 3] = [
+    let entries: [(&str, &str, &str, bool); 4] = [
         ("notes", "Notes", "Keeps what you tell your agents in a vault of notes, by topic (finances, work, study…). The vault opens in Obsidian too.", s.notes_enabled),
         ("telegram", "Telegram", "Your agents in a Telegram bot of your own: their replies, your messages, their questions.", s.telegram_enabled),
+        ("remote", "Remote", "Your agents on your other devices, end-to-end encrypted, with no account anywhere.", s.remote_enabled),
         ("voice", "Speech to text", "Talk instead of typing, through a transcription service you choose.", s.stt_enabled),
     ];
     for (name, title, detail, on) in entries {
@@ -729,6 +959,7 @@ fn addons(s: &Settings, list: &gtk::ListBox) -> gtk::Box {
                 show(&state, match name {
                     "notes" => s.notes_enabled,
                     "telegram" => s.telegram_enabled,
+                    "remote" => s.remote_enabled,
                     _ => s.stt_enabled,
                 });
             }

@@ -1,7 +1,8 @@
 # Bridges
 
 Providers are what loom drives (Claude Code under each agent). Bridges are how something
-outside loom reaches it: the Telegram bot today, perhaps a phone app or another chat later.
+outside loom reaches it: the Telegram bot, the remote bridge (your other devices), perhaps
+another chat later.
 
 Each bridge is a process of its own, `loom bridge <name>`. loom starts it while the settings
 switch it on, starts it again if it dies (after 2 s, then longer, up to a minute), and stops it
@@ -65,3 +66,33 @@ Agent events carry `agent` and `looking`: the user has that agent in front of th
 a bridge can stay quiet.
 
 Nothing else is reachable. A bridge that needs more is a change to this protocol, reviewed as one.
+
+## The remote bridge
+
+`loom bridge remote` runs `loom-remote bridge`, a program of its own beside loom: it brings
+iroh and its async runtime, which loom itself doesn't need. It is an iroh endpoint, its secret
+key made by loom when Remote is first switched on and kept in loom's settings. Its settings:
+
+```json
+{"key": "…", "relay": "", "devices": [{"id": "…", "name": "…"}], "pairing": null, "debug": false}
+```
+
+`relay` empty means n0's public relays. `pairing` is the one-time code while Settings shows
+one (ten minutes at most). Its state, shown in Settings:
+`{state: "online", id, relay, problem, ticket, candidate, online}`.
+
+Devices speak ALPN `loom/remote/0`. Each request is a bidirectional stream: the device writes
+`{"method", "params"}` and finishes its side; the bridge answers `{"ok"}` or `{"error"}` and
+finishes. `subscribe` stays open and carries loom's events, one per line.
+
+- **Pairing.** Settings shows a ticket (as a QR code): `loom:` and, in unpadded base64url,
+  `{"addr": <the endpoint's address>, "code": "…"}`. The device connects and sends
+  `pair {code, name}`; the user sees it in Settings and pairs it or refuses. Only then is it
+  added to `devices`, and only then is the answer `ok`.
+- **Paired devices** may send `agents`, `send`, `save`, `answer`, `form`, `stop`,
+  `last_reply`, `transcribe` (passed to loom as they are) and `subscribe`.
+- **Anyone else** is dropped as soon as the connection opens, unless a pairing code is
+  shown; then `pair` is all it may send. Removing a device in Settings closes its connections.
+
+`loom-remote pair <ticket>`, `agents`, `send`, `answer` and `watch` are such a device on the
+command line.

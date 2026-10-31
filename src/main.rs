@@ -88,6 +88,17 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("bridge") {
         return match std::env::args().nth(2).as_deref() {
             Some("telegram") => glib::ExitCode::from(bridges::telegram::run() as u8),
+            // Its own program: iroh and its runtime stay out of loom.
+            Some("remote") => {
+                use std::os::unix::process::CommandExt;
+                let Some(program) = bridges::remote_program() else {
+                    eprintln!("loom bridge remote: loom-remote is not installed beside loom");
+                    return glib::ExitCode::from(2);
+                };
+                let err = std::process::Command::new(program).arg("bridge").exec();
+                eprintln!("loom bridge remote: {err}");
+                glib::ExitCode::from(1)
+            }
             _ => {
                 eprintln!("loom bridge: no such bridge");
                 glib::ExitCode::from(2)

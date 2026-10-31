@@ -1,0 +1,12 @@
+[package]
+name = "loom-remote"
+version = "0.3.0"
+edition = "2024"
+description = "loom's remote bridge: your agents on your other devices, over iroh"
+license = "MIT"
+
+[dependencies]
+iroh = "1.4"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+data-encoding = "2"

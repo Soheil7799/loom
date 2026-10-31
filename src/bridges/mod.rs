@@ -1,5 +1,5 @@
-//! Bridges: how something outside loom reaches it (the Telegram bot; later a phone app, or
-//! whatever someone writes). Providers are what loom drives; bridges are what drive loom.
+//! Bridges: how something outside loom reaches it (the Telegram bot, your other devices
+//! through the remote bridge, or whatever someone writes). Providers are what loom drives; bridges are what drive loom.
 //!
 //! Each bridge is a process of its own (`loom bridge <name>`), started by loom while the
 //! settings switch it on and stopped with it (its stdin closes when loom goes). It talks to
@@ -34,7 +34,10 @@ use crate::app::App;
 use crate::settings::Settings;
 
 /// The bridges loom has: their names (`loom bridge <name>`).
-const BRIDGES: &[&str] = &["telegram"];
+const BRIDGES: &[&str] = &["telegram", "remote"];
+
+/// How long a pairing code shown in Settings stays good.
+const PAIRING: Duration = Duration::from_secs(600);
 
 /// The running bridges' secrets: (secret, bridge).
 static SECRETS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
@@ -52,6 +55,8 @@ struct Running {
     process: gio::Subprocess,
     secret: String,
     started: Instant,
+    /// What it was started with (a change to some of it starts it again).
+    settings: Value,
 }
 
 pub struct Host {
@@ -65,6 +70,12 @@ pub struct Host {
     told: RefCell<HashMap<u32, String>>,
     /// Bumped on every view: a bridge keeps the newest it got.
     seq: Cell<u64>,
+    /// The code Settings shows to pair a device with the remote bridge, while it shows one.
+    pairing: RefCell<Option<String>>,
+}
+
+thread_local! {
+    static HOST: RefCell<Weak<Host>> = RefCell::new(Weak::new());
 }
 
 /// The bridge socket of this app id, beside the control socket.
@@ -76,6 +87,16 @@ pub fn socket_path(app_id: &str) -> PathBuf {
 
 /// Characters nobody can guess (from /dev/urandom).
 pub fn random(len: usize) -> String {
+    const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
+    random_bytes(len).iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
+}
+
+/// `len` random bytes, as hex.
+fn random_hex(len: usize) -> String {
+    random_bytes(len).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn random_bytes(len: usize) -> Vec<u8> {
     use std::io::Read;
     let mut bytes = vec![0u8; len];
     if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
@@ -84,8 +105,30 @@ pub fn random(len: usize) -> String {
             *b = (seed >> ((i % 16) * 8)) as u8;
         }
     }
-    const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    bytes.iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
+    bytes
+}
+
+/// The remote bridge's program, `loom-remote` beside loom (it brings iroh; loom doesn't).
+pub fn remote_program() -> Option<PathBuf> {
+    let program = std::env::current_exe().ok()?.with_file_name("loom-remote");
+    program.is_file().then_some(program)
+}
+
+/// Opens pairing (a new code for Settings to show) or closes it.
+pub fn pair(open: bool) {
+    let Some(host) = HOST.with(|h| h.borrow().upgrade()) else { return };
+    let code = open.then(|| random(12));
+    *host.pairing.borrow_mut() = code.clone();
+    host.apply(&crate::settings::get());
+    if let Some(code) = code {
+        let weak = Rc::downgrade(&host);
+        glib::timeout_add_local_once(PAIRING, move || {
+            let Some(host) = weak.upgrade() else { return };
+            if host.pairing.borrow().as_deref() == Some(code.as_str()) {
+                pair(false);
+            }
+        });
+    }
 }
 
 impl Host {
@@ -98,12 +141,14 @@ impl Host {
             failures: RefCell::default(),
             told: RefCell::default(),
             seq: Cell::new(0),
+            pairing: RefCell::new(None),
         })
     }
 
     /// Listens on the bridge socket, then starts the bridges the settings switch on.
     pub fn attach(self: &Rc<Self>, app: &Rc<App>) {
         *self.app.borrow_mut() = Rc::downgrade(app);
+        HOST.with(|h| *h.borrow_mut() = Rc::downgrade(self));
         self.listen();
         self.apply(&crate::settings::get());
     }
@@ -145,20 +190,41 @@ impl Host {
 
     /// Starts, stops or tells each bridge as the settings say.
     pub fn apply(self: &Rc<Self>, s: &Settings) {
+        // Its endpoint's key, made the first time it is switched on (saved, then applied).
+        if s.remote_enabled && s.remote_key.is_empty() {
+            let key = random_hex(32);
+            glib::idle_add_local_once(move || crate::settings::update(|s| s.remote_key = key));
+            return;
+        }
+        if !s.remote_enabled {
+            *self.pairing.borrow_mut() = None;
+        }
         for name in BRIDGES {
             let wanted = self.settings_for(name, s);
-            let running = self.running.borrow().contains_key(name);
+            let running = self.running.borrow().get(name).map(|r| r.settings.clone());
             match (wanted, running) {
                 (None, running) => {
-                    if running {
+                    if running.is_some() {
                         self.stop(name);
                     }
-                    if *name == "telegram" {
-                        set_state(if s.telegram_enabled { Link::NeedsToken } else { Link::Off });
+                    match *name {
+                        "telegram" => set_state(name, (if s.telegram_enabled { Link::NeedsToken } else { Link::Off }).to_json()),
+                        _ if s.remote_enabled => set_state(name, json!({ "state": "failed", "why": "loom-remote is not installed beside loom." })),
+                        _ => set_state(name, json!({ "state": "off" })),
                     }
                 }
-                (Some(_), false) => self.start(name),
-                (Some(settings), true) => emit(Some(name), json!({ "event": "settings", "settings": settings })),
+                (Some(_), None) => self.start(name),
+                // Another key or relay: another endpoint.
+                (Some(settings), Some(was)) if *name == "remote" && (settings["key"] != was["key"] || settings["relay"] != was["relay"]) => {
+                    self.stop(name);
+                    self.start(name);
+                }
+                (Some(settings), Some(_)) => {
+                    if let Some(running) = self.running.borrow_mut().get_mut(name) {
+                        running.settings = settings.clone();
+                    }
+                    emit(Some(name), json!({ "event": "settings", "settings": settings }));
+                }
             }
         }
     }
@@ -172,20 +238,28 @@ impl Host {
                     json!({ "token": token, "user": s.telegram_user, "speech": crate::stt::configured(), "debug": s.debug_log })
                 })
             }
+            "remote" => (s.remote_enabled && !s.remote_key.is_empty() && remote_program().is_some()).then(|| {
+                json!({
+                    "key": s.remote_key,
+                    "relay": s.remote_relay.trim(),
+                    "devices": s.remote_devices.iter().map(|(id, name)| json!({ "id": id, "name": name })).collect::<Vec<_>>(),
+                    "pairing": *self.pairing.borrow(),
+                    "debug": s.debug_log,
+                })
+            }),
             _ => None,
         }
     }
 
     fn start(self: &Rc<Self>, name: &'static str) {
+        let Some(settings) = self.settings_for(name, &crate::settings::get()) else { return };
         let secret = random(32);
         let Ok(exe) = std::env::current_exe() else { return };
         let process = match gio::Subprocess::newv(&[exe.as_os_str(), "bridge".as_ref(), name.as_ref()], gio::SubprocessFlags::STDIN_PIPE) {
             Ok(process) => process,
             Err(err) => {
                 crate::log::debug!("bridges", "{name} did not start: {err}");
-                if name == "telegram" {
-                    set_state(Link::Failed(format!("The Telegram bridge did not start: {err}")));
-                }
+                set_state(name, json!({ "state": "failed", "why": format!("The {} bridge did not start: {err}", title(name)) }));
                 return;
             }
         };
@@ -196,9 +270,7 @@ impl Host {
             let _ = stdin.write_all(hello.as_bytes(), None::<&gio::Cancellable>);
         }
         crate::log::debug!("bridges", "{name} started (pid {:?})", process.identifier());
-        if name == "telegram" {
-            set_state(Link::Connecting);
-        }
+        set_state(name, json!({ "state": "connecting" }));
         let weak = Rc::downgrade(self);
         let (waited, mine) = (process.clone(), secret.clone());
         glib::spawn_future_local(async move {
@@ -206,7 +278,7 @@ impl Host {
             let Some(host) = weak.upgrade() else { return };
             host.ended(name, &mine);
         });
-        self.running.borrow_mut().insert(name, Running { process, secret, started: Instant::now() });
+        self.running.borrow_mut().insert(name, Running { process, secret, started: Instant::now(), settings });
     }
 
     fn stop(&self, name: &str) {
@@ -241,9 +313,7 @@ impl Host {
         };
         let wait = (1u64 << failures.min(6)).min(60);
         crate::log::debug!("bridges", "{name} stopped; again in {wait} s");
-        if name == "telegram" {
-            set_state(Link::Failed(format!("The Telegram bridge stopped; starting it again in {wait} s.")));
-        }
+        set_state(name, json!({ "state": "failed", "why": format!("The {} bridge stopped; starting it again in {wait} s.", title(name)) }));
         let weak = Rc::downgrade(self);
         glib::timeout_add_seconds_local_once(wait as u32, move || {
             let Some(host) = weak.upgrade() else { return };
@@ -397,13 +467,21 @@ impl Host {
                 });
                 return;
             }
-            "state" if bridge == "telegram" => {
-                set_state(Link::from_json(p));
+            "state" => {
+                set_state(bridge, p.clone());
                 Ok(json!({}))
             }
             other => Err(format!("unknown request {other}")),
         };
         answer(result);
+    }
+}
+
+/// A bridge's name, as said to the user.
+fn title(name: &str) -> &'static str {
+    match name {
+        "telegram" => "Telegram",
+        _ => "remote",
     }
 }
 
@@ -500,7 +578,11 @@ fn safe_name(name: &str) -> String {
     if name.is_empty() { "file".to_owned() } else { name.to_owned() }
 }
 
-// ---- the Telegram bridge as Settings shows it ----------------------------------------------
+// ---- the bridges as Settings shows them ----------------------------------------------------
+//
+// Each bridge's state is what it last said (the "state" request) or what loom knows of it
+// (off, starting, failed): `{"state": "off" | "connecting" | "failed" | …, …}`. The Telegram
+// bridge's is a `Link`.
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {
@@ -527,7 +609,7 @@ impl Link {
         }
     }
 
-    fn from_json(v: &Value) -> Link {
+    pub fn from_json(v: &Value) -> Link {
         match v["state"].as_str().unwrap_or("") {
             "off" => Link::Off,
             "needs-token" => Link::NeedsToken,
@@ -545,24 +627,29 @@ impl Link {
 }
 
 thread_local! {
-    static STATE: RefCell<Link> = const { RefCell::new(Link::Off) };
-    static WATCHERS: RefCell<Vec<Box<dyn Fn(&Link) -> bool>>> = RefCell::new(Vec::new());
+    static STATES: RefCell<HashMap<String, Value>> = RefCell::default();
+    static WATCHERS: RefCell<Vec<(String, Box<dyn Fn(&Value) -> bool>)>> = RefCell::new(Vec::new());
 }
 
-/// Calls `f` with the Telegram bridge's state now and on every change, while it returns true.
-pub fn watch(f: impl Fn(&Link) -> bool + 'static) {
-    if STATE.with(|s| f(&s.borrow())) {
-        WATCHERS.with(|w| w.borrow_mut().push(Box::new(f)));
+/// Bridge `name`'s state now.
+pub fn state_of(name: &str) -> Value {
+    STATES.with(|s| s.borrow().get(name).cloned()).unwrap_or_else(|| json!({ "state": "off" }))
+}
+
+/// Calls `f` with bridge `name`'s state now and on every change, while it returns true.
+pub fn watch(name: &str, f: impl Fn(&Value) -> bool + 'static) {
+    if f(&state_of(name)) {
+        WATCHERS.with(|w| w.borrow_mut().push((name.to_owned(), Box::new(f))));
     }
 }
 
-fn set_state(state: Link) {
-    if STATE.with(|s| *s.borrow() == state) {
+fn set_state(name: &str, state: Value) {
+    if state_of(name) == state {
         return;
     }
-    STATE.with(|s| *s.borrow_mut() = state.clone());
+    STATES.with(|s| s.borrow_mut().insert(name.to_owned(), state.clone()));
     let watchers = WATCHERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
-    let kept: Vec<_> = watchers.into_iter().filter(|f| f(&state)).collect();
+    let kept: Vec<_> = watchers.into_iter().filter(|(of, f)| of != name || f(&state)).collect();
     WATCHERS.with(|w| {
         let mut w = w.borrow_mut();
         let added = std::mem::take(&mut *w);

@@ -34,6 +34,7 @@
 //! - `teach:<why>` / `keeprule`: answer the newest "Why not?", keep its drafted rule
 //! - `fixnewest:<comment>`: a comment on the newest written change
 //! - `wfopen:<n>`: open agent n of the first workflow card
+//! - `remotestate:<file>`: the remote bridge state Settings shows (ticket…), written there
 //! - `quit`
 
 use std::path::{Path, PathBuf};
@@ -204,6 +205,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             collect(app.window.upcast_ref(), &test, &mut found);
             found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
         }
+        // The remote bridge as Settings sees it (its pairing ticket…), into a file.
+        "remotestate" => std::fs::write(&argument, crate::bridges::state_of("remote").to_string()).map_err(|_| "not written")?,
         // "\n" in it: a line break (the control file is a line each).
         "type" => app.active_agent().ok_or("no agent")?.chat.input.buffer().set_text(&argument.replace("\\n", "\n")),
         "plancomment" => {
