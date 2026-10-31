@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
 
+use serde_json::{Value, json};
+
 use crate::agent::view::View;
 use crate::agent::{Agent, Event, Status};
 use crate::jobs::Jobs;
@@ -208,6 +210,62 @@ impl Workspace {
                 }
             }
         }
+    }
+
+    // ---- what agents ask (loom's MCP tools) --------------------------------------------------
+
+    /// A request from agent `id`'s MCP tools that needs no UI: its project's jobs, the agents,
+    /// the Notes vault. None: one for the UI (opening a file, a notice).
+    pub fn answer(&self, id: u32, method: &str, params: &Value) -> Option<Result<Value, String>> {
+        let agent = self.agent(id);
+        let gone = || "this agent is no longer open in loom".to_owned();
+        let name = || params["name"].as_str().filter(|n| !n.is_empty()).map(str::to_owned).ok_or("a job name is needed".to_owned());
+        let job = |agent: &Agent, name: &str| agent.jobs.named(name).ok_or_else(|| format!("no job named {name}"));
+        Some(match method {
+            "run_job" => (|| {
+                let agent = agent.as_ref().ok_or_else(gone)?;
+                let name = name()?;
+                let command = params["command"].as_str().filter(|c| !c.trim().is_empty()).ok_or("a command is needed")?;
+                // A folder of its own: a repo inside the project, say (relative to the agent's).
+                let cwd = match params["cwd"].as_str().filter(|c| !c.is_empty()) {
+                    Some(dir) => {
+                        let dir = agent.cwd.join(state::expand(Path::new(dir)));
+                        if !dir.is_dir() {
+                            return Err(format!("{} is not a folder", dir.display()));
+                        }
+                        Some(dir)
+                    }
+                    None => None,
+                };
+                agent.jobs.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd)?;
+                Ok(json!({ "name": name }))
+            })(),
+            "job_output" => (|| {
+                let agent = agent.as_ref().ok_or_else(gone)?;
+                let name = name()?;
+                let job = job(agent, &name)?;
+                let lines = params["lines"].as_u64().unwrap_or(60).clamp(1, 2000) as usize;
+                Ok(json!({ "name": name, "running": job.running, "exit_code": job.exit_code, "output": agent.jobs.output(job.id, lines) }))
+            })(),
+            "stop_job" => (|| {
+                let agent = agent.as_ref().ok_or_else(gone)?;
+                agent.jobs.stop(job(agent, &name()?)?.id);
+                Ok(json!({}))
+            })(),
+            "list_jobs" => agent
+                .as_ref()
+                .ok_or_else(gone)
+                .map(|agent| json!(agent.jobs.list().into_iter().map(|j| json!({ "name": j.name, "running": j.running, "exit_code": j.exit_code })).collect::<Vec<_>>())),
+            // The Notes vault, for the MCP server's note tools (null: Notes is off).
+            "notes_info" => Ok(json!({ "vault": crate::vault::current().map(|v| v.to_string_lossy().into_owned()) })),
+            "list_agents" => Ok(json!(
+                self.agents_in_order()
+                    .iter()
+                    .map(|a| json!({ "title": a.title(), "project": a.project.to_string_lossy(), "status": a.status().css(), "you": a.id == id }))
+                    .collect::<Vec<_>>()
+            )),
+            _ => return None,
+        })
     }
 
     // ---- scheduled prompts --------------------------------------------------------------

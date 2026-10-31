@@ -103,6 +103,10 @@ impl Tray {
         match event {
             Event::Added(_) => {}
             Event::Started(_) => {
+                // Run again, maybe with another command (an agent's run_job).
+                if let Some(info) = self.core.info(id) {
+                    job.chip.set_tooltip_text(Some(&info.command));
+                }
                 job.term.reset(true, true);
                 job.dot.remove_css_class("done");
                 job.dot.remove_css_class("failed");
@@ -140,31 +144,9 @@ impl Tray {
         self.peek(&job);
     }
 
-    /// The job named `name`.
-    pub fn named(&self, name: &str) -> Option<Rc<Job>> {
-        self.core.named(name).and_then(|info| self.by_id(info.id))
-    }
-
-    /// Runs `command` as the job `name`: the same chip again if there is one (never two
-    /// jobs of one name, like herdr's named panes). Err if it is still running and
-    /// `restart` is false.
-    pub fn run_named(self: &Rc<Self>, name: &str, command: &str, restart: bool, cwd: Option<PathBuf>) -> Result<Rc<Job>, String> {
-        let id = self.core.run_named(name, command, restart, cwd)?;
-        if let Some(job) = self.by_id(id) {
-            job.chip.set_tooltip_text(Some(command));
-            return Ok(job);
-        }
-        Ok(self.add(id, name, command))
-    }
-
     /// How many jobs are running.
     pub fn running(&self) -> usize {
         self.core.list().iter().filter(|j| j.running).count()
-    }
-
-    /// Every job: (name, running, exit code).
-    pub fn list(&self) -> Vec<(String, bool, Option<i64>)> {
-        self.core.list().into_iter().map(|j| (j.name, j.running, j.exit_code)).collect()
     }
 
     fn add(self: &Rc<Self>, id: Id, name: &str, command: &str) -> Rc<Job> {
@@ -411,11 +393,6 @@ impl Job {
     /// The last `lines` lines it printed, as text.
     pub fn output(&self, lines: usize) -> String {
         self.core.output(self.id, lines)
-    }
-
-    /// Exit code once done (None while running or when unknown).
-    pub fn exit_code(&self) -> Option<i64> {
-        self.core.info(self.id).and_then(|info| info.exit_code)
     }
 
     /// Runs the command again: at once if nothing runs, else once the current run has

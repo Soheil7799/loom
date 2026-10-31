@@ -2606,42 +2606,11 @@ impl App {
     // ---- what agents ask of loom (its MCP tools) ------------------------------------------
 
     fn control(self: &Rc<Self>, id: u32, method: &str, params: &Value) -> Result<Value, String> {
+        if let Some(answer) = self.ws.answer(id, method, params) {
+            return answer;
+        }
         let agent = self.agent_by_id(id);
-        let tray = || agent.as_ref().map(|a| self.tray_for(&a.project)).ok_or_else(|| "this agent is no longer open in loom".to_owned());
-        let name = || params["name"].as_str().filter(|n| !n.is_empty()).map(str::to_owned).ok_or("a job name is needed");
-        let job = |name: &str| tray().and_then(|t| t.named(name).ok_or_else(|| format!("no job named {name}")));
         match method {
-            "run_job" => {
-                let name = name()?;
-                let command = params["command"].as_str().filter(|c| !c.trim().is_empty()).ok_or("a command is needed")?;
-                // A folder of its own: a repo inside the project, say (relative to the agent's).
-                let cwd = match params["cwd"].as_str().filter(|c| !c.is_empty()) {
-                    Some(dir) => {
-                        let base = agent.as_ref().map(|a| a.cwd.clone()).unwrap_or_default();
-                        let dir = base.join(crate::state::expand(Path::new(dir)));
-                        if !dir.is_dir() {
-                            return Err(format!("{} is not a folder", dir.display()));
-                        }
-                        Some(dir)
-                    }
-                    None => None,
-                };
-                tray()?.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd)?;
-                Ok(json!({ "name": name }))
-            }
-            "job_output" => {
-                let name = name()?;
-                let job = job(&name)?;
-                let lines = params["lines"].as_u64().unwrap_or(60).clamp(1, 2000) as usize;
-                Ok(json!({ "name": name, "running": job.is_running(), "exit_code": job.exit_code(), "output": job.output(lines) }))
-            }
-            "stop_job" => {
-                job(&name()?)?.stop();
-                Ok(json!({}))
-            }
-            "list_jobs" => Ok(json!(
-                tray()?.list().into_iter().map(|(n, r, c)| json!({ "name": n, "running": r, "exit_code": c })).collect::<Vec<_>>()
-            )),
             "open_file" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;
                 let path = Path::new(params["path"].as_str().ok_or("a path is needed")?);
@@ -2723,14 +2692,6 @@ impl App {
                 }
                 Ok(json!({}))
             }
-            // The Notes vault, for the MCP server's note tools (null: Notes is off).
-            "notes_info" => Ok(json!({ "vault": crate::vault::current().map(|v| v.to_string_lossy().into_owned()) })),
-            "list_agents" => Ok(json!(
-                self.agents_in_order()
-                    .iter()
-                    .map(|a| json!({ "title": a.title(), "project": a.project.to_string_lossy(), "status": a.status().css(), "you": a.id == id }))
-                    .collect::<Vec<_>>()
-            )),
             other => Err(format!("unknown request {other}")),
         }
     }
