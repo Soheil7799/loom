@@ -9,8 +9,10 @@ license = "MIT"
 async-channel = "2"
 data-encoding = "2"
 jiff = "0.2"
+pulldown-cmark = { version = "0.13", default-features = false }
 serde_json = { version = "1", features = ["preserve_order"] }
 trash = "5"
+ureq = { version = "3", default-features = false, features = ["rustls"] }
 uuid = { version = "1", features = ["v4"] }
 portable-pty = "0.9"
 vt100 = "0.16"

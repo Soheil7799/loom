@@ -14,7 +14,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::time::Duration;
 
-use gtk::{gio, glib};
 use serde_json::{Value, json};
 
 use super::Link;
@@ -144,7 +143,7 @@ struct Bot {
     labels: RefCell<HashMap<String, u32>>,
     /// The agent whose "typing…" shows (while it works on a message from here), and its timer.
     typing: Cell<Option<u32>>,
-    typing_timer: RefCell<Option<glib::SourceId>>,
+    typing_timer: RefCell<Option<crate::rt::Timer>>,
     /// Stopped from here (and when): its turn's end is not told again.
     stopped_here: Cell<Option<(u32, std::time::Instant)>>,
 }
@@ -228,7 +227,7 @@ impl Bot {
         let flag = self.generation.clone();
         let (weak, mine) = (Rc::downgrade(self), token.clone());
         std::thread::spawn(move || send(&token, &flag, generation, &to_send, &to_main));
-        glib::spawn_future_local(async move {
+        crate::rt::spawn_local(async move {
             while let Ok(incoming) = from_threads.recv().await {
                 let Some(bot) = weak.upgrade() else { break };
                 // Restarted meanwhile: what this bot already received is still handled (its
@@ -291,7 +290,7 @@ impl Bot {
 
     /// A message for `agent` (pictures as they came: loom reads them).
     fn send(&self, agent: u32, text: &str, images: Vec<Vec<u8>>) -> Result<(), String> {
-        let images: Vec<String> = images.iter().map(|b| glib::base64_encode(b).to_string()).collect();
+        let images: Vec<String> = images.iter().map(|b| data_encoding::BASE64.encode(b)).collect();
         let view = self.loom("send", json!({ "agent": agent, "text": text, "images": images }))?;
         self.seen(&view);
         Ok(())
@@ -470,20 +469,20 @@ impl Bot {
         let action = |bot: &Bot| bot.call("sendChatAction", json!({ "chat_id": bot.user.get(), "action": "typing" }), About::Nothing);
         action(self);
         let (weak, started) = (Rc::downgrade(self), std::time::Instant::now());
-        let timer = glib::timeout_add_seconds_local(4, move || {
-            let Some(bot) = weak.upgrade() else { return glib::ControlFlow::Break };
+        let timer = crate::rt::every(Duration::from_secs(4), move || {
+            let Some(bot) = weak.upgrade() else { return false };
             // Starting (resumed) and waiting on a question are still at it.
             let busy = bot.agent(agent).is_some_and(|a| matches!(a.status(), Status::Working | Status::Starting | Status::Blocked));
             if !bot.on() || !busy || started.elapsed().as_secs() > 30 * 60 {
                 bot.typing.set(None);
                 bot.typing_timer.borrow_mut().take();
-                return glib::ControlFlow::Break;
+                return false;
             }
             // Waiting on you: no "typing" then (it comes back once answered).
             if bot.agent(agent).is_some_and(|a| a.status() != Status::Blocked) {
                 action(&bot);
             }
-            glib::ControlFlow::Continue
+            true
         });
         *self.typing_timer.borrow_mut() = Some(timer);
     }
@@ -774,7 +773,7 @@ impl Bot {
             let sent = if picture {
                 bot.send(agent.id, &caption, vec![bytes])
             } else {
-                let data = glib::base64_encode(&bytes).to_string();
+                let data = data_encoding::BASE64.encode(&bytes);
                 bot.loom("save", json!({ "agent": agent.id, "name": name, "data": data })).and_then(|path| {
                     let note = format!("I sent you a file from Telegram, saved at {}", path.as_str().unwrap_or(""));
                     let text = if caption.is_empty() { note } else { format!("{caption}\n\n({note})") };
@@ -800,8 +799,8 @@ impl Bot {
         let Some((token, _)) = self.running.borrow().clone() else { return };
         self.react(message);
         let weak = Rc::downgrade(self);
-        glib::spawn_future_local(async move {
-            let fetched = gio::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
+        crate::rt::spawn_local(async move {
+            let fetched = crate::rt::spawn_blocking(move || download(&token, &file_id)).await.unwrap_or_else(|_| Err("the download stopped".into()));
             let Some(bot) = weak.upgrade() else { return };
             match fetched {
                 Ok(bytes) => then(&bot, bytes),
@@ -830,10 +829,10 @@ impl Bot {
         let message = message.clone();
         self.fetch(&message.clone(), &file, move |bot, audio| {
             let (weak, loom) = (Rc::downgrade(bot), bot.loom.clone());
-            let audio = glib::base64_encode(&audio).to_string();
-            glib::spawn_future_local(async move {
+            let audio = data_encoding::BASE64.encode(&audio);
+            crate::rt::spawn_local(async move {
                 let asked = json!({ "audio": audio, "name": name, "mime": mime });
-                let result = gio::spawn_blocking(move || loom.call("transcribe", asked)).await.unwrap_or_else(|_| Err("the request stopped".into()));
+                let result = crate::rt::spawn_blocking(move || loom.call("transcribe", asked)).await.unwrap_or_else(|_| Err("the request stopped".into()));
                 let Some(bot) = weak.upgrade() else { return };
                 match result.and_then(|text| text.as_str().map(str::to_owned).ok_or_else(|| "no text came back".to_owned())) {
                     Ok(text) if text.is_empty() => bot.say("Heard nothing in it.", About::Nothing),
@@ -1321,7 +1320,7 @@ fn html(markdown: &str) -> String {
 // ---- the process -----------------------------------------------------------------------------
 
 /// `loom bridge telegram`: started by loom (never by hand), until loom stops it or closes.
-pub fn run() -> i32 {
+pub fn run(main_loop: impl FnOnce()) -> i32 {
     let (loom, app_id) = match Client::from_stdin() {
         Ok(started) => started,
         Err(why) => {
@@ -1330,8 +1329,6 @@ pub fn run() -> i32 {
         }
     };
     crate::log::name_for(&app_id);
-    let context = glib::MainContext::default();
-    let Ok(_owner) = context.acquire() else { return 1 };
     // Told first, asked second: nothing happens in between unheard.
     let events = match loom.subscribe() {
         Ok(events) => events,
@@ -1353,13 +1350,13 @@ pub fn run() -> i32 {
     }
     bot.settings(&hello["settings"]);
     let weak = Rc::downgrade(&bot);
-    glib::spawn_future_local(async move {
+    crate::rt::spawn_local(async move {
         while let Ok(event) = events.recv().await {
             let Some(bot) = weak.upgrade() else { break };
             bot.event(&event);
         }
     });
-    glib::MainLoop::new(Some(&context), false).run();
+    main_loop();
     0
 }
 

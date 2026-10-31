@@ -9,7 +9,6 @@ use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 
-use gtk::{gio, glib};
 use serde_json::Value;
 
 use crate::settings;
@@ -26,8 +25,8 @@ pub fn transcribe(audio: Vec<u8>, name: &str, mime: &str, done: impl FnOnce(Resu
     let (url, key, model, language) = (s.stt_url.trim().to_owned(), s.stt_key.trim().to_owned(), s.stt_model.trim().to_owned(), s.stt_language.trim().to_owned());
     let (name, mime) = (name.to_owned(), mime.to_owned());
     let size = audio.len();
-    glib::spawn_future_local(async move {
-        let result = gio::spawn_blocking(move || request(&url, &key, &model, &language, &audio, &name, &mime))
+    crate::rt::spawn_local(async move {
+        let result = crate::rt::spawn_blocking(move || request(&url, &key, &model, &language, &audio, &name, &mime))
             .await
             .unwrap_or_else(|_| Err("the request stopped".to_owned()));
         crate::log::debug!("stt", "{size} bytes → {:?}", result.as_ref().map(|t| t.chars().count()));
@@ -135,7 +134,7 @@ pub fn record() -> Result<Recording, String> {
         ("arecord", vec!["-q", "-f", "S16_LE", "-r", "16000", "-c", "1", &file]),
     ];
     for (program, args) in tries {
-        if glib::find_program_in_path(program).is_none() {
+        if crate::paths::find_program(program).is_none() {
             continue;
         }
         let mut command = Command::new(program);

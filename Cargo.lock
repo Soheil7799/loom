@@ -1935,8 +1935,10 @@ dependencies = [
  "jiff",
  "libc",
  "portable-pty",
+ "pulldown-cmark",
  "serde_json",
  "trash",
+ "ureq",
  "uuid",
  "vt100",
 ]

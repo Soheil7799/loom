@@ -25,6 +25,11 @@ fn xdg(name: &str) -> Option<PathBuf> {
     std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute())
 }
 
+/// Where `name` is found on $PATH.
+pub fn find_program(name: &str) -> Option<PathBuf> {
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|dir| dir.join(name)).find(|path| path.is_file())
+}
+
 /// "3m ago", "2h ago"…
 pub fn ago(seconds: u64) -> String {
     match seconds {

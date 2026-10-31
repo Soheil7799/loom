@@ -40,7 +40,7 @@ use loom_core::scribe;
 mod scratch;
 use loom_core::settings;
 use loom_core::state;
-mod stt;
+use loom_core::stt;
 mod term;
 mod theme;
 mod workflow;
@@ -95,7 +95,12 @@ fn main() -> glib::ExitCode {
     // `loom bridge <name>`: a bridge, started by loom itself (see bridges.rs).
     if std::env::args().nth(1).as_deref() == Some("bridge") {
         return match std::env::args().nth(2).as_deref() {
-            Some("telegram") => glib::ExitCode::from(bridges::telegram::run() as u8),
+            Some("telegram") => {
+                // Its own process, on GLib's main loop like the app.
+                let context = glib::MainContext::default();
+                let Ok(_owner) = context.acquire() else { return glib::ExitCode::from(1) };
+                glib::ExitCode::from(bridges::telegram::run(|| glib::MainLoop::new(Some(&context), false).run()) as u8)
+            }
             // Its own program: iroh and its runtime stay out of loom.
             Some("remote") => {
                 use std::os::unix::process::CommandExt;

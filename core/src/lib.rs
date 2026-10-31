@@ -3,6 +3,7 @@
 //! on its own threads and reports over channels.
 
 pub mod agent;
+pub mod bridges;
 pub mod compacted;
 pub mod control;
 pub mod jobs;
@@ -21,6 +22,7 @@ pub mod schedule;
 pub mod scribe;
 pub mod settings;
 pub mod state;
+pub mod stt;
 pub mod topics;
 pub mod vault;
 pub mod workflow;

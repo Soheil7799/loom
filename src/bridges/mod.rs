@@ -14,8 +14,10 @@
 //!
 //! What a bridge can do is the methods in `Host::handle`, nothing else.
 
-pub mod client;
-pub mod telegram;
+pub use loom_core::bridges::{Link, random, telegram};
+#[cfg(test)]
+use loom_core::bridges::asking_from;
+use loom_core::bridges::random_hex;
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -86,35 +88,6 @@ pub fn socket_path(app_id: &str) -> PathBuf {
     control.with_file_name(format!("{stem}-bridges.sock"))
 }
 
-/// Characters nobody can guess (from /dev/urandom).
-pub fn random(len: usize) -> String {
-    const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    random_bytes(len).iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
-}
-
-/// `len` random bytes from /dev/urandom, as hex (a key: nothing weaker will do).
-fn random_hex(len: usize) -> Option<String> {
-    urandom(len).map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
-}
-
-fn urandom(len: usize) -> Option<Vec<u8>> {
-    use std::io::Read;
-    let mut bytes = vec![0u8; len];
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).ok().map(|()| bytes)
-}
-
-fn random_bytes(len: usize) -> Vec<u8> {
-    let mut bytes = vec![0u8; len];
-    if let Some(random) = urandom(len) {
-        bytes = random;
-    } else {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()) ^ u128::from(std::process::id());
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = (seed >> ((i % 16) * 8)) as u8;
-        }
-    }
-    bytes
-}
 
 /// The remote bridge's program, `loom-remote` beside loom (it brings iroh; loom doesn't).
 pub fn remote_program() -> Option<PathBuf> {
@@ -573,25 +546,6 @@ fn asking_json(serial: u64, a: &Asking) -> Value {
     })
 }
 
-/// A question as a bridge got it.
-pub fn asking_from(v: &Value) -> Asking {
-    let strings = |v: &Value| v.as_array().into_iter().flatten().map(|s| s.as_str().unwrap_or("").to_owned()).collect::<Vec<_>>();
-    Asking {
-        title: v["title"].as_str().unwrap_or("").to_owned(),
-        detail: v["detail"].as_str().map(str::to_owned),
-        options: v["options"].as_array().into_iter().flatten().map(|o| (o[0].as_str().unwrap_or("").to_owned(), o[1].as_str().unwrap_or("").to_owned())).collect(),
-        fields: v["fields"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .map(|f| (f[0].as_str().unwrap_or("").to_owned(), strings(&f[1]), f[2].as_bool().unwrap_or(false), f[3].as_array().into_iter().flatten().map(|b| b.as_bool().unwrap_or(false)).collect()))
-            .collect(),
-        is_form: v["is_form"].as_bool().unwrap_or(false),
-        writable: v["writable"].as_bool().unwrap_or(false),
-        summary: v["summary"].as_str().unwrap_or("").to_owned(),
-        blank: v["blank"].as_bool().unwrap_or(false),
-    }
-}
 
 /// A sent file's name, safe as a file name here (no folders, nothing hidden).
 fn safe_name(name: &str) -> String {
@@ -606,47 +560,6 @@ fn safe_name(name: &str) -> String {
 // (off, starting, failed): `{"state": "off" | "connecting" | "failed" | …, …}`. The Telegram
 // bridge's is a `Link`.
 
-#[derive(Clone, Debug, PartialEq)]
-pub enum Link {
-    Off,
-    NeedsToken,
-    Connecting,
-    /// `code`: no account linked yet, sending it proposes one. `candidate`: who sent it, to be
-    /// linked by the user in loom (never by the bot itself). `problem`: the last message that
-    /// could not be sent.
-    Connected { bot: String, user: i64, code: Option<String>, candidate: Option<(i64, String)>, problem: Option<String> },
-    Failed(String),
-}
-
-impl Link {
-    pub fn to_json(&self) -> Value {
-        match self {
-            Link::Off => json!({ "state": "off" }),
-            Link::NeedsToken => json!({ "state": "needs-token" }),
-            Link::Connecting => json!({ "state": "connecting" }),
-            Link::Connected { bot, user, code, candidate, problem } => json!({
-                "state": "connected", "bot": bot, "user": user, "code": code, "candidate": candidate, "problem": problem,
-            }),
-            Link::Failed(why) => json!({ "state": "failed", "why": why }),
-        }
-    }
-
-    pub fn from_json(v: &Value) -> Link {
-        match v["state"].as_str().unwrap_or("") {
-            "off" => Link::Off,
-            "needs-token" => Link::NeedsToken,
-            "connecting" => Link::Connecting,
-            "connected" => Link::Connected {
-                bot: v["bot"].as_str().unwrap_or("").to_owned(),
-                user: v["user"].as_i64().unwrap_or(0),
-                code: v["code"].as_str().map(str::to_owned),
-                candidate: v["candidate"].as_array().map(|c| (c[0].as_i64().unwrap_or(0), c[1].as_str().unwrap_or("").to_owned())),
-                problem: v["problem"].as_str().map(str::to_owned),
-            },
-            _ => Link::Failed(v["why"].as_str().unwrap_or("The Telegram bridge failed.").to_owned()),
-        }
-    }
-}
 
 thread_local! {
     static STATES: RefCell<HashMap<String, Value>> = RefCell::default();
