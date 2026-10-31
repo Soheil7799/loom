@@ -160,7 +160,7 @@ impl Workflow for crate::workflow::Run {
         self.task.clone()
     }
     fn done(&self) -> bool {
-        self.done.get()
+        crate::workflow::Run::done(self)
     }
     fn counts(&self) -> (usize, usize) {
         crate::workflow::Run::counts(self)

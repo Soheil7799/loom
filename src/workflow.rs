@@ -14,27 +14,20 @@ pub use loom_core::workflow::*;
 pub struct Run {
     pub tool_id: String,
     pub name: String,
-    dir: PathBuf,
     pub task: String,
     pub root: gtk::Box,
     status: gtk::Label,
     stop: gtk::Button,
-    progress: gtk::Label,
+    progress_label: gtk::Label,
     finished: gtk::Label,
     agents: gtk::Expander,
     list: gtk::ListBox,
-    members: RefCell<Vec<Member>>,
-    /// How much of the journal is read.
-    read: Cell<u64>,
-    /// Its output file, once found (it is there, empty, from the launch on).
-    output: RefCell<Option<PathBuf>>,
+    /// Where it stands (read from its files, in loom-core).
+    progress: RefCell<Progress>,
     /// What the strip was last told: (done, all, over).
     told: Cell<(usize, usize, bool)>,
     /// The members the list shows (it is filled again only when they change).
     shown: RefCell<Vec<Member>>,
-    pub done: Cell<bool>,
-    /// Launched in this run of the agent (not read back from an older one).
-    live: bool,
     /// The agent of the conversation still runs (a workflow ends with it).
     alive: Box<dyn Fn() -> bool>,
     /// An agent of it opened (its transcript file and label).
@@ -84,22 +77,17 @@ impl Run {
         let run = Rc::new(Run {
             tool_id: tool_id.to_owned(),
             name: launch.name.clone(),
+            progress: RefCell::new(Progress::new(&launch, live)),
             task: launch.task,
-            dir: launch.dir,
             root,
             status,
             stop: stop.clone(),
-            progress,
+            progress_label: progress,
             finished,
             agents: agents.clone(),
             list: list.clone(),
-            members: RefCell::default(),
-            read: Cell::new(0),
-            output: RefCell::default(),
             told: Cell::new((0, 0, false)),
             shown: RefCell::default(),
-            done: Cell::new(false),
-            live,
             alive: Box::new(alive),
             on_open: RefCell::default(),
             on_changed: RefCell::default(),
@@ -128,15 +116,15 @@ impl Run {
             let member = run.shown.borrow().get(row.index() as usize).cloned();
             let open = run.on_open.borrow().clone();
             if let (Some(member), Some(open)) = (member, open) {
-                open(run.dir.join(format!("agent-{}.jsonl", member.id)), member.label);
+                open(run.progress.borrow().transcript(&member.id), member.label);
             }
         });
         run.poll();
         // While it runs: read what is new every second and a half.
-        if !run.done.get() {
+        if !run.done() {
             let weak = Rc::downgrade(&run);
             glib::timeout_add_local(Duration::from_millis(1500), move || match weak.upgrade() {
-                Some(run) if !run.done.get() => {
+                Some(run) if !run.done() => {
                     run.poll();
                     glib::ControlFlow::Continue
                 }
@@ -146,70 +134,58 @@ impl Run {
         run
     }
 
-    /// (done, all) agents, for the strip.
-    pub fn counts(&self) -> (usize, usize) {
-        let members = self.members.borrow();
-        (members.iter().filter(|m| m.result.is_some()).count(), members.len())
+    /// Over (done, failed, stopped).
+    pub fn done(&self) -> bool {
+        self.progress.borrow().done()
     }
 
-    /// Reads what the journal has new, and whether the workflow is over.
+    /// (done, all) agents, for the strip.
+    pub fn counts(&self) -> (usize, usize) {
+        self.progress.borrow().counts()
+    }
+
+    /// Reads what its files have new, and shows it.
     fn poll(&self) {
-        let journal = self.dir.join("journal.jsonl");
-        let length = std::fs::metadata(&journal).map_or(0, |m| m.len());
-        if length > self.read.get()
-            && let Some(bytes) = read_from(&journal, self.read.get())
-        {
-            // Up to the last whole line (one may be half written).
-            let end = bytes.iter().rposition(|b| *b == b'\n').map_or(0, |i| i + 1);
-            read_journal(&String::from_utf8_lossy(&bytes[..end]), &mut self.members.borrow_mut());
-            self.read.set(self.read.get() + end as u64);
+        let alive = (self.alive)();
+        self.progress.borrow_mut().poll(alive);
+        self.show();
+    }
+
+    /// Where it stands, drawn; the strip told of a change.
+    fn show(&self) {
+        let (state, members) = {
+            let progress = self.progress.borrow();
+            (progress.state.clone(), progress.members.clone())
+        };
+        for class in ["done", "stopped", "failed"] {
+            self.status.remove_css_class(class);
         }
-        // Over once its output is written whole (the file is there, empty, from its launch on;
-        // one stopped stays so: that is told by the stop, see stopped_task).
-        if self.output.borrow().is_none() {
-            *self.output.borrow_mut() = find_output(&temporary(), &self.dir, &self.task);
+        let (word, class) = match &state {
+            State::Running => ("running", None),
+            State::Done(_) => ("done", Some("done")),
+            State::Ended => ("ended", Some("done")),
+            State::Failed => ("failed", Some("failed")),
+            State::Stopped => ("stopped", Some("stopped")),
+        };
+        self.status.set_label(word);
+        if let Some(class) = class {
+            self.status.add_css_class(class);
         }
-        let output = self.output.borrow().as_ref().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|t| serde_json::from_str::<Value>(&t).ok());
-        if let Some(output) = output {
-            self.done.set(true);
-            self.status.set_label("done");
-            self.status.add_css_class("done");
-            let mut said = Vec::new();
-            if let Some(n) = output["agentCount"].as_u64() {
-                said.push(format!("{n} agents"));
-            }
-            if let Some(tokens) = output["totalTokens"].as_u64() {
-                said.push(format!("{:.1}M tokens", tokens as f64 / 1_000_000.0));
-            }
-            let logs: Vec<String> = output["logs"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(str::to_owned)).collect();
-            let mut text = format!("Finished: {}.", said.join(", "));
-            if !logs.is_empty() {
-                text.push_str(&format!("\n{}", logs.join(" · ")));
-            }
-            self.finished.set_label(&text);
+        if let State::Done(text) = &state {
+            self.finished.set_label(text);
             self.finished.set_visible(true);
-        } else if !(self.alive)() {
-            // Its agent stopped (suspended, closed, loom quit) before it ended.
-            self.done.set(true);
-            self.status.set_label("stopped");
-            self.status.add_css_class("stopped");
-        } else if !self.live {
-            // Read back from an earlier run of the agent: over, its output not kept (Claude
-            // Code keeps it in a temporary folder).
-            self.done.set(true);
-            self.status.set_label("ended");
-            self.status.add_css_class("done");
         }
-        self.stop.set_visible(!self.done.get());
+        let over = state != State::Running;
+        self.stop.set_visible(!over);
         let (done, all) = self.counts();
-        let text = phases(&self.members.borrow());
-        self.progress.set_label(if all == 0 { "Starting…" } else { &text });
+        let text = phases(&members);
+        self.progress_label.set_label(if all == 0 { "Starting…" } else { &text });
         self.agents.set_label(Some(&format!("Agents ({done} of {all} done)")));
         if self.agents.is_expanded() {
             self.fill_list();
         }
         // The strip is told only of a change.
-        if self.told.replace((done, all, self.done.get())) != (done, all, self.done.get())
+        if self.told.replace((done, all, over)) != (done, all, over)
             && let Some(changed) = self.on_changed.borrow().clone()
         {
             changed();
@@ -219,7 +195,7 @@ impl Run {
     /// Its Stop was asked for and nothing stopped it (the request was taken back, or Claude
     /// did not stop it): Stop can be pressed again.
     pub fn stop_unanswered(&self) {
-        if !self.done.get() {
+        if !self.done() {
             self.stop.set_sensitive(true);
             self.stop.set_label("Stop");
         }
@@ -227,42 +203,19 @@ impl Run {
 
     /// Its end, as the provider tells it: done (its output in `output`), failed, or stopped.
     pub fn ended(&self, status: &str, output: Option<PathBuf>) {
-        if self.done.get() {
-            return;
-        }
-        match status {
-            "completed" => {
-                if output.is_some() {
-                    *self.output.borrow_mut() = output;
-                }
-                self.poll();
-            }
-            "failed" => {
-                self.done.set(true);
-                self.status.set_label("failed");
-                self.status.add_css_class("failed");
-                self.stop.set_visible(false);
-                if let Some(changed) = self.on_changed.borrow().clone() {
-                    changed();
-                }
-            }
-            _ => self.stopped(),
-        }
+        let alive = (self.alive)();
+        self.progress.borrow_mut().ended(status, output, alive);
+        self.show();
     }
 
     /// Stopped from loom: over, whatever its files say later.
     pub fn stopped(&self) {
-        self.done.set(true);
-        self.status.set_label("stopped");
-        self.status.add_css_class("stopped");
-        self.stop.set_visible(false);
-        if let Some(changed) = self.on_changed.borrow().clone() {
-            changed();
-        }
+        self.progress.borrow_mut().state = State::Stopped;
+        self.show();
     }
 
     fn fill_list(&self) {
-        let members = self.members.borrow().clone();
+        let members = self.progress.borrow().members.clone();
         if *self.shown.borrow() == members {
             return;
         }
@@ -359,41 +312,5 @@ pub fn fill_transcript(chat: &crate::chat::Chat, path: &Path) {
             }
             _ => {}
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_workflow_is_followed_from_its_files() {
-        let raw = "Workflow launched in background. Task ID: wf1\nSummary: Ask a council\nTranscript dir: /home/me/.claude/projects/-p/s1/subagents/workflows/wf_9\nScript file: /s/council-wf_9.js";
-        let launch = launch_of(&json!({ "rawOutput": raw })).unwrap();
-        assert_eq!((launch.task.as_str(), launch.summary.as_str(), launch.name.as_str()), ("wf1", "Ask a council", "council"));
-        // The output is looked for in each of the project's conversations (s0 started the process).
-        let root = std::env::temp_dir().join(format!("loom-test-workflow-{}", std::process::id()));
-        assert!(find_output(&root, &launch.dir, "wf1").is_none());
-        std::fs::create_dir_all(root.join("-p/s0/tasks")).unwrap();
-        std::fs::write(root.join("-p/s0/tasks/wf1.output"), "{}").unwrap();
-        assert!(find_output(&root, &launch.dir, "wf1").unwrap().ends_with("-p/s0/tasks/wf1.output"));
-        std::fs::remove_dir_all(&root).unwrap();
-        let stop = json!({ "_meta": { "claudeCode": { "toolResponse": { "message": "Successfully stopped task: wdx9 (x)", "task_id": "wdx9", "task_type": "local_workflow" } } } });
-        assert_eq!(stopped_task(&stop).as_deref(), Some("wdx9"));
-        assert_eq!(stopped_task(&json!({ "rawOutput": "{\"message\":\"Successfully stopped task: wdx9 (x)\"}" })).as_deref(), Some("wdx9"));
-        assert!(stopped_task(&json!({ "rawOutput": "Done." })).is_none());
-        let empty_first = json!({ "content": [{ "content": { "text": "" } }, { "content": { "text": raw } }] });
-        assert_eq!(launch_of(&empty_first).unwrap().task, "wf1");
-        let structured = json!({ "_meta": { "claudeCode": { "toolResponse": { "taskType": "local_workflow", "taskId": "t", "workflowName": "council", "transcriptDir": "/d/s/subagents/workflows/r" } } } });
-        assert_eq!(launch_of(&structured).unwrap().name, "council");
-        assert!(launch_of(&json!({ "rawOutput": "something else" })).is_none());
-        let mut members = Vec::new();
-        read_journal(
-            "{\"type\":\"launched\"}\n{\"type\":\"started\",\"agentId\":\"a\",\"label\":\"F1 · contrarian\",\"phase\":\"Advise\"}\n{\"type\":\"started\",\"agentId\":\"b\",\"label\":\"F1 · chair\",\"phase\":\"Decide\"}\n{\"type\":\"result\",\"agentId\":\"a\",\"result\":\"Choose B.\"}\n",
-            &mut members,
-        );
-        assert_eq!(members.len(), 2);
-        assert_eq!(members[0].result.as_deref(), Some("Choose B."));
-        assert_eq!(phases(&members), "Advise 1/1 · Decide 0/1");
     }
 }
