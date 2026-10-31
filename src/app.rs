@@ -1901,6 +1901,7 @@ impl App {
             self.notes_button.set_active(true);
             self.notes_button.add_css_class("on");
             self.notes_panel.refresh();
+            self.notes_panel.watch(true);
             self.mark_active();
         }
         self.chat_stack.set_visible_child_name("notes-chat");
@@ -1919,6 +1920,7 @@ impl App {
         *self.notes_file.borrow_mut() = (self.files.open_path(), self.files.editor_box.is_visible());
         *self.notes_tabs.borrow_mut() = self.files.swap_tabs(side.tabs);
         self.notes_chat.shown(false);
+        self.notes_panel.watch(false);
         self.side_stack.set_visible_child_name("agents");
         self.notes_panel.history.remove(&self.hub.panel);
         self.files.take_back_notes(&self.hub.panel);

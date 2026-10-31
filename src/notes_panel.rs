@@ -46,6 +46,9 @@ pub struct NotesPanel {
     expanded: RefCell<HashSet<String>>,
     /// Notes with a merge left undone in them (<<<<<<< lines), by path in the vault.
     marked: RefCell<Vec<String>>,
+    /// The vault's folders watched while the view shows (a sync adding or changing notes).
+    watches: RefCell<Vec<gtk::gio::FileMonitor>>,
+    watch_pending: Cell<bool>,
     reading: Cell<bool>,
     /// Asked again while reading: read once more after.
     again: Cell<bool>,
@@ -111,6 +114,8 @@ impl NotesPanel {
             notes: RefCell::default(),
             expanded: RefCell::default(),
             marked: RefCell::default(),
+            watches: RefCell::default(),
+            watch_pending: Cell::new(false),
             reading: Cell::new(false),
             again: Cell::new(false),
             on_open: RefCell::default(),
@@ -183,6 +188,55 @@ impl NotesPanel {
                 panel.refresh();
             }
         });
+    }
+
+    /// While the view shows (`on`), the vault's folders are watched: a note added, changed or
+    /// gone (a sync, another app) reads the panel again once things settle. Off: not watched.
+    pub fn watch(self: &Rc<Self>, on: bool) {
+        for monitor in self.watches.take() {
+            monitor.cancel();
+        }
+        let Some(vault) = crate::vault::current().filter(|_| on) else { return };
+        // Its folders, not loom's, git's or Obsidian's (hidden), a few hundred at most.
+        let mut folders = vec![vault];
+        let mut at = 0;
+        while at < folders.len() && folders.len() < 400 {
+            if let Ok(entries) = std::fs::read_dir(&folders[at]) {
+                for entry in entries.flatten() {
+                    if !entry.file_name().to_string_lossy().starts_with('.') && entry.file_type().is_ok_and(|k| k.is_dir()) {
+                        folders.push(entry.path());
+                    }
+                }
+            }
+            at += 1;
+        }
+        let mut watches = Vec::new();
+        for folder in folders {
+            let Ok(monitor) = gtk::gio::File::for_path(&folder).monitor_directory(gtk::gio::FileMonitorFlags::WATCH_MOVES, None::<&gtk::gio::Cancellable>) else { continue };
+            let weak = Rc::downgrade(self);
+            monitor.connect_changed(move |_, file, _, _| {
+                if file.basename().is_some_and(|n| n.to_string_lossy().starts_with('.')) {
+                    return;
+                }
+                let Some(panel) = weak.upgrade() else { return };
+                if panel.watch_pending.replace(true) {
+                    return;
+                }
+                let weak = weak.clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                    let Some(panel) = weak.upgrade() else { return };
+                    panel.watch_pending.set(false);
+                    if panel.watches.borrow().is_empty() {
+                        return;
+                    }
+                    // A new folder is watched too.
+                    panel.watch(true);
+                    panel.refresh();
+                });
+            });
+            watches.push(monitor);
+        }
+        *self.watches.borrow_mut() = watches;
     }
 
     /// Something new in History: its tab marked, until looked at.
