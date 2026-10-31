@@ -5,6 +5,7 @@
 pub mod agent;
 pub mod bridges;
 pub mod compacted;
+pub mod files;
 pub mod control;
 pub mod history;
 pub mod hub;

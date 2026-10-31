@@ -408,7 +408,7 @@ impl Host {
             // A file for the agent: saved in its folder, under <bridge>-files/. Its path back.
             "save" => agent().and_then(|agent| {
                 let dir = agent.cwd.join(format!("{bridge}-files"));
-                let target = crate::files::free_name(&dir.join(safe_name(p["name"].as_str().unwrap_or(""))));
+                let target = loom_core::files::free_name(&dir.join(safe_name(p["name"].as_str().unwrap_or(""))));
                 let bytes = glib::base64_decode(p["data"].as_str().unwrap_or(""));
                 std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
                 Ok(json!(target.to_string_lossy()))

@@ -2,6 +2,7 @@
 //! document it wrote) or the whole project as a tree, and an editor to open them in without
 //! leaving the app.
 
+use loom_core::files::{copy_all, free_name, ignored_in, ref_badges, to_trash};
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -1373,11 +1374,11 @@ impl Files {
         glib::spawn_future_local(async move {
             let reading = repo.clone();
             let found = gio::spawn_blocking(move || {
-                let log = Files::git(
+                let log = loom_core::files::git(
                     &reading,
                     &["-c", "core.quotePath=false", "log", "--graph", "--all", "--date-order", "--color=never", "-n", "400", "--format=%x1f%h%x1f%D%x1f%s%x1f%an%x1f%ar"],
                 )?;
-                let remotes: Vec<String> = Files::git(&reading, &["remote"]).unwrap_or_default().lines().map(str::to_owned).collect();
+                let remotes: Vec<String> = loom_core::files::git(&reading, &["remote"]).unwrap_or_default().lines().map(str::to_owned).collect();
                 Ok::<_, String>((log, remotes))
             })
             .await
@@ -1453,7 +1454,7 @@ impl Files {
         let (me, hash) = (self.me.borrow().clone(), hash.to_owned());
         glib::spawn_future_local(async move {
             let showing = hash.clone();
-            let text = gio::spawn_blocking(move || Files::git(&repo, &["-c", "core.quotePath=false", "show", "--stat", "--patch", "--format=fuller", &showing]).unwrap_or_else(|e| e))
+            let text = gio::spawn_blocking(move || loom_core::files::git(&repo, &["-c", "core.quotePath=false", "show", "--stat", "--patch", "--format=fuller", &showing]).unwrap_or_else(|e| e))
                 .await
                 .unwrap_or_default();
             if let Some(files) = me.upgrade() {
@@ -1570,16 +1571,6 @@ impl Files {
         *self.change_info.borrow_mut() = info;
     }
 
-    /// Runs git in `repo`: its output, or what it said went wrong.
-    fn git(repo: &Path, args: &[&str]) -> Result<String, String> {
-        let output = std::process::Command::new("git").arg("-C").arg(repo).args(args).output().map_err(|e| e.to_string())?;
-        if output.status.success() {
-            Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_owned())
-        }
-    }
-
     /// Runs git in the background (a commit hook or a signing prompt may take a while), then
     /// shows the Changes again, or what went wrong.
     fn git_then_refresh(&self, repo: &Path, args: Vec<String>) {
@@ -1595,7 +1586,7 @@ impl Files {
         glib::spawn_future_local(async move {
             let result = gio::spawn_blocking(move || {
                 let args: Vec<&str> = args.iter().map(String::as_str).collect();
-                Files::git(&repo, &args)
+                loom_core::files::git(&repo, &args)
             })
             .await
             .unwrap_or_else(|_| Err("git did not finish".to_owned()));
@@ -1616,7 +1607,7 @@ impl Files {
         glib::spawn_future_local(async move {
             let (reading, name) = (repo.clone(), file.clone());
             let diff = gio::spawn_blocking(move || {
-                Files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD", "--", &name])
+                loom_core::files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD", "--", &name])
                     .ok()
                     .filter(|d| !d.trim().is_empty())
                     .or_else(|| {
@@ -2158,30 +2149,6 @@ fn drop_into(into: impl Fn() -> Option<PathBuf> + 'static) -> gtk::DropTarget {
     target
 }
 
-/// `wanted`, or "name (2).ext", "name (3).ext"… if it is taken.
-pub fn free_name(wanted: &Path) -> PathBuf {
-    if !wanted.exists() {
-        return wanted.to_owned();
-    }
-    let stem = wanted.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let ext = wanted.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    (2..1000).map(|n| wanted.with_file_name(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or_else(|| wanted.to_owned())
-}
-
-/// A file, or a folder with all it holds.
-fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
-    if from.is_dir() {
-        std::fs::create_dir_all(to)?;
-        for entry in std::fs::read_dir(from)? {
-            let entry = entry?;
-            copy_all(&entry.path(), &to.join(entry.file_name()))?;
-        }
-        Ok(())
-    } else {
-        std::fs::copy(from, to).map(|_| ())
-    }
-}
-
 /// The file a DirectoryList entry stands for.
 fn file_of(info: &gio::FileInfo) -> Option<gio::File> {
     info.attribute_object("standard::file").and_downcast::<gio::File>()
@@ -2194,17 +2161,6 @@ fn tree_model(project: &Path) -> gtk::SingleSelection {
         (info.file_type() == gio::FileType::Directory).then(|| file_of(info).map(|f| folder(&f)))?
     });
     gtk::SingleSelection::new(Some(model))
-}
-
-/// The files and folders git ignores in `project` (none if it is no repository).
-fn ignored_in(project: &Path) -> std::collections::HashSet<PathBuf> {
-    let Ok(out) = std::process::Command::new("git").arg("-C").arg(project).args(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"]).output() else {
-        return Default::default();
-    };
-    if !out.status.success() {
-        return Default::default();
-    }
-    String::from_utf8_lossy(&out.stdout).split('\0').filter(|p| !p.is_empty()).map(|p| project.join(p.trim_end_matches('/'))).collect()
 }
 
 /// The tree's rows shown now, dimmed where git ignores them (the rows made later are, as
@@ -2315,26 +2271,6 @@ fn graph_markup(lanes: &str) -> String {
     out
 }
 
-/// A commit's refs as badges: (name, kind) with kind head / branch / remote / tag.
-fn ref_badges(refs: &str, remotes: &[String]) -> Vec<(String, &'static str)> {
-    let mut badges = Vec::new();
-    for part in refs.split(", ").map(str::trim).filter(|p| !p.is_empty()) {
-        if let Some(branch) = part.strip_prefix("HEAD -> ") {
-            badges.push(("HEAD".to_owned(), "head"));
-            badges.push((branch.to_owned(), "branch"));
-        } else if part == "HEAD" {
-            badges.push(("HEAD (detached)".to_owned(), "head"));
-        } else if let Some(tag) = part.strip_prefix("tag: ") {
-            badges.push((tag.to_owned(), "tag"));
-        } else if remotes.iter().any(|r| part.starts_with(&format!("{r}/"))) {
-            badges.push((part.to_owned(), "remote"));
-        } else {
-            badges.push((part.to_owned(), "branch"));
-        }
-    }
-    badges
-}
-
 /// The text selected in a label under `widget` (the Read view), if any.
 pub fn selected_text(widget: &gtk::Widget) -> Option<String> {
     if let Some(label) = widget.downcast_ref::<gtk::Label>()
@@ -2359,18 +2295,6 @@ fn file_icon(path: &Path, is_dir: bool) -> gio::Icon {
     crate::icons::for_file(path, is_dir)
 }
 
-/// Moves a file of the vault into its `.trash/` (where Obsidian puts what it deletes), under a
-/// name not taken there.
-fn to_trash(vault: &Path, file: &Path) -> std::io::Result<PathBuf> {
-    let trash = vault.join(".trash");
-    std::fs::create_dir_all(&trash)?;
-    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let extension = file.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
-    let place = (1..).map(|i| trash.join(if i == 1 { format!("{stem}{extension}") } else { format!("{stem} ({i}){extension}") })).find(|p| !p.exists()).unwrap_or_default();
-    std::fs::rename(file, &place)?;
-    Ok(place)
-}
-
 fn modified_time(path: &Path) -> Option<SystemTime> {
     std::fs::metadata(path).and_then(|m| m.modified()).ok()
 }
@@ -2386,45 +2310,4 @@ fn relative(dir: &Path, base: &Path) -> String {
 fn is_dark(widget: &impl IsA<gtk::Widget>) -> bool {
     let fg = widget.as_ref().color();
     0.299 * fg.red() + 0.587 * fg.green() + 0.114 * fg.blue() > 0.5
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn refs_read_as_badges() {
-        let remotes = vec!["origin".to_owned()];
-        assert_eq!(
-            super::ref_badges("HEAD -> main, origin/main, tag: v1.0, feature/x", &remotes),
-            vec![
-                ("HEAD".to_owned(), "head"),
-                ("main".to_owned(), "branch"),
-                ("origin/main".to_owned(), "remote"),
-                ("v1.0".to_owned(), "tag"),
-                ("feature/x".to_owned(), "branch"),
-            ]
-        );
-    }
-}
-
-#[cfg(test)]
-mod drop_tests {
-    use super::*;
-
-    #[test]
-    fn a_dropped_folder_is_copied_whole_and_names_never_clash() {
-        let base = std::env::temp_dir().join(format!("loom-drop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&base);
-        std::fs::create_dir_all(base.join("src/inner")).unwrap();
-        std::fs::write(base.join("src/a.txt"), "a").unwrap();
-        std::fs::write(base.join("src/inner/b.txt"), "b").unwrap();
-        std::fs::create_dir_all(base.join("into")).unwrap();
-        copy_all(&base.join("src"), &free_name(&base.join("into/src"))).unwrap();
-        assert_eq!(std::fs::read_to_string(base.join("into/src/inner/b.txt")).unwrap(), "b");
-        // Again: a second copy beside the first, not over it.
-        let second = free_name(&base.join("into/src"));
-        assert_eq!(second, base.join("into/src (2)"));
-        std::fs::write(base.join("into/note.md"), "x").unwrap();
-        assert_eq!(free_name(&base.join("into/note.md")), base.join("into/note (2).md"));
-        let _ = std::fs::remove_dir_all(&base);
-    }
 }
