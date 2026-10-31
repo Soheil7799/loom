@@ -32,6 +32,9 @@ thread_local! {
     /// Opens a file link ("loom-file:src/app.rs:42", or a relative or file:// link) clicked
     /// in a chat (the widget it was in, to know whose folder): true if it did.
     pub static OPEN_LINK: RefCell<Option<Rc<dyn Fn(&str, &gtk::Widget) -> bool>>> = const { RefCell::new(None) };
+    /// The account's limits as Claude Code last told them ({plan, windows}): the account's,
+    /// so any agent's answer tells them for every chat.
+    static LIMITS: RefCell<serde_json::Value> = const { RefCell::new(serde_json::Value::Null) };
 }
 
 /// A link clicked in chat text: files go to the app, the web to the browser (GTK's default).
@@ -100,8 +103,6 @@ pub struct Chat {
     /// The agent's folder, and its files once listed (for @ mentions).
     cwd: RefCell<std::path::PathBuf>,
     project_files: RefCell<Option<Vec<String>>>,
-    /// The account's limits as Claude Code tells them ({plan, windows}).
-    limits: RefCell<serde_json::Value>,
     /// The usage popover's MCP section (filled when the list comes).
     mcp_box: RefCell<Option<gtk::Box>>,
     /// What the open completion list offers: (text to insert, shown name, detail).
@@ -555,7 +556,6 @@ impl Chat {
             project_files: RefCell::default(),
             on_rewind_files: RefCell::default(),
             on_mcp: RefCell::default(),
-            limits: RefCell::new(serde_json::Value::Null),
             mcp_box: RefCell::default(),
             offered: RefCell::default(),
             thoughts: RefCell::default(),
@@ -1282,7 +1282,7 @@ impl Chat {
     }
 
     /// The usage popover: this conversation's context and cost, then the account's limits
-    /// (from `ai-usagebar`, when installed; else the limit the agent last reported).
+    /// (as Claude Code last told them, in any chat; else the limit this agent last reported).
     fn fill_usage(self: &Rc<Self>) {
         let body = &self.usage_body;
         while let Some(child) = body.first_child() {
@@ -1329,59 +1329,29 @@ impl Chat {
         body.append(&mcp);
         *self.mcp_box.borrow_mut() = Some(mcp);
         self.call(&self.on_mcp, ("status".to_owned(), String::new(), false));
-        // The account's limits as Claude Code tells them; else from ai-usagebar, if installed.
-        let limits = self.limits.borrow().clone();
-        if let Some(windows) = limits["windows"].as_array().filter(|w| !w.is_empty()) {
-            if let Some(plan) = limits["plan"].as_str().filter(|p| !p.is_empty())
-                && let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
-            {
-                heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
-            }
-            for window in windows {
-                let share = window["utilization"].as_f64().unwrap_or(0.0);
-                let name = match window["kind"].as_str().unwrap_or("") {
-                    "five_hour" => "5-hour".to_owned(),
-                    "seven_day" => "Weekly".to_owned(),
-                    "seven_day_opus" => "Weekly Opus".to_owned(),
-                    "seven_day_sonnet" => "Weekly Sonnet".to_owned(),
-                    other => other.replace('_', " "),
-                };
-                let resets = window["resetsAt"].as_i64().and_then(|t| glib::DateTime::from_unix_local(t).ok()).and_then(|t| t.format("%a %H:%M").ok()).map(|t| format!("Resets {t}")).unwrap_or_default();
-                account.append(&usage_row(&name, share, &format!("{:.0}%", share * 100.0), &resets));
-            }
+        // The account's limits as Claude Code last told them.
+        let limits = LIMITS.with_borrow(Clone::clone);
+        let Some(windows) = limits["windows"].as_array().filter(|w| !w.is_empty()) else {
+            account.append(&usage_note(&limit.unwrap_or_else(|| "No limits reported yet: they come with Claude's first answer.".into())));
             return;
+        };
+        if let Some(plan) = limits["plan"].as_str().filter(|p| !p.is_empty())
+            && let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
+        {
+            heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
         }
-        account.append(&usage_note("Loading…"));
-        glib::spawn_future_local(async move {
-            let found = gio::spawn_blocking(account_usage).await.ok().flatten();
-            account.first_child().and_then(|h| h.next_sibling()).inspect(|loading| account.remove(loading));
-            let Some(found) = found else {
-                account.append(&usage_note(&limit.unwrap_or_else(|| "No limits reported yet: they come with Claude's first answer.".into())));
-                return;
+        for window in windows {
+            let share = window["utilization"].as_f64().unwrap_or(0.0);
+            let name = match window["kind"].as_str().unwrap_or("") {
+                "five_hour" => "5-hour".to_owned(),
+                "seven_day" => "Weekly".to_owned(),
+                "seven_day_opus" => "Weekly Opus".to_owned(),
+                "seven_day_sonnet" => "Weekly Sonnet".to_owned(),
+                other => other.replace('_', " "),
             };
-            if let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
-                && let Some(plan) = found["plan"].as_str()
-            {
-                heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
-            }
-            for metric in found["metrics"].as_array().into_iter().flatten() {
-                let percent = metric["percent"].as_f64().unwrap_or(0.0);
-                account.append(&usage_row(
-                    metric["label"].as_str().unwrap_or("Limit"),
-                    percent / 100.0,
-                    metric["value"].as_str().unwrap_or(""),
-                    metric["detail"].as_str().unwrap_or(""),
-                ));
-            }
-            let credits = &found["reset_credits"];
-            if !credits.is_null() {
-                let text = credits.as_str().map(str::to_owned).unwrap_or_else(|| credits.to_string());
-                account.append(&usage_note(&format!("Usage resets left: {text}")));
-            }
-            if let Some(error) = found["error"].as_str() {
-                account.append(&usage_note(error));
-            }
-        });
+            let resets = window["resetsAt"].as_i64().and_then(|t| glib::DateTime::from_unix_local(t).ok()).and_then(|t| t.format("%a %H:%M").ok()).map(|t| format!("Resets {t}")).unwrap_or_default();
+            account.append(&usage_row(&name, share, &format!("{:.0}%", share * 100.0), &resets));
+        }
     }
 
     /// The usage popover's content, filled (for tests: a popover cannot open off screen).
@@ -1942,7 +1912,7 @@ impl Chat {
 
     /// The account's limits as Claude Code tells them, for the usage popover.
     pub fn set_limits(&self, limits: serde_json::Value) {
-        *self.limits.borrow_mut() = limits;
+        LIMITS.set(limits);
     }
 
     /// The agent's MCP servers in the usage popover: (name, status, error); None: not known
@@ -3673,13 +3643,6 @@ fn thumbnail(png: &glib::Bytes, max_w: i32, max_h: i32) -> Option<gtk::Picture> 
     picture.set_can_shrink(false);
     picture.set_size_request(width, height);
     Some(picture)
-}
-
-/// The Claude account's limits from `ai-usagebar` (its entry for Anthropic), if installed.
-fn account_usage() -> Option<serde_json::Value> {
-    let output = std::process::Command::new("ai-usagebar").args(["usage", "--json"]).output().ok()?;
-    let all: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
-    all["entries"].as_array()?.iter().find(|e| e["id"] == "anthropic").cloned()
 }
 
 fn usage_heading(text: &str) -> gtk::Label {
