@@ -869,7 +869,16 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
         let value = b.value() as u64;
         settings::update(|s| s.notes_daily_calls = value);
     });
-    row(&main, "Calls a day", "At most this many calls to Claude Haiku a day for notes (one per piece of a conversation read, plus one per topic it touches). Past it, checks wait for tomorrow.", &calls);
+    row(&main, "Calls a day", "At most this many calls to Claude a day for notes (one per piece of a conversation read, plus one per topic it touches). Past it, checks wait for tomorrow.", &calls);
+    let model = dropdown(&[("haiku".to_owned(), "Haiku"), ("sonnet".to_owned(), "Sonnet"), ("opus".to_owned(), "Opus")], s.scribe_model.clone(), Clone::clone, |s, v| s.scribe_model = v);
+    row(&main, "Model", "What Scribe reads and writes your notes with. Haiku is the lightest on your usage limits; Sonnet and Opus take more of them each call. A topic whose file names a model (model: sonnet) uses that one.", &model);
+    let effort = dropdown(
+        &[(String::new(), "Default"), ("low".to_owned(), "Low"), ("medium".to_owned(), "Medium"), ("high".to_owned(), "High"), ("xhigh".to_owned(), "Extra high"), ("max".to_owned(), "Max")],
+        s.scribe_effort.clone(),
+        Clone::clone,
+        |s, v| s.scribe_effort = v,
+    );
+    row(&main, "Effort", "How hard it thinks on each call (Default: Claude Code's own). Higher is slower and takes more of your usage limits.", &effort);
     caption(&main, "Your agents can search and read these notes, and Scribe keeps them up to date from your conversations (the Notes tab beside the chat shows what it wrote and asks).");
     // Corrections the user explained: rules in the topics, and tests kept on this machine.
     let corrections = crate::hub::corrections_path();
@@ -947,24 +956,63 @@ fn fill_topics(holder: &gtk::Box, window: &gtk::Window) {
     let problem = gtk::Label::builder().xalign(0.0).visible(false).build();
     problem.add_css_class("small");
     problem.add_css_class("error");
+    let describe = gtk::Entry::builder().placeholder_text("Optional: what it keeps, in a sentence (I surf; track sessions, spots and boards)").hexpand(true).build();
     let make = {
-        let (name, problem, w, vault) = (name.clone(), problem.clone(), window.clone(), vault.clone());
-        move || match crate::topics::create(&vault, &name.text()) {
-            Ok(file) => open(file, &w),
-            Err(why) => {
+        let (name, describe, create, problem, w, vault) = (name.clone(), describe.clone(), create.clone(), problem.clone(), window.clone(), vault.clone());
+        move || {
+            let said = describe.text().trim().to_owned();
+            let topic = name.text().trim().to_owned();
+            if said.is_empty() {
+                match crate::topics::create(&vault, &topic) {
+                    Ok(file) => open(file, &w),
+                    Err(why) => {
+                        problem.set_label(&why);
+                        problem.set_visible(true);
+                    }
+                }
+                return;
+            }
+            // Described: Claude drafts the topic's file, opened to adjust.
+            if let Err(why) = crate::topics::new_file(&vault, &topic) {
                 problem.set_label(&why);
                 problem.set_visible(true);
+                return;
             }
+            problem.set_visible(false);
+            create.set_sensitive(false);
+            create.set_label("Drafting…");
+            let (create, problem, w, vault) = (create.clone(), problem.clone(), w.clone(), vault.clone());
+            glib::spawn_future_local(async move {
+                let name = topic.clone();
+                let drafted = gio::spawn_blocking(move || crate::scribe::describe_topic(&name, &said)).await;
+                create.set_sensitive(true);
+                create.set_label("Create");
+                let made = match drafted {
+                    Ok(Ok(text)) => crate::topics::create_with(&vault, &topic, &text),
+                    Ok(Err(why)) => Err(format!("Not drafted: {why}")),
+                    Err(_) => Err("Drafting stopped unexpectedly.".to_owned()),
+                };
+                match made {
+                    Ok(file) => open(file, &w),
+                    Err(why) => {
+                        problem.set_label(&why);
+                        problem.set_visible(true);
+                    }
+                }
+            });
         }
     };
     let again = make.clone();
     create.connect_clicked(move |_| again());
+    let again = make.clone();
+    describe.connect_activate(move |_| again());
     name.connect_activate(move |_| make());
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     controls.append(&problem);
     controls.append(&name);
     controls.append(&create);
     row(&group, "New topic", "", &controls);
+    row_stacked(&group, "Describe it", "Say what it should keep and Claude drafts the topic (one call); it opens for you to adjust. Empty: a blank topic.", &describe);
     caption(&group, "Each topic is a note in Topics/: its settings at the top, and below them, in your words, how its notes are kept.");
     holder.append(&group);
 }

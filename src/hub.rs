@@ -675,9 +675,16 @@ impl Hub {
             empty.add_css_class("dim");
             self.body.append(&empty);
         }
-        if !store.teach.is_empty() {
+        let answered = |t: &&Value| t["kind"].as_str() == Some("answer");
+        if store.teach.iter().any(|t| !answered(&t)) {
             self.body.append(&heading("WHY NOT?"));
-            for t in &store.teach {
+            for t in store.teach.iter().filter(|t| !answered(t)) {
+                self.body.append(&self.teach_card(t));
+            }
+        }
+        if store.teach.iter().any(|t| answered(&t)) {
+            self.body.append(&heading("RULES FROM YOUR ANSWERS"));
+            for t in store.teach.iter().filter(answered) {
                 self.body.append(&self.teach_card(t));
             }
         }
@@ -744,15 +751,31 @@ impl Hub {
         card.add_css_class("hub-card");
         card.add_css_class("ask");
         let id = t["id"].as_u64().unwrap_or(0);
-        let Some(proposal) = scribe::proposal_from(t) else { return card };
+        // An answer to a question that makes a rule, or a change said no to.
+        let answered = t["kind"].as_str() == Some("answer");
+        let proposal = scribe::proposal_from(t);
+        if !answered && proposal.is_none() {
+            return card;
+        }
+        let topic = t["topic"].as_str().unwrap_or("").to_owned();
         card.append(&from_line(self, t));
-        let what = gtk::Label::builder().label(format!("{} · {}", proposal.change.note(), proposal.change.summary())).xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).build();
-        what.add_css_class("hub-note");
-        card.append(&what);
-        let diff = gtk::Label::builder().label(proposal.change.diff()).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
-        diff.add_css_class("hub-diff");
-        diff.add_css_class("mono");
-        card.append(&diff);
+        if let Some(proposal) = proposal.filter(|_| !answered) {
+            let what = gtk::Label::builder().label(format!("{} · {}", proposal.change.note(), proposal.change.summary())).xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).build();
+            what.add_css_class("hub-note");
+            card.append(&what);
+            let diff = gtk::Label::builder().label(proposal.change.diff()).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
+            diff.add_css_class("hub-diff");
+            diff.add_css_class("mono");
+            card.append(&diff);
+        } else {
+            let question = gtk::Label::builder().label(t["question"].as_str().unwrap_or("")).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
+            question.add_css_class("hub-question");
+            card.append(&question);
+            let said = gtk::Label::builder().label(format!("You answered: {}", t["answer"].as_str().unwrap_or(""))).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
+            said.add_css_class("small");
+            said.add_css_class("dim");
+            card.append(&said);
+        }
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let weak = Rc::downgrade(self);
         match t["stage"].as_str() {
@@ -763,7 +786,12 @@ impl Hub {
                 return card;
             }
             Some("draft") => {
-                let says = gtk::Label::builder().label(format!("A rule for {}, kept in its topic file (change it as you like):", proposal.topic)).xalign(0.0).wrap(true).build();
+                let says = if answered {
+                    format!("Keep it as a rule for {topic}, so Scribe doesn't ask this again (change it as you like):")
+                } else {
+                    format!("A rule for {topic}, kept in its topic file (change it as you like):")
+                };
+                let says = gtk::Label::builder().label(says).xalign(0.0).wrap(true).build();
                 says.add_css_class("small");
                 card.append(&says);
                 let rule = gtk::Entry::builder().text(t["draft"].as_str().unwrap_or("")).hexpand(true).build();
@@ -797,7 +825,7 @@ impl Hub {
             }
             _ => {
                 let says = gtk::Label::builder()
-                    .label(format!("Tell Scribe why, and it keeps it as a rule for {} (and as a test it must pass). Optional.", proposal.topic))
+                    .label(format!("Tell Scribe why, and it keeps it as a rule for {topic} (and as a test it must pass). Optional."))
                     .xalign(0.0)
                     .wrap(true)
                     .build();
@@ -936,6 +964,38 @@ impl Hub {
                 self.refresh();
             }
         }
+    }
+
+    /// An answered question: a rule drafted from the answer (one call to Claude), offered to
+    /// keep if it holds beyond that one case, so the question is asked once.
+    fn offer_answer_rule(self: &Rc<Self>, q: Value, answer: String) {
+        let Some(vault) = self.on() else { return };
+        if self.store.borrow_mut().calls_left() == 0 {
+            return;
+        }
+        self.store.borrow_mut().calls += 1;
+        self.store.borrow().save();
+        let (topic, question, said) = (q["topic"].as_str().unwrap_or("").to_owned(), q["question"].as_str().unwrap_or("").to_owned(), answer.clone());
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let drafted = gio::spawn_blocking(move || scribe::rule_from_answer(&vault, &topic, &question, &said)).await;
+            let Some(hub) = weak.upgrade() else { return };
+            let rule = match drafted {
+                Ok(Ok(Some(rule))) => rule,
+                Ok(Ok(None)) => return,
+                Ok(Err(why)) => return crate::log::write("scribe", &format!("no rule from an answer: {why}")),
+                Err(_) => return,
+            };
+            let mut t = json!({ "kind": "answer", "topic": q["topic"], "question": q["question"], "answer": answer, "session": q["session"], "title": q["title"], "stage": "draft", "draft": rule });
+            {
+                let mut store = hub.store.borrow_mut();
+                t["id"] = store.id().into();
+                store.teach.insert(0, t);
+                store.teach.truncate(3);
+                store.save();
+            }
+            hub.refresh();
+        });
     }
 
     fn question_card(self: &Rc<Self>, q: &Value) -> gtk::Box {
@@ -1531,6 +1591,7 @@ impl Hub {
         self.status.set_label("Writing your answer down…");
         let (session, title) = (q["session"].as_str().unwrap_or("").to_owned(), q["title"].as_str().unwrap_or("").to_owned());
         let answer = answer.to_owned();
+        let (asked, said) = (q.clone(), answer.clone());
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
             let done = gio::spawn_blocking(move || scribe::answer(&vault, &question, &answer)).await;
@@ -1540,6 +1601,7 @@ impl Hub {
                 Ok(mut report) => {
                     if report.failed.is_none() {
                         hub.store.borrow_mut().questions.retain(|q| q["id"].as_u64() != Some(id));
+                        hub.offer_answer_rule(asked, said);
                     }
                     report.session = session;
                     report.title = title;

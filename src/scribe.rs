@@ -19,6 +19,16 @@ use crate::topics::{Apply, Topic};
 static INDEX: std::sync::Mutex<Option<crate::notes::Index>> = std::sync::Mutex::new(None);
 
 /// An excerpt sent at once: about this many characters of conversation.
+/// The model and effort Scribe's calls use (Settings → Notes): set on the main thread, read
+/// by the calls running off it.
+static CHOICE: std::sync::Mutex<(String, String)> = std::sync::Mutex::new((String::new(), String::new()));
+
+pub fn choose(model: &str, effort: &str) {
+    if let Ok(mut choice) = CHOICE.lock() {
+        *choice = (model.trim().to_owned(), effort.trim().to_owned());
+    }
+}
+
 const CHUNK: usize = 6000;
 
 /// How many notes an edit is shown (the best matches), and how much of each.
@@ -41,6 +51,22 @@ const RULE: &str = "You help keep one topic of a person's notes. A notes keeper 
 Write ONE rule for this topic's instructions that would have kept the keeper from making that change, and that still makes sense for later conversations: one short imperative sentence, under 25 words, in the person's own terms. If what they said is already a rule, keep their words. Don't repeat the particular amounts or names of this change unless the rule is about them. Don't write anything else.
 
 Answer as JSON: {\"rule\": \"...\"}";
+
+/// Turns an answer to Scribe's question into a rule, when it holds beyond this one case.
+const RULE_ANSWER: &str = "You help keep one topic of a person's notes. While recording something from one of their conversations, the notes keeper asked them a question, and they answered.
+
+If the answer says how this kind of thing should be recorded from now on (a default currency, gross or net, which note it goes in, what to leave out), write ONE rule for this topic's instructions so the keeper never needs to ask it again: one short imperative sentence, under 25 words, in the person's own terms. If the answer only settles this one case (a particular amount, date or name), or the topic's instructions already say it, return an empty rule. Don't write anything else.
+
+Answer as JSON: {\"rule\": \"...\"}";
+
+/// Drafts a topic's file from the user's description of it.
+const DESCRIBE: &str = "You set up one topic of a person's personal notes (an Obsidian vault of Markdown files). A notes keeper will follow it to record what the person says in their conversations with their AI agents.
+
+You get the topic's name, the person's description of what it should keep, and an example topic. Return:
+- `folder`: the vault folder its notes go in (usually the topic's name; no slashes).
+- `listens_for`: 6 to 14 short words or phrases that would show a conversation is about it.
+- `apply`: \"ask\" if its notes are private or costly to get wrong (money, health, people), else \"auto\".
+- `instructions`: in plain words, like the example's text below its settings: which notes to keep (their names, one per what), what goes in each, and a few rules (\"- ...\" lines). Only what the description asks for; keep it short. Never assume the person's gender.";
 
 const EDIT: &str = "You keep one topic of a person's notes (an Obsidian vault of Markdown files).
 
@@ -427,7 +453,7 @@ fn route(topics: &[Topic], excerpt: &str) -> Result<Vec<(String, String)>, Strin
         .collect::<Vec<_>>()
         .join("\n");
     let input = format!("TOPICS:\n{list}\n\nEXCERPT:\n{excerpt}");
-    let answer = ask(&prompt("route", ROUTE), &input, &route_schema(), "haiku")?;
+    let answer = ask(&prompt("route", ROUTE), &input, &route_schema(), "")?;
     Ok(answer["topics"]
         .as_array()
         .map(|all| all.iter().filter_map(|t| Some((t["topic"].as_str()?.to_owned(), t["about"].as_str().unwrap_or("").to_owned()))).collect())
@@ -502,19 +528,23 @@ fn prompt(name: &str, built_in: &str) -> String {
 }
 
 /// The built-in prompts, for loom's Claude folder (name, text).
-pub fn prompts() -> [(&'static str, &'static str); 3] {
-    [("route", ROUTE), ("edit", EDIT), ("rule", RULE)]
+pub fn prompts() -> [(&'static str, &'static str); 5] {
+    [("route", ROUTE), ("edit", EDIT), ("rule", RULE), ("rule-answer", RULE_ANSWER), ("describe", DESCRIBE)]
 }
 
-/// One call to Claude (`claude -p`), its answer as the schema's JSON.
+/// One call to Claude (`claude -p`), its answer as the schema's JSON. `model`: a topic's own
+/// (empty: the one chosen in Settings → Notes, else Haiku).
 fn ask(system: &str, input: &str, schema: &Value, model: &str) -> Result<Value, String> {
     use std::io::Write;
     // An empty folder of its own: nothing in it to be taken for the user's project.
     let dir = std::env::temp_dir().join(format!("loom-notes-{}", std::process::id()));
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let model = if model.trim().is_empty() { "haiku" } else { model.trim() };
+    let (chosen, effort) = CHOICE.lock().map(|c| c.clone()).unwrap_or_default();
+    let model = [model.trim(), chosen.as_str()].into_iter().find(|m| !m.is_empty()).unwrap_or("haiku");
+    let effort: &[&str] = if effort.is_empty() { &[] } else { &["--effort", effort.as_str()] };
     let mut child = Command::new("timeout")
         .args(["180", "claude", "-p", "--model", model, "--setting-sources", "project", "--tools", "", "--strict-mcp-config", "--no-session-persistence"])
+        .args(effort)
         .args(["--output-format", "json", "--json-schema", &schema.to_string(), "--system-prompt", system])
         .current_dir(&dir)
         .env_remove("CLAUDECODE")
@@ -802,6 +832,41 @@ pub fn rule_from(vault: &Path, topic: &str, change: &Change, reason: &str, said:
     if rule.is_empty() { Err("No rule came of it.".to_owned()) } else { Ok(rule) }
 }
 
+/// A rule from the user's answer to a question about a topic, if it holds beyond that one
+/// case (None: it doesn't): one call to Claude.
+pub fn rule_from_answer(vault: &Path, topic: &str, question: &str, answer: &str) -> Result<Option<String>, String> {
+    let topic = crate::topics::list(vault).into_iter().find(|t| t.name == topic).ok_or_else(|| format!("There is no topic {topic} any more."))?;
+    let input = format!("TOPIC: {}\nITS INSTRUCTIONS:\n{}\n\nTHE KEEPER ASKED: {question}\n\nTHE USER ANSWERED: {answer}", topic.name, topic.instructions);
+    let schema = json!({ "type": "object", "properties": { "rule": { "type": "string" } }, "required": ["rule"] });
+    let answer = ask(&prompt("rule-answer", RULE_ANSWER), &input, &schema, &topic.model)?;
+    let rule = answer["rule"].as_str().unwrap_or("").trim().trim_start_matches("- ").replace('\n', " ");
+    Ok((!rule.is_empty()).then_some(rule))
+}
+
+/// A topic's file drafted from the user's description of it: one call to Claude.
+pub fn describe_topic(name: &str, said: &str) -> Result<String, String> {
+    let input = format!("TOPIC: {name}\n\nWHAT IT SHOULD KEEP: {said}\n\nAN EXAMPLE TOPIC:\n{}", crate::topics::example());
+    let schema = json!({
+        "type": "object",
+        "properties": {
+            "folder": { "type": "string" },
+            "listens_for": { "type": "array", "items": { "type": "string" } },
+            "apply": { "type": "string", "enum": ["ask", "auto"] },
+            "instructions": { "type": "string" }
+        },
+        "required": ["folder", "listens_for", "apply", "instructions"]
+    });
+    let answer = ask(&prompt("describe", DESCRIBE), &input, &schema, "")?;
+    let instructions = answer["instructions"].as_str().unwrap_or("").trim();
+    if instructions.is_empty() {
+        return Err("No topic came of it.".to_owned());
+    }
+    let folder = answer["folder"].as_str().map(|f| f.trim().trim_matches('/')).filter(|f| !f.is_empty() && !f.contains(['/', '\\']) && !f.starts_with('.')).unwrap_or(name);
+    let listens: Vec<String> = answer["listens_for"].as_array().into_iter().flatten().filter_map(|w| w.as_str().map(str::to_owned)).collect();
+    let apply = if answer["apply"].as_str() == Some("auto") { crate::topics::Apply::Auto } else { crate::topics::Apply::Ask };
+    Ok(crate::topics::text_of(name, folder, &listens, apply, instructions))
+}
+
 /// Where a topic's learned rules go in its file.
 const RULES: &str = "## Rules learned";
 
@@ -815,7 +880,7 @@ pub fn add_rule(vault: &Path, topic: &str, rule: &str) -> Result<(), String> {
     let text = std::fs::read_to_string(&topic.path).map_err(|e| e.to_string())?;
     std::fs::write(&topic.path, add_under(&text, RULES, &format!("- {rule}"))).map_err(|e| e.to_string())?;
     if let Ok(file) = topic.path.strip_prefix(vault) {
-        commit(vault, &[file.to_string_lossy().into_owned()], &format!("loom: {}: a rule learned from a correction", topic.name));
+        commit(vault, &[file.to_string_lossy().into_owned()], &format!("loom: {}: a rule learned", topic.name));
     }
     Ok(())
 }

@@ -56,6 +56,10 @@ pub struct Settings {
     pub notes_vault: String,
     /// At most this many note checks (calls to Claude) a day.
     pub notes_daily_calls: u64,
+    /// The model Scribe's calls use ("haiku", "sonnet", "opus"), and their effort (empty:
+    /// Claude Code's default). A topic's own `model:` is used over this one.
+    pub scribe_model: String,
+    pub scribe_effort: String,
     /// A Compact button by the context meter once the context is at least this full (%).
     pub compact_alert: bool,
     pub compact_at: u64,
@@ -96,6 +100,8 @@ impl Default for Settings {
             notes_enabled: false,
             notes_vault: String::new(),
             notes_daily_calls: 300,
+            scribe_model: "haiku".to_owned(),
+            scribe_effort: String::new(),
             compact_alert: true,
             compact_at: 80,
             rest_compact: true,
@@ -120,6 +126,7 @@ pub fn init(app_id: &str) {
     let file = glib::user_config_dir().join("loom").join(name);
     let settings = std::fs::read_to_string(&file).map(|t| parse(&t)).unwrap_or_default();
     FILE.with(|f| *f.borrow_mut() = Some(file));
+    crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
     CURRENT.with(|c| *c.borrow_mut() = Some(settings));
 }
 
@@ -136,6 +143,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
         return;
     }
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
+    crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
     crate::log::debug!("settings", "changed: {}", {
         let text = render(&settings).replace('\n', " ");
         let text = if settings.telegram_token.is_empty() { text } else { text.replace(&settings.telegram_token, "…") };
@@ -217,6 +225,8 @@ fn parse(text: &str) -> Settings {
         notes_enabled: flag("notesEnabled", d.notes_enabled),
         notes_vault: string("notesVault", &d.notes_vault),
         notes_daily_calls: v["notesDailyCalls"].as_u64().unwrap_or(d.notes_daily_calls),
+        scribe_model: string("scribeModel", &d.scribe_model),
+        scribe_effort: string("scribeEffort", &d.scribe_effort),
         compact_alert: flag("compactAlert", d.compact_alert),
         compact_at: v["compactAt"].as_u64().unwrap_or(d.compact_at).clamp(10, 95),
         rest_compact: flag("restCompact", d.rest_compact),
@@ -254,6 +264,8 @@ fn render(s: &Settings) -> String {
         "notesEnabled": s.notes_enabled,
         "notesVault": s.notes_vault,
         "notesDailyCalls": s.notes_daily_calls,
+        "scribeModel": s.scribe_model,
+        "scribeEffort": s.scribe_effort,
         "compactAlert": s.compact_alert,
         "compactAt": s.compact_at,
         "restCompact": s.rest_compact,

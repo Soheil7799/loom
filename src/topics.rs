@@ -25,6 +25,7 @@ pub struct Topic {
     pub apply: Apply,
     /// May leave this machine when the vault is synced.
     pub sync: bool,
+    /// The model for its calls (empty: the one chosen in Settings → Notes).
     pub model: String,
     pub enabled: bool,
     /// How its notes are kept, in the user's words.
@@ -41,7 +42,6 @@ folder: Finances
 listens-for: [salary, income, rent, bills, subscriptions, savings, taxes, invoices, budget, expenses, bank]
 apply: ask
 sync: false
-model: haiku
 enabled: true
 ---
 Keep one note per month (`Finances/2026-01.md`, named by year and month) with a table of
@@ -61,7 +61,6 @@ folder: Work
 listens-for: [project, client, meeting, deadline, decision, colleague, release, job, contract]
 apply: auto
 sync: true
-model: haiku
 enabled: true
 ---
 Keep one note per project or job (`Work/<Project>.md`): what it is, who is involved, its
@@ -80,7 +79,6 @@ folder: Study
 listens-for: [course, exam, lecture, assignment, grade, thesis, university, school, homework]
 apply: auto
 sync: true
-model: haiku
 enabled: true
 ---
 Keep one note per course (`Study/<Course>.md`): dates of exams and deadlines, grades, what
@@ -98,7 +96,6 @@ folder: Languages
 listens-for: [word, grammar, translation, vocabulary, verb, phrase, pronunciation, lesson]
 apply: auto
 sync: true
-model: haiku
 enabled: true
 ---
 Keep one note per language (`Languages/<Language>.md`) with new words and phrases (with their
@@ -116,7 +113,6 @@ folder: Life
 listens-for: [health, doctor, home, apartment, travel, trip, family, friend, plan, appointment, event]
 apply: ask
 sync: false
-model: haiku
 enabled: true
 ---
 Keep notes by subject (`Life/Health.md`, `Life/Home.md`, `Life/Travel.md`…): appointments,
@@ -134,7 +130,6 @@ folder: System
 listens-for: [install, package, config, settings, driver, kernel, hardware, desktop, shortcut, dotfiles]
 apply: auto
 sync: true
-model: haiku
 enabled: true
 ---
 Keep one note per machine or tool (`System/<Name>.md`; `System/Setup.md` when the machine is
@@ -154,7 +149,6 @@ folder: {name}
 listens-for: []
 apply: ask
 sync: false
-model: haiku
 enabled: true
 ---
 How this topic's notes are kept: which notes, what goes in them, and any rules.
@@ -197,7 +191,8 @@ fn parse(path: &Path, text: &str) -> Topic {
         listens_for: vault::get(&keys, "listens-for").map(Value::items).unwrap_or_default(),
         apply: if text_of("apply").is_some_and(|a| a.eq_ignore_ascii_case("auto")) { Apply::Auto } else { Apply::Ask },
         sync: yes("sync", false),
-        model: text_of("model").unwrap_or_else(|| "haiku".to_owned()),
+        // Empty: the one chosen in Settings → Notes.
+        model: text_of("model").unwrap_or_default(),
         enabled: yes("enabled", true),
         instructions: body.trim().to_owned(),
         path: path.to_owned(),
@@ -217,18 +212,44 @@ pub fn set_enabled(topic: &Topic, on: bool) -> std::io::Result<()> {
 
 /// A new topic from the template; its file (to open). Err if the name is unusable or taken.
 pub fn create(vault: &Path, name: &str) -> Result<PathBuf, String> {
+    create_with(vault, name, &TEMPLATE.replace("{name}", name.trim()))
+}
+
+/// A new topic's file, if the name is usable and not taken.
+pub fn new_file(vault: &Path, name: &str) -> Result<PathBuf, String> {
     let name = name.trim();
     if name.is_empty() || name.contains(['/', '\\', ':']) || name.starts_with('.') {
         return Err("A name with no / \\ : and not starting with a dot.".to_owned());
     }
-    let dir = vault.join(vault::TOPICS);
-    let file = dir.join(format!("{name}.md"));
+    let file = vault.join(vault::TOPICS).join(format!("{name}.md"));
     if file.exists() {
         return Err(format!("There is a topic named {name} already."));
     }
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(&file, TEMPLATE.replace("{name}", name)).map_err(|e| e.to_string())?;
     Ok(file)
+}
+
+/// A new topic with this text (a drafted one); its file (to open).
+pub fn create_with(vault: &Path, name: &str, text: &str) -> Result<PathBuf, String> {
+    let file = new_file(vault, name)?;
+    std::fs::create_dir_all(vault.join(vault::TOPICS)).map_err(|e| e.to_string())?;
+    std::fs::write(&file, text).map_err(|e| e.to_string())?;
+    Ok(file)
+}
+
+/// A topic's file from its parts (what a description was drafted into).
+pub fn text_of(name: &str, folder: &str, listens_for: &[String], apply: Apply, instructions: &str) -> String {
+    let words: Vec<String> = listens_for.iter().map(|w| w.replace([',', '[', ']', '\n'], " ").trim().to_owned()).filter(|w| !w.is_empty()).collect();
+    format!(
+        "---\ntopic: {name}\nfolder: {folder}\nlistens-for: [{}]\napply: {}\nsync: false\nenabled: true\n---\n{}\n",
+        words.join(", "),
+        if apply == Apply::Auto { "auto" } else { "ask" },
+        instructions.trim()
+    )
+}
+
+/// The first default topic's file, as an example of one.
+pub fn example() -> &'static str {
+    DEFAULTS[0].1
 }
 
 #[cfg(test)]
@@ -247,6 +268,19 @@ mod tests {
         let finances = parse(Path::new("Finances.md"), DEFAULTS[0].1);
         assert_eq!(finances.apply, Apply::Ask);
         assert!(!finances.sync);
+    }
+
+    #[test]
+    fn a_drafted_topic_reads_back() {
+        let text = text_of("Surfing", "Surf", &["waves".into(), "spot, board".into(), " ".into()], Apply::Auto, "Keep a log of sessions.\n");
+        let topic = parse(Path::new("Surfing.md"), &text);
+        assert_eq!(topic.name, "Surfing");
+        assert_eq!(topic.folder, "Surf");
+        assert_eq!(topic.listens_for.len(), 2, "{text}");
+        assert_eq!(topic.apply, Apply::Auto);
+        // No model of its own: the one chosen in Settings.
+        assert!(topic.model.is_empty());
+        assert_eq!(topic.instructions, "Keep a log of sessions.");
     }
 
     #[test]
