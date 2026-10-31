@@ -825,6 +825,25 @@ pub fn approve(vault: &Path, proposal: &Proposal) -> Result<Written, String> {
     Ok(done)
 }
 
+/// Whether a change that could not be written may be looked at again: one replacing a line
+/// of a note that is still there (the note changed since, by the user or a sync).
+pub fn may_redo(vault: &Path, proposal: &Proposal) -> bool {
+    matches!(proposal.change, Change::Replace { .. }) && vault.join(proposal.change.note()).is_file()
+}
+
+/// A change waiting for the user's OK whose note changed since: looked at again, against the
+/// note as it is now (one call to Claude). Its changes now; none: the note needs none.
+pub fn redo(vault: &Path, proposal: &Proposal) -> Result<Vec<Proposal>, String> {
+    let topic = crate::topics::list(vault).into_iter().find(|t| t.name == proposal.topic).ok_or_else(|| format!("There is no topic {} any more.", proposal.topic))?;
+    let note = proposal.change.note();
+    let text = std::fs::read_to_string(vault.join(note)).map_err(|e| format!("{note}: {e}"))?;
+    if crate::vault::has_conflict_marks(&text) {
+        return Err(format!("{note} has a sync conflict in it (<<<<<<< lines): the user settles it first."));
+    }
+    let (proposals, _) = edit(&topic, &[(note.to_owned(), text)], &proposal.excerpt)?;
+    Ok(proposals.into_iter().filter(|p| allowed(vault, &topic, &p.change).is_ok()).collect())
+}
+
 /// A rule for a topic's instructions, from the user's correction of a change (rejected or
 /// undone) and what they said about it: one call to Claude.
 pub fn rule_from(vault: &Path, topic: &str, change: &Change, reason: &str, said: &str) -> Result<String, String> {

@@ -1516,13 +1516,40 @@ impl Hub {
         self.running.set(true);
         self.status.set_label(&format!("Writing {}…", proposal.change.note()));
         let weak = Rc::downgrade(self);
+        // A line to replace that is gone (the note changed since: the user, a sync): Scribe looks
+        // at it again, if today's calls allow, and asks again.
+        let may_redo = self.store.borrow_mut().calls_left() > 0;
         glib::spawn_future_local(async move {
             let note = proposal.change.note().to_owned();
-            let written = gio::spawn_blocking(move || scribe::approve(&vault, &proposal)).await.unwrap_or_else(|_| Err("it stopped unexpectedly".to_owned()));
+            let written = gio::spawn_blocking(move || match scribe::approve(&vault, &proposal) {
+                Ok(done) => Ok(Ok(done)),
+                Err(_) if may_redo && scribe::may_redo(&vault, &proposal) => scribe::redo(&vault, &proposal).map(Err),
+                Err(why) => Err(why),
+            })
+            .await
+            .unwrap_or_else(|_| Err("it stopped unexpectedly".to_owned()));
             let Some(hub) = weak.upgrade() else { return };
             hub.running.set(false);
             match written {
-                Ok(done) => {
+                Ok(Err(again)) => {
+                    hub.store.borrow_mut().calls += 1;
+                    let mut dropped = p.clone();
+                    dropped["at"] = crate::state::now().into();
+                    log_change(&dropped, "dropped", None);
+                    if again.is_empty() {
+                        hub.status.set_label(&format!("{note} changed since, and needs this no more: nothing written."));
+                    } else {
+                        hub.status.set_label(&format!("{note} changed since: Scribe looked again, and asks again."));
+                    }
+                    let (session, title) = (p["session"].as_str().unwrap_or("").to_owned(), p["title"].as_str().unwrap_or("").to_owned());
+                    let mut store = hub.store.borrow_mut();
+                    for proposal in again {
+                        let mut v = scribe::proposal_json(&proposal, "The note changed since you were asked: Scribe looked at it again.", &session, &title);
+                        v["id"] = store.id().into();
+                        store.pending.insert(0, v);
+                    }
+                }
+                Ok(Ok(done)) => {
                     let mut p = p;
                     // Written now: its time is the writing's.
                     p["at"] = crate::state::now().into();
