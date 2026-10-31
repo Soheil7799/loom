@@ -26,3 +26,4 @@ pub mod stt;
 pub mod topics;
 pub mod vault;
 pub mod workflow;
+pub mod workspace;

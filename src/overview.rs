@@ -28,11 +28,7 @@ pub struct Card {
     pub scheduled: usize,
 }
 
-pub enum Act {
-    RunNow,
-    Pause,
-    Remove,
-}
+pub use loom_core::workspace::Act;
 
 type Handler<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 

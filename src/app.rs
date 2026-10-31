@@ -20,6 +20,7 @@ use crate::schedule::{self, Schedule};
 use crate::scratch::Scratch;
 use crate::settings;
 use crate::state::{self, Project, Saved};
+use loom_core::workspace::{Host, Workspace};
 
 /// What a sidebar row stands for.
 enum Row {
@@ -33,11 +34,11 @@ pub struct App {
     app: gtk::Application,
     app_id: String,
     pub window: gtk::ApplicationWindow,
-    projects: RefCell<Vec<Project>>,
-    agents: RefCell<Vec<Rc<Agent>>>,
-    closed: RefCell<Vec<Saved>>,
+    /// The projects and agents, the closed conversations, the schedules (in loom-core).
+    ws: Rc<Workspace>,
+    /// Itself (for what is called with only a reference).
+    me: RefCell<std::rc::Weak<App>>,
     focused: RefCell<Option<Rc<Agent>>>,
-    next_id: Cell<u32>,
     sidebar: gtk::Box,
     list: gtk::ListBox,
     rows: RefCell<Vec<Row>>,
@@ -50,7 +51,6 @@ pub struct App {
     history: Rc<crate::history::Page>,
     /// Every agent on one page, and the scheduled prompts.
     overview: Rc<crate::overview::Overview>,
-    schedules: RefCell<Vec<Schedule>>,
     /// The second agent shown beside the focused one (Ctrl+\), and where it sits.
     pinned: RefCell<Option<Rc<Agent>>>,
     pinned_box: gtk::Box,
@@ -421,11 +421,9 @@ impl App {
             app: app.clone(),
             app_id: app_id.clone(),
             window,
-            projects: RefCell::default(),
-            agents: RefCell::default(),
-            closed: RefCell::default(),
+            ws: Workspace::new(&app_id),
+            me: RefCell::default(),
             focused: RefCell::default(),
-            next_id: Cell::new(1),
             sidebar,
             list,
             rows: RefCell::default(),
@@ -434,7 +432,6 @@ impl App {
             inbox_list,
             chat_stack,
             overview,
-            schedules: RefCell::default(),
             welcome,
             history,
             pinned: RefCell::default(),
@@ -546,6 +543,9 @@ impl App {
             }
         });
         this.apply_settings(&settings::get());
+        let host: std::rc::Weak<App> = Rc::downgrade(&this);
+        *this.me.borrow_mut() = host.clone();
+        this.ws.set_host(host);
         this.restore();
         this.listen();
         this
@@ -710,7 +710,7 @@ impl App {
         ));
         let mic = crate::stt::configured();
         let suggestions = s.suggest_prompts != self.suggestions.replace(s.suggest_prompts);
-        for agent in self.agents.borrow().iter() {
+        for agent in self.ws.agents.borrow().iter() {
             agent.set_show_thinking(s.show_thinking);
             agent.chat().set_mic_visible(mic);
             if suggestions {
@@ -1236,7 +1236,7 @@ impl App {
         }
         going.append(&mut choices);
         let mut choices = going;
-        for saved in self.closed.borrow().iter() {
+        for saved in self.ws.closed.borrow().iter() {
             let weak = weak.clone();
             let saved = saved.clone();
             let title = if saved.title.is_empty() { "an agent".to_owned() } else { saved.title.clone() };
@@ -1264,7 +1264,7 @@ impl App {
             choice.dot = Some(agent.status().css());
             choices.push(choice);
         }
-        for project in self.projects.borrow().iter() {
+        for project in self.ws.projects.borrow().iter() {
             let weak = weak.clone();
             let path = project.path.clone();
             choices.push(Choice::new(self.project_label(&project.path), "project · conversations", move || {
@@ -1279,19 +1279,14 @@ impl App {
     // ---- projects and agents --------------------------------------------------------------
 
     fn restore(self: &Rc<Self>) {
-        let layout = state::load(&self.app_id);
+        let layout = self.ws.restore();
         if layout.width > 200 && layout.height > 200 {
             self.window.set_default_size(layout.width, layout.height);
         }
         if layout.maximized {
             self.window.maximize();
         }
-        *self.projects.borrow_mut() = layout.projects;
-        *self.closed.borrow_mut() = layout.closed;
-        self.start_schedules(layout.schedules);
-        for saved in layout.agents {
-            self.add_agent(saved);
-        }
+        self.wire_overview();
         let agents = self.agents_in_order();
         // The overview first: the agent last looked at is where "back" goes (not resumed yet).
         if settings::get().start_on_overview && !agents.is_empty() {
@@ -1318,36 +1313,16 @@ impl App {
     }
 
     fn ensure_project(&self, path: &Path) {
-        let mut projects = self.projects.borrow_mut();
-        if !projects.iter().any(|p| p.path == path) {
-            projects.push(Project { path: path.to_owned(), collapsed: false, name: String::new() });
-        }
+        self.ws.ensure_project(path);
     }
 
     fn add_agent(self: &Rc<Self>, saved: Saved) -> Rc<Agent> {
-        let id = self.next_id.get();
-        self.next_id.set(id + 1);
-        let project = project_of(&saved.cwd);
-        self.ensure_project(&project);
-        let tray = self.tray_for(&project);
-        let chat = crate::chat::Chat::new();
-        let agent = Agent::new(id, saved, tray.core(), crate::chat_view::ChatView::new(chat.clone(), &tray));
-        crate::chat_view::wire(&agent, &chat);
-        agent.chat().set_show_thinking(settings::get().show_thinking);
-        self.chat_stack.add_named(&agent.chat().root, Some(&format!("agent-{id}")));
-        let weak = Rc::downgrade(self);
-        agent.on_event(move |agent, event| {
-            if let Some(app) = weak.upgrade() {
-                app.agent_event(agent, event);
-            }
-        });
-        self.agents.borrow_mut().push(agent.clone());
-        agent
+        self.ws.add_agent(saved)
     }
 
     pub fn add_schedule_for_tests(&self, cwd: PathBuf, prompt: &str) {
-        let id = self.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
-        self.schedules.borrow_mut().push(Schedule {
+        let id = self.ws.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
+        self.ws.schedules.borrow_mut().push(Schedule {
             id, cwd, session_id: None, title: String::new(), prompt: prompt.to_owned(), when: "in 1m".into(),
             next: Some(schedule::now().timestamp().as_second()), paused: false, last_run: None,
         });
@@ -1367,7 +1342,7 @@ impl App {
     }
 
     fn agent_by_id(&self, id: u32) -> Option<Rc<Agent>> {
-        self.agents.borrow().iter().find(|a| a.id == id).cloned()
+        self.ws.agent(id)
     }
 
     fn tray_for(&self, project: &Path) -> Rc<Tray> {
@@ -1606,36 +1581,11 @@ impl App {
     /// The projects as the sidebar shows them: with sorting on, those with an agent waiting
     /// for the user (or failed) come first, the rest keep their place.
     fn projects_in_order(&self) -> Vec<Project> {
-        let mut projects = self.projects.borrow().clone();
-        if settings::get().sort_by_urgency {
-            let agents = self.agents.borrow();
-            let needs_you = |p: &Project| agents.iter().any(|a| a.project == p.path && a.status() == Status::Blocked);
-            projects.sort_by_key(|p| !needs_you(p));
-        }
-        projects
+        self.ws.projects_in_order()
     }
 
-    /// Agents in sidebar order (number keys follow it too): by project, each where it was put;
-    /// with sorting on, one that needs you goes up until answered, then back to its place.
     fn agents_in_order(&self) -> Vec<Rc<Agent>> {
-        self.ordered(settings::get().sort_by_urgency)
-    }
-
-    /// `urgent`: those waiting for you first. What is saved is the order without that.
-    fn ordered(&self, urgent: bool) -> Vec<Rc<Agent>> {
-        let projects = if urgent { self.projects_in_order() } else { self.projects.borrow().clone() };
-        let agents = self.agents.borrow();
-        let mut ordered: Vec<Rc<Agent>> = Vec::new();
-        for project in &projects {
-            let mut mine: Vec<Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).cloned().collect();
-            if urgent {
-                mine.sort_by_key(|a| a.status() != Status::Blocked);
-            }
-            ordered.extend(mine);
-        }
-        // Any agent whose project is missing from the list still counts.
-        ordered.extend(agents.iter().filter(|a| !projects.iter().any(|p| p.path == a.project)).cloned());
-        ordered
+        self.ws.agents_in_order()
     }
 
     /// A new agent starts from its project's page (where a past conversation can be picked
@@ -1670,7 +1620,7 @@ impl App {
         crate::chat::OPEN_LINK.with(|h| {
             *h.borrow_mut() = Some(Rc::new(move |uri: &str, widget: &gtk::Widget| {
                 let Some(app) = weak.upgrade() else { return false };
-                let agent = app.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat().root)).cloned().or_else(|| app.focused_agent());
+                let agent = app.ws.agents.borrow().iter().find(|a| widget.is_ancestor(&a.chat().root)).cloned().or_else(|| app.focused_agent());
                 let in_file = widget.is_ancestor(&app.files.editor_box);
                 let file_dir = app.files.open_path().and_then(|p| p.parent().map(Path::to_path_buf)).filter(|_| in_file);
                 let base = file_dir.unwrap_or_else(|| agent.as_ref().map_or_else(glib::home_dir, |a| a.cwd.clone()));
@@ -1726,7 +1676,7 @@ impl App {
     fn move_agent(self: &Rc<Self>, by: i32) {
         let Some(agent) = self.focused_agent() else { return };
         {
-            let mut agents = self.agents.borrow_mut();
+            let mut agents = self.ws.agents.borrow_mut();
             let mine: Vec<usize> = agents.iter().enumerate().filter(|(_, a)| a.project == agent.project).map(|(i, _)| i).collect();
             let Some(at) = mine.iter().position(|&i| Rc::ptr_eq(&agents[i], &agent)) else { return };
             let to = at as i32 + by;
@@ -1744,7 +1694,7 @@ impl App {
         let project = self.focused_agent().map(|a| a.project.clone()).or_else(|| self.showing_project());
         let Some(project) = project else { return };
         {
-            let mut projects = self.projects.borrow_mut();
+            let mut projects = self.ws.projects.borrow_mut();
             let Some(at) = projects.iter().position(|p| p.path == project) else { return };
             let to = at as i32 + by;
             if to < 0 || to as usize >= projects.len() {
@@ -1802,14 +1752,14 @@ impl App {
 
     /// The project's name: given by hand, else its folder's.
     pub fn project_label(&self, path: &Path) -> String {
-        let projects = self.projects.borrow();
+        let projects = self.ws.projects.borrow();
         let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());
         named.map_or_else(|| project_name(path), str::to_owned)
     }
 
     /// Names a project (empty: back to its folder's name).
     fn rename_project(self: &Rc<Self>, path: &Path, name: &str) {
-        if let Some(project) = self.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
+        if let Some(project) = self.ws.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
             project.name = name.to_owned();
         }
         if self.showing_project().is_some_and(|p| p == path) {
@@ -1843,7 +1793,7 @@ impl App {
     }
 
     fn agent_with_session(&self, id: &str) -> Option<Rc<Agent>> {
-        self.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(id)).cloned()
+        self.ws.agent_with_session(id)
     }
 
     // ---- overview and schedules -----------------------------------------------------------
@@ -1951,7 +1901,7 @@ impl App {
         if !self.leave_notes() {
             return;
         }
-        let previous = self.previous.borrow().clone().filter(|p| had && self.agents.borrow().iter().any(|a| Rc::ptr_eq(a, p)));
+        let previous = self.previous.borrow().clone().filter(|p| had && self.ws.agents.borrow().iter().any(|a| Rc::ptr_eq(a, p)));
         match previous {
             Some(agent) => self.focus(&agent),
             None => self.show_overview(),
@@ -1999,7 +1949,7 @@ impl App {
     }
 
     fn fill_overview(self: &Rc<Self>) {
-        let schedules = self.schedules.borrow().clone();
+        let schedules = self.ws.schedules.borrow().clone();
         let cards = self
             .agents_in_order()
             .iter()
@@ -2038,15 +1988,7 @@ impl App {
 
     /// The schedules from the last run, and the clock that sends them. A run missed by more
     /// than an hour while loom was closed is skipped.
-    fn start_schedules(self: &Rc<Self>, mut schedules: Vec<Schedule>) {
-        let now = schedule::now();
-        for s in schedules.iter_mut().filter(|s| s.next.is_some_and(|t| t < now.timestamp().as_second() - 3600)) {
-            s.next = match schedule::next_run(&s.when, &now) {
-                Ok((t, true)) => Some(t),
-                _ => None,
-            };
-        }
-        *self.schedules.borrow_mut() = schedules;
+    fn wire_overview(self: &Rc<Self>) {
         // Scribe's line: the Notes tab, beside the agent last looked at.
         let weak = Rc::downgrade(self);
         *self.overview.on_scribe.borrow_mut() = Some(Rc::new(move |()| {
@@ -2093,113 +2035,28 @@ impl App {
         }));
         let weak = Rc::downgrade(self);
         *self.overview.on_schedule.borrow_mut() = Some(Rc::new(move |(id, act)| {
-            let Some(app) = weak.upgrade() else { return };
-            match act {
-                crate::overview::Act::RunNow => app.run_schedule(id, true),
-                crate::overview::Act::Pause => {
-                    if let Some(s) = app.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
-                        s.paused = !s.paused;
-                        if !s.paused {
-                            s.next = schedule::next_run(&s.when, &schedule::now()).ok().filter(|(_, repeats)| *repeats).map(|(t, _)| t).or(s.next);
-                        }
-                    }
-                }
-                crate::overview::Act::Remove => app.schedules.borrow_mut().retain(|s| s.id != id),
+            if let Some(app) = weak.upgrade() {
+                app.ws.act(id, act);
             }
-            app.save();
-            app.fill_overview();
         }));
-        let weak = Rc::downgrade(self);
-        glib::timeout_add_seconds_local(20, move || {
-            let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
-            let clock = schedule::now();
-            let now = clock.timestamp().as_second();
-            // Missed by over an hour (the laptop slept): skipped, the next one comes as usual.
-            for s in app.schedules.borrow_mut().iter_mut().filter(|s| !s.paused && s.next.is_some_and(|t| t < now - 3600)) {
-                s.next = schedule::next_run(&s.when, &clock).ok().filter(|(_, repeats)| *repeats).map(|(t, _)| t);
-            }
-            let due: Vec<u64> = app.schedules.borrow().iter().filter(|s| !s.paused && s.next.is_some_and(|t| t <= now)).map(|s| s.id).collect();
-            for id in due {
-                app.run_schedule(id, false);
-            }
-            glib::ControlFlow::Continue
-        });
     }
 
     /// Asks for a prompt and when to send it to `agent`.
     pub(crate) fn schedule_for(self: &Rc<Self>, agent: &Rc<Agent>) {
         let weak = Rc::downgrade(self);
-        let (cwd, session, title) = (agent.cwd.clone(), agent.session_id(), agent.title());
-        schedule::ask(self.window.upcast_ref(), &agent.title(), session.is_some(), move |prompt, when, same| {
-            let Some(app) = weak.upgrade() else { return };
-            let Ok((next, _)) = schedule::next_run(&when, &schedule::now()) else { return };
-            let id = app.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
-            app.schedules.borrow_mut().push(Schedule {
-                id,
-                cwd: cwd.clone(),
-                session_id: if same { session.clone() } else { None },
-                title: title.clone(),
-                prompt,
-                when,
-                next: Some(next),
-                paused: false,
-                last_run: None,
-            });
-            app.save();
-            if app.showing_overview() {
-                app.fill_overview();
+        let target = Rc::downgrade(agent);
+        schedule::ask(self.window.upcast_ref(), &agent.title(), agent.session_id().is_some(), move |prompt, when, same| {
+            if let (Some(app), Some(agent)) = (weak.upgrade(), target.upgrade()) {
+                let _ = app.ws.schedule(&agent, prompt, when, same);
             }
         });
-    }
-
-    /// Sends a scheduled prompt: to its conversation (reopened if closed), or a new one.
-    /// `by_hand`: Run now (the schedule keeps its next time).
-    fn run_schedule(self: &Rc<Self>, id: u64, by_hand: bool) {
-        let Some(schedule) = self.schedules.borrow().iter().find(|s| s.id == id).cloned() else { return };
-        if !schedule.cwd.is_dir() {
-            // Its folder is gone: nothing to run in. Paused, and said so.
-            if let Some(s) = self.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
-                s.paused = true;
-            }
-            let notification = gio::Notification::new("A scheduled prompt was paused");
-            notification.set_body(Some(&format!("Its folder no longer exists: {}", schedule.cwd.display())));
-            self.app.send_notification(Some(&format!("schedule-{id}")), &notification);
-            self.save();
-            self.refresh_overview();
-            return;
-        }
-        let cwd = schedule.cwd.clone();
-        let agent = match &schedule.session_id {
-            Some(session) => self.agent_with_session(session).unwrap_or_else(|| {
-                self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session.as_str()));
-                self.add_agent(Saved { cwd, session_id: Some(session.clone()), title: schedule.title.clone(), named: false, draft: String::new(), used: crate::state::now(), awake: false, dirs: Vec::new() })
-            }),
-            None => self.add_agent(Saved::new(cwd)),
-        };
-        agent.submit_with(schedule.prompt.clone(), Vec::new());
-        let now = schedule::now();
-        if let Some(s) = self.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
-            s.last_run = Some(now.timestamp().as_second());
-            if !by_hand {
-                s.next = match schedule::next_run(&s.when, &now) {
-                    Ok((t, true)) => Some(t),
-                    _ => None,
-                };
-            }
-        }
-        if !by_hand && settings::get().notify_done {
-            self.notify(&agent, "Scheduled prompt sent");
-        }
-        self.refresh_sidebar();
-        self.save();
-        self.refresh_overview();
     }
 
     /// Opens `project`'s page: nothing starts until a conversation is picked there.
     pub fn show_project(self: &Rc<Self>, project: &Path, cwd: &Path) {
         self.leave_notes();
         self.ensure_project(project);
-        if let Some(entry) = self.projects.borrow_mut().iter_mut().find(|p| p.path == project) {
+        if let Some(entry) = self.ws.projects.borrow_mut().iter_mut().find(|p| p.path == project) {
             entry.collapsed = false;
         }
         // No agent has the keyboard while the page shows (the last one is "previous").
@@ -2226,9 +2083,9 @@ impl App {
             self.focus(&agent);
             return;
         }
-        self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(past.session_id.as_str()));
+        self.ws.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(past.session_id.as_str()));
         // A folder deleted since resumes in its project (or home): the adapter can't start in it.
-        let cwd = [past.cwd.clone(), project_of(&past.cwd), glib::home_dir()].into_iter().find(|d| d.is_dir()).unwrap_or(past.cwd);
+        let cwd = loom_core::workspace::start_folder(&past.cwd);
         let saved = Saved { cwd, session_id: Some(past.session_id), title: past.title.unwrap_or_default(), named: false, draft: String::new(), used: crate::state::now(), awake: false, dirs: Vec::new() };
         let agent = self.add_agent(saved);
         self.focus(&agent);
@@ -2240,13 +2097,13 @@ impl App {
     }
 
     fn reopen(self: &Rc<Self>, saved: Saved) {
-        self.closed.borrow_mut().retain(|c| *c != saved);
+        self.ws.closed.borrow_mut().retain(|c| *c != saved);
         let agent = self.add_agent(saved);
         self.focus(&agent);
     }
 
     fn reopen_closed(self: &Rc<Self>) {
-        let last = self.closed.borrow().first().cloned();
+        let last = self.ws.closed.borrow().first().cloned();
         if let Some(saved) = last {
             self.reopen(saved);
         }
@@ -2315,13 +2172,13 @@ impl App {
         // Remembered to reopen (a conversation that never started has nothing to reopen).
         let saved = agent.saved();
         if saved.session_id.is_some() {
-            let mut closed = self.closed.borrow_mut();
+            let mut closed = self.ws.closed.borrow_mut();
             closed.retain(|c| c.session_id != saved.session_id);
             closed.insert(0, saved);
             closed.truncate(state::CLOSED_KEPT);
         }
         self.chat_stack.remove(&agent.chat().root);
-        self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
+        self.ws.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         if focused_left {
             *self.focused.borrow_mut() = None;
         }
@@ -2344,7 +2201,7 @@ impl App {
     }
 
     fn toggle_collapsed(self: &Rc<Self>, path: &Path) {
-        if let Some(project) = self.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
+        if let Some(project) = self.ws.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
             project.collapsed = !project.collapsed;
         }
         self.refresh_sidebar();
@@ -2353,7 +2210,7 @@ impl App {
 
     /// Takes a project out of the sidebar, closing its agents (asks first if any is busy).
     fn remove_project(self: &Rc<Self>, path: &Path) {
-        let agents: Vec<Rc<Agent>> = self.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
+        let agents: Vec<Rc<Agent>> = self.ws.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
         let busy = agents.iter().filter(|a| a.is_busy() || a.background_running()).count();
         let path = path.to_owned();
         let weak = Rc::downgrade(self);
@@ -2363,7 +2220,7 @@ impl App {
             for agent in &agents {
                 app.remove_agent_then(agent, false);
             }
-            app.projects.borrow_mut().retain(|p| p.path != path);
+            app.ws.projects.borrow_mut().retain(|p| p.path != path);
             if app.showing_project().is_some_and(|p| p == path) {
                 app.show_welcome();
             }
@@ -2371,7 +2228,7 @@ impl App {
             let next = if had_focus { app.agents_in_order().into_iter().next() } else { None };
             match next {
                 Some(next) => app.focus(&next),
-                None if app.agents.borrow().is_empty() => app.show_welcome(),
+                None if app.ws.agents.borrow().is_empty() => app.show_welcome(),
                 None => {}
             }
             app.refresh_sidebar();
@@ -2483,7 +2340,7 @@ impl App {
         let weak = Rc::downgrade(self);
         crate::plugin::on_changed(move || {
             if let Some(app) = weak.upgrade() {
-                for agent in app.agents.borrow().iter().chain(app.notes_chat.agents().iter()) {
+                for agent in app.ws.agents.borrow().iter().chain(app.notes_chat.agents().iter()) {
                     agent.reload_extensions();
                 }
             }
@@ -2581,7 +2438,7 @@ impl App {
         let weak = Rc::downgrade(self);
         *self.hub.on_open.borrow_mut() = Some(Box::new(move |session: &str| {
             let Some(app) = weak.upgrade() else { return };
-            let agent = app.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(session)).cloned();
+            let agent = app.ws.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(session)).cloned();
             if let Some(agent) = agent {
                 app.focus(&agent);
             }
@@ -2683,56 +2540,23 @@ impl App {
     }
 
     fn suspend_idle(&self) {
-        let minutes = std::env::var("LOOM_IDLE_MINUTES").ok().and_then(|m| m.parse().ok()).unwrap_or(settings::get().idle_minutes);
-        if minutes == 0 {
-            return;
-        }
-        let limit = Duration::from_secs(minutes * 60);
-        let s = settings::get();
-        let agents = self.agents.borrow().clone();
-        for agent in agents {
-            let in_view = agent.focused.get() || self.is_pinned(&agent);
-            // A workflow it launched still runs: suspending it would stop the workflow.
-            if agent.status() == Status::Idle && !in_view && !agent.awake.get() && !agent.background_running() && agent.last_active.get().elapsed() > limit {
-                // A draft in its input: something is still being said to it, nothing changes.
-                // A command's output waiting for the next message would go in front of /compact.
-                if s.rest_compact && agent.chat().context_used() >= s.rest_compact_tokens && agent.chat().draft().trim().is_empty() && !agent.has_pending() {
-                    agent.compact_then_rest();
-                } else {
-                    agent.suspend();
-                }
-            }
-        }
+        self.ws.suspend_idle(|agent| agent.focused.get() || self.is_pinned(agent));
     }
 
     fn save(&self) {
-        let order = self.ordered(false);
         // On a project's page, the agent that had focus before it.
         let focused = self.focused.borrow().clone().or_else(|| self.previous.borrow().clone());
-        let focused = focused.and_then(|f| order.iter().position(|a| Rc::ptr_eq(a, &f))).unwrap_or(0);
         // Not put back yet (opened on the overview): kept as it was.
         let pinned = self.pinned.borrow().clone().or_else(|| self.pending_pin.borrow().as_ref().map(|(_, p)| p.clone()));
-        let pinned = pinned.and_then(|p| order.iter().position(|a| Rc::ptr_eq(a, &p)));
-        state::save(
-            &self.app_id,
-            &state::Layout {
-                projects: self.projects.borrow().clone(),
-                agents: order.iter().map(|a| a.saved()).collect(),
-                focused,
-                pinned,
-                closed: self.closed.borrow().clone(),
-                width: if self.window.is_maximized() { self.window.default_width() } else { self.window.width() },
-                height: if self.window.is_maximized() { self.window.default_height() } else { self.window.height() },
-                maximized: self.window.is_maximized(),
-                schedules: self.schedules.borrow().clone(),
-            },
-        );
+        let window = &self.window;
+        let size = if window.is_maximized() { (window.default_width(), window.default_height()) } else { (window.width(), window.height()) };
+        state::save(&self.app_id, &self.ws.layout(focused.as_ref(), pinned.as_ref(), (size.0, size.1, window.is_maximized())));
     }
 
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let busy: Vec<String> =
-            self.agents.borrow().iter().chain(self.notes_chat.agents().iter()).filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
+            self.ws.agents.borrow().iter().chain(self.notes_chat.agents().iter()).filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
         let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
         let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {
@@ -2765,7 +2589,7 @@ impl App {
         }
         // Stopped first: what was waiting to be sent goes back in the input, and is saved
         // with it as the draft.
-        for agent in self.agents.borrow().iter() {
+        for agent in self.ws.agents.borrow().iter() {
             agent.stop();
         }
         self.notes_chat.shutdown();
@@ -2917,7 +2741,7 @@ impl App {
     fn mark_active(&self) {
         let focused = self.focused.borrow().clone();
         let pinned = self.pinned.borrow().clone();
-        for agent in self.agents.borrow().iter() {
+        for agent in self.ws.agents.borrow().iter() {
             let root = &agent.chat().root;
             root.remove_css_class("active");
             root.remove_css_class("inactive");
@@ -2966,7 +2790,7 @@ impl App {
         let menu = match row {
             Some(Row::Project(path)) => {
                 let p = || path.clone();
-                let collapsed = self.projects.borrow().iter().any(|e| e.path == path && e.collapsed);
+                let collapsed = self.ws.projects.borrow().iter().any(|e| e.path == path && e.collapsed);
                 let (p1, p2, p3, p4, p5, p6, p7) = (p(), p(), p(), p(), p(), p(), p());
                 let list = self.list.clone();
                 Menu::new()
@@ -2993,7 +2817,7 @@ impl App {
             // The empty part of the list.
             _ => {
                 let (any_shut, any_open) = {
-                    let projects = self.projects.borrow();
+                    let projects = self.ws.projects.borrow();
                     (projects.iter().any(|p| p.collapsed), projects.iter().any(|p| !p.collapsed))
                 };
                 Menu::new()
@@ -3076,7 +2900,7 @@ impl App {
             _ => "loom".to_owned(),
         };
         // Agents waiting for you, first: the window list and task switcher show it.
-        let waiting = self.agents.borrow().iter().filter(|a| a.status() == Status::Blocked).count();
+        let waiting = self.ws.agents.borrow().iter().filter(|a| a.status() == Status::Blocked).count();
         let title = if waiting > 0 { format!("({waiting}) needs you · {title}") } else { title };
         self.window.set_title(Some(&title));
     }
@@ -3085,7 +2909,7 @@ impl App {
         self.refresh_title();
         if self.notes_mode.get() {
             let (mut working, mut waiting) = (0, 0);
-            for agent in self.agents.borrow().iter() {
+            for agent in self.ws.agents.borrow().iter() {
                 match agent.status() {
                     Status::Working => working += 1,
                     Status::Blocked => waiting += 1,
@@ -3314,7 +3138,7 @@ impl App {
     /// The running agents in the Running list's order. A suspended (or closed) one leaves it;
     /// one that started running joins at the end.
     fn running_agents(&self) -> Vec<Rc<Agent>> {
-        let agents = self.agents.borrow().clone();
+        let agents = self.ws.agents.borrow().clone();
         let live = |a: &Rc<Agent>| a.status() != Status::Suspended;
         let mut order = self.running.borrow_mut();
         order.retain(|id| agents.iter().any(|a| a.id == *id && live(a)));
@@ -3425,7 +3249,7 @@ impl App {
 
     /// Every project card closed, or every one open.
     fn collapse_all(self: &Rc<Self>, collapsed: bool) {
-        for project in self.projects.borrow_mut().iter_mut() {
+        for project in self.ws.projects.borrow_mut().iter_mut() {
             project.collapsed = collapsed;
         }
         self.refresh_sidebar();
@@ -3465,7 +3289,7 @@ impl App {
             return;
         }
         {
-            let mut projects = self.projects.borrow_mut();
+            let mut projects = self.ws.projects.borrow_mut();
             let Some(at) = projects.iter().position(|p| p.path == from) else { return };
             let moved = projects.remove(at);
             let Some(to) = projects.iter().position(|p| p.path == onto) else {
@@ -3479,7 +3303,7 @@ impl App {
     }
 
     fn refresh_inbox(self: &Rc<Self>) {
-        let agents = self.agents.borrow().clone();
+        let agents = self.ws.agents.borrow().clone();
         let count: usize = agents.iter().map(|a| a.questions().len()).sum();
         self.inbox.set_label(&format!("⚑  {count} waiting for you  ·  Ctrl+I"));
         self.inbox.set_visible(count > 0);
@@ -3590,14 +3414,14 @@ impl App {
             actions.append(&button);
         };
         action("Open a project folder…", "Ctrl+Shift+N", Box::new(|a| a.new_agent(true)));
-        if !self.closed.borrow().is_empty() {
+        if !self.ws.closed.borrow().is_empty() {
             action("Reopen the last closed agent", "Ctrl+Shift+T", Box::new(|a| a.reopen_closed()));
         }
         action("Command palette", "Ctrl+Shift+P", Box::new(|a| a.palette()));
         action("Settings", "Ctrl+,", Box::new(|a| crate::prefs::open(&a.window)));
         middle.append(&actions);
 
-        let projects = self.projects.borrow().clone();
+        let projects = self.ws.projects.borrow().clone();
         if !projects.is_empty() {
             let heading = gtk::Label::builder().label("Projects").xalign(0.0).build();
             heading.add_css_class("welcome-heading");
@@ -3775,3 +3599,52 @@ fn project_name(project: &Path) -> String {
     project.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| project.to_string_lossy().into_owned())
 }
 
+impl App {
+    fn me(&self) -> Option<Rc<App>> {
+        self.me.borrow().upgrade()
+    }
+}
+
+impl Host for App {
+    fn agent_parts(&self, id: u32, project: &Path) -> (loom_core::jobs::Jobs, Rc<dyn loom_core::agent::view::View>) {
+        let _ = id;
+        let tray = self.tray_for(project);
+        (tray.core(), crate::chat_view::ChatView::new(crate::chat::Chat::new(), &tray))
+    }
+
+    fn agent_added(&self, agent: &Rc<Agent>) {
+        let chat = agent.chat();
+        crate::chat_view::wire(agent, &chat);
+        self.chat_stack.add_named(&chat.root, Some(&format!("agent-{}", agent.id)));
+    }
+
+    fn agent_event(&self, agent: &Rc<Agent>, event: Event) {
+        if let Some(app) = self.me() {
+            app.agent_event(agent, event);
+        }
+    }
+
+    fn notify(&self, agent: Option<&Rc<Agent>>, title: &str, body: &str) {
+        match agent {
+            Some(agent) => App::notify(self, agent, body),
+            None => {
+                if std::env::var_os("LOOM_CONTROL").is_some() {
+                    return;
+                }
+                let notification = gio::Notification::new(title);
+                notification.set_body(Some(body));
+                self.app.send_notification(Some("schedule"), &notification);
+            }
+        }
+    }
+
+    fn schedules_changed(&self) {
+        if let Some(app) = self.me() {
+            app.refresh_sidebar();
+            app.save();
+            if app.showing_overview() {
+                app.fill_overview();
+            }
+        }
+    }
+}
