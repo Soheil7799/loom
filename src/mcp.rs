@@ -216,20 +216,33 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
         let name = args["note"].as_str().unwrap_or("");
         let (path, text, links, backlinks) = index.read(name).ok_or_else(|| format!("No note named {name}. Find it with loom_note_search."))?;
         const MOST: usize = 60_000;
+        let warning = if crate::vault::has_conflict_marks(&text) {
+            "Careful: this note holds a sync conflict left unsettled (<<<<<<< lines): two versions in one. Don't change it; the user settles it in loom's Notes view.\n"
+        } else {
+            ""
+        };
         let text = if text.len() > MOST { format!("{}\n… (cut: the note is longer)", &text[..text.floor_char_boundary(MOST)]) } else { text };
-        return Ok(format!("{path}\n---\n{text}\n---\nLinks to: {}\nLinked from: {}", list_or_none(&links), list_or_none(&backlinks)));
+        return Ok(format!("{warning}{path}\n---\n{text}\n---\nLinks to: {}\nLinked from: {}", list_or_none(&links), list_or_none(&backlinks)));
     }
     let query = args["query"].as_str().unwrap_or("");
     let limit = args["limit"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
     let hits = index.search(query, args["folder"].as_str(), limit);
+    // Conflict copies are not searched: said, so they are not taken for missing notes.
+    let copies = crate::vault::conflicts(&vault).len();
+    let left_out = if copies == 0 {
+        String::new()
+    } else {
+        format!("\n\n({copies} sync conflict cop{} left out: older or other versions of notes, for the user to settle in loom's Notes view.)", if copies == 1 { "y is" } else { "ies are" })
+    };
     if hits.is_empty() {
-        return Ok(format!("No note matches \"{query}\" ({} notes in the vault).", index.len()));
+        return Ok(format!("No note matches \"{query}\" ({} notes in the vault).{left_out}", index.len()));
     }
     Ok(hits
         .iter()
         .map(|h| format!("{} ({})\n{}\nLinks to: {} · Linked from: {}", h.path, h.title, h.snippet, list_or_none(&h.links), list_or_none(&h.backlinks)))
         .collect::<Vec<_>>()
-        .join("\n\n"))
+        .join("\n\n")
+        + &left_out)
 }
 
 /// loom_note_topics / loom_note_list / loom_note_recent: what the vault holds, read from its
@@ -260,7 +273,7 @@ fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Str
             if found.is_empty() {
                 return Ok(format!("No notes in {}.", if folder.is_empty() { "the vault" } else { folder }));
             }
-            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", crate::vault::ago(*when))).collect::<Vec<_>>().join("\n"))
+            Ok(found.iter().map(|(path, title, when)| listed(path, title, *when)).collect::<Vec<_>>().join("\n"))
         }
         _ => {
             let days = args["days"].as_u64().unwrap_or(7).max(1);
@@ -269,8 +282,16 @@ fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Str
             if found.is_empty() {
                 return Ok(format!("No note changed in the last {days} days."));
             }
-            Ok(found.iter().map(|(path, title, when)| format!("{path} ({title}) · changed {}", crate::vault::ago(*when))).collect::<Vec<_>>().join("\n"))
+            Ok(found.iter().map(|(path, title, when)| listed(path, title, *when)).collect::<Vec<_>>().join("\n"))
         }
+    }
+}
+
+/// A note in a list: its path, title and age; a conflict copy said to be one.
+fn listed(path: &str, title: &str, when: u64) -> String {
+    match crate::vault::conflict_of(path) {
+        Some(of) => format!("{path} · a sync conflict copy of {of}, not a note: leave it to the user · changed {}", crate::vault::ago(when)),
+        None => format!("{path} ({title}) · changed {}", crate::vault::ago(when)),
     }
 }
 

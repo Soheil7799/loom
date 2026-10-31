@@ -476,6 +476,10 @@ fn candidates(vault: &Path, index: &crate::notes::Index, topic: &Topic, about: &
         .into_iter()
         .filter_map(|p| {
             let text = std::fs::read_to_string(vault.join(&p)).ok()?;
+            // A merge left undone: not shown, so not changed, until the user settles it.
+            if crate::vault::has_conflict_marks(&text) {
+                return None;
+            }
             let text = if text.len() > NOTE_MOST { format!("{}\n[… the rest of the note is not shown]", &text[..text.floor_char_boundary(NOTE_MOST)]) } else { text };
             Some((p, text))
         })
@@ -593,7 +597,13 @@ fn allowed(vault: &Path, topic: &Topic, change: &Change) -> Result<(), String> {
     if !path.starts_with(folder) {
         return Err(format!("{note} is outside the {} folder ({folder}/).", topic.name));
     }
+    if crate::vault::conflict_of(note).is_some() {
+        return Err(format!("{note} is a sync conflict copy: the user settles it first."));
+    }
     let exists = vault.join(path).is_file();
+    if exists && std::fs::read_to_string(vault.join(path)).is_ok_and(|t| crate::vault::has_conflict_marks(&t)) {
+        return Err(format!("{note} has a sync conflict in it (<<<<<<< lines): the user settles it first."));
+    }
     match change {
         // A note made meanwhile (by another change): what was to be in it goes into it.
         Change::Create { .. } => Ok(()),

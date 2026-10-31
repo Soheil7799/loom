@@ -17,6 +17,10 @@ asking what their notes say, thinking aloud, telling you things to keep.
   note of that topic, and follow it.
 - Each topic's notes live in its `folder`.
 - `.loom/` is loom's own: never change it.
+- Sync conflict copies (`Note (… conflicted copy …).md`, `Note.sync-conflict-….md`) and
+  notes with `<<<<<<<` / `>>>>>>>` lines hold two versions of a note: never change them or
+  answer from them as if they were the note. The user settles them in loom's Notes view;
+  help only if they ask you to.
 
 ## Answering
 

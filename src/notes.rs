@@ -63,6 +63,10 @@ impl Index {
                 continue;
             }
             let key = relative.to_string_lossy().into_owned();
+            // A sync tool's conflict copy is not the note: the user settles it in loom.
+            if vault::conflict_of(&key).is_some() {
+                continue;
+            }
             let stamp = std::fs::metadata(&file).ok().and_then(|m| Some((m.modified().ok()?, m.len())));
             seen.insert(key.clone());
             if stamp.is_some() && self.notes.get(&key).is_some_and(|n| n.stamp == stamp) {

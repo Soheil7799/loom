@@ -28,6 +28,44 @@ pub const TOPICS: &str = "Topics";
 pub const OWN: &str = ".loom";
 
 /// Every note of the vault: (path in it, title, last change in Unix seconds), newest first.
+/// The note a sync tool's conflict copy is of (its path in the vault), if `path` is one:
+/// Syncthing's `Note.sync-conflict-20261031-021500-ABCDEFG.md`; Dropbox's, Nextcloud's,
+/// ownCloud's and the like `Note (… conflicted copy …).md`.
+pub fn conflict_of(path: &str) -> Option<String> {
+    let (dir, name) = match path.rfind('/') {
+        Some(i) => (&path[..=i], &path[i + 1..]),
+        None => ("", path),
+    };
+    let (stem, extension) = match name.rfind('.') {
+        Some(i) if i > 0 => (&name[..i], &name[i..]),
+        _ => (name, ""),
+    };
+    // ASCII lowercase: the same byte offsets as the name.
+    let lower = stem.to_ascii_lowercase();
+    if let Some(i) = lower.find(".sync-conflict-") {
+        return Some(format!("{dir}{}{extension}", &stem[..i]));
+    }
+    if lower.ends_with(')')
+        && let Some(i) = lower.rfind(" (")
+        && lower[i..].contains("conflict")
+        && i > 0
+    {
+        return Some(format!("{dir}{}{extension}", &stem[..i]));
+    }
+    None
+}
+
+/// Whether a note holds a merge left undone: git's (or a sync tool's) `<<<<<<<` and
+/// `>>>>>>>` lines.
+pub fn has_conflict_marks(text: &str) -> bool {
+    text.lines().any(|l| l.starts_with("<<<<<<< ") || l == "<<<<<<<") && text.lines().any(|l| l.starts_with(">>>>>>> ") || l == ">>>>>>>")
+}
+
+/// The vault's conflict copies: (the copy, the note it is of), paths in the vault.
+pub fn conflicts(vault: &Path) -> Vec<(String, String)> {
+    all_notes(vault).into_iter().filter_map(|(path, _, _)| conflict_of(&path).map(|of| (path, of))).collect()
+}
+
 pub fn all_notes(vault: &Path) -> Vec<(String, String, u64)> {
     fn walk(root: &Path, dir: &Path, out: &mut Vec<(String, String, u64)>) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
@@ -306,6 +344,19 @@ mod tests {
         prepare(&vault).unwrap();
         assert!(own_repository(&vault));
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn conflict_copies_are_told() {
+        assert_eq!(conflict_of("Work/Plan.sync-conflict-20261031-021500-ABCDEFG.md").as_deref(), Some("Work/Plan.md"));
+        assert_eq!(conflict_of("Plan (Mostafa's conflicted copy 2026-10-31).md").as_deref(), Some("Plan.md"));
+        assert_eq!(conflict_of("Finances/2026-10 (conflicted copy 2026-10-31 021500).md").as_deref(), Some("Finances/2026-10.md"));
+        assert_eq!(conflict_of("Life/Trip (Conflicted copy laptop 202610310215).md").as_deref(), Some("Life/Trip.md"));
+        assert_eq!(conflict_of("Work/Plan (draft).md"), None);
+        assert_eq!(conflict_of("Work/Conflicts at work.md"), None);
+        assert_eq!(conflict_of("Work/Plan.md"), None);
+        assert!(has_conflict_marks("a\n<<<<<<< HEAD\nmine\n=======\ntheirs\n>>>>>>> phone\n"));
+        assert!(!has_conflict_marks("a\n<<<<<<< only an opening\n"));
     }
 
     #[test]
