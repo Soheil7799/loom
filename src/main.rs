@@ -4,7 +4,7 @@
 
 mod about;
 mod bridges;
-mod provider;
+use loom_core::provider;
 mod agent;
 mod app;
 mod chat;
@@ -79,6 +79,10 @@ fn quit_on_signals(loom: &std::rc::Rc<app::App>) {
 }
 
 fn main() -> glib::ExitCode {
+    // The core's agents run on this thread, in GLib's main loop.
+    loom_core::rt::set_spawner(|future| {
+        glib::spawn_future_local(future);
+    });
     // `loom mcp`: the MCP server an agent runs to reach loom (no window).
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);

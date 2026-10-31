@@ -11,7 +11,6 @@ use std::process::{Child, ChildStdin, Command, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
 
-use gtk::glib;
 use serde_json::Value;
 
 pub struct Process {
@@ -95,7 +94,7 @@ impl Process {
         });
         crate::log::debug!(tag.clone(), "started {} in {}", program.join(" "), cwd.display());
         let process = Rc::new(Process { stdin: RefCell::new(child.stdin.take()), child: RefCell::new(Some(child)), pid, tag });
-        glib::spawn_future_local(async move {
+        crate::rt::spawn_local(async move {
             while let Ok(line) = rx.recv().await {
                 let end = line.is_none();
                 on_line(line);

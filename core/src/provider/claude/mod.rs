@@ -13,7 +13,6 @@ use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::sync::OnceLock;
 
-use gtk::{gio, glib};
 use serde_json::{Value, json};
 
 use super::process::Process;
@@ -31,7 +30,7 @@ pub fn program() -> PathBuf {
     PROGRAM
         .get_or_init(|| {
             let on_path = std::env::var_os("PATH").into_iter().flat_map(|p| std::env::split_paths(&p).collect::<Vec<_>>()).map(|d| d.join("claude"));
-            let home = glib::home_dir();
+            let home = crate::paths::home();
             let usual = [home.join(".local/bin/claude"), home.join(".claude/local/claude"), PathBuf::from("/usr/local/bin/claude"), PathBuf::from("/usr/bin/claude")];
             on_path.chain(usual).find(|p| p.is_file()).unwrap_or_else(|| PathBuf::from("claude"))
         })
@@ -241,7 +240,7 @@ impl Link {
             }
         };
         if later {
-            glib::idle_add_local_once(fail);
+            crate::rt::idle_once(fail);
         } else {
             fail();
         }
@@ -297,7 +296,7 @@ impl Link {
                 "agentInfo": { "name": "claude-code", "version": known_version() }
             }))),
             "session/new" => {
-                let id = glib::uuid_string_random().to_string();
+                let id = crate::rt::uuid();
                 self.untitled.set(true);
                 self.start(id, false, &params, reply);
             }
@@ -329,8 +328,8 @@ impl Link {
             "session/fork" => {
                 let session = params["sessionId"].as_str().unwrap_or("").to_owned();
                 let at = params["_meta"]["jetbrains"]["air"]["fork"]["messageId"].as_str().map(str::to_owned);
-                glib::spawn_future_local(async move {
-                    let result = gio::spawn_blocking(move || transcripts::fork(&session, at.as_deref())).await.unwrap_or_else(|_| Err("fork failed".to_owned()));
+                crate::rt::spawn_local(async move {
+                    let result = crate::rt::spawn_blocking(move || transcripts::fork(&session, at.as_deref())).await.unwrap_or_else(|_| Err("fork failed".to_owned()));
                     reply(result.map(|id| json!({ "sessionId": id })).map_err(|e| error(&e)));
                 });
             }
@@ -358,8 +357,8 @@ impl Link {
                     },
                     Some(after) => {
                         let (me, session) = (self.me.clone(), self.session_id());
-                        glib::spawn_future_local(async move {
-                            let found = gio::spawn_blocking(move || transcripts::user_after(&session, &after)).await.ok().flatten();
+                        crate::rt::spawn_local(async move {
+                            let found = crate::rt::spawn_blocking(move || transcripts::user_after(&session, &after)).await.ok().flatten();
                             let Some(link) = me.upgrade() else { return };
                             match found {
                                 Some(message) => rewind(&link, message, reply),
@@ -401,8 +400,8 @@ impl Link {
             }
             "session/close" => reply(Ok(json!({}))),
             "session/list" => {
-                glib::spawn_future_local(async move {
-                    let sessions = gio::spawn_blocking(transcripts::list).await.unwrap_or_default();
+                crate::rt::spawn_local(async move {
+                    let sessions = crate::rt::spawn_blocking(transcripts::list).await.unwrap_or_default();
                     reply(Ok(json!({ "sessions": sessions })));
                 });
             }
@@ -591,8 +590,8 @@ impl Link {
     fn load(&self, params: Value, reply: Reply) {
         let Some(id) = params["sessionId"].as_str().map(str::to_owned) else { return reply(Err(error("no sessionId"))) };
         let (me, cwd, read) = (self.me.clone(), self.cwd.clone(), id.clone());
-        glib::spawn_future_local(async move {
-            let updates = gio::spawn_blocking(move || transcripts::replay(&read, &cwd)).await.ok().flatten();
+        crate::rt::spawn_local(async move {
+            let updates = crate::rt::spawn_blocking(move || transcripts::replay(&read, &cwd)).await.ok().flatten();
             let Some(link) = me.upgrade() else { return };
             let Some(updates) = updates else { return reply(Err(error("Session not found"))) };
             *link.session.borrow_mut() = Some(id.clone());
@@ -620,7 +619,7 @@ impl Link {
     /// Carries the plan out in a new conversation, in `mode`, within the turn that is running
     /// (its answer comes from the new one). loom is told the new conversation's id.
     fn fresh_context(&self, mode: &'static str, plan: String) {
-        let id = glib::uuid_string_random().to_string();
+        let id = crate::rt::uuid();
         let old = self.session_id();
         (self.on_incoming)(Incoming::Call {
             id: None,
@@ -675,7 +674,7 @@ impl Link {
                 _ => None,
             })
             .collect();
-        let id = glib::uuid_string_random().to_string();
+        let id = crate::rt::uuid();
         self.write(&json!({ "type": "user", "uuid": id, "message": { "role": "user", "content": content }, "parent_tool_use_id": null, "session_id": self.session_id() }));
         id
     }

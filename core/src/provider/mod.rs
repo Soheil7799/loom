@@ -23,7 +23,7 @@ pub enum Incoming {
     Exited,
 }
 
-pub(crate) type Reply = Box<dyn FnOnce(Result<Value, Value>)>;
+pub type Reply = Box<dyn FnOnce(Result<Value, Value>)>;
 
 enum Link {
     Acp(Rc<acp::Link>),

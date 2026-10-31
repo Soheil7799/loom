@@ -11,6 +11,11 @@ pub fn config_dir() -> PathBuf {
     xdg("XDG_CONFIG_HOME").unwrap_or_else(|| home().join(".config"))
 }
 
+/// $XDG_DATA_HOME, else ~/.local/share.
+pub fn data_dir() -> PathBuf {
+    xdg("XDG_DATA_HOME").unwrap_or_else(|| home().join(".local/share"))
+}
+
 /// $XDG_RUNTIME_DIR, else ~/.cache (GLib's fallback too).
 pub fn runtime_dir() -> PathBuf {
     xdg("XDG_RUNTIME_DIR").or_else(|| xdg("XDG_CACHE_HOME")).unwrap_or_else(|| home().join(".cache"))

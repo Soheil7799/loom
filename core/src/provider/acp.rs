@@ -6,7 +6,6 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use gtk::glib;
 use serde_json::{Value, json};
 
 use super::process::Process;
@@ -35,7 +34,7 @@ pub fn default_adapter() -> Vec<String> {
 }
 
 fn installed_dir() -> PathBuf {
-    glib::user_data_dir().join("loom/adapter")
+    crate::paths::data_dir().join("loom/adapter")
 }
 
 impl Link {

@@ -28,7 +28,7 @@ pub fn list() -> Vec<Value> {
             let Ok(meta) = entry.metadata() else { continue };
             let Some(info) = summary(&path) else { continue };
             let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-            let updated = gtk::glib::DateTime::from_unix_utc(modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)).ok().and_then(|t| t.format_iso8601().ok()).map(|s| s.to_string()).unwrap_or_default();
+            let updated = jiff::Timestamp::from_second(modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)).map(|t| t.to_string()).unwrap_or_default();
             found.push((modified, json!({ "sessionId": id, "cwd": info.0, "title": info.1, "updatedAt": updated })));
         }
     }
@@ -116,7 +116,7 @@ pub fn delete(session: &str) -> Result<(), String> {
 pub fn fork(session: &str, at: Option<&str>) -> Result<String, String> {
     let path = file(session).ok_or_else(|| "Session not found".to_owned())?;
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let id = gtk::glib::uuid_string_random().to_string();
+    let id = crate::rt::uuid();
     let lines: Vec<&str> = text.lines().collect();
     // The last line of that message (a message is written as one line per block).
     let end = match at {
