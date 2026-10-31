@@ -14,6 +14,7 @@
 //! - `snapall:<prefix>`: pictures of the other windows (settings…), <prefix>-1.png…
 //! - `scratch`, `files`, `switcher`, `inbox`, `help`, `peek`: what their keys do
 //! - `run:<command>`: run a command in the tray
+//! - `pin` / `unpin`: pin the newest job above the tray, or back
 //! - `open:<file>`: open a file in the editor (relative to the focused agent's folder)
 //! - `mode`: next permission mode
 //! - `split`: what Ctrl+\ does

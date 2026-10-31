@@ -1010,6 +1010,8 @@ impl App {
                 }
             }
             "peek" => self.current_tray().peek_latest(),
+            "pin" => self.current_tray().pin_latest(true),
+            "unpin" => self.current_tray().pin_latest(false),
             "split" => self.toggle_split(),
             "find" => self.find_file(),
             "elsewhere" => self.files.open_elsewhere(),

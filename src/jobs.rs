@@ -204,11 +204,13 @@ impl Tray {
         popover.set_child(Some(&job.frame(false)));
         holder.append(&job.term);
 
+        // A pinned job's chip takes it back to the tray, and peeks it there.
         let weak = Rc::downgrade(&job);
         chip.connect_clicked(move |_| {
             if let Some(job) = weak.upgrade()
                 && let Some(tray) = job.tray.upgrade()
             {
+                tray.unpin(&job);
                 tray.peek(&job);
             }
         });
@@ -271,6 +273,16 @@ impl Tray {
         let latest = self.jobs.borrow().last().cloned();
         if let Some(job) = latest {
             self.peek(&job);
+        }
+    }
+
+    /// Pins the newest job above the tray, or back (the test hooks).
+    pub fn pin_latest(&self, pin: bool) {
+        let latest = self.jobs.borrow().last().cloned();
+        match latest {
+            Some(job) if pin => self.pin(&job),
+            Some(job) => self.unpin(&job),
+            None => {}
         }
     }
 
