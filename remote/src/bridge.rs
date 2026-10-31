@@ -6,7 +6,7 @@
 //! the code, and is paired when the user confirms it in loom. A paired device asks what the
 //! bridge protocol allows (listed in `PASSED`) and hears loom's events.
 
-use std::collections::HashSet;
+use std::collections::BTreeSet;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,6 +26,9 @@ const PASSED: &[&str] = &["agents", "send", "save", "answer", "form", "stop", "l
 
 /// How long loom waits for the user to confirm a device.
 const CONFIRM: Duration = Duration::from_secs(300);
+
+/// The most a device not paired may send in a request (a pairing request is small).
+const STRANGER_LIMIT: usize = 4096;
 
 #[derive(Default)]
 struct Shared {
@@ -81,6 +84,7 @@ pub async fn run() -> i32 {
         Ok(endpoint) => endpoint,
         // Said in Settings; loom starts it again when the settings change.
         Err(why) => {
+            drop(events);
             let _ = loom.call("state", json!({ "state": "failed", "why": why })).await;
             return std::future::pending::<i32>().await;
         }
@@ -189,12 +193,14 @@ impl Bridge {
                 .collect();
             shared.pairing = settings["pairing"].as_str().map(str::to_owned);
             let Shared { devices, pairing, candidate, connections, .. } = &mut *shared;
+            // Refused: it is told so, then dropped (by `stream`).
+            let refused = candidate.as_ref().map(|(id, _)| *id);
             if pairing.is_none() || candidate.as_ref().is_some_and(|(id, _)| devices.iter().any(|(d, _)| d == id)) {
                 *candidate = None;
             }
             // A removed device goes now; one pairing stays while the code is shown.
             connections.retain(|c| {
-                let keep = devices.iter().any(|(d, _)| *d == c.remote_id()) || pairing.is_some();
+                let keep = devices.iter().any(|(d, _)| *d == c.remote_id()) || pairing.is_some() || refused == Some(c.remote_id());
                 if !keep {
                     c.close(1u32.into(), b"not paired");
                 }
@@ -211,7 +217,7 @@ impl Bridge {
         let addr = self.endpoint.addr();
         let relay = addr.relay_urls().next().map(|r| r.to_string());
         let ticket = shared.pairing.as_ref().map(|code| Ticket { addr: addr.clone(), code: code.clone() }.encode());
-        let online: HashSet<String> = shared.connections.iter().map(|c| c.remote_id().to_string()).collect();
+        let online: BTreeSet<String> = shared.connections.iter().map(|c| c.remote_id().to_string()).collect();
         let _ = self.state.send(json!({
             "state": "online",
             "id": self.endpoint.id().to_string(),
@@ -243,17 +249,27 @@ impl Bridge {
         self.log(&format!("{} connected", id.fmt_short()));
         self.report();
         while let Ok((send, recv)) = connection.accept_bi().await {
-            tokio::spawn(self.clone().stream(id, send, recv));
+            tokio::spawn(self.clone().stream(connection.clone(), send, recv));
         }
         let gone = connection.stable_id();
-        self.shared.lock().unwrap().connections.retain(|c| c.stable_id() != gone);
+        {
+            let mut shared = self.shared.lock().unwrap();
+            shared.connections.retain(|c| c.stable_id() != gone);
+            // A device that asked to pair and left is not offered any more.
+            if shared.candidate.as_ref().is_some_and(|(c, _)| *c == id) && !shared.connections.iter().any(|c| c.remote_id() == id) {
+                shared.candidate = None;
+            }
+        }
+        self.changed.notify_waiters();
         self.log(&format!("{} went", id.fmt_short()));
         self.report();
     }
 
-    /// One request from device `id`, answered on `send`.
-    async fn stream(self: Arc<Self>, id: EndpointId, mut send: SendStream, mut recv: RecvStream) {
-        let Ok(bytes) = recv.read_to_end(LIMIT).await else { return };
+    /// One request on `connection`, answered on `send`.
+    async fn stream(self: Arc<Self>, connection: Connection, mut send: SendStream, mut recv: RecvStream) {
+        let id = connection.remote_id();
+        let limit = if self.is_device(&id) { LIMIT } else { STRANGER_LIMIT };
+        let Ok(bytes) = recv.read_to_end(limit).await else { return };
         let request: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
         let method = request["method"].as_str().unwrap_or("");
         self.log(&format!("{} → {method}", id.fmt_short()));
@@ -274,6 +290,9 @@ impl Bridge {
                     Err(broadcast::error::RecvError::Closed) => return,
                 }
             }
+        } else if method == "address" {
+            // Where it is now, for the device to find it next time.
+            wire::answer(Ok(json!(self.endpoint.addr())))
         } else if PASSED.contains(&method) {
             self.loom.call(method, request["params"].clone()).await
         } else {
@@ -281,6 +300,11 @@ impl Bridge {
         };
         let _ = send.write_all(answer.to_string().as_bytes()).await;
         let _ = send.finish();
+        // Refused or not paired: it goes once it has heard why.
+        if !self.is_device(&id) && self.shared.lock().unwrap().pairing.is_none() {
+            let _ = send.stopped().await;
+            connection.close(1u32.into(), b"not paired");
+        }
     }
 
     /// Device `id` asks to pair: it must send the code loom shows, then the user confirms it.
@@ -308,6 +332,10 @@ impl Bridge {
         let decided = tokio::time::timeout(CONFIRM, async {
             loop {
                 notified.as_mut().await;
+                // It left meanwhile: nothing to wait for.
+                if self.shared.lock().unwrap().candidate.as_ref().is_none_or(|(c, _)| *c != id) && !self.is_device(&id) {
+                    return Err("Not paired: refused or cancelled in loom.".to_owned());
+                }
                 notified = Box::pin(self.changed.notified());
                 notified.as_mut().enable();
                 let shared = self.shared.lock().unwrap();

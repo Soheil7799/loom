@@ -73,11 +73,21 @@ async fn connect(key: SecretKey, addr: EndpointAddr) -> Result<Desktop, String> 
     Ok(Desktop { _endpoint: endpoint, connection })
 }
 
-/// The desktop paired with.
+/// The desktop paired with. Its address now is kept for next time (its relay or network may
+/// change; while it has none, the one known stays).
 async fn desktop() -> Result<Desktop, String> {
     let mut config = load();
     let addr: EndpointAddr = serde_json::from_value(config["desktop"].clone()).map_err(|_| "Not paired yet: loom-remote pair <ticket>".to_owned())?;
-    connect(key(&mut config), addr).await
+    let desktop = connect(key(&mut config), addr.clone()).await?;
+    if let Ok(now) = wire::request(&desktop, "address", Value::Null).await.and_then(|a| serde_json::from_value::<EndpointAddr>(a).map_err(|e| e.to_string()))
+        && now.id == addr.id
+        && now != addr
+        && (now.relay_urls().next().is_some() || addr.relay_urls().next().is_none())
+    {
+        config["desktop"] = json!(now);
+        let _ = save(&config);
+    }
+    Ok(desktop)
 }
 
 pub async fn pair(ticket: &str, name: &str) -> Result<(), String> {

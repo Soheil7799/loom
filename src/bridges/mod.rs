@@ -91,15 +91,22 @@ pub fn random(len: usize) -> String {
     random_bytes(len).iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
 }
 
-/// `len` random bytes, as hex.
-fn random_hex(len: usize) -> String {
-    random_bytes(len).iter().map(|b| format!("{b:02x}")).collect()
+/// `len` random bytes from /dev/urandom, as hex (a key: nothing weaker will do).
+fn random_hex(len: usize) -> Option<String> {
+    urandom(len).map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
+}
+
+fn urandom(len: usize) -> Option<Vec<u8>> {
+    use std::io::Read;
+    let mut bytes = vec![0u8; len];
+    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).ok().map(|()| bytes)
 }
 
 fn random_bytes(len: usize) -> Vec<u8> {
-    use std::io::Read;
     let mut bytes = vec![0u8; len];
-    if std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).is_err() {
+    if let Some(random) = urandom(len) {
+        bytes = random;
+    } else {
         let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()) ^ u128::from(std::process::id());
         for (i, b) in bytes.iter_mut().enumerate() {
             *b = (seed >> ((i % 16) * 8)) as u8;
@@ -190,11 +197,11 @@ impl Host {
 
     /// Starts, stops or tells each bridge as the settings say.
     pub fn apply(self: &Rc<Self>, s: &Settings) {
-        // Its endpoint's key, made the first time it is switched on (saved, then applied).
-        if s.remote_enabled && s.remote_key.is_empty() {
-            let key = random_hex(32);
+        // The remote bridge's key, made the first time it is switched on (saved, then applied).
+        if s.remote_enabled && s.remote_key.is_empty()
+            && let Some(key) = random_hex(32)
+        {
             glib::idle_add_local_once(move || crate::settings::update(|s| s.remote_key = key));
-            return;
         }
         if !s.remote_enabled {
             *self.pairing.borrow_mut() = None;
@@ -207,15 +214,18 @@ impl Host {
                     if running.is_some() {
                         self.stop(name);
                     }
-                    match *name {
-                        "telegram" => set_state(name, (if s.telegram_enabled { Link::NeedsToken } else { Link::Off }).to_json()),
-                        _ if s.remote_enabled => set_state(name, json!({ "state": "failed", "why": "loom-remote is not installed beside loom." })),
-                        _ => set_state(name, json!({ "state": "off" })),
-                    }
+                    let state = match *name {
+                        "telegram" => (if s.telegram_enabled { Link::NeedsToken } else { Link::Off }).to_json(),
+                        "remote" if !s.remote_enabled => json!({ "state": "off" }),
+                        "remote" if remote_program().is_none() => json!({ "state": "failed", "why": "loom-remote is not installed beside loom." }),
+                        "remote" if s.remote_key.is_empty() => json!({ "state": "failed", "why": "No key could be made (/dev/urandom can't be read)." }),
+                        _ => json!({ "state": "off" }),
+                    };
+                    set_state(name, state);
                 }
                 (Some(_), None) => self.start(name),
-                // Another key or relay: another endpoint.
-                (Some(settings), Some(was)) if *name == "remote" && (settings["key"] != was["key"] || settings["relay"] != was["relay"]) => {
+                // Settings it can't take while running: started again with them.
+                (Some(settings), Some(was)) if restarts_on(name).iter().any(|key| settings[key] != was[key]) => {
                     self.stop(name);
                     self.start(name);
                 }
@@ -408,7 +418,9 @@ impl Host {
         let result = match method {
             "hello" => Ok(json!({ "settings": self.settings_for(bridge, &crate::settings::get()), "agents": agents() })),
             "agents" => Ok(agents()),
-            // A message: pictures (any format GTK reads) go as pasted ones.
+            // A message: pictures (any format GTK reads) go as pasted ones. A shell command
+            // (`!…`) runs only from loom's own window, never from a bridge.
+            "send" if p["text"].as_str().unwrap_or("").trim_start().starts_with('!') => Err("! commands run only from loom itself.".to_owned()),
             "send" => agent().and_then(|agent| {
                 let mut images = Vec::new();
                 for data in p["images"].as_array().into_iter().flatten() {
@@ -474,6 +486,15 @@ impl Host {
             other => Err(format!("unknown request {other}")),
         };
         answer(result);
+    }
+}
+
+/// What a bridge is started again for when it changes (the remote bridge's endpoint is made
+/// from its key and relay).
+fn restarts_on(name: &str) -> &'static [&'static str] {
+    match name {
+        "remote" => &["key", "relay"],
+        _ => &[],
     }
 }
 

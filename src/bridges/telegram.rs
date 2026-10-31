@@ -722,7 +722,7 @@ impl Bot {
             return;
         };
         // A shell command would run here unasked: only from the window.
-        if text.starts_with('!') {
+        if text.trim_start().starts_with('!') {
             self.say("! commands run only from loom itself.", About::Nothing);
             return;
         }

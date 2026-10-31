@@ -635,7 +635,7 @@ fn remote(s: &Settings) -> gtk::Box {
 
     // Pairing: the code to scan, or the ticket to paste into loom-remote.
     let pairing = gtk::Box::new(gtk::Orientation::Horizontal, 16);
-    let qr = gtk::DrawingArea::builder().content_width(180).content_height(180).valign(gtk::Align::Start).build();
+    let qr = gtk::DrawingArea::builder().content_width(220).content_height(220).valign(gtk::Align::Start).build();
     let ticket = Rc::new(std::cell::RefCell::new(String::new()));
     let drawn = ticket.clone();
     qr.set_draw_func(move |_, cr, width, height| draw_qr(cr, width, height, &drawn.borrow()));
@@ -784,7 +784,8 @@ fn remote(s: &Settings) -> gtk::Box {
         title.set_label(&heading);
         detail.set_label(&words);
         detail.set_visible(!words.is_empty());
-        pair.set_sensitive(up);
+        // A ticket without the relay would be good on this network only.
+        pair.set_sensitive(up && (!state["relay"].is_null() || !state["problem"].is_null()));
 
         let shown = str_of("ticket");
         pairing.set_visible(up && !shown.is_empty());

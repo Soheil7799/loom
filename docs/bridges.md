@@ -34,7 +34,7 @@ Connect to the socket, write one line, read one line back:
 |---|---|---|
 | `hello` | | `{settings, agents}`: this bridge's settings and every agent |
 | `agents` | | the agents, in the sidebar's order |
-| `send` | `agent`, `text`, `images` (base64, any format) | the agent |
+| `send` | `agent`, `text`, `images` (base64, any format) | the agent; `!` commands are refused |
 | `save` | `agent`, `name`, `data` (base64) | where it was saved (`<agent folder>/<bridge>-files/`) |
 | `answer` | `agent`, `serial`, `option` | `{answered, agent}`; "always allow" is refused |
 | `form` | `agent`, `serial`, `do`: `pick` (`field`, `option`), `write` (`text`), `send`, `skip` | `{done, problem, agent}` |
@@ -90,7 +90,8 @@ finishes. `subscribe` stays open and carries loom's events, one per line.
   `pair {code, name}`; the user sees it in Settings and pairs it or refuses. Only then is it
   added to `devices`, and only then is the answer `ok`.
 - **Paired devices** may send `agents`, `send`, `save`, `answer`, `form`, `stop`,
-  `last_reply`, `transcribe` (passed to loom as they are) and `subscribe`.
+  `last_reply`, `transcribe` (passed to loom as they are), `subscribe`, and `address` (where
+  the desktop is now, kept by the device to find it next time).
 - **Anyone else** is dropped as soon as the connection opens, unless a pairing code is
   shown; then `pair` is all it may send. Removing a device in Settings closes its connections.
 
