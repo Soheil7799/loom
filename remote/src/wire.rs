@@ -85,7 +85,9 @@ mod tests {
     fn a_ticket_reads_back() {
         let id = iroh::SecretKey::generate().public();
         let relay: RelayUrl = "http://localhost:3340".parse().unwrap();
-        let ticket = Ticket { addr: EndpointAddr::new(id).with_relay_url(relay.clone()), code: "abc".into() };
+        // As a desktop gives it: its relay and the addresses it can be reached at directly.
+        let addr = EndpointAddr::new(id).with_relay_url(relay.clone()).with_ip_addr("192.168.1.20:41641".parse().unwrap()).with_ip_addr("[fe80::1]:41641".parse().unwrap());
+        let ticket = Ticket { addr, code: "abc".into() };
         let back = Ticket::decode(&ticket.encode()).unwrap();
         assert_eq!(back.addr, ticket.addr);
         assert_eq!(back.code, "abc");
