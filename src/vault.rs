@@ -138,10 +138,11 @@ pub fn prepare(path: &Path) -> Result<(), String> {
         crate::topics::write_defaults(path).map_err(|e| fail("the topics", e))?;
         std::fs::write(own.join("vault.json"), "{ \"version\": 1 }\n").map_err(|e| fail(".loom/vault.json", e))?;
     }
-    // Every change loom makes becomes a commit; a vault in no repository gets one of its own.
-    // Only loom's own files go in it: the user's notes are theirs to add (or not).
-    let in_repo = Command::new("git").arg("-C").arg(path).args(["rev-parse", "--is-inside-work-tree"]).output().is_ok_and(|o| o.status.success());
-    if !in_repo {
+    // Every change loom makes becomes a commit; a vault that is not a repository of its own
+    // gets one (a vault inside another repository, a folder of documents or a project, gets
+    // its own too: loom's commits never go into that one). Only loom's own files go in it:
+    // the user's notes are theirs to add (or not).
+    if !own_repository(path) {
         let ignore = path.join(".gitignore");
         if !ignore.exists() {
             // What Obsidian rewrites as the window changes: not worth a commit each time.
@@ -155,6 +156,13 @@ pub fn prepare(path: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Whether `path` is the top of a git repository (not only somewhere inside one).
+fn own_repository(path: &Path) -> bool {
+    let Ok(out) = Command::new("git").arg("-C").arg(path).args(["rev-parse", "--show-toplevel"]).output() else { return false };
+    let top = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim());
+    out.status.success() && top.canonicalize().ok() == path.canonicalize().ok()
 }
 
 /// Why `path` can't be a vault (None: it can): the home folder itself, or a system folder.
@@ -282,6 +290,21 @@ mod tests {
         assert_eq!(inspect(&root), Folder::Other(1));
         std::fs::create_dir_all(root.join(".obsidian")).unwrap();
         assert_eq!(inspect(&root), Folder::Vault(1));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_vault_inside_another_repository_gets_its_own() {
+        let root = scratch("nested");
+        let vault = root.join("Notes");
+        std::fs::create_dir_all(&root).unwrap();
+        assert!(Command::new("git").arg("-C").arg(&root).args(["init", "-q"]).status().unwrap().success());
+        assert!(!own_repository(&vault));
+        prepare(&vault).unwrap();
+        assert!(own_repository(&vault));
+        // Again: the vault's own one is kept.
+        prepare(&vault).unwrap();
+        assert!(own_repository(&vault));
         let _ = std::fs::remove_dir_all(&root);
     }
 
