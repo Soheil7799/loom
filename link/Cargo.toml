@@ -1,0 +1,15 @@
+[package]
+name = "loom-link"
+version = "0.3.0"
+edition = "2024"
+description = "A device's side of loom's remote bridge: pair with loom, then talk to its agents, over iroh"
+license = "MIT"
+
+[dependencies]
+iroh = "1.4"
+tokio = { version = "1", features = ["io-util"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+data-encoding = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "io-util", "time"] }

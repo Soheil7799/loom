@@ -96,4 +96,11 @@ finishes. `subscribe` stays open and carries loom's events, one per line.
   shown; then `pair` is all it may send. Removing a device in Settings closes its connections.
 
 `loom-remote pair <ticket>`, `agents`, `send`, `answer` and `watch` are such a device on the
-command line.
+command line. Both it and the phone apps are built on `loom-link` (`link/`), the device's
+side as a library: `Desktop::pair`, `Desktop::connect`, a method per request, and
+`subscribe`. It keeps nothing: the device's key and the desktop's address are the caller's
+to store.
+
+A ticket carries the relay and at most three direct addresses (this network's first; never
+loopback or link-local), so its QR code stays easy to scan; once connected, `address` gives
+the whole one.

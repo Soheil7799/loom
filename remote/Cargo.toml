@@ -6,6 +6,7 @@ description = "loom's remote bridge: your agents on your other devices, over iro
 license = "MIT"
 
 [dependencies]
+loom-link = { path = "../link" }
 iroh = "1.4"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "io-util", "io-std", "sync", "time"] }
 serde_json = { version = "1", features = ["preserve_order"] }

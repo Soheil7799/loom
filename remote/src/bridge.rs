@@ -7,6 +7,7 @@
 //! bridge protocol allows (listed in `PASSED`) and hears loom's events.
 
 use std::collections::BTreeSet;
+use std::net::{IpAddr, SocketAddr};
 use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -14,12 +15,12 @@ use std::time::Duration;
 
 use data_encoding::HEXLOWER;
 use iroh::endpoint::{Connection, RecvStream, SendStream, presets};
-use iroh::{Endpoint, EndpointId, RelayMode, RelayUrl, SecretKey};
+use iroh::{Endpoint, EndpointAddr, EndpointId, RelayMode, RelayUrl, SecretKey};
 use serde_json::{Value, json};
 use tokio::sync::{Notify, broadcast, watch};
 
 use crate::loom::Loom;
-use crate::wire::{self, ALPN, LIMIT, Ticket};
+use loom_link::wire::{self, ALPN, LIMIT, Ticket};
 
 /// The bridge requests a paired device may make, passed to loom as they are.
 const PASSED: &[&str] = &["agents", "send", "save", "answer", "form", "stop", "last_reply", "transcribe"];
@@ -238,7 +239,7 @@ impl Bridge {
         let shared = self.shared.lock().unwrap();
         let addr = self.endpoint.addr();
         let relay = addr.relay_urls().next().map(|r| r.to_string());
-        let ticket = shared.pairing.as_ref().map(|code| Ticket { addr: addr.clone(), code: code.clone() }.encode());
+        let ticket = shared.pairing.as_ref().map(|code| Ticket { addr: for_ticket(&addr), code: code.clone() }.encode());
         let online: BTreeSet<String> = shared.connections.iter().map(|c| c.remote_id().to_string()).collect();
         let _ = self.state.send(json!({
             "state": "online",
@@ -381,5 +382,60 @@ impl Bridge {
             self.report();
             Err("Not confirmed in loom in time.".to_owned())
         })
+    }
+}
+
+/// The address a pairing ticket carries: the relay, and the few direct addresses a device on
+/// this network is likely to reach. Every Docker or VM bridge's would make the QR code too dense
+/// to scan; once connected, the device asks for the whole address (`address`).
+fn for_ticket(addr: &EndpointAddr) -> EndpointAddr {
+    let mut ips: Vec<SocketAddr> = addr.ip_addrs().filter(|a| reach(a.ip()).is_some()).copied().collect();
+    ips.sort_by_key(|a| reach(a.ip()));
+    let ticket = addr.relay_urls().fold(EndpointAddr::new(addr.id), |t, relay| t.with_relay_url(relay.clone()));
+    ips.into_iter().take(3).fold(ticket, |t, ip| t.with_ip_addr(ip))
+}
+
+/// How likely another device is to reach this computer at `ip` (lower: likelier); None: never.
+fn reach(ip: IpAddr) -> Option<u8> {
+    match ip {
+        IpAddr::V4(ip) if ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() => None,
+        IpAddr::V4(ip) => {
+            let [a, b, _, d] = ip.octets();
+            Some(match (a, b) {
+                (192, 168) | (10, _) => 0,
+                // Docker's and VMs' bridges are 172.16/12, this computer their gateway (.1).
+                (172, 16..=31) if d == 1 => 3,
+                (172, 16..=31) => 1,
+                _ => 2,
+            })
+        }
+        IpAddr::V6(ip) if ip.is_loopback() || ip.is_unspecified() || ip.is_unicast_link_local() => None,
+        IpAddr::V6(ip) if ip.is_unique_local() => Some(3),
+        IpAddr::V6(_) => Some(2),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_ticket_carries_the_likely_addresses() {
+        let relay: RelayUrl = "http://localhost:3340".parse().unwrap();
+        let mut addr = EndpointAddr::new(SecretKey::generate().public()).with_relay_url(relay.clone());
+        // As on a laptop with a dozen Docker networks.
+        for net in 17..=28 {
+            addr = addr.with_ip_addr(format!("172.{net}.0.1:4000").parse().unwrap());
+        }
+        for ip in ["127.0.0.1:4000", "169.254.3.4:4000", "[fe80::1]:4000", "192.168.0.5:4000", "[2a07::1]:4000"] {
+            addr = addr.with_ip_addr(ip.parse().unwrap());
+        }
+        let ticket = for_ticket(&addr);
+        assert_eq!(ticket.id, addr.id);
+        assert_eq!(ticket.relay_urls().collect::<Vec<_>>(), [&relay]);
+        let ips: Vec<String> = ticket.ip_addrs().map(|ip| ip.to_string()).collect();
+        assert_eq!(ips.len(), 3);
+        assert!(ips.contains(&"192.168.0.5:4000".to_owned()) && ips.contains(&"[2a07::1]:4000".to_owned()), "{ips:?}");
+        assert!(Ticket { addr: ticket, code: "abc".into() }.encode().len() < 400);
     }
 }

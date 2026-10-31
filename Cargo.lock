@@ -1944,11 +1944,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "loom-link"
+version = "0.3.0"
+dependencies = [
+ "data-encoding",
+ "iroh",
+ "serde_json",
+ "tokio",
+]
+
+[[package]]
 name = "loom-remote"
 version = "0.3.0"
 dependencies = [
  "data-encoding",
  "iroh",
+ "loom-link",
  "serde_json",
  "tokio",
 ]

@@ -5,7 +5,6 @@
 mod bridge;
 mod loom;
 mod peer;
-mod wire;
 
 const USAGE: &str = "loom-remote: your loom agents from another device.
 

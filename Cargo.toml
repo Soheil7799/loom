@@ -25,4 +25,4 @@ codegen-units = 1
 strip = true
 
 [workspace]
-members = ["core", "remote"]
+members = ["core", "link", "remote"]
