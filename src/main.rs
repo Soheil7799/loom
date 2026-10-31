@@ -16,31 +16,30 @@ mod files;
 mod history;
 mod hub;
 mod jobs;
-mod journal;
-mod log;
-mod memory;
-mod compacted;
+use loom_core::journal;
+use loom_core::log;
+use loom_core::memory;
+use loom_core::compacted;
 mod icons;
 mod menu;
 mod logo;
 mod markdown;
 mod overview;
-mod notes;
 mod notes_chat;
 mod notes_panel;
-mod plugin;
-mod topics;
-mod vault;
-mod mcp;
+use loom_core::plugin;
+use loom_core::topics;
+use loom_core::vault;
+use loom_core::mcp;
 mod picker;
 mod prefs;
-mod quickopen;
-mod repos;
+use loom_core::quickopen;
+use loom_core::repos;
 mod schedule;
-mod scribe;
+use loom_core::scribe;
 mod scratch;
-mod settings;
-mod state;
+use loom_core::settings;
+use loom_core::state;
 mod stt;
 mod term;
 mod theme;
@@ -117,6 +116,15 @@ fn main() -> glib::ExitCode {
     settings::init(&app_id);
     log::name_for(&app_id);
     log::install();
+    // GTK's own warnings go into the log too.
+    glib::log_set_writer_func(|level, fields| {
+        if log::on() {
+            let message = fields.iter().find(|f| f.key() == "MESSAGE").and_then(|f| f.value_str()).unwrap_or("");
+            let domain = fields.iter().find(|f| f.key() == "GLIB_DOMAIN").and_then(|f| f.value_str()).unwrap_or("glib");
+            log::write(&format!("{domain} {level:?}"), message);
+        }
+        glib::log_writer_default(level, fields)
+    });
     log::set(settings::get().debug_log);
     plugin::init(&app_id);
     journal::init(&app_id);

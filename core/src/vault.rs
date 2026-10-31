@@ -99,7 +99,7 @@ pub fn all_notes(vault: &Path) -> Vec<(String, String, u64)> {
 
 /// "3h ago", "2d ago" from Unix seconds.
 pub fn ago(when: u64) -> String {
-    crate::overview::ago(crate::state::now().saturating_sub(when))
+    crate::paths::ago(crate::state::now().saturating_sub(when))
 }
 
 pub fn inspect(path: &Path) -> Folder {
@@ -222,7 +222,7 @@ fn forget_old_model_lines(path: &Path) {
 
 /// Why `path` can't be a vault (None: it can): the home folder itself, or a system folder.
 pub fn unsuitable(path: &Path) -> Option<String> {
-    let home = gtk::glib::home_dir();
+    let home = crate::paths::home();
     let path = path.canonicalize().unwrap_or_else(|_| path.to_owned());
     if path == home || path == Path::new("/") || home.starts_with(&path) {
         return Some("Your home folder can't be the vault: choose or make a folder inside it.".to_owned());
@@ -420,7 +420,7 @@ mod tests {
 
     #[test]
     fn unsafe_folders_are_refused() {
-        let home = gtk::glib::home_dir();
+        let home = crate::paths::home();
         assert!(unsuitable(&home).is_some());
         assert!(unsuitable(Path::new("/")).is_some());
         assert!(unsuitable(Path::new("/etc/loom")).is_some());

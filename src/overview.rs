@@ -385,14 +385,7 @@ fn one_paragraph(text: &str) -> String {
 }
 
 /// "just now", "5m ago", "3h ago", "2d ago": loom's one way of saying it.
-pub fn ago(seconds: u64) -> String {
-    match seconds {
-        s if s < 60 => "just now".to_owned(),
-        s if s < 3600 => format!("{}m ago", s / 60),
-        s if s < 86400 => format!("{}h ago", s / 3600),
-        s => format!("{}d ago", s / 86400),
-    }
-}
+pub use loom_core::paths::ago;
 
 #[cfg(test)]
 mod tests {

@@ -1346,7 +1346,7 @@ impl App {
         let id = self.schedules.borrow().iter().map(|s| s.id).max().unwrap_or(0) + 1;
         self.schedules.borrow_mut().push(Schedule {
             id, cwd, session_id: None, title: String::new(), prompt: prompt.to_owned(), when: "in 1m".into(),
-            next: Some(schedule::now().to_unix()), paused: false, last_run: None,
+            next: Some(schedule::now().timestamp().as_second()), paused: false, last_run: None,
         });
     }
 
@@ -2037,7 +2037,7 @@ impl App {
     /// than an hour while loom was closed is skipped.
     fn start_schedules(self: &Rc<Self>, mut schedules: Vec<Schedule>) {
         let now = schedule::now();
-        for s in schedules.iter_mut().filter(|s| s.next.is_some_and(|t| t < now.to_unix() - 3600)) {
+        for s in schedules.iter_mut().filter(|s| s.next.is_some_and(|t| t < now.timestamp().as_second() - 3600)) {
             s.next = match schedule::next_run(&s.when, &now) {
                 Ok((t, true)) => Some(t),
                 _ => None,
@@ -2110,7 +2110,7 @@ impl App {
         glib::timeout_add_seconds_local(20, move || {
             let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
             let clock = schedule::now();
-            let now = clock.to_unix();
+            let now = clock.timestamp().as_second();
             // Missed by over an hour (the laptop slept): skipped, the next one comes as usual.
             for s in app.schedules.borrow_mut().iter_mut().filter(|s| !s.paused && s.next.is_some_and(|t| t < now - 3600)) {
                 s.next = schedule::next_run(&s.when, &clock).ok().filter(|(_, repeats)| *repeats).map(|(t, _)| t);
@@ -2176,7 +2176,7 @@ impl App {
         agent.submit_with(schedule.prompt.clone(), Vec::new());
         let now = schedule::now();
         if let Some(s) = self.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
-            s.last_run = Some(now.to_unix());
+            s.last_run = Some(now.timestamp().as_second());
             if !by_hand {
                 s.next = match schedule::next_run(&s.when, &now) {
                     Ok((t, true)) => Some(t),

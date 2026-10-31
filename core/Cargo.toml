@@ -7,6 +7,9 @@ license = "MIT"
 
 [dependencies]
 async-channel = "2"
+jiff = "0.2"
+serde_json = { version = "1", features = ["preserve_order"] }
+trash = "5"
 portable-pty = "0.9"
 vt100 = "0.16"
 

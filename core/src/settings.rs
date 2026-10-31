@@ -1,11 +1,13 @@
 //! The user's settings: kept in ~/.config/loom/settings.json, read once, written on change,
 //! and announced to whoever listens (the window restyles, terminals refont…).
 
+/// The terminals' font unless the user picks another.
+pub const TERMINAL_FONT: &str = "JetBrains Mono, Vazirmatn 10";
+
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use gtk::glib;
 use serde_json::{Value, json};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -87,7 +89,7 @@ impl Default for Settings {
             default_mode: String::new(),
             show_thinking: true,
             text_scale: 1.0,
-            terminal_font: crate::term::FONT.to_owned(),
+            terminal_font: TERMINAL_FONT.to_owned(),
             scratch_autohide: false,
             sort_by_urgency: true,
             suggest_prompts: true,
@@ -134,7 +136,7 @@ pub fn init(app_id: &str) {
         Some("Loom") | None => "settings.json".to_owned(),
         Some(suffix) => format!("settings-{suffix}.json"),
     };
-    let file = glib::user_config_dir().join("loom").join(name);
+    let file = crate::paths::config_dir().join("loom").join(name);
     let settings = std::fs::read_to_string(&file).map(|t| parse(&t)).unwrap_or_default();
     FILE.with(|f| *f.borrow_mut() = Some(file));
     crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);

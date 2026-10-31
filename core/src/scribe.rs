@@ -492,7 +492,7 @@ fn edit(topic: &Topic, notes: &[(String, String)], excerpt: &str) -> Result<(Vec
     } else {
         notes.iter().map(|(path, text)| format!("=== {path} ===\n{text}")).collect::<Vec<_>>().join("\n\n")
     };
-    let today = gtk::glib::DateTime::now_local().ok().and_then(|d| d.format("%Y-%m-%d").ok()).map(|d| d.to_string()).unwrap_or_default();
+    let today = crate::paths::local_now("%Y-%m-%d");
     let input = format!(
         "TODAY: {today}\n\nTOPIC: {} (its notes go in the folder {}/)\nITS INSTRUCTIONS:\n{}\n\nNOTES:\n{shown}\n\nEXCERPT:\n{excerpt}",
         topic.name, topic.folder, topic.instructions
@@ -656,10 +656,7 @@ pub fn undo(vault: &Path, note: &str, written: &Written, what: &str) -> Result<(
     };
     match back {
         Some(text) => std::fs::write(&path, text).map_err(|e| e.to_string())?,
-        None => {
-            use gtk::gio::prelude::FileExt;
-            gtk::gio::File::for_path(&path).trash(None::<&gtk::gio::Cancellable>).map_err(|e| e.to_string())?
-        }
+        None => trash::delete(&path).map_err(|e| e.to_string())?
     }
     commit(vault, &[note.to_owned()], &format!("loom: undo: {what}"));
     Ok(())

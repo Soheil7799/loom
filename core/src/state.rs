@@ -4,7 +4,6 @@
 
 use std::path::PathBuf;
 
-use gtk::glib;
 use serde_json::{Value, json};
 
 #[derive(Clone, Debug, PartialEq)]
@@ -77,7 +76,7 @@ fn path(app_id: &str) -> PathBuf {
 /// A path with a leading ~ made absolute.
 pub fn expand(path: &std::path::Path) -> PathBuf {
     match path.strip_prefix("~") {
-        Ok(rest) => glib::home_dir().join(rest),
+        Ok(rest) => crate::paths::home().join(rest),
         Err(_) => path.to_owned(),
     }
 }
@@ -87,7 +86,7 @@ pub fn dir() -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
-        .unwrap_or_else(|| glib::home_dir().join(".local/state"))
+        .unwrap_or_else(|| crate::paths::home().join(".local/state"))
         .join("loom")
 }
 
@@ -123,7 +122,7 @@ pub fn session_written(session: &str) -> Option<u64> {
 
 /// Claude Code's config folder: $CLAUDE_CONFIG_DIR, or ~/.claude.
 pub fn claude_dir() -> PathBuf {
-    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| glib::home_dir().join(".claude"))
+    std::env::var_os("CLAUDE_CONFIG_DIR").map(PathBuf::from).filter(|p| p.is_absolute()).unwrap_or_else(|| crate::paths::home().join(".claude"))
 }
 
 /// Claude Code's own file of a conversation, under whichever project folder it is.

@@ -4,7 +4,7 @@
 use gtk::{gdk, glib, pango};
 use vte::prelude::*;
 
-pub const FONT: &str = "JetBrains Mono, Vazirmatn 10";
+pub const FONT: &str = loom_core::settings::TERMINAL_FONT;
 
 pub fn new(widget_for_colors: &impl IsA<gtk::Widget>) -> vte::Terminal {
     let term = vte::Terminal::new();

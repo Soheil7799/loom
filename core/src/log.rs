@@ -8,7 +8,6 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use gtk::glib;
 
 static ON: AtomicBool = AtomicBool::new(false);
 /// "debug.log", or "debug-<Suffix>.log" for a test instance (its own, as its settings are).
@@ -77,7 +76,7 @@ pub fn write(area: &str, text: &str) {
     } else {
         text.to_owned()
     };
-    let time = glib::DateTime::now_local().ok().and_then(|t| t.format("%F %T.%f").ok()).map(|t| t.to_string()).unwrap_or_default();
+    let time = crate::paths::local_now("%F %T.%6f");
     let line = format!("{time} [{area}] {text}\n");
     let Ok(mut file) = FILE.lock() else { return };
     if file.as_ref().and_then(|f| f.metadata().ok()).is_some_and(|m| m.len() > MOST) {
@@ -94,25 +93,18 @@ pub fn write(area: &str, text: &str) {
     }
 }
 
-/// From here on: crashes and GTK's own warnings go into the log too.
+/// From here on: crashes go into the log too.
 pub fn install() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         write("crash", &format!("{info}\n{}", std::backtrace::Backtrace::force_capture()));
         previous(info);
     }));
-    glib::log_set_writer_func(|level, fields| {
-        if on() {
-            let message = fields.iter().find(|f| f.key() == "MESSAGE").and_then(|f| f.value_str()).unwrap_or("");
-            let domain = fields.iter().find(|f| f.key() == "GLIB_DOMAIN").and_then(|f| f.value_str()).unwrap_or("glib");
-            write(&format!("{domain} {level:?}"), message);
-        }
-        glib::log_writer_default(level, fields)
-    });
 }
 
 /// `debug!("area", "format", args…)`: written only while the log is on (nothing is
 /// formatted otherwise).
+#[macro_export]
 macro_rules! debug {
     ($area:expr, $($arg:tt)*) => {
         if $crate::log::on() {
@@ -120,4 +112,4 @@ macro_rules! debug {
         }
     };
 }
-pub(crate) use debug;
+pub use crate::debug;

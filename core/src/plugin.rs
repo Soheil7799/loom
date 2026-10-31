@@ -17,14 +17,13 @@
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use gtk::glib;
 
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// The skills loom ships: (name, SKILL.md).
 const DEFAULT_SKILLS: &[(&str, &str)] = &[
-    ("loom", include_str!("../data/skill/SKILL.md")),
-    ("notes-chat", include_str!("../data/skill-notes-chat/SKILL.md")),
+    ("loom", include_str!("../../data/skill/SKILL.md")),
+    ("notes-chat", include_str!("../../data/skill-notes-chat/SKILL.md")),
 ];
 
 const MANIFEST: &str = r#"{
@@ -116,7 +115,7 @@ pub struct Item {
 /// The folder for `app_id` (set once, at start), made with loom's defaults if missing.
 pub fn init(app_id: &str) {
     let name = crate::state::suffix(app_id).map_or("claude".to_owned(), |s| format!("claude-{s}"));
-    let dir = glib::user_config_dir().join("loom").join(name);
+    let dir = crate::paths::config_dir().join("loom").join(name);
     if let Err(err) = prepare(&dir) {
         crate::log::write("plugin", &format!("folder {}: {err}", dir.display()));
     }
@@ -124,7 +123,7 @@ pub fn init(app_id: &str) {
 }
 
 pub fn dir() -> PathBuf {
-    DIR.get().cloned().unwrap_or_else(|| glib::user_config_dir().join("loom/claude"))
+    DIR.get().cloned().unwrap_or_else(|| crate::paths::config_dir().join("loom/claude"))
 }
 
 /// The manifest, the hooks file and loom's skills, where they are missing (never over the
