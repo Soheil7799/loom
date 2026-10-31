@@ -31,12 +31,13 @@ use std::time::{Duration, Instant};
 use data_encoding::BASE64_NOPAD;
 use serde_json::{Value, json};
 
+use crate::agent::view::Png;
 use crate::agent::{Agent, Asking, Event};
 use crate::settings::Settings;
 use crate::workspace::Workspace;
 
-/// Pictures sent in any format, as PNG (the UI's toolkit reads them).
-pub type ToPng = Box<dyn Fn(Vec<u8>) -> Result<Vec<u8>, String>>;
+/// Pictures sent in any format, as PNG (the UI's toolkit reads them); called off the UI's thread.
+pub type ToPng = Arc<dyn Fn(Vec<u8>) -> Result<Vec<u8>, String> + Send + Sync>;
 
 /// The bridges loom has: their names (`loom bridge <name>`).
 const BRIDGES: &[&str] = &["telegram", "remote"];
@@ -392,13 +393,8 @@ impl Host {
     }
 
     /// A request from bridge `bridge`, answered on `reply` (now, or when it is done).
-    fn handle(&self, bridge: &str, method: &str, p: &Value, reply: async_channel::Sender<Value>) {
-        let answer = |result: Result<Value, String>| {
-            let _ = reply.try_send(match result {
-                Ok(value) => json!({ "ok": value }),
-                Err(error) => json!({ "error": error }),
-            });
-        };
+    fn handle(self: &Rc<Self>, bridge: &str, method: &str, p: &Value, reply: async_channel::Sender<Value>) {
+        let answer = |result: Result<Value, String>| respond(&reply, result);
         let Some(ws) = self.ws.borrow().upgrade() else { return answer(Err("loom is closing".into())) };
         let agent = || {
             let id = p["agent"].as_u64().unwrap_or(0) as u32;
@@ -413,25 +409,58 @@ impl Host {
             // A message: pictures (any format the UI reads) go as pasted ones. A shell command
             // (`!…`) runs only from loom's own window, never from a bridge.
             "send" if p["text"].as_str().unwrap_or("").trim_start().starts_with('!') => Err("! commands run only from loom itself.".to_owned()),
-            "send" => agent().and_then(|agent| {
-                let mut images = Vec::new();
-                for data in p["images"].as_array().into_iter().flatten() {
-                    let bytes = decode(data.as_str().unwrap_or("")).ok_or("That picture could not be read.")?;
-                    let to_png = self.to_png.borrow();
-                    let png = to_png.as_ref().ok_or("Pictures can't be read here.")?(bytes).map_err(|_| "That picture could not be read.".to_owned())?;
-                    images.push(png.into());
-                }
-                agent.submit_with(p["text"].as_str().unwrap_or("").to_owned(), images);
-                Ok(self.view(&ws, &agent))
-            }),
-            // A file for the agent: saved in its folder, under <bridge>-files/. Its path back.
-            "save" => agent().and_then(|agent| {
-                let dir = agent.cwd.join(format!("{bridge}-files"));
-                let target = crate::files::free_name(&dir.join(safe_name(p["name"].as_str().unwrap_or(""))));
-                let bytes = decode(p["data"].as_str().unwrap_or("")).ok_or("That file could not be read.")?;
-                std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
-                Ok(json!(target.to_string_lossy()))
-            }),
+            // Pictures are read off the UI's thread (they may be large), then sent.
+            "send" => {
+                let id = match agent() {
+                    Ok(agent) => agent.id,
+                    Err(why) => return answer(Err(why)),
+                };
+                let data: Vec<String> = p["images"].as_array().into_iter().flatten().map(|d| d.as_str().unwrap_or("").to_owned()).collect();
+                let (to_png, text) = (self.to_png.borrow().clone(), p["text"].as_str().unwrap_or("").to_owned());
+                let (host, reply) = (self.clone(), reply.clone());
+                crate::rt::spawn_local(async move {
+                    let images = crate::rt::spawn_blocking(move || {
+                        data.into_iter()
+                            .map(|data| {
+                                let bytes = decode(&data).ok_or("That picture could not be read.")?;
+                                let to_png = to_png.as_ref().ok_or("Pictures can't be read here.")?;
+                                to_png(bytes).map(Png::from).map_err(|_| "That picture could not be read.".to_owned())
+                            })
+                            .collect::<Result<Vec<Png>, String>>()
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("That picture could not be read.".into()));
+                    respond(&reply, images.and_then(|images| {
+                        let ws = host.ws.borrow().upgrade().ok_or("loom is closing")?;
+                        let agent = ws.agent(id).ok_or("That agent is closed.")?;
+                        agent.submit_with(text, images);
+                        Ok(host.view(&ws, &agent))
+                    }));
+                });
+                return;
+            }
+            // A file for the agent: saved in its folder, under <bridge>-files/, off the UI's
+            // thread. Its path back.
+            "save" => {
+                let dir = match agent() {
+                    Ok(agent) => agent.cwd.join(format!("{bridge}-files")),
+                    Err(why) => return answer(Err(why)),
+                };
+                let (name, data) = (safe_name(p["name"].as_str().unwrap_or("")), p["data"].as_str().unwrap_or("").to_owned());
+                let reply = reply.clone();
+                crate::rt::spawn_local(async move {
+                    let saved = crate::rt::spawn_blocking(move || {
+                        let bytes = decode(&data).ok_or("That file could not be read.")?;
+                        let target = crate::files::free_name(&dir.join(name));
+                        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
+                        Ok(json!(target.to_string_lossy()))
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("Could not save it in the agent's folder.".into()));
+                    respond(&reply, saved);
+                });
+                return;
+            }
             // "Always allow" is a decision made at the desk, never from a bridge.
             "answer" => agent().and_then(|agent| {
                 let option = p["option"].as_u64().unwrap_or(0) as usize;
@@ -497,6 +526,14 @@ fn title(name: &str) -> &'static str {
         "telegram" => "Telegram",
         _ => "remote",
     }
+}
+
+/// `result` as a bridge reads it.
+fn respond(reply: &async_channel::Sender<Value>, result: Result<Value, String>) {
+    let _ = reply.try_send(match result {
+        Ok(value) => json!({ "ok": value }),
+        Err(error) => json!({ "error": error }),
+    });
 }
 
 fn forget_secret(secret: &str) {

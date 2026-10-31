@@ -80,13 +80,32 @@ pub async fn run() -> i32 {
     if settings.is_null() {
         return 0;
     }
-    let endpoint = match bind(&settings).await {
-        Ok(endpoint) => endpoint,
-        // Said in Settings; loom starts it again when the settings change.
-        Err(why) => {
-            drop(events);
-            let _ = loom.call("state", json!({ "state": "failed", "why": why })).await;
-            return std::future::pending::<i32>().await;
+    let (mut settings, mut wait) = (settings, 2);
+    let endpoint = loop {
+        match bind(&settings).await {
+            Ok(endpoint) => break endpoint,
+            // Said in Settings, and tried again a while later (with the settings as they are then).
+            Err(why) => {
+                let _ = loom.call("state", json!({ "state": "failed", "why": why })).await;
+                let again = tokio::time::sleep(Duration::from_secs(wait));
+                tokio::pin!(again);
+                loop {
+                    tokio::select! {
+                        () = &mut again => break,
+                        line = events.next_line() => match line {
+                            Ok(Some(line)) => {
+                                let event: Value = serde_json::from_str(&line).unwrap_or(Value::Null);
+                                if event["event"] == "settings" {
+                                    settings = event["settings"].clone();
+                                }
+                            }
+                            // loom is gone.
+                            _ => return 0,
+                        },
+                    }
+                }
+                wait = (wait * 2).min(60);
+            }
         }
     };
     let (state, reports) = watch::channel(Value::Null);
@@ -185,6 +204,7 @@ impl Bridge {
         self.debug.store(settings["debug"].as_bool().unwrap_or(false), Ordering::Relaxed);
         {
             let mut shared = self.shared.lock().unwrap();
+            let before = std::mem::take(&mut shared.devices);
             shared.devices = settings["devices"]
                 .as_array()
                 .into_iter()
@@ -200,7 +220,9 @@ impl Bridge {
             }
             // A removed device goes now; one pairing stays while the code is shown.
             connections.retain(|c| {
-                let keep = devices.iter().any(|(d, _)| *d == c.remote_id()) || pairing.is_some() || refused == Some(c.remote_id());
+                let id = c.remote_id();
+                let removed = before.iter().any(|(d, _)| *d == id);
+                let keep = devices.iter().any(|(d, _)| *d == id) || (pairing.is_some() && !removed) || refused == Some(id);
                 if !keep {
                     c.close(1u32.into(), b"not paired");
                 }
@@ -281,6 +303,8 @@ impl Bridge {
             let mut events = self.events.subscribe();
             loop {
                 match events.recv().await {
+                    // Removed meanwhile: told nothing more.
+                    Ok(_) if !self.is_device(&id) => return,
                     Ok(line) => {
                         if send.write_all(format!("{line}\n").as_bytes()).await.is_err() {
                             return;

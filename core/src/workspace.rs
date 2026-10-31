@@ -302,7 +302,8 @@ impl Workspace {
     /// A schedule's button pressed.
     pub fn act(&self, id: u64, act: Act) {
         match act {
-            Act::RunNow => self.run_schedule(id, true),
+            // It says so itself.
+            Act::RunNow => return self.run_schedule(id, true),
             Act::Pause => {
                 if let Some(s) = self.schedules.borrow_mut().iter_mut().find(|s| s.id == id) {
                     s.paused = !s.paused;

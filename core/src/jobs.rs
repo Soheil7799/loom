@@ -402,34 +402,42 @@ fn text(parser: &mut vt100::Parser, lines: usize) -> String {
     let (rows, cols) = screen.size();
     screen.set_scrollback(usize::MAX);
     let kept = screen.scrollback();
-    let (mut all, mut joining) = (Vec::new(), false);
-    // Page through the scrollback from its oldest line, then the screen itself.
-    let mut seen = 0;
-    while seen < kept {
-        screen.set_scrollback(kept - seen);
-        let page = (kept - seen).min(usize::from(rows));
-        add_rows(screen, page, cols, &mut all, &mut joining);
-        seen += page;
+    // Pages from the screen back through the scrollback, newest first, only until they hold
+    // `lines` whole lines (past any blank ones at the end). A row: its text, and whether the
+    // terminal wrapped it onto the next.
+    let mut pages: Vec<Vec<(String, bool)>> = Vec::new();
+    let (mut offset, mut count, mut ends, mut printed) = (0, usize::from(rows), 0, false);
+    loop {
+        screen.set_scrollback(offset);
+        let view: &vt100::Screen = screen;
+        let page: Vec<(String, bool)> = view.rows(0, cols).take(count).enumerate().map(|(i, row)| (row, view.row_wrapped(i as u16))).collect();
+        for (row, wrapped) in page.iter().rev() {
+            printed |= !row.trim().is_empty();
+            ends += usize::from(printed && !wrapped);
+        }
+        pages.push(page);
+        if ends > lines || offset == kept {
+            break;
+        }
+        let next = (offset + usize::from(rows)).min(kept);
+        (count, offset) = (next - offset, next);
     }
     screen.set_scrollback(0);
-    add_rows(screen, usize::from(rows), cols, &mut all, &mut joining);
-    while all.last().is_some_and(|line: &String| line.trim().is_empty()) {
+    // Oldest first again: a wrapped row goes on the line it continues (as it was printed).
+    let mut all: Vec<String> = Vec::new();
+    let mut joining = false;
+    for (row, wrapped) in pages.into_iter().rev().flatten() {
+        match all.last_mut() {
+            Some(last) if joining => last.push_str(&row),
+            _ => all.push(row),
+        }
+        joining = wrapped;
+    }
+    while all.last().is_some_and(|line| line.trim().is_empty()) {
         all.pop();
     }
     let start = all.len().saturating_sub(lines);
     all[start..].iter().map(|line| line.trim_end()).collect::<Vec<_>>().join("\n")
-}
-
-/// The first `count` rows in view, onto `lines`: a row the terminal wrapped goes on the line
-/// it continues (as it was printed), not as a line of its own.
-fn add_rows(screen: &vt100::Screen, count: usize, cols: u16, lines: &mut Vec<String>, joining: &mut bool) {
-    for (i, row) in screen.rows(0, cols).take(count).enumerate() {
-        match lines.last_mut() {
-            Some(last) if *joining => last.push_str(&row),
-            _ => lines.push(row),
-        }
-        *joining = screen.row_wrapped(i as u16);
-    }
 }
 
 #[cfg(test)]
@@ -543,6 +551,21 @@ mod tests {
         let wide = format!("{:0200}", 7);
         assert!(text.lines().any(|l| l == wide), "{text}");
         assert!(text.ends_with("79\n80"), "{text}");
+    }
+
+    #[test]
+    fn the_last_lines_come_from_deep_in_the_scrollback() {
+        let mut parser = vt100::Parser::new(24, 80, SCROLLBACK);
+        // A wide line across a page's edge, then lines to push it back, then blank ones.
+        let mut printed: String = (1..=500).map(|n| format!("{n}\r\n")).collect();
+        printed += &format!("{:0200}\r\n", 7);
+        printed += &(501..=521).map(|n| format!("{n}\r\n")).collect::<String>();
+        parser.process(format!("{printed}\r\n\r\n").as_bytes());
+        let wide = format!("{:0200}", 7);
+        assert_eq!(text(&mut parser, 2), "520\n521");
+        assert_eq!(text(&mut parser, 23), format!("500\n{wide}\n{}", (501..=521).map(|n| n.to_string()).collect::<Vec<_>>().join("\n")));
+        assert!(text(&mut parser, 10_000).starts_with("1\n2\n3\n"));
+        assert_eq!(parser.screen().scrollback(), 0);
     }
 
     #[test]

@@ -691,7 +691,7 @@ impl App {
             }
         });
         // Pictures sent to agents, in any format GTK reads, as PNG.
-        self.bridges.attach(&self.ws, Box::new(|bytes| {
+        self.bridges.attach(&self.ws, std::sync::Arc::new(|bytes| {
             let texture = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map_err(|e| e.to_string())?;
             Ok(texture.save_to_png_bytes().to_vec())
         }));
