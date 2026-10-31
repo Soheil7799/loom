@@ -94,6 +94,12 @@ pub struct Files {
     /// bar over the editor that says so, with Done and Cancel.
     request: RefCell<Option<(u64, PathBuf)>>,
     request_bar: gtk::Box,
+    /// The open file changed on disk while edits here are unsaved: Compare, Keep mine, Reload.
+    disk_bar: gtk::Box,
+    /// Watches the open file (another app, a sync tool changing it).
+    watch: RefCell<Option<gio::FileMonitor>>,
+    /// A look at the file on disk is due (changes come in bursts).
+    disk_pending: Cell<bool>,
     request_text: gtk::Label,
     /// Told when the user finishes (true: Done, saved) or cancels a request.
     pub on_request: RefCell<Option<Rc<dyn Fn(u64, bool)>>>,
@@ -308,6 +314,30 @@ impl Files {
         request_bar.append(&request_cancel);
         request_bar.append(&request_done);
         editor_box.append(&request_bar);
+        // The open file changed on disk (another app, a sync) while edits here are unsaved.
+        let disk_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        disk_bar.add_css_class("edit-request");
+        disk_bar.add_css_class("disk-changed");
+        disk_bar.set_visible(false);
+        let disk_text = gtk::Label::builder()
+            .label("This file changed on disk (another app, or a sync), and your edits here aren't saved.")
+            .xalign(0.0)
+            .wrap(true)
+            .hexpand(true)
+            .build();
+        let disk_compare = gtk::Button::with_label("Compare");
+        disk_compare.set_tooltip_text(Some("What differs between the file on disk and yours"));
+        let disk_keep = gtk::Button::with_label("Keep mine");
+        disk_keep.set_tooltip_text(Some("Save yours over it (a note's other version goes to the vault's .trash/)"));
+        let disk_reload = gtk::Button::with_label("Reload");
+        disk_reload.set_tooltip_text(Some("Show the file as it is on disk: your edits here go"));
+        disk_bar.append(&disk_text);
+        for button in [&disk_compare, &disk_keep, &disk_reload] {
+            button.add_css_class("prefs-button");
+            button.set_valign(gtk::Align::Center);
+            disk_bar.append(button);
+        }
+        editor_box.append(&disk_bar);
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 4);
         tabs.add_css_class("editor-tabs");
         tabs.set_visible(false);
@@ -358,6 +388,9 @@ impl Files {
             on_ask: RefCell::default(),
             request: RefCell::default(),
             request_bar: request_bar.clone(),
+            disk_bar: disk_bar.clone(),
+            watch: RefCell::default(),
+            disk_pending: Cell::new(false),
             request_text: request_text.clone(),
             on_request: RefCell::default(),
             commit_entry,
@@ -397,6 +430,18 @@ impl Files {
                 files.finish_request(false);
             }
         });
+        for (button, act) in [(&disk_compare, 0), (&disk_keep, 1), (&disk_reload, 2)] {
+            let weak = Rc::downgrade(&files);
+            button.connect_clicked(move |_| {
+                if let Some(files) = weak.upgrade() {
+                    match act {
+                        0 => files.compare_with_disk(),
+                        1 => files.keep_mine(),
+                        _ => files.reload_from_disk(),
+                    }
+                }
+            });
+        }
         let views = files.views.clone();
         notes_tab.connect_toggled(move |tab| {
             if tab.is_active() {
@@ -859,6 +904,7 @@ impl Files {
         let same_file = self.open.borrow().as_deref() == Some(path);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
+        self.watch_file(path);
         self.remember(path);
         let markdown = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("md") || e.eq_ignore_ascii_case("markdown"));
         self.read_toggle.set_visible(markdown);
@@ -908,6 +954,7 @@ impl Files {
         self.buffer.set_modified(false);
         *self.open.borrow_mut() = Some(path.to_owned());
         self.opened_at.set(modified_time(path));
+        self.watch_file(path);
         self.remember(path);
         self.editor_box.set_visible(true);
         true
@@ -1067,6 +1114,10 @@ impl Files {
             return;
         }
         *self.open.borrow_mut() = None;
+        if let Some(watch) = self.watch.take() {
+            watch.cancel();
+        }
+        self.disk_bar.set_visible(false);
         self.editor_box.set_visible(false);
     }
 
@@ -1082,14 +1133,134 @@ impl Files {
         let window = self.view.root().and_then(|root| root.downcast::<gtk::Window>().ok());
         let focus = window.as_ref().and_then(|w| GtkWindowExt::focus(w));
         let offset = self.buffer.cursor_position();
+        let scrolled = self.view.vadjustment().map(|a| a.value());
         if !self.load(&path) {
             return;
         }
         self.buffer.place_cursor(&self.buffer.iter_at_offset(offset));
+        // Where it was scrolled to, once laid out again.
+        if let (Some(value), Some(adjustment)) = (scrolled, self.view.vadjustment()) {
+            glib::timeout_add_local_once(std::time::Duration::from_millis(60), move || adjustment.set_value(value));
+        }
         // Loading grabbed focus; a reload gives it back (to the chat, say).
         if let Some(widget) = focus {
             widget.grab_focus();
         }
+    }
+
+    /// Watches the open file: a change on disk (another app, a sync tool) is looked at once
+    /// it settles.
+    fn watch_file(&self, path: &Path) {
+        self.disk_bar.set_visible(false);
+        let monitor = gio::File::for_path(path).monitor_file(gio::FileMonitorFlags::WATCH_MOVES, None::<&gio::Cancellable>).ok();
+        if let Some(monitor) = &monitor {
+            let (me, watched) = (self.me.borrow().clone(), path.to_owned());
+            monitor.connect_changed(move |_, _, _, _| {
+                let Some(files) = me.upgrade() else { return };
+                if files.disk_pending.replace(true) {
+                    return;
+                }
+                let (me, watched) = (me.clone(), watched.clone());
+                glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                    if let Some(files) = me.upgrade() {
+                        files.disk_pending.set(false);
+                        if files.open.borrow().as_deref() == Some(watched.as_path()) {
+                            files.disk_changed();
+                        }
+                    }
+                });
+            });
+        }
+        if let Some(old) = self.watch.replace(monitor) {
+            old.cancel();
+        }
+    }
+
+    /// The open file on disk is not the one shown: shown again if nothing here is unsaved,
+    /// else the bar asks.
+    fn disk_changed(&self) {
+        if self.view_only.get() {
+            return;
+        }
+        let Some(path) = self.open.borrow().clone() else { return };
+        let on_disk = modified_time(&path);
+        if on_disk == self.opened_at.get() {
+            self.disk_bar.set_visible(false);
+            return;
+        }
+        if on_disk.is_none() {
+            // Gone (deleted, or moved away): what is shown stays, said.
+            self.notice("This file is gone from disk (deleted or moved). Save to write it again.");
+            return;
+        }
+        if self.buffer.is_modified() {
+            self.disk_bar.set_visible(true);
+        } else {
+            self.reload_if_changed();
+        }
+    }
+
+    /// Test hooks: text typed at the editor's end; a button of the bar ("compare", "keep",
+    /// "reload"), its state printed first.
+    pub fn type_for_tests(&self, text: &str) {
+        self.buffer.insert(&mut self.buffer.end_iter(), &text.replace("\\n", "\n"));
+    }
+
+    pub fn disk_for_tests(&self, act: &str) {
+        eprintln!("DISKBAR {}", self.disk_bar.is_visible());
+        match act {
+            "compare" => self.compare_with_disk(),
+            "keep" => self.keep_mine(),
+            "reload" => self.reload_from_disk(),
+            _ => {}
+        }
+    }
+
+    /// The bar's Reload: the file as it is on disk, the edits here dropped.
+    fn reload_from_disk(&self) {
+        self.buffer.set_modified(false);
+        self.reload_if_changed();
+        self.disk_bar.set_visible(false);
+    }
+
+    /// The bar's Keep mine: saved over the file on disk. A note of the vault keeps the other
+    /// version in the vault's `.trash/` (where Obsidian puts what it deletes).
+    fn keep_mine(&self) {
+        let Some(path) = self.open.borrow().clone() else { return };
+        let kept = crate::vault::current().filter(|vault| path.starts_with(vault)).and_then(|vault| {
+            let text = std::fs::read(&path).ok()?;
+            let stem = path.file_stem()?.to_string_lossy().into_owned();
+            let when = glib::DateTime::now_local().ok()?.format("%Y-%m-%d %H%M%S").ok()?;
+            let extension = path.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+            let trash = vault.join(".trash");
+            std::fs::create_dir_all(&trash).ok()?;
+            let file = trash.join(format!("{stem} (on disk {when}){extension}"));
+            std::fs::write(&file, text).ok()?;
+            Some(file)
+        });
+        self.warned.set(modified_time(&path));
+        if self.write(true) {
+            self.disk_bar.set_visible(false);
+            if let Some(file) = kept {
+                self.notice(&format!("Saved yours. The version that was on disk is in .trash/{}", file.file_name().map(|n| n.to_string_lossy()).unwrap_or_default()));
+            }
+        }
+    }
+
+    /// The bar's Compare: what differs between the file on disk and the text here.
+    fn compare_with_disk(&self) {
+        let Some(path) = self.open.borrow().clone() else { return };
+        let text = self.buffer.text(&self.buffer.start_iter(), &self.buffer.end_iter(), false).to_string();
+        let mine = std::env::temp_dir().join(format!("loom-mine-{}", std::process::id()));
+        let diff = std::fs::write(&mine, text)
+            .ok()
+            .and_then(|()| std::process::Command::new("diff").args(["-u", "--label", "on disk", "--label", "yours"]).arg(&path).arg(&mine).output().ok())
+            .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+            .filter(|d| !d.trim().is_empty())
+            .unwrap_or_else(|| "No differences to show.".to_owned());
+        let _ = std::fs::remove_file(&mine);
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        self.diff_window(&format!("{name} — on disk and yours"), &diff);
     }
 
     pub fn choose(self: &Rc<Self>) {

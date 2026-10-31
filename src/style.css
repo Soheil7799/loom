@@ -485,6 +485,7 @@ button.overview-scribe { padding: 2px 6px; margin-left: -6px; color: @accent_col
 /* An agent waits for the user to fill the open file in (loom_edit). */
 .edit-request { padding: 8px 12px; background: alpha(@accent_color, 0.12); border-bottom: 1px solid alpha(@accent_color, 0.35); }
 .edit-request label { font-weight: 600; }
+.edit-request.disk-changed { background: alpha(@loom_warn, 0.12); border-bottom-color: alpha(@loom_warn, 0.35); }
 
 /* Settings' close button, as loom's other icon buttons. */
 button.prefs-close { margin: 10px 12px; min-width: 30px; min-height: 30px; padding: 0;

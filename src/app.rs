@@ -1045,6 +1045,9 @@ impl App {
                 self.files.root.set_visible(true);
                 self.files.open_file(Path::new(argument));
             }
+            // Test hooks: typing in the editor, and the changed-on-disk bar's buttons.
+            "edittype" => self.files.type_for_tests(argument),
+            "disk" => self.files.disk_for_tests(argument),
             "mode" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.cycle_mode();
