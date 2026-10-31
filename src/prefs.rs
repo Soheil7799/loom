@@ -1113,7 +1113,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     row(&main, "Effort", "How hard it thinks on each call (Default: Claude Code's own). Higher is slower and takes more of your usage limits.", &effort);
     caption(&main, "Your agents can search and read these notes, and Scribe keeps them up to date from your conversations (the Notes tab beside the chat shows what it wrote and asks).");
     // Corrections the user explained: rules in the topics, and tests kept on this machine.
-    let corrections = crate::hub::corrections_path();
+    let corrections = loom_core::hub::corrections_path();
     let kept = std::fs::read_to_string(&corrections).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
     if kept > 0 {
         caption(

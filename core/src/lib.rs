@@ -7,6 +7,7 @@ pub mod bridges;
 pub mod compacted;
 pub mod control;
 pub mod history;
+pub mod hub;
 pub mod jobs;
 pub mod journal;
 pub mod log;
