@@ -2,9 +2,9 @@
 
 A light, keyboard-first home for coding agents, written in Rust with GTK 4.
 
-Each agent is a Claude Code session driven over [ACP](https://agentclientprotocol.com)
-(`claude-agent-acp`) and shown as a chat, not a terminal. Agents are grouped by project, and
-a project may hold several git repos.
+Each agent is a Claude Code session, driven by loom and shown as a chat, not a terminal.
+Agents are grouped by project, and a project may hold several git repos. (Any other
+[ACP](https://agentclientprotocol.com) agent can be set in Settings → Advanced.)
 
 ![An agent's chat, with the Running list and projects in the sidebar](docs/chat.png)
 
@@ -29,10 +29,15 @@ a project may hold several git repos.
 - **A scratch terminal**, one key away (Ctrl+\`).
 - **Schedules.** Run a prompt at a time or on a repeat ("weekdays 9:30", "every 2h").
 - **Add-ons**, each off until you switch it on in Settings → Add-ons:
-  - **Notes.** Keeps what you tell your agents in a vault of notes, by topic. The vault opens
-    in Obsidian too.
+  - **Notes.** Keeps what you tell your agents in a vault of notes, by topic. Scribe, a small
+    model (Haiku unless you pick another), reads what you said, files it under the right
+    topic and asks first where a topic says so. It learns from your answers and from why you
+    turned a change down, and a topic can be described in plain words for it to draft. The
+    Notes view shows the vault, its history and a chat about your notes. The vault opens in
+    Obsidian too.
   - **Telegram.** Your agents in a Telegram bot of your own: it relays their replies and takes
-    your messages, voice, photos and answers. It talks only to the one account you link.
+    your messages, voice, photos and answers. It talks only to the one account you link, and
+    runs as a process of its own (a [bridge](docs/bridges.md)).
   - **Speech to text.** Talk instead of typing, through any OpenAI-style transcription
     endpoint you set: Groq, OpenAI, or a local Whisper server.
 - **Themes** follow your GTK colours. Persian and right-to-left text work.
@@ -52,11 +57,11 @@ switches them on and off, and opens them in loom's editor.
 loom runs on Linux and needs:
 
 - GTK 4.14 or later, GtkSourceView 5 and VTE (gtk4)
-- Node and npm, for the ACP adapter
 - Claude Code, logged in (loom uses your login)
+- git, for the Notes add-on
 
-On Arch: `pacman -S gtk4 gtksourceview5 vte4 nodejs npm`. On Ubuntu 24.04 or Debian 13:
-`apt install libgtk-4-1 libgtksourceview-5-0 libvte-2.91-gtk4-0 nodejs npm`.
+On Arch: `pacman -S gtk4 gtksourceview5 vte4 git`. On Ubuntu 24.04 or Debian 13:
+`apt install libgtk-4-1 libgtksourceview-5-0 libvte-2.91-gtk4-0 git`.
 
 ### From a release
 
@@ -72,8 +77,7 @@ With Rust installed, run `./install.sh` in a checkout; it builds loom first (wit
 
 ### What it installs
 
-- `loom` into `~/.local/bin`, with a desktop entry and an icon;
-- the ACP adapter into `~/.local/share/loom/adapter`;
+`loom` into `~/.local/bin`, with a desktop entry and an icon.
 
 ## Use
 
@@ -96,6 +100,14 @@ then start an agent in it with Ctrl+N.
 Ctrl+B followed by a letter works as in herdr (V split, J/K next/previous, C new agent…).
 
 Settings are kept in `~/.config/loom`.
+
+## Syncing your notes
+
+loom doesn't sync the vault itself: use what you already use for files. Obsidian Sync, or
+Syncthing, or the Remotely Save plugin with S3 or WebDAV, keep it on your phone too (in
+Obsidian). loom sees what a sync changes: an open note reloads, or tells you it changed under
+your edits; the conflict copies a sync leaves are listed under Sync conflicts in the Notes
+view to settle, and Scribe leaves them alone.
 
 ## License
 
