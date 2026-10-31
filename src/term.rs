@@ -56,25 +56,3 @@ fn colors(widget: &gtk::Widget) -> (gdk::RGBA, gdk::RGBA) {
     let lookup = |name: &str, fallback: &str| context.lookup_color(name).unwrap_or_else(|| gdk::RGBA::parse(fallback).unwrap());
     (lookup("view_fg_color", "#cccac2"), lookup("view_bg_color", "#1f2430"))
 }
-
-/// Text from an agent ends lines with "\n"; a terminal wants "\r\n".
-pub fn crlf(data: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len() + 16);
-    let mut previous = 0u8;
-    for &byte in data.as_bytes() {
-        if byte == b'\n' && previous != b'\r' {
-            out.push(b'\r');
-        }
-        out.push(byte);
-        previous = byte;
-    }
-    out
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn lone_newlines_get_a_carriage_return() {
-        assert_eq!(super::crlf("a\nb\r\nc"), b"a\r\nb\r\nc".to_vec());
-    }
-}

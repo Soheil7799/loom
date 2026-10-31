@@ -1,43 +1,31 @@
 //! The job tray: one chip per command along the bottom of a project. A chip peeks its
 //! terminal in a popover; pinning docks the terminal above the tray.
 //!
-//! Two kinds of job: the commands an agent runs (their output arrives over ACP and is fed to
-//! a read-only terminal), and commands run from here (a real process in the terminal).
+//! The commands themselves run in loom-core (`loom_core::jobs`); here they are drawn: each
+//! terminal is fed what its job prints, and sends back the keys typed into it and its size.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
-use gtk::{gio, glib, prelude::*};
+use gtk::{glib, prelude::*};
+use loom_core::jobs::{Event, Id, Jobs};
 use vte::prelude::*;
 
 use crate::term;
 
-/// Finished agent jobs beyond this many go, oldest first (pinned ones stay).
-const KEEP: usize = 12;
-
 pub struct Job {
-    pub name: RefCell<String>,
+    id: Id,
+    core: Jobs,
     title: gtk::Label,
-    command: RefCell<Option<String>>,
     term: vte::Terminal,
     chip: gtk::Button,
     dot: gtk::Box,
     popover: gtk::Popover,
     holder: gtk::Box,
     status: gtk::Label,
-    /// None while running; Some(exit code, if known) once done.
-    outcome: Cell<Option<Option<i64>>>,
-    pid: Cell<Option<glib::Pid>>,
-    /// Asked to run again while still running: the exit starts it (one restart, however
-    /// many times it was asked).
-    restart_pending: Cell<bool>,
-    /// SIGKILL, if SIGTERM was not enough.
-    kill_timer: RefCell<Option<glib::SourceId>>,
-    /// Where it runs, if not the project folder.
-    cwd: RefCell<Option<PathBuf>>,
-    /// Between asking VTE to spawn and hearing back.
-    spawning: Cell<bool>,
+    /// The rows and columns last told to the job.
+    size: Cell<(i64, i64)>,
     docked: RefCell<Option<gtk::Box>>,
     tray: Weak<Tray>,
 }
@@ -50,7 +38,7 @@ pub struct Tray {
     chips: gtk::Box,
     hint: gtk::Label,
     jobs: RefCell<Vec<Rc<Job>>>,
-    cwd: PathBuf,
+    core: Jobs,
     /// Told when a job ends: its name and exit code.
     pub on_finish: RefCell<Option<Rc<dyn Fn(&str, Option<i64>)>>>,
 }
@@ -58,7 +46,7 @@ pub struct Tray {
 impl Tray {
     /// The folder its jobs run in.
     pub fn cwd(&self) -> &std::path::Path {
-        &self.cwd
+        self.core.cwd()
     }
 
     pub fn new(cwd: PathBuf) -> Rc<Tray> {
@@ -79,57 +67,91 @@ impl Tray {
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
         dock.set_visible(false);
-        Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), cwd, on_finish: RefCell::default() })
+        let (core, events) = Jobs::new(cwd);
+        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default() });
+        let weak = Rc::downgrade(&tray);
+        glib::spawn_future_local(async move {
+            while let Ok(event) = events.recv().await {
+                let Some(tray) = weak.upgrade() else { return };
+                tray.show(event);
+            }
+        });
+        tray
     }
 
-    /// The job showing an agent's command (made on first sight of `terminal_id`).
+    /// What a job did, drawn.
+    fn show(&self, event: Event) {
+        let id = match &event {
+            Event::Started(id) | Event::Restarting(id) | Event::Output(id, _) | Event::Exited(id, _) => *id,
+        };
+        let Some(job) = self.by_id(id) else { return };
+        match event {
+            Event::Started(_) => {
+                job.term.reset(true, true);
+                job.dot.remove_css_class("done");
+                job.dot.remove_css_class("failed");
+                job.dot.add_css_class("working");
+                job.status.set_label("running");
+            }
+            // Its old output goes now, so nobody reads it as the new run's.
+            Event::Restarting(_) => {
+                job.term.reset(true, true);
+                job.status.set_label("restarting");
+            }
+            Event::Output(_, bytes) => job.term.feed(&bytes),
+            Event::Exited(_, code) => {
+                job.finish(code);
+                let told = self.on_finish.borrow().clone();
+                if let Some(told) = told {
+                    told(&job.title.label(), code);
+                }
+            }
+        }
+    }
+
+    fn by_id(&self, id: Id) -> Option<Rc<Job>> {
+        self.jobs.borrow().iter().find(|j| j.id == id).cloned()
+    }
+
     /// Runs `line` in the project ("name: command" names the chip).
     pub fn run(self: &Rc<Self>, line: &str) {
         let (name, command) = match line.split_once(": ") {
             Some((name, command)) if !name.contains(' ') => (name.to_owned(), command.to_owned()),
             _ => (short_name(line), line.to_owned()),
         };
-        let job = self.add(&name, Some(command.clone()), &command);
-        job.start();
+        let id = self.core.run(&name, &command, None);
+        let job = self.add(id, &name, &command);
         self.peek(&job);
     }
 
-    /// The job named `name` that runs a command of its own (not an agent's).
+    /// The job named `name`.
     pub fn named(&self, name: &str) -> Option<Rc<Job>> {
-        self.jobs.borrow().iter().rev().find(|j| j.command.borrow().is_some() && *j.name.borrow() == name).cloned()
+        self.core.named(name).and_then(|info| self.by_id(info.id))
     }
 
     /// Runs `command` as the job `name`: the same chip again if there is one (never two
     /// jobs of one name, like herdr's named panes). Err if it is still running and
     /// `restart` is false.
     pub fn run_named(self: &Rc<Self>, name: &str, command: &str, restart: bool, cwd: Option<PathBuf>) -> Result<Rc<Job>, String> {
-        if let Some(job) = self.named(name) {
-            if job.is_running() && !restart {
-                return Err(format!("job {name} is still running (stop it, or pass restart)"));
-            }
-            *job.cwd.borrow_mut() = cwd;
-            *job.command.borrow_mut() = Some(command.to_owned());
+        let id = self.core.run_named(name, command, restart, cwd)?;
+        if let Some(job) = self.by_id(id) {
             job.chip.set_tooltip_text(Some(command));
-            job.restart();
             return Ok(job);
         }
-        let job = self.add(name, Some(command.to_owned()), command);
-        *job.cwd.borrow_mut() = cwd;
-        job.start();
-        Ok(job)
+        Ok(self.add(id, name, command))
     }
 
     /// How many jobs are running.
     pub fn running(&self) -> usize {
-        self.jobs.borrow().iter().filter(|j| j.is_running()).count()
+        self.core.list().iter().filter(|j| j.running).count()
     }
 
     /// Every job: (name, running, exit code).
     pub fn list(&self) -> Vec<(String, bool, Option<i64>)> {
-        self.jobs.borrow().iter().map(|j| (j.name.borrow().clone(), j.is_running(), j.outcome.get().flatten())).collect()
+        self.core.list().into_iter().map(|j| (j.name, j.running, j.exit_code)).collect()
     }
 
-    fn add(self: &Rc<Self>, name: &str, command: Option<String>, tooltip: &str) -> Rc<Job> {
+    fn add(self: &Rc<Self>, id: Id, name: &str, command: &str) -> Rc<Job> {
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.add_css_class("dot");
         dot.add_css_class("working");
@@ -138,12 +160,15 @@ impl Tray {
         let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         content.append(&dot);
         content.append(&label);
-        let chip = gtk::Button::builder().child(&content).tooltip_text(tooltip).build();
+        let chip = gtk::Button::builder().child(&content).tooltip_text(command).build();
         chip.add_css_class("chip");
         chip.add_css_class("flat");
 
         let term = term::new(&chip);
         term.set_size_request(760, 320);
+        // It only draws: what is typed in it goes to the job.
+        let core = self.core.clone();
+        term.connect_commit(move |_, text, _| core.write(id, text.as_bytes()));
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let status = gtk::Label::new(Some("running"));
         status.add_css_class("dim");
@@ -153,48 +178,31 @@ impl Tray {
 
         let title = gtk::Label::new(Some(name));
         let job = Rc::new(Job {
-            name: RefCell::new(name.to_owned()),
+            id,
+            core: self.core.clone(),
             title,
-            command: RefCell::new(command),
             term,
             chip: chip.clone(),
             dot,
             popover: popover.clone(),
             holder: holder.clone(),
             status: status.clone(),
-            outcome: Cell::new(None),
-            pid: Cell::new(None),
-            spawning: Cell::new(false),
-            restart_pending: Cell::new(false),
-            kill_timer: RefCell::default(),
-            cwd: RefCell::default(),
+            size: Cell::new((0, 0)),
             docked: RefCell::default(),
             tray: Rc::downgrade(self),
         });
+        // And its size: VTE has no signal for it, so it is checked on each frame drawn.
+        let weak = Rc::downgrade(&job);
+        job.term.add_tick_callback(move |term, _| {
+            let Some(job) = weak.upgrade() else { return glib::ControlFlow::Break };
+            let size = (term.row_count(), term.column_count());
+            if size != job.size.replace(size) {
+                job.core.resize(job.id, u16::try_from(size.0).unwrap_or(0), u16::try_from(size.1).unwrap_or(0));
+            }
+            glib::ControlFlow::Continue
+        });
         popover.set_child(Some(&job.frame(false)));
         holder.append(&job.term);
-        if job.command.borrow().is_some() {
-            let weak = Rc::downgrade(&job);
-            job.term.connect_child_exited(move |_, status| {
-                let Some(job) = weak.upgrade() else { return };
-                job.pid.set(None);
-                if let Some(timer) = job.kill_timer.borrow_mut().take() {
-                    timer.remove();
-                }
-                // Asked to run again: this exit was the old run's.
-                if job.restart_pending.take() {
-                    job.start();
-                    return;
-                }
-                // A wait status: the exit code in the second byte when the low 7 bits are 0.
-                let code = if status & 0x7f == 0 { (status >> 8) & 0xff } else { 128 + (status & 0x7f) };
-                job.finish(Some(i64::from(code)));
-                let told = job.tray.upgrade().and_then(|tray| tray.on_finish.borrow().clone());
-                if let Some(told) = told {
-                    told(&job.name.borrow(), Some(i64::from(code)));
-                }
-            });
-        }
 
         let weak = Rc::downgrade(&job);
         chip.connect_clicked(move |_| {
@@ -218,37 +226,34 @@ impl Tray {
                     }
                 }
             };
-            let command = job.command.borrow().clone();
-            let running = job.is_running();
+            let command = job.core.info(job.id).map(|info| info.command).unwrap_or_default();
             let docked = job.docked.borrow().is_some();
-            let mut menu = crate::menu::Menu::new().item("Show its output", act(|tray, job| tray.peek(job)));
-            if command.is_some() {
-                menu = menu.item("Run again", act(|_, job| job.restart())).item("Stop", act(|_, job| job.stop())).enabled(running);
-            }
-            menu = menu.item(
-                if docked { "Unpin" } else { "Pin above the tray" },
-                act(|tray, job| if job.docked.borrow().is_some() { tray.unpin(job) } else { tray.pin(job) }),
-            );
+            let menu = crate::menu::Menu::new()
+                .item("Show its output", act(|tray, job| tray.peek(job)))
+                .item("Run again", act(|_, job| job.restart()))
+                .item("Stop", act(|_, job| job.stop()))
+                .enabled(job.is_running())
+                .item(
+                    if docked { "Unpin" } else { "Pin above the tray" },
+                    act(|tray, job| if job.docked.borrow().is_some() { tray.unpin(job) } else { tray.pin(job) }),
+                );
             let (chip, chip2) = (job.chip.clone(), job.chip.clone());
             let output = Rc::downgrade(&job);
-            menu = menu.section();
-            if let Some(command) = command {
-                menu = menu.item("Copy the command", move || crate::menu::copy(&chip, &command));
-            }
-            menu.item("Copy its output", move || {
-                if let Some(job) = output.upgrade() {
-                    crate::menu::copy(&chip2, &job.output(10_000));
-                }
-            })
-            .section()
-            .item("Remove from the tray", act(|tray, job| tray.remove(job)))
-            .danger()
-            .popup(&job.chip, x, y);
+            menu.section()
+                .item("Copy the command", move || crate::menu::copy(&chip, &command))
+                .item("Copy its output", move || {
+                    if let Some(job) = output.upgrade() {
+                        crate::menu::copy(&chip2, &job.output(10_000));
+                    }
+                })
+                .section()
+                .item("Remove from the tray", act(|tray, job| tray.remove(job)))
+                .danger()
+                .popup(&job.chip, x, y);
         });
         self.chips.append(&chip);
         self.hint.set_visible(false);
         self.jobs.borrow_mut().push(job.clone());
-        self.trim();
         job
     }
 
@@ -293,40 +298,16 @@ impl Tray {
     fn remove(&self, job: &Rc<Job>) {
         self.unpin(job);
         job.popover.popdown();
-        job.stop();
+        self.core.remove(job.id);
         job.popover.unparent();
         self.chips.remove(&job.chip);
         self.jobs.borrow_mut().retain(|other| !Rc::ptr_eq(other, job));
         self.hint.set_visible(self.jobs.borrow().is_empty());
     }
 
-    /// Drops the oldest finished, unpinned jobs past KEEP.
-    fn trim(&self) {
-        loop {
-            let old = {
-                let jobs = self.jobs.borrow();
-                if jobs.len() <= KEEP {
-                    return;
-                }
-                jobs.iter()
-                    .find(|job| job.command.borrow().is_none() && job.outcome.get().is_some() && job.docked.borrow().is_none())
-                    .cloned()
-            };
-            match old {
-                Some(job) => self.remove(&job),
-                None => return,
-            }
-        }
-    }
-
     pub fn clear_finished(&self) {
-        let done: Vec<Rc<Job>> = self
-            .jobs
-            .borrow()
-            .iter()
-            .filter(|job| job.outcome.get().is_some() && job.docked.borrow().is_none())
-            .cloned()
-            .collect();
+        let done: Vec<Rc<Job>> =
+            self.jobs.borrow().iter().filter(|job| !job.is_running() && job.docked.borrow().is_none()).cloned().collect();
         for job in done {
             self.remove(&job);
         }
@@ -334,9 +315,7 @@ impl Tray {
 
     /// Stops the jobs this tray started (on quit).
     pub fn stop_all(&self) {
-        for job in self.jobs.borrow().iter() {
-            job.stop();
-        }
+        self.core.stop_all();
     }
 }
 
@@ -376,10 +355,8 @@ impl Job {
             });
             b
         };
-        if self.command.borrow().is_some() {
-            header.append(&button("Rerun", "Run the command again", |_, job| job.restart()));
-            header.append(&button("Stop", "Stop the command", |_, job| job.stop()));
-        }
+        header.append(&button("Rerun", "Run the command again", |_, job| job.restart()));
+        header.append(&button("Stop", "Stop the command", |_, job| job.stop()));
         if docked {
             header.append(&button("Unpin", "Back to the tray", |tray, job| tray.unpin(job)));
         } else {
@@ -393,46 +370,32 @@ impl Job {
         frame
     }
 
-    /// Names the job (an agent's command is known only after its first report).
-
-    /// Output an agent's command printed.
-    pub fn feed(&self, data: &str) {
-        self.term.feed(&term::crlf(data));
-    }
-
     /// The last `lines` lines it printed, as text.
     pub fn output(&self, lines: usize) -> String {
-        let (_, row) = self.term.cursor_position();
-        let start = (row - lines as libc::c_long).max(0);
-        let (text, _) = self.term.text_range_format(vte::Format::Text, start, 0, row, self.term.column_count());
-        text.map(|t| t.trim_end().to_owned()).unwrap_or_default()
+        self.core.output(self.id, lines)
     }
 
     /// Exit code once done (None while running or when unknown).
     pub fn exit_code(&self) -> Option<i64> {
-        self.outcome.get().flatten()
+        self.core.info(self.id).and_then(|info| info.exit_code)
     }
 
     /// Runs the command again: at once if nothing runs, else once the current run has
-    /// exited (it is stopped). Its old output goes now, so nobody reads it as the new run's.
-    pub fn restart(self: &Rc<Self>) {
-        if self.pid.get().is_none() && !self.spawning.get() {
-            self.start();
-            return;
-        }
-        self.restart_pending.set(true);
-        self.term.reset(true, true);
-        self.outcome.set(None);
-        self.status.set_label("restarting");
-        self.terminate();
+    /// exited (it is stopped).
+    pub fn restart(&self) {
+        self.core.restart(self.id);
     }
 
     pub fn is_running(&self) -> bool {
-        self.outcome.get().is_none()
+        self.core.info(self.id).is_some_and(|info| info.running)
     }
 
-    pub fn finish(&self, code: Option<i64>) {
-        self.outcome.set(Some(code));
+    /// Stops it (and any restart it was waiting for).
+    pub fn stop(&self) {
+        self.core.stop(self.id);
+    }
+
+    fn finish(&self, code: Option<i64>) {
         for class in ["working", "done", "failed"] {
             self.dot.remove_css_class(class);
         }
@@ -443,81 +406,6 @@ impl Job {
         };
         self.dot.add_css_class(class);
         self.status.set_label(&text);
-    }
-
-    /// (Re)starts a command run from here.
-    fn start(self: &Rc<Self>) {
-        let Some(command) = self.command.borrow().clone() else { return };
-        if self.spawning.get() || self.pid.get().is_some() {
-            return;
-        }
-        let Some(tray) = self.tray.upgrade() else { return };
-        self.spawning.set(true);
-        self.term.reset(true, true);
-        self.outcome.set(None);
-        self.dot.remove_css_class("done");
-        self.dot.remove_css_class("failed");
-        self.dot.add_css_class("working");
-        self.status.set_label("running");
-        let weak = Rc::downgrade(self);
-        let cwd = self.cwd.borrow().clone().unwrap_or_else(|| tray.cwd.clone()).to_string_lossy().into_owned();
-        self.term.spawn_async(
-            vte::PtyFlags::DEFAULT,
-            Some(&cwd),
-            &["/bin/bash", "-c", &command],
-            &[],
-            glib::SpawnFlags::DEFAULT,
-            || {},
-            -1,
-            None::<&gio::Cancellable>,
-            move |result| {
-                let Some(job) = weak.upgrade() else { return };
-                job.spawning.set(false);
-                match result {
-                    Ok(pid) => {
-                        job.pid.set(Some(pid));
-                        // Asked to restart (or stop) while it was starting: that applies now.
-                        if job.restart_pending.get() {
-                            job.terminate();
-                        }
-                    }
-                    Err(err) => {
-                        job.feed(&format!("loom: could not start: {err}\n"));
-                        job.finish(Some(127));
-                    }
-                }
-            },
-        );
-    }
-
-    /// Stops it (and any restart it was waiting for).
-    pub fn stop(self: &Rc<Self>) {
-        self.restart_pending.set(false);
-        self.terminate();
-    }
-
-    /// SIGTERM to its process group, SIGKILL 3 s later if it is still there. The pid stays
-    /// until the exit is seen, so it is never run twice.
-    fn terminate(self: &Rc<Self>) {
-        let Some(pid) = self.pid.get() else { return };
-        // SAFETY: plain kill(2); the shell VTE started leads its own session and group.
-        unsafe { libc::kill(-pid.0, libc::SIGTERM) };
-        let group = pid.0;
-        let weak = Rc::downgrade(self);
-        let timer = glib::timeout_add_local_once(std::time::Duration::from_secs(3), move || {
-            // Fired: the handle is spent (removing it later would be an error).
-            if let Some(job) = weak.upgrade() {
-                job.kill_timer.borrow_mut().take();
-                if job.pid.get().is_none_or(|p| p.0 != group) {
-                    return;
-                }
-            }
-            // SAFETY: as above; a group already gone just gives ESRCH.
-            unsafe { libc::kill(-group, libc::SIGKILL) };
-        });
-        if let Some(old) = self.kill_timer.borrow_mut().replace(timer) {
-            old.remove();
-        }
     }
 }
 
