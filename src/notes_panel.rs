@@ -25,6 +25,8 @@ enum Row {
     Note(PathBuf),
     /// "Show all" (or fewer) of a topic's notes.
     More(String),
+    /// Two versions of a note: (its conflict copy, the note); no copy: the note holds both.
+    Conflict(String, String),
 }
 
 pub struct NotesPanel {
@@ -42,6 +44,8 @@ pub struct NotesPanel {
     notes: RefCell<Vec<(String, String, u64)>>,
     /// Topics shown with all their notes (by name; `OTHER` for the notes of none).
     expanded: RefCell<HashSet<String>>,
+    /// Notes with a merge left undone in them (<<<<<<< lines), by path in the vault.
+    marked: RefCell<Vec<String>>,
     reading: Cell<bool>,
     /// Asked again while reading: read once more after.
     again: Cell<bool>,
@@ -49,6 +53,9 @@ pub struct NotesPanel {
     pub on_open: Callback<PathBuf>,
     /// A chat about a topic: (its name, its folder).
     pub on_chat: Callback<(String, String)>,
+    /// Two versions of a note to settle: (the conflict copy, or "" if the note holds both;
+    /// the note), paths in the vault.
+    pub on_conflict: Callback<(String, String)>,
 }
 
 impl NotesPanel {
@@ -103,10 +110,12 @@ impl NotesPanel {
             topics: RefCell::default(),
             notes: RefCell::default(),
             expanded: RefCell::default(),
+            marked: RefCell::default(),
             reading: Cell::new(false),
             again: Cell::new(false),
             on_open: RefCell::default(),
             on_chat: RefCell::default(),
+            on_conflict: RefCell::default(),
         });
         let (stack, weak) = (views.clone(), Rc::downgrade(&panel));
         topics_tab.connect_toggled(move |tab| {
@@ -151,12 +160,23 @@ impl NotesPanel {
         }
         let weak = Rc::downgrade(self);
         glib::spawn_future_local(async move {
-            let read = gtk::gio::spawn_blocking(move || (crate::topics::list(&vault), crate::vault::all_notes(&vault))).await;
+            let read = gtk::gio::spawn_blocking(move || {
+                let notes = crate::vault::all_notes(&vault);
+                let marked = notes
+                    .iter()
+                    .filter(|n| crate::vault::conflict_of(&n.0).is_none())
+                    .filter(|n| std::fs::read_to_string(vault.join(&n.0)).is_ok_and(|t| crate::vault::has_conflict_marks(&t)))
+                    .map(|n| n.0.clone())
+                    .collect::<Vec<_>>();
+                (crate::topics::list(&vault), notes, marked)
+            })
+            .await;
             let Some(panel) = weak.upgrade() else { return };
             panel.reading.set(false);
-            if let Ok((topics, notes)) = read {
+            if let Ok((topics, notes, marked)) = read {
                 *panel.topics.borrow_mut() = topics;
                 *panel.notes.borrow_mut() = notes;
+                *panel.marked.borrow_mut() = marked;
                 panel.fill();
             }
             if panel.again.take() {
@@ -176,6 +196,14 @@ impl NotesPanel {
         self.topics_tab.set_active(true);
     }
 
+    /// Test hook: the first note with two versions, opened to settle.
+    pub fn settle_for_tests(&self) {
+        let first = self.rows.borrow().iter().position(|r| matches!(r, Row::Conflict(..)));
+        if let Some(index) = first {
+            self.activate(index);
+        }
+    }
+
     pub fn focus_filter(&self) {
         self.show_topics();
         self.filter.grab_focus();
@@ -188,7 +216,7 @@ impl NotesPanel {
         let mut rows = Vec::new();
         let filter = self.filter.text().to_lowercase();
         let notes = self.notes.borrow();
-        let matches = |n: &&(String, String, u64)| filter.is_empty() || n.0.to_lowercase().contains(&filter);
+        let matches = |n: &&(String, String, u64)| crate::vault::conflict_of(&n.0).is_none() && (filter.is_empty() || n.0.to_lowercase().contains(&filter));
         let in_folder = |folder: &str, path: &str| !folder.is_empty() && path.starts_with(&format!("{}/", folder.trim_end_matches('/')));
         let topics = self.topics.borrow();
         let mut groups: Vec<(Option<&Topic>, String, Vec<&(String, String, u64)>)> = topics
@@ -198,6 +226,28 @@ impl NotesPanel {
         let other: Vec<&(String, String, u64)> = notes.iter().filter(|n| !topics.iter().any(|t| in_folder(&t.folder, &n.0))).filter(matches).collect();
         groups.push((None, OTHER.to_owned(), other));
         let vault = crate::vault::current().unwrap_or_default();
+        // Two versions of a note (a sync tool's conflict copy, or a merge left undone): first.
+        let mut conflicts: Vec<(String, String)> = notes.iter().filter_map(|n| crate::vault::conflict_of(&n.0).map(|of| (n.0.clone(), of))).collect();
+        conflicts.extend(self.marked.borrow().iter().map(|path| (String::new(), path.clone())));
+        if !conflicts.is_empty() {
+            self.list.append(&conflicts_heading(conflicts.len()));
+            rows.push(Row::Topic);
+            for (copy, note) in conflicts {
+                let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+                let title = note.rsplit('/').next().unwrap_or(&note).trim_end_matches(".md").to_owned();
+                let label = gtk::Label::builder().label(title).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).tooltip_text(note.as_str()).build();
+                let what = gtk::Label::new(Some(if copy.is_empty() { "two versions in it" } else { "and another version" }));
+                what.add_css_class("dim");
+                what.add_css_class("small");
+                line.append(&label);
+                line.append(&what);
+                let row = gtk::ListBoxRow::builder().child(&line).tooltip_text("Two versions of this note: compare them and keep one, both, or a merge").build();
+                row.add_css_class("notes-note");
+                row.add_css_class("notes-conflict");
+                self.list.append(&row);
+                rows.push(Row::Conflict(copy, note));
+            }
+        }
         for (topic, key, found) in groups {
             // A filter shows only what matches it.
             let name_matches = topic.is_some_and(|t| !filter.is_empty() && t.name.to_lowercase().contains(&filter));
@@ -299,6 +349,11 @@ impl NotesPanel {
                     open(path.clone());
                 }
             }
+            Some(Row::Conflict(copy, note)) => {
+                if let Some(settle) = self.on_conflict.borrow().clone() {
+                    settle((copy.clone(), note.clone()));
+                }
+            }
             Some(Row::More(key)) => {
                 let key = key.clone();
                 drop(rows);
@@ -312,4 +367,20 @@ impl NotesPanel {
             _ => {}
         }
     }
+}
+
+/// "Sync conflicts", over the notes that have two versions.
+fn conflicts_heading(count: usize) -> gtk::ListBoxRow {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let name = gtk::Label::builder().label("Sync conflicts").xalign(0.0).hexpand(true).build();
+    name.add_css_class("notes-topic-name");
+    let number = gtk::Label::new(Some(&count.to_string()));
+    number.add_css_class("dim");
+    number.add_css_class("small");
+    line.append(&name);
+    line.append(&number);
+    let row = gtk::ListBoxRow::builder().child(&line).activatable(false).build();
+    row.add_css_class("notes-topic");
+    row.add_css_class("notes-conflicts");
+    row
 }

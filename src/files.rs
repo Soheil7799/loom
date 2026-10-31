@@ -1637,19 +1637,21 @@ impl Files {
         });
     }
 
-    fn diff_window(&self, file: &str, diff: &str) {
+    fn diff_window(&self, file: &str, diff: &str) -> gtk::Window {
         let buffer = sourceview::Buffer::new(None);
         buffer.set_language(sourceview::LanguageManager::default().language("diff").as_ref());
         buffer.set_text(diff);
-        if let Some(scheme) = self.buffer.style_scheme() {
-            buffer.set_style_scheme(Some(&scheme));
-        }
+        // The editor's light or dark (worked out here: no file may have been opened yet).
+        let dark = gtk::Settings::default().is_some_and(|s| s.is_gtk_application_prefer_dark_theme()) || is_dark(&self.view);
+        buffer.set_style_scheme(sourceview::StyleSchemeManager::default().scheme(if dark { "Adwaita-dark" } else { "Adwaita" }).as_ref());
         let view = sourceview::View::with_buffer(&buffer);
         view.set_editable(false);
+        view.set_cursor_visible(false);
         view.set_monospace(true);
         view.add_css_class("editor");
         let scroller = gtk::ScrolledWindow::builder().child(&view).vexpand(true).build();
         let window = gtk::Window::builder().title(file.to_owned()).default_width(900).default_height(640).child(&scroller).build();
+        window.add_css_class("loom");
         if let Some(parent) = self.root.root().and_downcast::<gtk::Window>() {
             window.set_transient_for(Some(&parent));
         }
@@ -1666,6 +1668,118 @@ impl Files {
         });
         window.add_controller(keys);
         window.present();
+        window
+    }
+
+    /// Two versions of a note to settle: what differs, and keep the note, the copy, both, or
+    /// a merge by a Notes chat. `copy` empty: the note holds both (<<<<<<< lines). `merge`
+    /// gets what to ask the chat; `done` follows a change.
+    pub fn conflict_window(&self, vault: &Path, copy: &str, note: &str, merge: Rc<dyn Fn(String)>, done: Rc<dyn Fn()>) {
+        let (copy_path, note_path) = (vault.join(copy), vault.join(note));
+        let (title, shown, ask) = if copy.is_empty() {
+            (
+                format!("{note} — two versions in it"),
+                std::fs::read_to_string(&note_path).unwrap_or_default(),
+                format!(
+                    "My note {note} has a sync conflict left in it: <<<<<<<, ======= and >>>>>>> lines around two versions. Settle it: keep everything from both versions, in the note's order and style, without duplicates, and take those lines out. Show me the result before you write it."
+                ),
+            )
+        } else {
+            let diff = std::process::Command::new("diff")
+                .args(["-u", "--label", note, "--label", copy])
+                .arg(&note_path)
+                .arg(&copy_path)
+                .output()
+                .map(|out| String::from_utf8_lossy(&out.stdout).into_owned())
+                .ok()
+                .filter(|d| !d.trim().is_empty())
+                .unwrap_or_else(|| "The two are the same.".to_owned());
+            (
+                format!("{note} — and another version"),
+                diff,
+                format!(
+                    "My note {note} has a sync conflict copy, {copy}: another version of it. Merge them into {note}: keep everything from both, in the note's order and style, without duplicates. Show me what you will change before you write it; once it is written, move {copy} into the vault's .trash/ folder."
+                ),
+            )
+        };
+        let window = self.diff_window(&title, &shown);
+        let Some(view) = window.child() else { return };
+        window.set_child(None::<&gtk::Widget>);
+        let actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        actions.add_css_class("conflict-actions");
+        let said = gtk::Label::builder().xalign(0.0).hexpand(true).wrap(true).build();
+        said.add_css_class("small");
+        actions.append(&said);
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        body.append(&view);
+        body.append(&actions);
+        window.set_child(Some(&body));
+        type Act = Box<dyn Fn() -> std::io::Result<()>>;
+        let mut choices: Vec<(&str, &str, Act)> = Vec::new();
+        if copy.is_empty() {
+            let (me, path) = (self.me.borrow().clone(), note_path.clone());
+            choices.push((
+                "Open it",
+                "Settle it by hand in the editor",
+                Box::new(move || {
+                    if let Some(files) = me.upgrade() {
+                        files.root.set_visible(true);
+                        files.open_file(&path);
+                    }
+                    Ok(())
+                }),
+            ));
+        } else {
+            let (v, c) = (vault.to_owned(), copy_path.clone());
+            choices.push(("Keep the note", "The other version goes to the vault's .trash/", Box::new(move || to_trash(&v, &c).map(|_| ()))));
+            let (v, c, n) = (vault.to_owned(), copy_path.clone(), note_path.clone());
+            choices.push((
+                "Keep the other",
+                "It becomes the note; the note as it was goes to the vault's .trash/",
+                Box::new(move || {
+                    to_trash(&v, &n)?;
+                    std::fs::rename(&c, &n)
+                }),
+            ));
+            let (c, n) = (copy_path.clone(), note_path.clone());
+            choices.push((
+                "Keep both",
+                "The other version becomes a note of its own beside it",
+                Box::new(move || {
+                    let stem = n.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                    let dir = n.parent().map(Path::to_path_buf).unwrap_or_default();
+                    let free = (1..).map(|i| dir.join(if i == 1 { format!("{stem} (other version).md") } else { format!("{stem} (other version {i}).md") })).find(|p| !p.exists()).unwrap_or_default();
+                    std::fs::rename(&c, free)
+                }),
+            ));
+        }
+        for (label, tip, act) in choices {
+            let button = gtk::Button::with_label(label);
+            button.add_css_class("prefs-button");
+            button.set_tooltip_text(Some(tip));
+            let (w, said, done) = (window.downgrade(), said.clone(), done.clone());
+            button.connect_clicked(move |_| match act() {
+                Ok(()) => {
+                    done();
+                    if let Some(window) = w.upgrade() {
+                        window.close();
+                    }
+                }
+                Err(err) => said.set_label(&format!("Could not: {err}")),
+            });
+            actions.append(&button);
+        }
+        let merging = gtk::Button::with_label("Merge with Claude");
+        merging.add_css_class("suggested-action");
+        merging.set_tooltip_text(Some("A Notes chat, asked to merge them: you see the result before it is written"));
+        let w = window.downgrade();
+        merging.connect_clicked(move |_| {
+            merge(ask.clone());
+            if let Some(window) = w.upgrade() {
+                window.close();
+            }
+        });
+        actions.append(&merging);
     }
 
     /// Throws a file's changes away, after asking.
@@ -2230,6 +2344,18 @@ pub fn selected_text(widget: &gtk::Widget) -> Option<String> {
 /// A file's icon by its kind (from its name), or a folder's.
 fn file_icon(path: &Path, is_dir: bool) -> gio::Icon {
     crate::icons::for_file(path, is_dir)
+}
+
+/// Moves a file of the vault into its `.trash/` (where Obsidian puts what it deletes), under a
+/// name not taken there.
+fn to_trash(vault: &Path, file: &Path) -> std::io::Result<PathBuf> {
+    let trash = vault.join(".trash");
+    std::fs::create_dir_all(&trash)?;
+    let stem = file.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let extension = file.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    let place = (1..).map(|i| trash.join(if i == 1 { format!("{stem}{extension}") } else { format!("{stem} ({i}){extension}") })).find(|p| !p.exists()).unwrap_or_default();
+    std::fs::rename(file, &place)?;
+    Ok(place)
 }
 
 fn modified_time(path: &Path) -> Option<SystemTime> {

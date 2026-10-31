@@ -489,6 +489,18 @@ impl NotesChat {
         self.chat_for(None, None);
     }
 
+    /// A new chat with `text` in its input, for the user to send (or change first).
+    pub fn new_chat_saying(self: &Rc<Self>, text: &str) {
+        self.new_chat();
+        let current = self.current.borrow().clone();
+        if let Some(agent) = current {
+            let buffer = agent.chat.input.buffer();
+            buffer.set_text(text);
+            buffer.place_cursor(&buffer.end_iter());
+            agent.chat.input.grab_focus();
+        }
+    }
+
     /// A new chat about topic `name`, its notes in `folder`.
     pub fn topic_chat(self: &Rc<Self>, name: &str, folder: &str) {
         self.chat_for(None, Some((name.to_owned(), folder.to_owned())));

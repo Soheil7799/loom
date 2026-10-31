@@ -1048,6 +1048,7 @@ impl App {
             // Test hooks: typing in the editor, and the changed-on-disk bar's buttons.
             "edittype" => self.files.type_for_tests(argument),
             "disk" => self.files.disk_for_tests(argument),
+            "settle" => self.notes_panel.settle_for_tests(),
             "mode" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.cycle_mode();
@@ -2524,6 +2525,24 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 app.files.open_file(&path);
             }
+        }));
+        let weak = Rc::downgrade(self);
+        *self.notes_panel.on_conflict.borrow_mut() = Some(Rc::new(move |(copy, note): (String, String)| {
+            let (Some(app), Some(vault)) = (weak.upgrade(), crate::vault::current()) else { return };
+            let w = Rc::downgrade(&app);
+            let merge: Rc<dyn Fn(String)> = Rc::new(move |text| {
+                if let Some(app) = w.upgrade() {
+                    app.chat_stack.set_visible_child_name("notes-chat");
+                    app.notes_chat.new_chat_saying(&text);
+                }
+            });
+            let w = Rc::downgrade(&app);
+            let done: Rc<dyn Fn()> = Rc::new(move || {
+                if let Some(app) = w.upgrade() {
+                    app.notes_panel.refresh();
+                }
+            });
+            app.files.conflict_window(&vault, &copy, &note, merge, done);
         }));
         let weak = Rc::downgrade(self);
         *self.notes_panel.on_chat.borrow_mut() = Some(Rc::new(move |(name, folder): (String, String)| {

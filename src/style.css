@@ -549,3 +549,5 @@ list.notes-topics row.notes-topic { margin-top: 10px; }
 label.notes-topic-name { font-weight: 700; }
 list.notes-topics row.notes-note { padding-left: 18px; }
 list.notes-topics row.notes-more { padding-left: 18px; }
+list.notes-topics row.notes-conflicts label.notes-topic-name { color: @loom_warn; }
+.conflict-actions { padding: 10px 12px; background: @window_bg_color; border-top: 1px solid alpha(currentColor, 0.12); }
