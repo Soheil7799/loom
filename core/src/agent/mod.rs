@@ -19,6 +19,7 @@ use crate::provider::{self, Conn, Incoming};
 use crate::rt::Timer;
 use crate::state::Saved;
 
+pub mod form;
 pub mod view;
 
 use view::{Card, Crew, Form, Png, View, Workflow};

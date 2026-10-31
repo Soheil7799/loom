@@ -3,6 +3,7 @@
 //! Widgets only; what happens on submit, stop or a permission answer is the agent's business
 //! (see agent.rs), passed in as callbacks.
 
+use loom_core::agent::form::{FormModel, Kind as FieldKind};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
@@ -240,29 +241,30 @@ struct ToolCard {
     group: RefCell<std::rc::Weak<ToolGroup>>,
 }
 
+/// A question form (Claude Code's AskUserQuestion, or an MCP server asking for input): the
+/// model (in loom-core) and each field's widgets, kept the same both ways.
+pub struct FormCard {
+    pub card: PermissionCard,
+    model: Rc<RefCell<FormModel>>,
+    widgets: Vec<FieldWidgets>,
+    /// Why it can't be sent yet.
+    problem: gtk::Label,
+}
+
+enum FieldWidgets {
+    Choice(Vec<gtk::CheckButton>),
+    Text(gtk::Entry),
+    /// Nothing sets a flag but its own box: no handle kept.
+    Flag,
+}
+
 #[derive(Clone)]
 pub struct PermissionCard {
     buttons: gtk::Widget,
     answer: gtk::Label,
 }
 
-/// A question form (Claude Code's AskUserQuestion, or an MCP server asking for input).
-pub struct FormCard {
-    pub card: PermissionCard,
-    fields: Vec<Field>,
-    /// The fields that must be answered.
-    required: Vec<String>,
-    /// Why it can't be sent yet.
-    problem: gtk::Label,
-}
 
-enum Field {
-    /// One of the options (`multi`: any of them); each button with the value it stands for
-    /// and its name.
-    Choice { key: String, title: String, multi: bool, buttons: Vec<(gtk::CheckButton, Value, String)> },
-    Text { key: String, title: String, entry: gtk::Entry, number: Option<bool> },
-    Flag { key: String, title: String, check: gtk::CheckButton },
-}
 
 impl Chat {
     pub fn new() -> Rc<Chat> {
@@ -2777,86 +2779,90 @@ impl Chat {
         root.add_css_class("question-card");
         root.append(&text_label(&format!("<b>{}</b>", glib::markup_escape_text(message))));
         let controls = gtk::Box::new(gtk::Orientation::Vertical, 10);
-        let mut fields = Vec::new();
-        let properties = schema["properties"].as_object().cloned().unwrap_or_default();
+        let model = Rc::new(RefCell::new(FormModel::from_schema(schema)));
+        let mut widgets = Vec::new();
         // Digits pick in the first question with options: its options are numbered.
         let mut numbered = false;
-        for (key, field) in &properties {
-            let title = field["title"].as_str().unwrap_or(key).to_owned();
-            let description = field["description"].as_str().unwrap_or("");
-            let choices = choices_with_previews(field);
+        for (index, field) in model.borrow().fields.iter().enumerate() {
+            let (title, description) = (&field.title, field.description.as_str());
             let box_ = gtk::Box::new(gtk::Orientation::Vertical, 4);
             // Claude Code's per-question "Other" box sits under its options without a heading.
-            let other = choices.is_empty() && title == "Other";
+            let other = matches!(field.kind, FieldKind::Text { .. }) && title == "Other";
             if !other {
-                let heading = if description.is_empty() { title.clone() } else if title == *key { description.to_owned() } else { format!("{title} · {description}") };
+                let heading = if description.is_empty() { title.clone() } else if *title == field.key { description.to_owned() } else { format!("{title} · {description}") };
                 let label = text_label(&glib::markup_escape_text(&heading));
                 label.add_css_class("question-heading");
                 box_.append(&label);
             }
-            if !choices.is_empty() {
-                let multi = field["type"].as_str() == Some("array");
-                let number_these = !numbered;
-                numbered = true;
-                let defaults: Vec<Value> = match &field["default"] {
-                    Value::Array(all) => all.clone(),
-                    Value::Null => Vec::new(),
-                    one => vec![one.clone()],
-                };
-                let mut buttons = Vec::new();
-                let mut group: Option<gtk::CheckButton> = None;
-                for (i, (value, name, about, preview)) in choices.into_iter().enumerate() {
-                    let line = gtk::Box::new(gtk::Orientation::Vertical, 1);
-                    let shown = if number_these && i < 9 { format!("{}  {name}", i + 1) } else { name.clone() };
-                    line.append(&gtk::Label::builder().label(shown).xalign(0.0).wrap(true).build());
-                    if !about.is_empty() {
-                        let about = gtk::Label::builder().label(&about).xalign(0.0).wrap(true).build();
-                        about.add_css_class("dim");
-                        about.add_css_class("small");
-                        line.append(&about);
-                    }
-                    if !preview.is_empty() {
-                        let shown = gtk::Label::builder().label(&preview).xalign(0.0).wrap(true).selectable(true).build();
-                        shown.set_wrap_mode(pango::WrapMode::Char);
-                        shown.add_css_class("code-block");
-                        shown.add_css_class("option-preview");
-                        line.append(&shown);
-                    }
-                    let check = gtk::CheckButton::new();
-                    check.set_child(Some(&line));
-                    if !multi {
-                        match &group {
-                            Some(first) => check.set_group(Some(first)),
-                            None => group = Some(check.clone()),
+            match &field.kind {
+                FieldKind::Choice { multi, options, picked } => {
+                    let number_these = !numbered;
+                    numbered = true;
+                    let mut buttons = Vec::new();
+                    let mut group: Option<gtk::CheckButton> = None;
+                    for (i, (option, on)) in options.iter().zip(picked).enumerate() {
+                        let line = gtk::Box::new(gtk::Orientation::Vertical, 1);
+                        let shown = if number_these && i < 9 { format!("{}  {}", i + 1, option.name) } else { option.name.clone() };
+                        line.append(&gtk::Label::builder().label(shown).xalign(0.0).wrap(true).build());
+                        if !option.about.is_empty() {
+                            let about = gtk::Label::builder().label(&option.about).xalign(0.0).wrap(true).build();
+                            about.add_css_class("dim");
+                            about.add_css_class("small");
+                            line.append(&about);
                         }
+                        if !option.preview.is_empty() {
+                            let shown = gtk::Label::builder().label(&option.preview).xalign(0.0).wrap(true).selectable(true).build();
+                            shown.set_wrap_mode(pango::WrapMode::Char);
+                            shown.add_css_class("code-block");
+                            shown.add_css_class("option-preview");
+                            line.append(&shown);
+                        }
+                        let check = gtk::CheckButton::new();
+                        check.set_child(Some(&line));
+                        if !multi {
+                            match &group {
+                                Some(first) => check.set_group(Some(first)),
+                                None => group = Some(check.clone()),
+                            }
+                        }
+                        check.set_active(*on);
+                        let model = Rc::downgrade(&model);
+                        check.connect_toggled(move |check| {
+                            if let Some(model) = model.upgrade() {
+                                model.borrow_mut().set_picked(index, i, check.is_active());
+                            }
+                        });
+                        box_.append(&check);
+                        buttons.push(check);
                     }
-                    check.set_active(defaults.contains(&value));
+                    widgets.push(FieldWidgets::Choice(buttons));
+                }
+                FieldKind::Flag { on } => {
+                    let check = gtk::CheckButton::with_label(title);
+                    check.set_active(*on);
+                    let model = Rc::downgrade(&model);
+                    check.connect_toggled(move |check| {
+                        if let Some(model) = model.upgrade() {
+                            model.borrow_mut().set_flag(index, check.is_active());
+                        }
+                    });
                     box_.append(&check);
-                    buttons.push((check, value, name));
+                    widgets.push(FieldWidgets::Flag);
                 }
-                fields.push(Field::Choice { key: key.clone(), title: title.clone(), multi, buttons });
-            } else if field["type"].as_str() == Some("boolean") {
-                let check = gtk::CheckButton::with_label(&title);
-                check.set_active(field["default"].as_bool().unwrap_or(false));
-                box_.append(&check);
-                fields.push(Field::Flag { key: key.clone(), title, check });
-            } else {
-                let kind = match field["type"].as_str() {
-                    Some("integer") => Some(true),
-                    Some("number") => Some(false),
-                    _ => None,
-                };
-                let entry = gtk::Entry::builder().hexpand(true).build();
-                if other {
-                    entry.set_placeholder_text(Some("Other: your own answer (optional)"));
+                FieldKind::Text { text, .. } => {
+                    let entry = gtk::Entry::builder().hexpand(true).text(text.as_str()).build();
+                    if other {
+                        entry.set_placeholder_text(Some("Other: your own answer (optional)"));
+                    }
+                    let model = Rc::downgrade(&model);
+                    entry.connect_changed(move |entry| {
+                        if let Some(model) = model.upgrade() {
+                            model.borrow_mut().set_text(index, &entry.text());
+                        }
+                    });
+                    box_.append(&entry);
+                    widgets.push(FieldWidgets::Text(entry));
                 }
-                match &field["default"] {
-                    Value::String(text) => entry.set_text(text),
-                    Value::Number(n) => entry.set_text(&n.to_string()),
-                    _ => {}
-                }
-                box_.append(&entry);
-                fields.push(Field::Text { key: key.clone(), title, entry, number: kind });
             }
             controls.append(&box_);
         }
@@ -2884,8 +2890,7 @@ impl Chat {
         self.list.append(&root);
         *self.last.borrow_mut() = Last::None;
         self.group.take();
-        let required = schema["required"].as_array().into_iter().flatten().filter_map(|k| k.as_str().map(str::to_owned)).collect();
-        let form = Rc::new(FormCard { card: PermissionCard { buttons: controls.upcast(), answer: answered }, fields, required, problem });
+        let form = Rc::new(FormCard { card: PermissionCard { buttons: controls.upcast(), answer: answered }, model, widgets, problem });
         let (weak, reply) = (Rc::downgrade(&form), answer.clone());
         send.connect_clicked(move |_| {
             if let Some(form) = weak.upgrade()
@@ -2926,44 +2931,9 @@ impl Chat {
 }
 
 impl FormCard {
-    /// What was filled in, as the schema's object, or why it can't be sent (a required
-    /// field left empty, a number that isn't one).
+    /// What was filled in, as the schema's object, or why it can't be sent.
     pub fn content(&self) -> Result<Value, String> {
-        let mut content = serde_json::Map::new();
-        for field in &self.fields {
-            match field {
-                Field::Choice { key, multi, buttons, .. } => {
-                    let picked: Vec<Value> = buttons.iter().filter(|(b, _, _)| b.is_active()).map(|(_, v, _)| v.clone()).collect();
-                    if *multi {
-                        if !picked.is_empty() {
-                            content.insert(key.clone(), Value::Array(picked));
-                        }
-                    } else if let Some(one) = picked.into_iter().next() {
-                        content.insert(key.clone(), one);
-                    }
-                }
-                Field::Text { key, title, entry, number } => {
-                    let text = entry.text().trim().to_owned();
-                    if text.is_empty() {
-                        continue;
-                    }
-                    let value = match number {
-                        Some(true) => Value::from(text.parse::<i64>().map_err(|_| format!("“{title}” needs a whole number."))?),
-                        Some(false) => Value::from(text.parse::<f64>().map_err(|_| format!("“{title}” needs a number."))?),
-                        None => Value::String(text),
-                    };
-                    content.insert(key.clone(), value);
-                }
-                Field::Flag { key, check, .. } => {
-                    content.insert(key.clone(), Value::Bool(check.is_active()));
-                }
-            }
-        }
-        if let Some(missing) = self.required.iter().find(|k| !content.contains_key(k.as_str())) {
-            let title = self.fields.iter().find(|f| f.key() == missing).map_or(missing.as_str(), Field::title);
-            return Err(format!("“{title}” needs an answer."));
-        }
-        Ok(Value::Object(content))
+        self.model.borrow().content()
     }
 
     /// The content if it can be sent; else the card says what is missing.
@@ -2983,126 +2953,60 @@ impl FormCard {
 
     /// "Approach: Small steps · Other: keep the API", for the card once answered.
     pub fn summary(&self) -> String {
-        let mut parts = Vec::new();
-        for field in &self.fields {
-            match field {
-                Field::Choice { title, buttons, .. } => {
-                    let picked: Vec<&str> = buttons.iter().filter(|(b, _, _)| b.is_active()).map(|(_, _, name)| name.as_str()).collect();
-                    if !picked.is_empty() {
-                        parts.push(format!("{title}: {}", picked.join(", ")));
-                    }
-                }
-                Field::Text { title, entry, .. } if !entry.text().trim().is_empty() => parts.push(format!("{title}: {}", entry.text().trim())),
-                Field::Flag { title, check, .. } => parts.push(format!("{title}: {}", if check.is_active() { "yes" } else { "no" })),
-                _ => {}
-            }
-        }
-        if parts.is_empty() { "→ (nothing picked)".to_owned() } else { format!("→ {}", parts.join(" · ")) }
+        self.model.borrow().summary()
     }
 
     /// Its choices: (question, option names, several allowed, which are picked).
     pub fn choices(&self) -> Vec<(String, Vec<String>, bool, Vec<bool>)> {
-        self.fields
-            .iter()
-            .filter_map(|f| match f {
-                Field::Choice { title, multi, buttons, .. } => Some((
-                    title.clone(),
-                    buttons.iter().map(|(_, _, name)| name.clone()).collect(),
-                    *multi,
-                    buttons.iter().map(|(b, _, _)| b.is_active()).collect(),
-                )),
-                _ => None,
-            })
-            .collect()
+        self.model.borrow().choices()
     }
 
     /// Option `option` of choice `field` (counted among the choices): picked, or toggled in a
     /// multiple choice.
     pub fn pick_in(&self, field: usize, option: usize) -> bool {
-        let Some(Field::Choice { buttons, multi, .. }) = self.fields.iter().filter(|f| matches!(f, Field::Choice { .. })).nth(field) else {
-            return false;
-        };
-        let Some((button, _, _)) = buttons.get(option) else { return false };
-        button.set_active(if *multi { !button.is_active() } else { true });
-        true
+        let picked = self.model.borrow_mut().pick_in(field, option);
+        picked.inspect(|field| self.show(*field)).is_some()
     }
 
     /// One text field (more, and a written answer could not say which it is for).
     pub fn writable(&self) -> bool {
-        self.fields.iter().filter(|f| matches!(f, Field::Text { .. })).count() == 1
+        self.model.borrow().writable()
     }
 
     /// `text` in its text field (false unless it has exactly one).
     pub fn write(&self, text: &str) -> bool {
-        if !self.writable() {
-            return false;
-        }
-        let Some(Field::Text { entry, .. }) = self.fields.iter().find(|f| matches!(f, Field::Text { .. })) else { return false };
-        entry.set_text(text);
-        true
+        let written = self.model.borrow_mut().write(text);
+        written.inspect(|field| self.show(*field)).is_some()
     }
 
     /// Option `n` (from 0) of the first question with options: picked (a multiple choice:
     /// toggled). Focus stays where it is, so the next digit picks again.
     pub fn pick(&self, n: usize) -> bool {
-        let Some(Field::Choice { buttons, multi, .. }) = self.fields.iter().find(|f| matches!(f, Field::Choice { .. })) else { return false };
-        let Some((button, _, _)) = buttons.get(n) else { return false };
-        button.set_active(if *multi { !button.is_active() } else { true });
-        true
+        self.pick_in(0, n)
     }
-}
 
-impl Field {
-    fn key(&self) -> &str {
-        match self {
-            Field::Choice { key, .. } | Field::Text { key, .. } | Field::Flag { key, .. } => key,
+    /// Field `field`'s widgets as its model says (changed from elsewhere: a key, the bot).
+    fn show(&self, field: usize) {
+        let kind = match &self.model.borrow().fields[field].kind {
+            FieldKind::Choice { picked, .. } => Ok(picked.clone()),
+            FieldKind::Text { text, .. } => Err(text.clone()),
+            FieldKind::Flag { .. } => return,
+        };
+        // Setting them tells the model again, which by then holds the same.
+        match (&self.widgets[field], kind) {
+            (FieldWidgets::Choice(buttons), Ok(picked)) => {
+                for (button, on) in buttons.iter().zip(picked) {
+                    button.set_active(on);
+                }
+            }
+            (FieldWidgets::Text(entry), Err(text)) => entry.set_text(&text),
+            _ => {}
         }
     }
-
-    fn title(&self) -> &str {
-        match self {
-            Field::Choice { title, .. } | Field::Text { title, .. } | Field::Flag { title, .. } => title,
-        }
-    }
 }
 
-/// A field's options as (value, name, description): `oneOf`/`anyOf` of `{const, title,
-/// description}`, or a plain `enum` (also inside `items`, for a multiple choice).
-#[cfg(test)]
-fn choices_of(field: &Value) -> Vec<(Value, String, String)> {
-    choices_with_previews(field).into_iter().map(|(v, n, d, _)| (v, n, d)).collect()
-}
 
-/// The options with the preview Claude may attach to each (a mock-up, a snippet to compare).
-fn choices_with_previews(field: &Value) -> Vec<(Value, String, String, String)> {
-    let source = if field["type"].as_str() == Some("array") { &field["items"] } else { field };
-    let name_of = |v: &Value| v.as_str().map_or_else(|| v.to_string(), str::to_owned);
-    for key in ["oneOf", "anyOf"] {
-        if let Some(options) = source[key].as_array() {
-            return options
-                .iter()
-                .filter(|o| !o["const"].is_null())
-                .map(|o| {
-                    let value = o["const"].clone();
-                    let name = o["title"].as_str().map_or_else(|| name_of(&value), str::to_owned);
-                    let preview = o["_meta"]["_claude/askUserQuestionOption"]["preview"].as_str().unwrap_or("").to_owned();
-                    (value, name, o["description"].as_str().unwrap_or("").to_owned(), preview)
-                })
-                .collect();
-        }
-    }
-    let names = source["enumNames"].as_array();
-    source["enum"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .enumerate()
-        .map(|(i, v)| {
-            let name = names.and_then(|n| n.get(i)).and_then(Value::as_str).map_or_else(|| name_of(v), str::to_owned);
-            (v.clone(), name, String::new(), String::new())
-        })
-        .collect()
-}
+
 
 /// A message's `!command` runs (`<bash-input>…</bash-input>` and its output blocks, as
 /// Claude Code stores them) taken out: the commands, and the rest of the text.
@@ -3987,7 +3891,7 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_lines, chip_value, choices_of, plain_tail, split_shell_runs};
+    use super::{changed_lines, chip_value, plain_tail, split_shell_runs};
 
     #[test]
     fn shell_runs_read_as_commands() {
@@ -4032,17 +3936,6 @@ mod tests {
         assert_eq!(super::tool_title("python3 - <<EOF\nprint(1)\nEOF"), "python3 - <<EOF …");
     }
 
-    #[test]
-    fn choices_come_from_one_of_and_enum() {
-        let single = serde_json::json!({ "type": "string", "oneOf": [{ "const": "a", "title": "Apple", "description": "red" }] });
-        assert_eq!(choices_of(&single), vec![("a".into(), "Apple".into(), "red".into())]);
-        let multi = serde_json::json!({ "type": "array", "items": { "anyOf": [{ "const": "x", "title": "X" }] } });
-        assert_eq!(choices_of(&multi), vec![("x".into(), "X".into(), String::new())]);
-        let plain = serde_json::json!({ "type": "string", "enum": ["s", "m"], "enumNames": ["Small", "Medium"] });
-        assert_eq!(choices_of(&plain)[1], ("m".into(), "Medium".into(), String::new()));
-        let numbers = serde_json::json!({ "type": "integer", "enum": [1, 2] });
-        assert_eq!(choices_of(&numbers)[1], (serde_json::json!(2), "2".into(), String::new()));
-    }
 
     #[test]
     fn chips_say_what_default_means() {
