@@ -7,26 +7,21 @@
 //! the notes is in the notes-chat skill (loom's Claude folder, editable).
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use gtk::{glib, pango, prelude::*};
-use serde_json::json;
 
 use crate::chat_view::AgentChat;
 use crate::agent::{Agent, Event, Status};
 use crate::history::{self, Past};
 use crate::jobs::Tray;
-use crate::state::Saved;
 
 /// Ids of the chats' agents, apart from the sidebar's.
 const FIRST_ID: u32 = 1_000_000;
 
-use loom_core::notes_chat::{PROMPT, chat_topics, chats, remember_chat, remember_topic, resolved};
+use loom_core::notes_chat::{Before, Scope, chats, collect_edits, hint, prepare, remember_chat, remember_topic, saved_for, scope_of};
 
-/// A topic a chat is about: (its name, its folder in the vault).
-type Scope = (String, String);
 
 /// A chat with an agent alive: the one shown, or one left while it works.
 struct Open {
@@ -36,7 +31,7 @@ struct Open {
     starters: gtk::Box,
     /// The notes it is changing in this turn, as they were before (None: new): read when its
     /// edit is asked for, so what it records is its own change, against what was there.
-    before: Rc<RefCell<HashMap<PathBuf, Option<String>>>>,
+    before: Before,
 }
 
 pub struct NotesChat {
@@ -227,60 +222,17 @@ impl NotesChat {
             return;
         }
         // A past chat about a topic is about it again.
-        let scope = scope.or_else(|| {
-            let name = chat_topics(&vault).remove(session.as_deref()?)?;
-            let topic = crate::topics::list(&vault).into_iter().find(|t| t.name == name)?;
-            Some((topic.name, topic.folder))
-        });
+        let scope = scope.or_else(|| scope_of(&vault, session.as_deref()?));
         let id = self.next_id.get();
         self.next_id.set(id + 1);
-        let saved = Saved {
-            cwd: vault.clone(),
-            session_id: session.clone(),
-            title: match (&session, &scope) {
-                (Some(_), _) => String::new(),
-                (None, Some((name, _))) => format!("About {name}"),
-                (None, None) => "New chat".to_owned(),
-            },
-            named: false,
-            draft: String::new(),
-            dirs: Vec::new(),
-            used: 0,
-            awake: false,
-        };
+        let saved = saved_for(&vault, session.clone(), scope.as_ref());
         let tray = self.tray(&vault);
         let chat = crate::chat::Chat::new();
         let agent = Agent::new(id, saved, tray.core(), crate::chat_view::ChatView::new(chat.clone(), &tray));
         crate::chat_view::wire(&agent, &chat);
-        agent.no_journal.set(true);
-        let prompt = match &scope {
-            Some((name, folder)) => format!(
-                "{PROMPT} This chat is about the topic \"{name}\"; its notes are in the folder {folder}. Keep to it unless the user asks for more."
-            ),
-            None => PROMPT.to_owned(),
-        };
-        *agent.extra_options.borrow_mut() = json!({ "model": "sonnet", "appendSystemPrompt": prompt });
+        let before = prepare(&agent, &vault, scope.as_ref());
         agent.set_show_thinking(crate::settings::get().show_thinking);
-        agent.chat().set_hint(&match &scope {
-            Some((name, _)) => format!("Ask about {name}, or tell it what to keep"),
-            None => "Ask your notes, or tell them what to keep".to_owned(),
-        });
-        // A note it is about to edit, read as it is first.
-        let before: Rc<RefCell<HashMap<PathBuf, Option<String>>>> = Rc::default();
-        let (map, root) = (before.clone(), history::real(&vault));
-        *agent.on_tool.borrow_mut() = Some(Rc::new(move |update: &serde_json::Value| {
-            if update["sessionUpdate"] != "tool_call" || update["kind"] != "edit" {
-                return;
-            }
-            let paths = update["locations"].as_array().into_iter().flatten().filter_map(|l| l["path"].as_str());
-            for path in paths {
-                let path = resolved(Path::new(path));
-                if path.starts_with(&root) && !map.borrow().contains_key(&path) {
-                    let was = std::fs::read_to_string(&path).ok();
-                    map.borrow_mut().insert(path, was);
-                }
-            }
-        }));
+        agent.chat().set_hint(&hint(scope.as_ref()));
         let starters = self.starters(&agent, &vault, scope.as_ref());
         starters.set_visible(session.is_none());
         let page = gtk::Overlay::builder().child(&agent.chat().root).build();
@@ -379,34 +331,10 @@ impl NotesChat {
     /// before the chat's edit), told to the Notes history. Only its own edits: a note changed
     /// only by someone else is not among them.
     fn record(&self, open: &Open) {
-        let taken: Vec<(PathBuf, Option<String>)> = open.before.borrow_mut().drain().collect();
         let Some(vault) = crate::vault::current() else { return };
         let Some(on_edits) = self.on_edits.borrow().clone() else { return };
-        if taken.is_empty() {
-            return;
-        }
-        let root = history::real(&vault);
         let (session, title) = (open.agent.session_id().unwrap_or_default(), open.agent.title());
-        glib::spawn_future_local(async move {
-            let edits = gtk::gio::spawn_blocking(move || {
-                taken
-                    .into_iter()
-                    .filter_map(|(path, before)| {
-                        let note = path.strip_prefix(&root).ok()?.to_string_lossy().into_owned();
-                        if !note.ends_with(".md") || note.starts_with(".loom/") || note.starts_with(".git/") {
-                            return None;
-                        }
-                        let after = std::fs::read_to_string(&path).ok()?;
-                        (before.as_deref() != Some(after.as_str())).then_some((note, before, after))
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .await
-            .unwrap_or_default();
-            if !edits.is_empty() {
-                on_edits(edits, session, title);
-            }
-        });
+        collect_edits(&vault, &open.before, move |edits| on_edits(edits, session, title));
     }
 
     /// A chat waits for an answer (or none does): told on; the list marks who works or waits.
