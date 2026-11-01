@@ -225,7 +225,7 @@ impl Bridge {
                 let removed = before.iter().any(|(d, _)| *d == id);
                 let keep = devices.iter().any(|(d, _)| *d == id) || (pairing.is_some() && !removed) || refused == Some(id);
                 if !keep {
-                    c.close(1u32.into(), b"not paired");
+                    c.close(wire::NOT_PAIRED_CODE.into(), b"not paired");
                 }
                 keep
             });
@@ -264,7 +264,7 @@ impl Bridge {
             if !shared.devices.iter().any(|(d, _)| *d == id) && shared.pairing.is_none() {
                 drop(shared);
                 self.log(&format!("{} is not paired: dropped", id.fmt_short()));
-                connection.close(1u32.into(), b"not paired");
+                connection.close(wire::NOT_PAIRED_CODE.into(), b"not paired");
                 return;
             }
             shared.connections.push(connection.clone());
@@ -299,7 +299,7 @@ impl Bridge {
         let answer = if method == "pair" {
             wire::answer(self.pair(id, &request["params"]).await)
         } else if !self.is_device(&id) {
-            wire::answer(Err("This device is not paired.".into()))
+            wire::answer(Err(wire::NOT_PAIRED.into()))
         } else if method == "subscribe" {
             let mut events = self.events.subscribe();
             loop {
@@ -328,7 +328,7 @@ impl Bridge {
         // Refused or not paired: it goes once it has heard why.
         if !self.is_device(&id) && self.shared.lock().unwrap().pairing.is_none() {
             let _ = send.stopped().await;
-            connection.close(1u32.into(), b"not paired");
+            connection.close(wire::NOT_PAIRED_CODE.into(), b"not paired");
         }
     }
 

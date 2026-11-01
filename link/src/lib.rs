@@ -91,6 +91,15 @@ impl Desktop {
         self.connection.paths().iter().any(|path| path.is_selected() && path.is_ip())
     }
 
+    /// Whether the desktop closed the connection because this device is not paired (removed in
+    /// loom), as opposed to the connection being lost.
+    pub fn removed(&self) -> bool {
+        matches!(
+            self.connection.close_reason(),
+            Some(iroh::endpoint::ConnectionError::ApplicationClosed(close)) if close.error_code == wire::NOT_PAIRED_CODE.into()
+        )
+    }
+
     /// Why the connection ended; None while it is open.
     pub fn closed(&self) -> Option<String> {
         self.connection.close_reason().map(|why| why.to_string())
@@ -223,7 +232,7 @@ mod tests {
                             "address" => wire::answer(Ok(json!(told))).to_string(),
                             "agents" => wire::answer(Ok(json!([{ "id": 1, "title": "One" }]))).to_string(),
                             "pair" if request["params"]["code"] == "abc" => wire::answer(Ok(json!({ "paired": true }))).to_string(),
-                            _ => wire::answer(Err("This device is not paired.".into())).to_string(),
+                            _ => wire::answer(Err(wire::NOT_PAIRED.into())).to_string(),
                         };
                         let _ = send.write_all(answer.as_bytes()).await;
                         let _ = send.finish();

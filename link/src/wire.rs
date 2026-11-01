@@ -16,6 +16,13 @@ use serde_json::{Value, json};
 
 pub const ALPN: &[u8] = b"loom/remote/0";
 
+/// The code a connection is closed with when the device is not paired (or was removed in
+/// loom): devices tell "removed" from "lost" by it, not by any wording.
+pub const NOT_PAIRED_CODE: u32 = 1;
+
+/// The answer to a device that is not paired, word for word.
+pub const NOT_PAIRED: &str = "This device is not paired.";
+
 /// The most a request or an answer may be (pictures and files go in them).
 pub const LIMIT: usize = 64 << 20;
 
