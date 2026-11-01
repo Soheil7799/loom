@@ -86,6 +86,11 @@ impl Desktop {
         &self.addr
     }
 
+    /// Whether traffic goes straight to the desktop (else through the relay, still encrypted).
+    pub fn direct(&self) -> bool {
+        self.connection.paths().iter().any(|path| path.is_selected() && path.is_ip())
+    }
+
     /// Why the connection ended; None while it is open.
     pub fn closed(&self) -> Option<String> {
         self.connection.close_reason().map(|why| why.to_string())
