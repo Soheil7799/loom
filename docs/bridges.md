@@ -43,10 +43,14 @@ Connect to the socket, write one line, read one line back:
 | `history` | `agent`, `epoch`, `after` | its whole conversation, or what changed since (below) |
 | `files` | `agent` | the files it created or changed, newest first: `{path, name, created, exists, size}` |
 | `file` | `agent`, `path` | one of those, read-only: `{text, size, truncated}` (up to 512 KiB), or `{binary, size}` |
+| `notes` | | the remote bridge only: loom's Notes chat, `{vault, chats: [{session, title, updated, ago, day, mark}], current}`; `vault` null when Notes is off; the list is read again each time (ask again for the newest) |
+| `notes_open` | `session` (none: a new chat) | the remote bridge only: that chat open, as if picked in loom; its agent (then `send`, `history`, `answer`… as any agent) |
+| `usage` | `agent` (optional) | `{account, agent}`: the account's limits `{plan, windows: [{kind, utilization, resetsAt}]}` (shared by every agent; `utilization` 0.33 is 33%, `resetsAt` Unix seconds), and that agent's `{used, size, cost}`; null until known |
 | `transcribe` | `audio` (base64), `name`, `mime` | the text, with loom's speech-to-text settings |
 | `state` | the bridge's own status | shown in Settings |
 
-An agent is `{id, seq, title, project, status, unseen, busy, questions}`. `seq` grows with each
+An agent is `{id, seq, title, project, status, unseen, busy, questions, notes}` (`notes`: a
+Notes chat's agent, project "Notes"; its events go to the remote bridge only). `seq` grows with each
 view loom makes: keep the newest. A question is `{serial, title, detail, options, fields,
 is_form, writable, summary, blank}`.
 
@@ -112,7 +116,8 @@ finishes. `subscribe` stays open and carries loom's events, one per line.
   `pair {code, name}`; the user sees it in Settings and pairs it or refuses. Only then is it
   added to `devices`, and only then is the answer `ok`.
 - **Paired devices** may send `agents`, `send`, `save`, `answer`, `form`, `stop`,
-  `last_reply`, `history`, `files`, `file`, `transcribe` (passed to loom as they are),
+  `last_reply`, `history`, `files`, `file`, `usage`, `notes`, `notes_open`, `transcribe`
+  (passed to loom as they are),
   `subscribe`, and `address` (where the desktop is now, kept by the device to find it next
   time).
 - **Anyone else** is dropped as soon as the connection opens, unless a pairing code is

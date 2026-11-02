@@ -23,7 +23,7 @@ use crate::loom::Loom;
 use loom_link::wire::{self, ALPN, LIMIT, Ticket};
 
 /// The bridge requests a paired device may make, passed to loom as they are.
-const PASSED: &[&str] = &["agents", "send", "save", "answer", "form", "stop", "last_reply", "history", "files", "file", "transcribe"];
+const PASSED: &[&str] = &["agents", "send", "save", "answer", "form", "stop", "last_reply", "history", "files", "file", "usage", "notes", "notes_open", "transcribe"];
 
 /// How long loom waits for the user to confirm a device.
 const CONFIRM: Duration = Duration::from_secs(300);

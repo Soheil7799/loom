@@ -469,6 +469,11 @@ impl Agent {
         self.session_id.borrow().clone()
     }
 
+    /// Its usage as last told: `{used, size, cost}` (any of them missing until told).
+    pub fn usage(&self) -> Value {
+        self.recorded.usage.borrow().clone()
+    }
+
     /// Its conversation as data: what changed after revision `after` of `epoch` (see
     /// transcript.rs), and `loading` while it is being read back. One loom restored but nobody
     /// opened yet has not been read back: it is started, as opening it does.

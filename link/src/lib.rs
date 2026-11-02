@@ -171,6 +171,22 @@ impl Desktop {
         self.request("files", json!({ "agent": agent })).await
     }
 
+    /// The account's limits and, with `agent`, that agent's context and cost:
+    /// `{account: {plan, windows}|null, agent: {used, size, cost}|null}`.
+    pub async fn usage(&self, agent: Option<u64>) -> Result<Value, String> {
+        self.request("usage", json!({ "agent": agent })).await
+    }
+
+    /// loom's Notes chat: `{vault, chats: [{session, title, updated, ago, day, mark}], current}`.
+    pub async fn notes(&self) -> Result<Value, String> {
+        self.request("notes", json!({})).await
+    }
+
+    /// Notes chat `session` open (None: a new one): its agent.
+    pub async fn notes_open(&self, session: Option<&str>) -> Result<Value, String> {
+        self.request("notes_open", json!({ "session": session })).await
+    }
+
     /// One of those files: `{text, size, truncated}`, or `{binary, size}`.
     pub async fn file(&self, agent: u64, path: &str) -> Result<Value, String> {
         self.request("file", json!({ "agent": agent, "path": path })).await

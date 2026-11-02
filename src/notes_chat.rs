@@ -58,6 +58,8 @@ pub struct NotesChat {
     pub on_attention: RefCell<Option<Rc<dyn Fn(bool)>>>,
     /// A chat was picked or made (to show the chat page).
     pub on_shown: RefCell<Option<Rc<dyn Fn()>>>,
+    /// What happened to a chat's agent (for the phone, through the remote bridge).
+    pub on_agent_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, &Event)>>>,
 }
 
 /// Working, or waiting for an answer: a chat left like that keeps going.
@@ -114,6 +116,7 @@ impl NotesChat {
             on_edits: RefCell::default(),
             on_attention: RefCell::default(),
             on_shown: RefCell::default(),
+            on_agent_event: RefCell::default(),
         });
         let weak = Rc::downgrade(&chat);
         chat.list.connect_row_activated(move |_, row| {
@@ -243,6 +246,10 @@ impl NotesChat {
         let shown_starters = starters.downgrade();
         agent.on_event(move |agent, event| {
             let Some(chat) = weak.upgrade() else { return };
+            let tell = chat.on_agent_event.borrow().clone();
+            if let Some(tell) = tell {
+                tell(agent, &event);
+            }
             // A chat's first message makes it one of the vault's past chats.
             if matches!(event, Event::Session)
                 && let (Some(session), Some(vault)) = (agent.session_id(), crate::vault::current())
@@ -505,5 +512,58 @@ impl NotesChat {
             Some(row) => self.list.select_row(Some(&row)),
             None => self.list.unselect_all(),
         }
+    }
+}
+
+/// The Notes chat as the remote bridge reaches it (the phone's Vault tab): its chats, one of
+/// them opened as if picked here, and the agents of those open.
+pub struct Remote(pub std::rc::Weak<NotesChat>);
+
+impl loom_core::bridges::host::Notes for Remote {
+    fn chats(&self) -> serde_json::Value {
+        let off = serde_json::json!({ "vault": null, "chats": [] });
+        let (Some(chat), Some(vault)) = (self.0.upgrade(), crate::vault::current()) else { return off };
+        // Read again for next time (the list comes from Claude Code, in the background).
+        chat.refresh();
+        let marked = chat.marked.borrow();
+        let chats: Vec<serde_json::Value> = chat
+            .pasts
+            .borrow()
+            .iter()
+            .map(|past| {
+                serde_json::json!({
+                    "session": past.session_id,
+                    "title": past.title,
+                    "updated": past.updated,
+                    "ago": history::ago(&past.updated),
+                    "day": history::day_of(&past.updated),
+                    "mark": marked.iter().find(|(s, _)| *s == past.session_id).map(|(_, css)| *css),
+                })
+            })
+            .collect();
+        serde_json::json!({
+            "vault": vault.file_name().map(|n| n.to_string_lossy().into_owned()),
+            "chats": chats,
+            "current": chat.current().and_then(|a| a.session_id()),
+        })
+    }
+
+    fn open(&self, session: Option<String>) -> Option<Rc<Agent>> {
+        let chat = self.0.upgrade()?;
+        crate::vault::current()?;
+        match session {
+            None => chat.new_chat(),
+            Some(session) => {
+                let open = chat.current().is_some_and(|a| a.session_id().as_deref() == Some(session.as_str()));
+                if !open {
+                    chat.chat_for(Some(session), None);
+                }
+            }
+        }
+        chat.current()
+    }
+
+    fn agent(&self, id: u32) -> Option<Rc<Agent>> {
+        self.0.upgrade()?.agents().into_iter().find(|a| a.id == id)
     }
 }

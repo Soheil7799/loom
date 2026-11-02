@@ -2338,6 +2338,16 @@ impl App {
     /// Scribe's news shown: the Notes tab marked, and switched to when the user isn't working
     /// in the panel; a question's conversation opened from it.
     fn wire_hub(self: &Rc<Self>) {
+        // The Notes chat for the phone: its chats through the remote bridge, and what happens
+        // to them told to it.
+        self.bridges.set_notes(Rc::new(crate::notes_chat::Remote(Rc::downgrade(&self.notes_chat))));
+        let weak = Rc::downgrade(self);
+        *self.notes_chat.on_agent_event.borrow_mut() = Some(Rc::new(move |agent: &Rc<Agent>, event: &Event| {
+            if let Some(app) = weak.upgrade() {
+                let looking = app.window.is_active() && app.notes_mode.get() && agent.focused.get();
+                app.bridges.notes_event(agent, event, looking);
+            }
+        }));
         // loom's Claude folder changed: every running session reads its skills and plugins again.
         let weak = Rc::downgrade(self);
         crate::plugin::on_changed(move || {

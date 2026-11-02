@@ -177,13 +177,26 @@ impl Transcript {
 pub struct Recorded {
     inner: Rc<dyn View>,
     pub transcript: RefCell<Transcript>,
+    /// Its usage as last told: `{used, size}` of its context, `cost` (as "$0.42").
+    pub usage: RefCell<Value>,
 }
 
 impl Recorded {
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { inner, transcript: RefCell::new(transcript) }
+        Recorded { inner, transcript: RefCell::new(transcript), usage: RefCell::new(json!({})) }
     }
+}
+
+thread_local! {
+    /// The account's limits as Claude Code last told them (any agent): `{plan, windows}`.
+    static ACCOUNT: RefCell<Value> = const { RefCell::new(Value::Null) };
+}
+
+/// The account's limits (`{plan, windows: [{kind, utilization, resetsAt}]}`), null until an
+/// agent's answer brought them.
+pub fn account_limits() -> Value {
+    ACCOUNT.with_borrow(Clone::clone)
 }
 
 impl View for Recorded {
@@ -313,12 +326,19 @@ impl View for Recorded {
         self.inner.set_workflow_note(note);
     }
     fn set_usage(&self, used: u64, size: u64) {
+        {
+            let mut usage = self.usage.borrow_mut();
+            usage["used"] = json!(used);
+            usage["size"] = json!(size);
+        }
         self.inner.set_usage(used, size);
     }
     fn set_spend(&self, cost: Option<String>, limit: Option<(String, String)>) {
+        self.usage.borrow_mut()["cost"] = json!(cost);
         self.inner.set_spend(cost, limit);
     }
     fn set_limits(&self, limits: Value) {
+        ACCOUNT.set(limits.clone());
         self.inner.set_limits(limits);
     }
     fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {

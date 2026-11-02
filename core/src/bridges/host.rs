@@ -83,6 +83,21 @@ pub struct Host {
     seq: Cell<u64>,
     /// The code Settings shows to pair a device with the remote bridge, while it shows one.
     pairing: RefCell<Option<String>>,
+    /// loom's Notes chat, when the app has one (see [`Notes`]).
+    notes: RefCell<Option<Rc<dyn Notes>>>,
+}
+
+/// loom's Notes chat (the app's, not the workspace's: its chats are agents of their own). Only
+/// the remote bridge reaches it: the phone's Vault tab.
+pub trait Notes {
+    /// `{vault, chats: [{session, title, updated, mark}], current}`: the vault's name (null when
+    /// Notes is off), its past chats newest first (`mark`: "working", "blocked" or null), the
+    /// session of the chat open. The list is read again in the background: ask again for it.
+    fn chats(&self) -> Value;
+    /// Chat `session` open (None: a new one), as if picked in loom: its agent.
+    fn open(&self, session: Option<String>) -> Option<Rc<Agent>>;
+    /// An open chat's agent.
+    fn agent(&self, id: u32) -> Option<Rc<Agent>>;
 }
 
 thread_local! {
@@ -132,6 +147,7 @@ impl Host {
             told: RefCell::default(),
             seq: Cell::new(0),
             pairing: RefCell::new(None),
+            notes: RefCell::default(),
         })
     }
 
@@ -326,6 +342,16 @@ impl Host {
         });
     }
 
+    /// The app's Notes chat, for the remote bridge.
+    pub fn set_notes(&self, notes: Rc<dyn Notes>) {
+        *self.notes.borrow_mut() = Some(notes);
+    }
+
+    /// Agent `id`: one of the workspace's, or an open Notes chat's.
+    fn find(&self, ws: &Workspace, id: u32) -> Option<Rc<Agent>> {
+        ws.agent(id).or_else(|| self.notes.borrow().as_ref().and_then(|n| n.agent(id)))
+    }
+
     /// An agent as bridges see it.
     fn view(&self, ws: &Workspace, agent: &Agent) -> Value {
         self.seq.set(self.seq.get() + 1);
@@ -334,7 +360,9 @@ impl Host {
             "id": agent.id,
             "seq": self.seq.get(),
             "title": agent.title(),
-            "project": ws.project_label(&agent.project),
+            // A Notes chat's agent is in no project of the sidebar.
+            "project": if ws.agent(agent.id).is_some() { ws.project_label(&agent.project) } else { "Notes".to_owned() },
+            "notes": ws.agent(agent.id).is_none(),
             "status": agent.status().css(),
             "unseen": agent.unseen.get(),
             "busy": agent.is_busy(),
@@ -345,6 +373,16 @@ impl Host {
     /// What happened to an agent: told to the bridges. `looking`: the user has it in front of
     /// them in loom (a bridge then stays quiet).
     pub fn agent_event(&self, agent: &Agent, event: &Event, looking: bool) {
+        self.tell(agent, event, looking, None);
+    }
+
+    /// What happened to a Notes chat: told to the remote bridge only (the Telegram bot knows
+    /// nothing of Notes chats).
+    pub fn notes_event(&self, agent: &Agent, event: &Event, looking: bool) {
+        self.tell(agent, event, looking, Some("remote"));
+    }
+
+    fn tell(&self, agent: &Agent, event: &Event, looking: bool, to: Option<&str>) {
         if !subscribed() {
             return;
         }
@@ -383,7 +421,7 @@ impl Host {
             _ => return,
         }
         self.told.borrow_mut().insert(agent.id, key);
-        emit(None, told);
+        emit(to, told);
     }
 
     /// An agent closed.
@@ -398,7 +436,7 @@ impl Host {
         let Some(ws) = self.ws.borrow().upgrade() else { return answer(Err("loom is closing".into())) };
         let agent = || {
             let id = p["agent"].as_u64().unwrap_or(0) as u32;
-            ws.agent(id).ok_or_else(|| "That agent is closed.".to_owned())
+            self.find(&ws, id).ok_or_else(|| "That agent is closed.".to_owned())
         };
         let serial = p["serial"].as_u64().unwrap_or(0);
         let agents = || Value::Array(ws.agents_in_order().iter().map(|a| self.view(&ws, a)).collect());
@@ -432,7 +470,7 @@ impl Host {
                     .unwrap_or_else(|_| Err("That picture could not be read.".into()));
                     respond(&reply, images.and_then(|images| {
                         let ws = host.ws.borrow().upgrade().ok_or("loom is closing")?;
-                        let agent = ws.agent(id).ok_or("That agent is closed.")?;
+                        let agent = host.find(&ws, id).ok_or("That agent is closed.")?;
                         agent.submit_with(text, images);
                         Ok(host.view(&ws, &agent))
                     }));
@@ -460,6 +498,19 @@ impl Host {
                     respond(&reply, saved);
                 });
                 return;
+            }
+            // The account's limits (shared by every agent), and with `agent` that one's context
+            // and cost. Null parts are not known yet (no answer from Claude since loom started).
+            "usage" => Ok(json!({
+                "account": crate::agent::transcript::account_limits(),
+                "agent": p["agent"].as_u64().and_then(|id| self.find(&ws, id as u32)).map(|a| a.usage()),
+            })),
+            // The Notes chat, for the phone's Vault tab: its chats, and one of them open.
+            "notes" if bridge == "remote" => Ok(self.notes.borrow().as_ref().map_or(json!({ "vault": null, "chats": [] }), |n| n.chats())),
+            "notes_open" if bridge == "remote" => {
+                let notes = self.notes.borrow().clone();
+                let opened = notes.and_then(|n| n.open(p["session"].as_str().map(str::to_owned)));
+                opened.map(|agent| self.view(&ws, &agent)).ok_or_else(|| "Notes is off in loom (Settings → Add-ons → Notes).".to_owned())
             }
             // The files the agent created or changed, newest first: what it did, to look at.
             "files" => agent().map(|agent| {
