@@ -193,8 +193,35 @@ thread_local! {
     static ACCOUNT: RefCell<Value> = const { RefCell::new(Value::Null) };
 }
 
-/// The account's limits (`{plan, windows: [{kind, utilization, resetsAt}]}`), null until an
-/// agent's answer brought them.
+/// The account's limits as reported so far, `new` on top of `old`: Claude Code reports one
+/// window at a time (the one closest to its limit), so each kind keeps its last report, with
+/// when it came (`seenAt`), until its reset time passes. The 5-hour window first, then the weekly
+/// ones, as reported.
+pub fn merge_limits(old: &Value, new: &Value, now: i64) -> Value {
+    let mut windows: Vec<Value> = old["windows"].as_array().cloned().unwrap_or_default();
+    for window in new["windows"].as_array().into_iter().flatten() {
+        let mut window = window.clone();
+        window["seenAt"] = json!(now);
+        match windows.iter().position(|w| w["kind"] == window["kind"]) {
+            Some(i) => windows[i] = window,
+            None => windows.push(window),
+        }
+    }
+    windows.retain(|w| w["resetsAt"].as_i64().is_none_or(|at| at > now));
+    windows.sort_by_key(|w| match w["kind"].as_str() {
+        Some("five_hour") => 0,
+        Some("seven_day") => 1,
+        _ => 2,
+    });
+    let plan = if new["plan"].is_null() { old["plan"].clone() } else { new["plan"].clone() };
+    if windows.is_empty() && plan.is_null() {
+        return Value::Null;
+    }
+    json!({ "plan": plan, "windows": windows })
+}
+
+/// The account's limits (`{plan, windows: [{kind, utilization, resetsAt, seenAt}]}`), null
+/// until an agent's answer brought them.
 pub fn account_limits() -> Value {
     ACCOUNT.with_borrow(Clone::clone)
 }
@@ -338,8 +365,11 @@ impl View for Recorded {
         self.inner.set_spend(cost, limit);
     }
     fn set_limits(&self, limits: Value) {
-        ACCOUNT.set(limits.clone());
-        self.inner.set_limits(limits);
+        let merged = ACCOUNT.with_borrow_mut(|account| {
+            *account = merge_limits(account, &limits, crate::state::now() as i64);
+            account.clone()
+        });
+        self.inner.set_limits(merged);
     }
     fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {
         self.inner.set_context_parts(parts, compacts_at);
@@ -399,6 +429,24 @@ impl View for Recorded {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn limits_keep_each_window_until_it_resets() {
+        let five = json!({ "plan": "max", "windows": [{ "kind": "five_hour", "utilization": 0.3, "resetsAt": 200 }] });
+        let week = json!({ "plan": null, "windows": [{ "kind": "seven_day", "utilization": 0.6, "resetsAt": 900 }] });
+        let both = merge_limits(&merge_limits(&Value::Null, &five, 100), &week, 150);
+        assert_eq!(both["plan"], "max");
+        let kinds: Vec<_> = both["windows"].as_array().unwrap().iter().map(|w| (w["kind"].as_str().unwrap().to_owned(), w["seenAt"].as_i64().unwrap())).collect();
+        assert_eq!(kinds, [("five_hour".to_owned(), 100), ("seven_day".to_owned(), 150)]);
+        // A newer report of a kind replaces it.
+        let again = merge_limits(&both, &json!({ "windows": [{ "kind": "five_hour", "utilization": 0.5, "resetsAt": 200 }] }), 160);
+        assert_eq!(again["windows"][0]["utilization"], 0.5);
+        // Past its reset, a window goes.
+        let later = merge_limits(&again, &week, 300);
+        assert_eq!(later["windows"].as_array().unwrap().len(), 1);
+        assert_eq!(later["windows"][0]["kind"], "seven_day");
+    }
+
     use super::*;
 
     fn texts(t: &Transcript, after: u64) -> Vec<(u64, String, String)> {

@@ -48,7 +48,7 @@ Connect to the socket, write one line, read one line back:
 | `notes_list` | `folder` (`""`: the vault's root) | the remote bridge only: `{vault, folder, entries}`, each `{name, path, kind}` (`folder` with `count`; `note` with `title`, `size`, `modified`; `file` with `size`, `modified`), folders first, then by name |
 | `note_read` | `path` | the remote bridge only: `{path, title, text, size, modified, truncated, tags, links: [{target, path}], backlinks: [{path, title}]}`; another file `{path, text, size, modified, truncated}`, or `{path, size, modified, binary}` |
 | `notes_search` | `query`, `limit` (30, at most 100) | the remote bridge only: `{results: [{path, title, folder, snippet, modified}]}`, notes with every word, names first, then the newest |
-| `usage` | `agent` (optional) | `{account, agent}`: the account's limits `{plan, windows: [{kind, utilization, resetsAt}]}` (shared by every agent; `utilization` 0.33 is 33%, `resetsAt` Unix seconds), and that agent's `{used, size, cost}`; null until known |
+| `usage` | `agent` (optional) | `{account, agent}`: the account's limits `{plan, windows: [{kind, utilization, resetsAt, seenAt}]}` (shared by every agent; `utilization` 0.33 is 33%, `resetsAt` and `seenAt` Unix seconds; Claude Code reports one window at a time, the one closest to its limit, so each kind is as last reported, `seenAt`, until it resets), and that agent's `{used, size, cost}`; null until known |
 | `transcribe` | `audio` (base64), `name`, `mime` | the text, with loom's speech-to-text settings |
 | `state` | the bridge's own status | shown in Settings |
 
