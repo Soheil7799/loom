@@ -512,6 +512,22 @@ impl Host {
                 let opened = notes.and_then(|n| n.open(p["session"].as_str().map(str::to_owned)));
                 opened.map(|agent| self.view(&ws, &agent)).ok_or_else(|| "Notes is off in loom (Settings → Add-ons → Notes).".to_owned())
             }
+            // The notes vault, read-only (browse.rs): a folder, a note, a search. Off the UI's thread.
+            "notes_list" | "note_read" | "notes_search" if bridge == "remote" => {
+                let Some(root) = crate::vault::current() else { return answer(Err("Notes is off in loom (Settings → Add-ons → Notes).".into())) };
+                let (method, p, reply) = (method.to_owned(), p.clone(), reply.clone());
+                crate::rt::spawn_local(async move {
+                    let result = crate::rt::spawn_blocking(move || match method.as_str() {
+                        "notes_list" => super::browse::list(&root, p["folder"].as_str().unwrap_or("")),
+                        "note_read" => super::browse::read(&root, p["path"].as_str().unwrap_or("")),
+                        _ => super::browse::search(&root, p["query"].as_str().unwrap_or(""), p["limit"].as_u64().map_or(30, |limit| limit.min(100)) as usize),
+                    })
+                    .await
+                    .unwrap_or_else(|_| Err("Could not read the vault.".into()));
+                    respond(&reply, result);
+                });
+                return;
+            }
             // The files the agent created or changed, newest first: what it did, to look at.
             "files" => agent().map(|agent| {
                 let files = agent.files();
@@ -803,7 +819,7 @@ mod tests {
 const FILE_READ: u64 = 512 * 1024;
 
 /// A file as text for `file`: `{text, size, truncated}`, or `{binary, size}` when it isn't text.
-fn read_text(path: &std::path::Path) -> Result<Value, String> {
+pub(crate) fn read_text(path: &std::path::Path) -> Result<Value, String> {
     use std::io::Read;
     let file = std::fs::File::open(path).map_err(|_| "It is no longer there.".to_owned())?;
     let size = file.metadata().map(|m| m.len()).unwrap_or(0);

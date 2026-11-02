@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 use crate::agent::Asking;
 
+pub mod browse;
 pub mod client;
 pub mod host;
 pub mod telegram;

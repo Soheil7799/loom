@@ -193,6 +193,50 @@ impl Index {
             .collect()
     }
 
+    /// A note's title (its file name, as `[[links]]` name it), by path.
+    pub fn title(&self, path: &str) -> Option<String> {
+        self.notes.get(path).map(|n| n.title.clone())
+    }
+
+    /// A note's tags (front matter and #tags in the text), each once.
+    pub fn tags(&self, path: &str) -> Vec<String> {
+        let mut tags = Vec::new();
+        for tag in self.notes.get(path).map(|n| n.tags.as_slice()).unwrap_or_default() {
+            if !tags.contains(tag) {
+                tags.push(tag.clone());
+            }
+        }
+        tags
+    }
+
+    /// When a note last changed, in Unix seconds.
+    pub fn modified(&self, path: &str) -> Option<u64> {
+        let (at, _) = self.notes.get(path)?.stamp?;
+        Some(at.duration_since(SystemTime::UNIX_EPOCH).ok()?.as_secs())
+    }
+
+    /// The notes with every word of `query` in their title, aliases, tags or text (any case),
+    /// as (path, title): those with a word in the title or an alias first, then the most
+    /// recently changed.
+    pub fn matching(&self, query: &str, limit: usize) -> Vec<(String, String)> {
+        let words: Vec<String> = query.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_lowercase).collect();
+        if words.is_empty() {
+            return Vec::new();
+        }
+        let mut found: Vec<(bool, u64, &String)> = Vec::new();
+        for (path, note) in &self.notes {
+            let title = note.title.to_lowercase();
+            let aliases: Vec<String> = note.aliases.iter().map(|a| a.to_lowercase()).collect();
+            let named = |word: &str| title.contains(word) || aliases.iter().any(|a| a.contains(word));
+            let all = words.iter().all(|w| named(w) || note.tags.iter().any(|t| t.to_lowercase().contains(w.as_str())) || note.lower.contains(w.as_str()));
+            if all {
+                found.push((words.iter().any(|w| named(w)), self.modified(path).unwrap_or(0), path));
+            }
+        }
+        found.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)).then_with(|| a.2.cmp(b.2)));
+        found.into_iter().take(limit).map(|(_, _, path)| (path.clone(), self.notes[path].title.clone())).collect()
+    }
+
     /// A note's text, by path or `[[name]]`, with what it links to and what links to it.
     pub fn read(&self, name: &str) -> Option<(String, String, Vec<String>, Vec<String>)> {
         let path = self.resolve(name)?;
@@ -227,17 +271,7 @@ fn read(title: &str, text: &str) -> Note {
         if heading {
             headings.push(trimmed.trim_start_matches('#').trim().to_owned());
         }
-        // [[Target]], [[Target|shown]], [[Target#heading]], ![[embed]].
-        let mut rest = line;
-        while let Some(start) = rest.find("[[") {
-            let after = &rest[start + 2..];
-            let Some(end) = after.find("]]") else { break };
-            let target = after[..end].split(['|', '#']).next().unwrap_or("").trim();
-            if !target.is_empty() {
-                links.push(target.to_owned());
-            }
-            rest = &after[end + 2..];
-        }
+        links_in(line, &mut links);
         // #tags in the text (not headings, not "#1").
         for word in line.split_whitespace() {
             if let Some(tag) = word.strip_prefix('#') {
@@ -251,6 +285,70 @@ fn read(title: &str, text: &str) -> Note {
     let mut aliases = items("aliases");
     aliases.extend(items("alias"));
     Note { title: title.to_owned(), aliases, tags, headings, links, lower: text.to_lowercase(), stamp: None }
+}
+
+/// The `[[links]]` of one line, onto `links`: [[Target]], [[Target|shown]], [[Target#heading]],
+/// ![[embed]], each as its target is written.
+fn links_in(line: &str, links: &mut Vec<String>) {
+    let mut rest = line;
+    while let Some(start) = rest.find("[[") {
+        let after = &rest[start + 2..];
+        let Some(end) = after.find("]]") else { break };
+        let target = after[..end].split(['|', '#']).next().unwrap_or("").trim();
+        if !target.is_empty() {
+            links.push(target.to_owned());
+        }
+        rest = &after[end + 2..];
+    }
+}
+
+/// Every `[[link]]` target in `text` (code blocks left out), in order of first appearance,
+/// each once.
+pub fn wikilinks(text: &str) -> Vec<String> {
+    let mut links = Vec::new();
+    let mut fenced = false;
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("```") || trimmed.starts_with("~~~") {
+            fenced = !fenced;
+        } else if !fenced {
+            links_in(line, &mut links);
+        }
+    }
+    let mut seen = HashSet::new();
+    links.retain(|l| seen.insert(l.clone()));
+    links
+}
+
+/// About `width` characters of `text` (front matter left out) on one line, around the first
+/// word of `query` in it; its start when none is. None when it has no text.
+pub fn line_around(text: &str, query: &str, width: usize) -> Option<String> {
+    let (_, body) = vault::frontmatter(text);
+    let flat: Vec<char> = body.split_whitespace().collect::<Vec<_>>().join(" ").chars().collect();
+    if flat.is_empty() {
+        return None;
+    }
+    // One lowercased char per char, so a place in one is the same place in the other.
+    let lower: Vec<char> = flat.iter().map(|c| c.to_lowercase().next().unwrap_or(*c)).collect();
+    let first = query
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .filter_map(|word| {
+            let word: Vec<char> = word.to_lowercase().chars().collect();
+            lower.windows(word.len()).position(|w| w == word.as_slice())
+        })
+        .min()
+        .unwrap_or(0);
+    let start = first.saturating_sub(width / 3).min(flat.len().saturating_sub(width));
+    let end = (start + width).min(flat.len());
+    let mut line: String = flat[start..end].iter().collect();
+    if start > 0 {
+        line.insert(0, '…');
+    }
+    if end < flat.len() {
+        line.push('…');
+    }
+    Some(line)
 }
 
 /// Up to three lines of `text` with a query word in them (else its first lines).
@@ -303,5 +401,39 @@ mod tests {
         index.refresh();
         assert_eq!(index.len(), 2);
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_word_must_match_and_names_come_first() {
+        let (root, index) = vault_with(&[
+            ("Plan.md", "---
+tags: [work]
+---
+The budget for the trip.
+"),
+            ("Trips/Budget.md", "Nothing about the plan of work here. trip
+"),
+            ("Other.md", "budget only
+"),
+        ]);
+        let found: Vec<String> = index.matching("Budget trip", 10).into_iter().map(|(p, _)| p).collect();
+        assert_eq!(found, ["Trips/Budget.md", "Plan.md"], "a title match first; Other.md lacks 'trip'");
+        assert_eq!(index.matching("work plan", 10).len(), 2);
+        assert_eq!(index.tags("Plan.md"), ["work"]);
+        assert_eq!(index.title("Trips/Budget.md").as_deref(), Some("Budget"));
+        assert!(index.modified("Plan.md").is_some_and(|t| t > 1_600_000_000));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn links_and_a_line_around_a_word() {
+        let text = "See [[Budget 2026|money]] and [[Plan#Goals]], [[Budget 2026]] again.\n```\n[[In code]]\n```\n![[pic.png]] [[#Here]]\n";
+        assert_eq!(wikilinks(text), ["Budget 2026", "Plan", "pic.png"]);
+        let long = format!("---\ntags: [x]\n---\n{}needle{}", "a ".repeat(200), " b".repeat(200));
+        let line = line_around(&long, "Needle", 160).unwrap();
+        assert!(line.contains("needle") && line.starts_with('…') && line.ends_with('…') && !line.contains('\n'), "{line}");
+        assert!(line.chars().count() <= 162);
+        assert_eq!(line_around("Short note.", "absent", 160).as_deref(), Some("Short note."));
+        assert_eq!(line_around("---\ntags: [x]\n---\n", "x", 160), None);
     }
 }

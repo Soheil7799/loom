@@ -45,6 +45,9 @@ Connect to the socket, write one line, read one line back:
 | `file` | `agent`, `path` | one of those, read-only: `{text, size, truncated}` (up to 512 KiB), or `{binary, size}` |
 | `notes` | | the remote bridge only: loom's Notes chat, `{vault, chats: [{session, title, updated, ago, day, mark}], current}`; `vault` null when Notes is off; the list is read again each time (ask again for the newest) |
 | `notes_open` | `session` (none: a new chat) | the remote bridge only: that chat open, as if picked in loom; its agent (then `send`, `history`, `answer`… as any agent) |
+| `notes_list` | `folder` (`""`: the vault's root) | the remote bridge only: `{vault, folder, entries}`, each `{name, path, kind}` (`folder` with `count`; `note` with `title`, `size`, `modified`; `file` with `size`, `modified`), folders first, then by name |
+| `note_read` | `path` | the remote bridge only: `{path, title, text, size, modified, truncated, tags, links: [{target, path}], backlinks: [{path, title}]}`; another file `{path, text, size, modified, truncated}`, or `{path, size, modified, binary}` |
+| `notes_search` | `query`, `limit` (30, at most 100) | the remote bridge only: `{results: [{path, title, folder, snippet, modified}]}`, notes with every word, names first, then the newest |
 | `usage` | `agent` (optional) | `{account, agent}`: the account's limits `{plan, windows: [{kind, utilization, resetsAt}]}` (shared by every agent; `utilization` 0.33 is 33%, `resetsAt` Unix seconds), and that agent's `{used, size, cost}`; null until known |
 | `transcribe` | `audio` (base64), `name`, `mime` | the text, with loom's speech-to-text settings |
 | `state` | the bridge's own status | shown in Settings |
@@ -72,6 +75,19 @@ change as they stream in: send back the `epoch` and `rev` of the last answer as 
 you kept, `entries` are all of it (a new conversation, the agent read back again, or loom
 restarted). `loading`: it is being read back (an agent loom restored but no one opened yet is
 started by asking); ask again on its next event. Subagents' own conversations are not in it.
+
+### The notes vault
+
+`notes_list`, `note_read` and `notes_search` read the vault Notes uses; with Notes off they
+answer "Notes is off in loom (Settings → Add-ons → Notes)." Nothing is ever written. Paths are
+the vault's, with `/`. Anything leading out of the vault (`..`, an absolute path, a link pointing
+out) answers "That is not in the vault."; a hidden part (`.obsidian`, `.loom`, `.git`…) is never
+listed or read. Text stops at 512 KiB (`truncated`). A note's `links` are its `[[targets]]` as
+written (no `|alias`, no `#heading`), in order, each once, with the note each one resolves to
+(by path, file name or alias, as Obsidian does) or null. Search, titles and backlinks come from
+loom's index of the vault, which leaves out the topic files in `Topics/` and sync conflict
+copies; a search `snippet` is about 160 characters around the first word found, else the note's
+start.
 
 ## Events
 
@@ -116,7 +132,8 @@ finishes. `subscribe` stays open and carries loom's events, one per line.
   `pair {code, name}`; the user sees it in Settings and pairs it or refuses. Only then is it
   added to `devices`, and only then is the answer `ok`.
 - **Paired devices** may send `agents`, `send`, `save`, `answer`, `form`, `stop`,
-  `last_reply`, `history`, `files`, `file`, `usage`, `notes`, `notes_open`, `transcribe`
+  `last_reply`, `history`, `files`, `file`, `usage`, `notes`, `notes_open`, `notes_list`,
+  `note_read`, `notes_search`, `transcribe`
   (passed to loom as they are),
   `subscribe`, and `address` (where the desktop is now, kept by the device to find it next
   time).

@@ -187,6 +187,22 @@ impl Desktop {
         self.request("notes_open", json!({ "session": session })).await
     }
 
+    /// A folder of the notes vault (`""`: its root), read-only: `{vault, folder, entries}`.
+    pub async fn notes_list(&self, folder: &str) -> Result<Value, String> {
+        self.request("notes_list", json!({ "folder": folder })).await
+    }
+
+    /// A file of the notes vault: a note's text with its tags, links and backlinks, another
+    /// file's text, or `{binary}`. See docs/bridges.md.
+    pub async fn note_read(&self, path: &str) -> Result<Value, String> {
+        self.request("note_read", json!({ "path": path })).await
+    }
+
+    /// The notes with every word of `query`, names first, then the newest: `{results}`.
+    pub async fn notes_search(&self, query: &str, limit: u64) -> Result<Value, String> {
+        self.request("notes_search", json!({ "query": query, "limit": limit })).await
+    }
+
     /// One of those files: `{text, size, truncated}`, or `{binary, size}`.
     pub async fn file(&self, agent: u64, path: &str) -> Result<Value, String> {
         self.request("file", json!({ "agent": agent, "path": path })).await
