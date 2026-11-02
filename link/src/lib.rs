@@ -165,6 +165,13 @@ impl Desktop {
         Ok(self.request("last_reply", json!({ "agent": agent })).await?.as_str().map(str::to_owned))
     }
 
+    /// Agent `agent`'s whole conversation: `{epoch, rev, reset, loading, entries}`. Pass the
+    /// `epoch` and `rev` of the last answer to get only what changed since (`""`, 0: all of it);
+    /// `reset` says to drop what was kept. See docs/bridges.md, `history`.
+    pub async fn history(&self, agent: u64, epoch: &str, after: u64) -> Result<Value, String> {
+        self.request("history", json!({ "agent": agent, "epoch": epoch, "after": after })).await
+    }
+
     /// A recording as text, with loom's speech-to-text settings.
     pub async fn transcribe(&self, audio: &[u8], name: &str, mime: &str) -> Result<String, String> {
         let text = self.request("transcribe", json!({ "audio": BASE64.encode(audio), "name": name, "mime": mime })).await?;

@@ -40,12 +40,32 @@ Connect to the socket, write one line, read one line back:
 | `form` | `agent`, `serial`, `do`: `pick` (`field`, `option`), `write` (`text`), `send`, `skip` | `{done, problem, agent}` |
 | `stop` | `agent` | the agent |
 | `last_reply` | `agent` | its last reply (Markdown), or null |
+| `history` | `agent`, `epoch`, `after` | its whole conversation, or what changed since (below) |
 | `transcribe` | `audio` (base64), `name`, `mime` | the text, with loom's speech-to-text settings |
 | `state` | the bridge's own status | shown in Settings |
 
 An agent is `{id, seq, title, project, status, unseen, busy, questions}`. `seq` grows with each
 view loom makes: keep the newest. A question is `{serial, title, detail, options, fields,
 is_form, writable, summary, blank}`.
+
+### `history`
+
+An agent's conversation as entries, in order:
+
+| `kind` | Fields |
+|---|---|
+| `user` | `text`, `pictures` (how many came with it) |
+| `agent`, `thought` | `text` (Markdown) |
+| `tool` | `id`, `title`, `tool` (read, edit, execute…), `status`, `parent` (the task it ran under), `output` (its last 4,000 characters), `exit` |
+| `notice` | `text`, `class` (`dim`, `error`…) |
+| `turn` | `seconds` the turn took |
+
+The answer is `{epoch, rev, reset, loading, entries}`, each entry with its place `i`. Entries
+change as they stream in: send back the `epoch` and `rev` of the last answer as `epoch` and
+`after` to get only the entries changed since (empty and 0 the first time). `reset`: drop what
+you kept, `entries` are all of it (a new conversation, the agent read back again, or loom
+restarted). `loading`: it is being read back (an agent loom restored but no one opened yet is
+started by asking); ask again on its next event. Subagents' own conversations are not in it.
 
 ## Events
 
@@ -90,7 +110,7 @@ finishes. `subscribe` stays open and carries loom's events, one per line.
   `pair {code, name}`; the user sees it in Settings and pairs it or refuses. Only then is it
   added to `devices`, and only then is the answer `ok`.
 - **Paired devices** may send `agents`, `send`, `save`, `answer`, `form`, `stop`,
-  `last_reply`, `transcribe` (passed to loom as they are), `subscribe`, and `address` (where
+  `last_reply`, `history`, `transcribe` (passed to loom as they are), `subscribe`, and `address` (where
   the desktop is now, kept by the device to find it next time).
 - **Anyone else** is dropped as soon as the connection opens, unless a pairing code is
   shown; then `pair` is all it may send. Removing a device in Settings closes its connections.

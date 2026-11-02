@@ -101,6 +101,26 @@ pub async fn answer(agent: u64, serial: u64, option: u64) -> Result<(), String> 
     Ok(())
 }
 
+/// An agent's conversation, one line per entry (long ones cut).
+pub async fn history(agent: u64) -> Result<(), String> {
+    let history = desktop().await?.history(agent, "", 0).await?;
+    if history["loading"] == true {
+        println!("(still being read back: ask again in a moment)");
+    }
+    for entry in history["entries"].as_array().into_iter().flatten() {
+        let kind = entry["kind"].as_str().unwrap_or("?");
+        let text = match kind {
+            "tool" => format!("{} [{}]", entry["title"].as_str().unwrap_or(""), entry["status"].as_str().unwrap_or("")),
+            "turn" => format!("took {} s", entry["seconds"]),
+            _ => entry["text"].as_str().unwrap_or("").to_owned(),
+        };
+        let text: String = text.split_whitespace().collect::<Vec<_>>().join(" ").chars().take(100).collect();
+        let pictures = entry["pictures"].as_u64().map_or(String::new(), |n| format!(" (+{n} pictures)"));
+        println!("{:>4} {kind:<8} {text}{pictures}", entry["i"]);
+    }
+    Ok(())
+}
+
 /// loom's events as they come, until the desktop goes; lines typed meanwhile are sent over the
 /// same connection (a second one with this key would knock this one off the relay).
 pub async fn watch() -> Result<(), String> {

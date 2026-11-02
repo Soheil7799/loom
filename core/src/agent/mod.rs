@@ -20,6 +20,7 @@ use crate::rt::Timer;
 use crate::state::Saved;
 
 pub mod form;
+pub mod transcript;
 pub mod view;
 
 use view::{Card, Crew, Form, Png, View, Workflow};
@@ -196,6 +197,8 @@ pub struct Agent {
     /// The repository it works in (see app::project_of).
     pub project: PathBuf,
     pub view: Rc<dyn View>,
+    /// The same view, keeping the conversation as data too (for `history`).
+    recorded: Rc<transcript::Recorded>,
     /// Its project's jobs.
     pub jobs: Jobs,
     session_id: RefCell<Option<String>>,
@@ -295,11 +298,13 @@ impl Agent {
         let draft = saved.draft.clone();
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
+        let recorded = Rc::new(transcript::Recorded::new(view));
         let agent = Rc::new(Agent {
             id,
             project,
             cwd: saved.cwd,
-            view,
+            view: recorded.clone(),
+            recorded,
             jobs,
             session_id: RefCell::new(saved.session_id),
             title: RefCell::new(saved.title),
@@ -462,6 +467,19 @@ impl Agent {
 
     pub fn session_id(&self) -> Option<String> {
         self.session_id.borrow().clone()
+    }
+
+    /// Its conversation as data: what changed after revision `after` of `epoch` (see
+    /// transcript.rs), and `loading` while it is being read back. One loom restored but nobody
+    /// opened yet has not been read back: it is started, as opening it does.
+    pub fn history(self: &Rc<Self>, epoch: &str, after: u64) -> Value {
+        let unread = self.recorded.transcript.borrow().is_empty() && self.session_id().is_some() && self.status() == Status::Suspended;
+        if unread {
+            self.start();
+        }
+        let mut answer = self.recorded.transcript.borrow().since(epoch, after);
+        answer["loading"] = json!(unread || self.replaying.get());
+        answer
     }
 
     pub fn saved(&self) -> Saved {

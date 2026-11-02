@@ -486,6 +486,8 @@ impl Host {
                 self.view(&ws, &agent)
             }),
             "last_reply" => agent().map(|agent| json!(agent.view.last_reply())),
+            // The whole conversation, or what changed since the device last asked.
+            "history" => agent().map(|agent| agent.history(p["epoch"].as_str().unwrap_or(""), p["after"].as_u64().unwrap_or(0))),
             // Speech to text with loom's settings (its key never leaves loom); answered when heard.
             "transcribe" => {
                 if !crate::stt::configured() {

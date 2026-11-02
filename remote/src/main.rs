@@ -12,6 +12,7 @@ const USAGE: &str = "loom-remote: your loom agents from another device.
   loom-remote agents                   the agents, with their open questions
   loom-remote send <agent> <text…>     a message to an agent
   loom-remote answer <agent> <serial> <option>
+  loom-remote history <agent>           an agent's whole conversation
   loom-remote watch                    what the agents do, as it happens; type
                                        <agent> <text> or answer <agent> <serial> <option>
 
@@ -27,6 +28,7 @@ async fn main() {
         Some("agents") => peer::agents().await,
         Some("send") if args.len() >= 3 && number(1).is_some() => peer::send(number(1).unwrap_or(0), &args[2..].join(" ")).await,
         Some("answer") if number(1).zip(number(2)).zip(number(3)).is_some() => peer::answer(number(1).unwrap_or(0), number(2).unwrap_or(0), number(3).unwrap_or(0)).await,
+        Some("history") if number(1).is_some() => peer::history(number(1).unwrap_or(0)).await,
         Some("watch") => peer::watch().await,
         _ => {
             eprintln!("{USAGE}");
