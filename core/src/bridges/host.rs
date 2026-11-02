@@ -461,6 +461,43 @@ impl Host {
                 });
                 return;
             }
+            // The files the agent created or changed, newest first: what it did, to look at.
+            "files" => agent().map(|agent| {
+                let files = agent.files();
+                Value::Array(
+                    files
+                        .iter()
+                        .map(|(path, mark)| {
+                            let size = std::fs::metadata(path).ok().map(|m| m.len());
+                            json!({
+                                "path": path.to_string_lossy(),
+                                "name": path.strip_prefix(&agent.cwd).unwrap_or(path).to_string_lossy(),
+                                "created": *mark == crate::agent::Mark::Created,
+                                "exists": size.is_some(),
+                                "size": size,
+                            })
+                        })
+                        .collect(),
+                )
+            }),
+            // One of them, to read: only a file this agent wrote (never any other path), text
+            // only, up to FILE_READ bytes. Off the UI's thread.
+            "file" => {
+                let path = PathBuf::from(p["path"].as_str().unwrap_or(""));
+                match agent() {
+                    Ok(agent) if agent.files().iter().any(|(f, _)| *f == path) => {}
+                    Ok(_) => return answer(Err("That is not a file this agent wrote.".into())),
+                    Err(why) => return answer(Err(why)),
+                }
+                let reply = reply.clone();
+                crate::rt::spawn_local(async move {
+                    let read = crate::rt::spawn_blocking(move || read_text(&path))
+                        .await
+                        .unwrap_or_else(|_| Err("Could not read it.".into()));
+                    respond(&reply, read);
+                });
+                return;
+            }
             // "Always allow" is a decision made at the desk, never from a bridge.
             "answer" => agent().and_then(|agent| {
                 let option = p["option"].as_u64().unwrap_or(0) as usize;
@@ -708,5 +745,45 @@ mod tests {
         assert_eq!(safe_name(".env"), "env");
         assert_eq!(safe_name("report final.pdf"), "report final.pdf");
         assert_eq!(safe_name(""), "file");
+    }
+}
+
+/// How much of a file a bridge reads (`file`): enough for code, not a whole log.
+const FILE_READ: u64 = 512 * 1024;
+
+/// A file as text for `file`: `{text, size, truncated}`, or `{binary, size}` when it isn't text.
+fn read_text(path: &std::path::Path) -> Result<Value, String> {
+    use std::io::Read;
+    let file = std::fs::File::open(path).map_err(|_| "It is no longer there.".to_owned())?;
+    let size = file.metadata().map(|m| m.len()).unwrap_or(0);
+    let mut bytes = Vec::new();
+    file.take(FILE_READ).read_to_end(&mut bytes).map_err(|e| format!("Could not read it: {e}"))?;
+    if bytes.iter().take(8000).any(|&b| b == 0) {
+        return Ok(json!({ "binary": true, "size": size }));
+    }
+    Ok(json!({ "text": String::from_utf8_lossy(&bytes), "size": size, "truncated": size > FILE_READ }))
+}
+
+#[cfg(test)]
+mod read_text_tests {
+    use super::*;
+
+    #[test]
+    fn text_binary_and_long_files_read_as_said() {
+        let dir = std::env::temp_dir().join(format!("loom-read-text-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let text = dir.join("a.rs");
+        std::fs::write(&text, "fn main() {}\n").unwrap();
+        assert_eq!(read_text(&text).unwrap(), json!({ "text": "fn main() {}\n", "size": 13, "truncated": false }));
+        let binary = dir.join("b.png");
+        std::fs::write(&binary, [0x89, b'P', b'N', b'G', 0, 1, 2]).unwrap();
+        assert_eq!(read_text(&binary).unwrap()["binary"], json!(true));
+        let long = dir.join("c.log");
+        std::fs::write(&long, "x".repeat(FILE_READ as usize + 10)).unwrap();
+        let read = read_text(&long).unwrap();
+        assert_eq!(read["truncated"], json!(true));
+        assert_eq!(read["text"].as_str().unwrap().len() as u64, FILE_READ);
+        assert!(read_text(&dir.join("gone")).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -41,6 +41,8 @@ Connect to the socket, write one line, read one line back:
 | `stop` | `agent` | the agent |
 | `last_reply` | `agent` | its last reply (Markdown), or null |
 | `history` | `agent`, `epoch`, `after` | its whole conversation, or what changed since (below) |
+| `files` | `agent` | the files it created or changed, newest first: `{path, name, created, exists, size}` |
+| `file` | `agent`, `path` | one of those, read-only: `{text, size, truncated}` (up to 512 KiB), or `{binary, size}` |
 | `transcribe` | `audio` (base64), `name`, `mime` | the text, with loom's speech-to-text settings |
 | `state` | the bridge's own status | shown in Settings |
 
@@ -110,8 +112,9 @@ finishes. `subscribe` stays open and carries loom's events, one per line.
   `pair {code, name}`; the user sees it in Settings and pairs it or refuses. Only then is it
   added to `devices`, and only then is the answer `ok`.
 - **Paired devices** may send `agents`, `send`, `save`, `answer`, `form`, `stop`,
-  `last_reply`, `history`, `transcribe` (passed to loom as they are), `subscribe`, and `address` (where
-  the desktop is now, kept by the device to find it next time).
+  `last_reply`, `history`, `files`, `file`, `transcribe` (passed to loom as they are),
+  `subscribe`, and `address` (where the desktop is now, kept by the device to find it next
+  time).
 - **Anyone else** is dropped as soon as the connection opens, unless a pairing code is
   shown; then `pair` is all it may send. Removing a device in Settings closes its connections.
 

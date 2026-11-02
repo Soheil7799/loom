@@ -165,6 +165,17 @@ impl Desktop {
         Ok(self.request("last_reply", json!({ "agent": agent })).await?.as_str().map(str::to_owned))
     }
 
+    /// The files agent `agent` created or changed, newest first: `[{path, name, created,
+    /// exists, size}]`.
+    pub async fn files(&self, agent: u64) -> Result<Value, String> {
+        self.request("files", json!({ "agent": agent })).await
+    }
+
+    /// One of those files: `{text, size, truncated}`, or `{binary, size}`.
+    pub async fn file(&self, agent: u64, path: &str) -> Result<Value, String> {
+        self.request("file", json!({ "agent": agent, "path": path })).await
+    }
+
     /// Agent `agent`'s whole conversation: `{epoch, rev, reset, loading, entries}`. Pass the
     /// `epoch` and `rev` of the last answer to get only what changed since (`""`, 0: all of it);
     /// `reset` says to drop what was kept. See docs/bridges.md, `history`.
