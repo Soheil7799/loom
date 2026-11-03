@@ -267,7 +267,7 @@ fn vault_follows_files(c: &mut Connection, vault: &Path) {
 fn agent_turn_with_question(c: &mut Connection, agent: &str) {
     let mut chat = follow(c, &format!("conversation/{agent}"));
     until(c, &mut chat, Duration::from_secs(5), "the conversation", |_| true);
-    let prompt = "Use the AskUserQuestion tool once to ask me which colour I prefer, with the options Red and Blue. Then reply with only the colour I chose.";
+    let prompt = "Use the AskUserQuestion tool once to ask me which colour I prefer, with the options Red and Blue. Then use the loom_run tool to run `echo from-agent` as a job named e2e-agent. Then reply with only the colour I chose.";
     command(c, "send", json!({ "agent": agent, "text": prompt }));
     let deadline = Instant::now() + Duration::from_secs(180);
     let mut answered = Vec::<String>::new();
@@ -300,6 +300,9 @@ fn agent_turn_with_question(c: &mut Connection, agent: &str) {
     assert!(reply["text"].as_str().unwrap().contains("Blue"), "the answer reached the agent: {reply}");
     let asked = chat.mirror.items.iter().find(|e| e["id"] == answered[0].as_str()).unwrap();
     assert_eq!(asked["status"], "done");
+    // Its loom tool reached loom through the API, as this agent.
+    let jobs = c.get("jobs").unwrap();
+    assert!(jobs.iter().any(|j| j["name"] == "e2e-agent"), "the agent's job is in the tray: {jobs:?}");
     c.request("unsubscribe", json!({ "sub": chat.sub })).unwrap();
 }
 
@@ -337,6 +340,11 @@ fn audit_log_has_every_command(root: &Path) {
     assert!(refused["error"].as_str().is_some());
     assert_eq!(lines[0]["peer"]["principal"]["kind"], "cli");
     assert!(lines[0]["peer"]["command"].as_str().unwrap().contains("e2e"), "{}", lines[0]["peer"]);
+    if std::env::var_os("LOOM_E2E_AGENT").is_some() {
+        let tool = lines.iter().find(|l| l["method"] == "tool").expect("the agent's tool call logged");
+        assert_eq!(tool["peer"]["principal"]["kind"], "agent", "{tool}");
+        assert!(tool["peer"]["command"].as_str().unwrap().contains("mcp"), "from its MCP server: {tool}");
+    }
 }
 
 fn closing_an_agent_ends_its_conversation(c: &mut Connection, agent: &str) {

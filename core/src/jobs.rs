@@ -112,7 +112,8 @@ impl Jobs {
 
     /// Runs `command` as the job `name`: that job again if there is one. Err if it is still
     /// running and `restart` is false.
-    pub fn run_named(&self, name: &str, command: &str, restart: bool, cwd: Option<PathBuf>) -> Result<Id, String> {
+    /// `by`: the agent running it, if one is (its runs go in that agent's scope).
+    pub fn run_named(&self, name: &str, command: &str, restart: bool, cwd: Option<PathBuf>, by: Option<u32>) -> Result<Id, String> {
         if let Some(job) = self.find(|s| s.name == name) {
             {
                 let mut state = job.state.lock().unwrap();
@@ -121,15 +122,22 @@ impl Jobs {
                 }
                 state.cwd = cwd;
                 state.command = command.to_owned();
+                if by.is_some() {
+                    state.by = by;
+                }
             }
             self.inner.restart(&job);
             return Ok(job.id);
         }
-        Ok(self.run(name, command, cwd))
+        Ok(self.run_by(name, command, cwd, by))
     }
 
     /// Runs `command` as a new job, whatever else bears its name (the user's own runs).
     pub fn run(&self, name: &str, command: &str, cwd: Option<PathBuf>) -> Id {
+        self.run_by(name, command, cwd, None)
+    }
+
+    fn run_by(&self, name: &str, command: &str, cwd: Option<PathBuf>, by: Option<u32>) -> Id {
         let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let size = PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
         let job = Arc::new(Job {
@@ -140,7 +148,7 @@ impl Jobs {
                 cwd,
                 outcome: None,
                 restart_pending: false,
-                by: None,
+                by,
                 run: None,
                 generation: 0,
                 size,
@@ -248,13 +256,6 @@ impl Jobs {
         self.inner.jobs.lock().unwrap().iter().find(|job| job.id == id).cloned()
     }
 
-    /// Marks job `id` as run by agent `agent` (kept through reruns: the command is the agent's).
-    pub fn set_by(&self, id: Id, agent: u32) {
-        if let Some(job) = self.get(id) {
-            job.state.lock().unwrap().by = Some(agent);
-        }
-    }
-
     /// The agent whose job runs as process `pid`, if one does.
     pub fn agent_of(&self, pid: u32) -> Option<u32> {
         self.find(|s| s.run.as_ref().is_some_and(|r| r.pid == Some(pid))).and_then(|job| job.state.lock().unwrap().by)
@@ -297,7 +298,7 @@ impl Inner {
         state.printed = 0;
         let generation = state.generation;
         let cwd = state.cwd.clone().unwrap_or_else(|| self.cwd.clone());
-        let (child, reader, run) = match spawn(&state.command, &cwd, state.size) {
+        let (child, reader, run) = match spawn(&state.command, &cwd, state.size, state.by) {
             Ok(spawned) => spawned,
             Err(err) => {
                 let message = format!("loom: could not start: {err}\r\n");
@@ -369,14 +370,20 @@ impl Inner {
 type Spawned = (Box<dyn portable_pty::Child + Send + Sync>, Box<dyn Read + Send>, Run);
 
 /// `command` through the shell in a new PTY.
-fn spawn(command: &str, cwd: &Path, size: PtySize) -> Result<Spawned, String> {
+fn spawn(command: &str, cwd: &Path, size: PtySize, by: Option<u32>) -> Result<Spawned, String> {
     // portable-pty would quietly run it in the home folder instead.
     if !cwd.is_dir() {
         return Err(format!("{} is not a folder", cwd.display()));
     }
     let pair = native_pty_system().openpty(size).map_err(|e| e.to_string())?;
-    let mut cmd = CommandBuilder::new("/bin/bash");
-    cmd.args(["-c", command]);
+    let shell = ["/bin/bash".to_owned(), "-c".to_owned(), command.to_owned()];
+    // An agent's job runs in a scope of that agent's (so what it starts stays known as its).
+    let program = match by {
+        Some(agent) => crate::scope::wrap(&shell, agent),
+        None => shell.to_vec(),
+    };
+    let mut cmd = CommandBuilder::new(&program[0]);
+    cmd.args(&program[1..]);
     cmd.cwd(cwd);
     cmd.env("TERM", "xterm-256color");
     cmd.env("COLORTERM", "truecolor");
@@ -511,7 +518,7 @@ mod tests {
     #[test]
     fn runs_and_keeps_its_output() {
         let (jobs, rx) = jobs();
-        let id = jobs.run_named("hi", "printf 'one\\ntwo\\n'; exit 3", false, None).unwrap();
+        let id = jobs.run_named("hi", "printf 'one\\ntwo\\n'; exit 3", false, None, None).unwrap();
         let seen = until(&rx, exited);
         assert_eq!(seen[..2], [Event::Added(id), Event::Started(id)]);
         assert_eq!(seen.last(), Some(&Event::Exited(id, Some(3))));
@@ -525,7 +532,7 @@ mod tests {
     #[test]
     fn output_reaches_into_the_scrollback() {
         let (jobs, rx) = jobs();
-        let id = jobs.run_named("seq", "seq 1 100", false, None).unwrap();
+        let id = jobs.run_named("seq", "seq 1 100", false, None, None).unwrap();
         until(&rx, exited);
         let text = jobs.output(id, 100);
         assert!(text.starts_with("1\n2\n"), "{text}");
@@ -535,10 +542,10 @@ mod tests {
     #[test]
     fn one_job_per_name() {
         let (jobs, rx) = jobs();
-        let first = jobs.run_named("s", "sleep 30", false, None).unwrap();
+        let first = jobs.run_named("s", "sleep 30", false, None, None).unwrap();
         until(&rx, |e| *e == Event::Started(first));
-        assert!(jobs.run_named("s", "true", false, None).is_err());
-        let again = jobs.run_named("s", "echo again", true, None).unwrap();
+        assert!(jobs.run_named("s", "true", false, None, None).is_err());
+        let again = jobs.run_named("s", "echo again", true, None, None).unwrap();
         assert_eq!(first, again);
         let seen = until(&rx, exited);
         assert!(seen.contains(&Event::Restarting(first)));
@@ -550,7 +557,7 @@ mod tests {
     #[test]
     fn stop_ends_the_whole_group() {
         let (jobs, rx) = jobs();
-        let id = jobs.run_named("s", "sleep 30 & sleep 30; wait", false, None).unwrap();
+        let id = jobs.run_named("s", "sleep 30 & sleep 30; wait", false, None, None).unwrap();
         until(&rx, |e| *e == Event::Started(id));
         jobs.stop(id);
         // Killed by SIGTERM: no exit code.
@@ -560,7 +567,7 @@ mod tests {
     #[test]
     fn keys_reach_the_program() {
         let (jobs, rx) = jobs();
-        let id = jobs.run_named("read", "read line; echo got $line", false, None).unwrap();
+        let id = jobs.run_named("read", "read line; echo got $line", false, None, None).unwrap();
         until(&rx, |e| *e == Event::Started(id));
         jobs.write(id, b"hello\r");
         until(&rx, exited);
@@ -570,7 +577,7 @@ mod tests {
     #[test]
     fn the_size_reaches_the_program() {
         let (jobs, rx) = jobs();
-        let id = jobs.run_named("size", "read; stty size", false, None).unwrap();
+        let id = jobs.run_named("size", "read; stty size", false, None, None).unwrap();
         until(&rx, |e| *e == Event::Started(id));
         jobs.resize(id, 40, 120);
         jobs.write(id, b"\r");
@@ -582,7 +589,7 @@ mod tests {
     fn a_long_line_reads_back_whole() {
         let (jobs, rx) = jobs();
         // Wider than the 80 columns it runs in, among enough lines to reach the scrollback.
-        let id = jobs.run_named("wide", "seq 1 40; printf '%0200d\\n' 7; seq 41 80", false, None).unwrap();
+        let id = jobs.run_named("wide", "seq 1 40; printf '%0200d\\n' 7; seq 41 80", false, None, None).unwrap();
         until(&rx, exited);
         let text = jobs.output(id, 1000);
         let wide = format!("{:0200}", 7);
@@ -609,7 +616,7 @@ mod tests {
     fn keys_wait_for_a_program_that_does_not_read() {
         let (jobs, rx) = jobs();
         // It never reads: a big paste must not hold up the caller.
-        let id = jobs.run_named("deaf", "sleep 3", false, None).unwrap();
+        let id = jobs.run_named("deaf", "sleep 3", false, None, None).unwrap();
         until(&rx, |e| *e == Event::Started(id));
         let started = std::time::Instant::now();
         jobs.write(id, &vec![b'x'; 256 * 1024]);
@@ -622,7 +629,7 @@ mod tests {
     #[test]
     fn a_missing_folder_says_so() {
         let (jobs, rx) = jobs();
-        let id = jobs.run_named("x", "true", false, Some(PathBuf::from("/nonexistent/loom"))).unwrap();
+        let id = jobs.run_named("x", "true", false, Some(PathBuf::from("/nonexistent/loom")), None).unwrap();
         assert_eq!(until(&rx, exited).last(), Some(&Event::Exited(id, Some(127))));
         assert!(jobs.output(id, 5).starts_with("loom: could not start"));
     }

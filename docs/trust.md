@@ -19,9 +19,18 @@ loom decides, when a connection is made; a client never says who it is.
 | Principal | Who | How loom knows |
 |---|---|---|
 | window | loom's own window | in-process, no socket |
-| agent | an agent's tools, its commands, the jobs it ran in the tray | the connecting process descends from that agent's process or job |
+| agent | an agent's tools, its commands, the jobs it ran in the tray | the connecting process is in that agent's systemd scope, or descends from its process or job |
 | bridge | Telegram, a paired phone | started by loom, over the bridge socket |
 | CLI | anything else of yours (`loom api` in a terminal, a script) | none of the above |
+
+Each agent's process, and each job an agent runs in the tray, starts in a systemd scope of
+its own (`loom-<pid>-a<agent>-<n>.scope`, through `systemd-run --user --scope`). A process
+can't leave its cgroup by itself, so whatever an agent starts stays known as that agent's,
+wherever it moves in the process tree. Without a user systemd, loom goes by the process tree
+alone (set `LOOM_NO_SCOPES=1` to choose that).
+
+An agent's loom tools (its MCP server) speak the same API, through one command, `tool`, which
+acts as the agent loom found, never as one the caller names.
 
 Other users are turned away. The connecting process is pinned with a pidfd when it
 connects, so a process id reused afterwards can't be taken for it.
@@ -41,10 +50,11 @@ connects, so a process id reused afterwards can't be taken for it.
 
 ## What this does not stop
 
-The CLI is "whatever loom can't place under an agent". A process an agent leaves running on
-its own escapes that: `setsid`, `nohup`, `cmd &` once its shell has ended, a tmux session, a
-cron or `at` job, `systemd-run --user`, a script your shell runs later. Such a process is
-taken for the CLI. That is why the CLI answers no questions and can't open a way off the
+The CLI is "whatever loom can't place under an agent". With scopes, `setsid`, `nohup`,
+`cmd &` and tmux sessions stay placed; what starts a new systemd unit escapes: `systemd-run
+--user`, a timer, a cron or `at` job, a script your shell runs later. Without scopes, any
+process an agent leaves running on its own escapes too. Such a process is taken for the
+CLI. That is why the CLI answers no questions and can't open a way off the
 machine: whatever it can do, the agent could already do by editing your files.
 
 ## The audit log

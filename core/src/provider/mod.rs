@@ -82,11 +82,12 @@ pub fn version_note() -> Option<String> {
 impl Conn {
     /// A connection for an agent working in `cwd`. Claude Code starts with the session (on
     /// `session/new`, `session/load`, `session/resume`); an adapter starts now.
-    pub fn spawn(cwd: &Path, on_incoming: impl Fn(Incoming) + 'static) -> std::io::Result<Rc<Conn>> {
+    /// `agent`: the agent it is for (its processes go in that agent's scope).
+    pub fn spawn(cwd: &Path, agent: Option<u32>, on_incoming: impl Fn(Incoming) + 'static) -> std::io::Result<Rc<Conn>> {
         let on_incoming: Rc<dyn Fn(Incoming)> = Rc::new(on_incoming);
         let link = match acp::chosen() {
-            Some(program) => Link::Acp(acp::Link::spawn(&program, cwd, on_incoming)?),
-            None => Link::Claude(claude::Link::new(cwd, on_incoming)?),
+            Some(program) => Link::Acp(acp::Link::spawn(&program, cwd, agent, on_incoming)?),
+            None => Link::Claude(claude::Link::new(cwd, agent, on_incoming)?),
         };
         Ok(Rc::new(Conn { link }))
     }

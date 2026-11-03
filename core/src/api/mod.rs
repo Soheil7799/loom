@@ -53,6 +53,8 @@ pub enum Error {
     Invalid(String),
     /// Too late: someone else acted first (a question already answered).
     Conflict(String),
+    /// It was tried and didn't work (the words say why, as they are).
+    Failed(String),
 }
 
 impl fmt::Display for Error {
@@ -61,7 +63,7 @@ impl fmt::Display for Error {
             Error::NotFound(what) => write!(f, "not found: {what}"),
             Error::Forbidden(what) => write!(f, "not allowed: {what}"),
             Error::Invalid(why) => write!(f, "invalid: {why}"),
-            Error::Conflict(why) => write!(f, "{why}"),
+            Error::Conflict(why) | Error::Failed(why) => write!(f, "{why}"),
         }
     }
 }

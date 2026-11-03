@@ -11,7 +11,6 @@ mod chat;
 mod chat_view;
 mod cheatsheet;
 mod column;
-mod control;
 mod devhooks;
 mod feed;
 mod files;

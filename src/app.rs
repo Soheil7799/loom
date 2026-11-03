@@ -705,12 +705,17 @@ impl App {
         }));
     }
 
-    /// Opens the control socket the agents' MCP servers talk to.
+    /// Opens the core API's socket: the CLI, and the agents' MCP servers (`tool`).
     fn listen(self: &Rc<Self>) {
+        // What agents ask of loom through their tools: as the agent loom knows the caller is.
         let weak = Rc::downgrade(self);
-        crate::control::serve(crate::control::socket_path(&self.app_id), move |agent, method, params| {
-            let app = weak.upgrade().ok_or("loom is closing")?;
-            app.control(agent, method, params)
+        loom_core::api::hub().handle("tool", move |who, params| {
+            use loom_core::api::{Error, Principal};
+            let Principal::Agent(id) = who else { return Err(Error::Forbidden("an agent's tools, but for agents".into())) };
+            let id: u32 = id.parse().map_err(|_| Error::Forbidden("an agent's tools, but for agents loom started".into()))?;
+            let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let name = params["name"].as_str().ok_or_else(|| Error::Invalid("which tool?".into()))?;
+            app.control(id, name, &params["params"]).map_err(Error::Failed)
         });
         // Agents started and closed through the API: by people only (the window, the CLI).
         let human = |who: &loom_core::api::Principal| matches!(who, loom_core::api::Principal::Window | loom_core::api::Principal::Cli);
@@ -742,11 +747,17 @@ impl App {
             Ok(serde_json::json!({}))
         });
         // The core API, for the CLI and the clients to come (`loom api --help`).
-        let ws = Rc::downgrade(&self.ws);
+        let weak = Rc::downgrade(self);
         let path = loom_core::api::socket::socket_path(&self.app_id);
-        let owner = move |pid| ws.upgrade()?.agent_of_process(pid).map(|id| loom_core::api::Principal::Agent(id.to_string()));
-        if let Err(err) = loom_core::api::socket::serve(&path, owner) {
-            eprintln!("loom: no API socket at {}: {err}", path.display());
+        // The agent a process is under: the workspace's, or a Notes chat's.
+        let owner = move |pid| {
+            let app = weak.upgrade()?;
+            let id = app.ws.agent_of_process(pid).or_else(|| app.notes_chat.agents().iter().find(|a| a.adapter_pid() == Some(pid)).map(|a| a.id))?;
+            Some(loom_core::api::Principal::Agent(id.to_string()))
+        };
+        match loom_core::api::socket::serve(&path, owner) {
+            Ok(()) => loom_core::control::set_current(path),
+            Err(err) => eprintln!("loom: no API socket at {}: {err}", path.display()),
         }
     }
 
@@ -2659,7 +2670,7 @@ impl App {
         for tray in self.trays.borrow().values() {
             tray.stop_all();
         }
-        if let Some(socket) = crate::control::current() {
+        if let Some(socket) = loom_core::control::current() {
             let _ = std::fs::remove_file(socket);
         }
         glib::Propagation::Proceed

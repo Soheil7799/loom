@@ -203,6 +203,10 @@ fn command_line(pid: u32) -> String {
 
 /// Who process `pid` speaks for: the first of its ancestors `owner` knows, else the CLI.
 pub fn principal_of(pid: u32, owner: &impl Fn(u32) -> Option<Principal>) -> Principal {
+    // In an agent's scope: that agent's, wherever it went in the process tree.
+    if let Some(agent) = crate::scope::agent_of(pid) {
+        return Principal::Agent(agent.to_string());
+    }
     let me = std::process::id();
     let mut at = pid;
     for _ in 0..64 {

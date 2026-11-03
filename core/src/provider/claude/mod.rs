@@ -93,6 +93,8 @@ pub struct Link {
     cwd: PathBuf,
     on_incoming: Rc<dyn Fn(Incoming)>,
     process: RefCell<Option<Rc<Process>>>,
+    /// The agent it runs for (its process in that agent's scope).
+    agent: Option<u32>,
     /// Which process is the current one (what an older one says after it is replaced is not
     /// heard).
     generation: Cell<u64>,
@@ -171,7 +173,7 @@ fn error(message: &str) -> Value {
 }
 
 impl Link {
-    pub fn new(cwd: &Path, on_incoming: Rc<dyn Fn(Incoming)>) -> std::io::Result<Rc<Link>> {
+    pub fn new(cwd: &Path, agent: Option<u32>, on_incoming: Rc<dyn Fn(Incoming)>) -> std::io::Result<Rc<Link>> {
         // Claude Code starts later (with the session), but a folder that is gone fails now,
         // as starting a program in it would.
         if !cwd.is_dir() {
@@ -180,6 +182,7 @@ impl Link {
         Ok(Rc::new_cyclic(|me| Link {
             me: me.clone(),
             cwd: cwd.to_owned(),
+            agent,
             on_incoming,
             process: RefCell::default(),
             generation: Cell::new(0),
@@ -543,7 +546,7 @@ impl Link {
         let me = self.me.clone();
         // File checkpoints (to undo Claude's edits back to a message), as the Agent SDK has them.
         let env = [("CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING", "true"), ("CLAUDE_CODE_ENTRYPOINT", "sdk-ts")];
-        let process = match Process::spawn(&program, &self.cwd, &env, "claude", move |line| {
+        let process = match Process::spawn(&program, &self.cwd, &env, "claude", self.agent, move |line| {
             if let Some(link) = me.upgrade().filter(|l| l.generation.get() == generation) {
                 match line {
                     Some(message) => link.handle(message),

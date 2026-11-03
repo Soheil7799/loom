@@ -39,7 +39,7 @@ pub fn list(done: impl FnOnce(Result<Vec<Past>, String>) + 'static) -> Option<st
         })
     };
     let on_exit = finish.clone();
-    let conn = match Conn::spawn(&crate::paths::home(), move |incoming| {
+    let conn = match Conn::spawn(&crate::paths::home(), None, move |incoming| {
         if let crate::provider::Incoming::Exited = incoming {
             on_exit(Err("the agent program stopped".to_owned()));
         }
@@ -88,7 +88,7 @@ pub fn delete(session: String, done: impl FnOnce(Result<(), String>) + 'static) 
         })
     };
     let on_exit = finish.clone();
-    let conn = match Conn::spawn(&crate::paths::home(), move |incoming| {
+    let conn = match Conn::spawn(&crate::paths::home(), None, move |incoming| {
         if let crate::provider::Incoming::Exited = incoming {
             on_exit(Err("the agent program stopped".to_owned()));
         }

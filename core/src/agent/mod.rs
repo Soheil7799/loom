@@ -676,7 +676,7 @@ impl Agent {
         }
         crate::log::debug!(format!("agent {}", self.id), "start in {} (session {:?})", self.cwd.display(), self.session_id());
         let weak = Rc::downgrade(self);
-        let conn = match Conn::spawn(&self.cwd, move |incoming| {
+        let conn = match Conn::spawn(&self.cwd, Some(self.id), move |incoming| {
             if let Some(agent) = weak.upgrade() {
                 agent.incoming(incoming);
             }
@@ -1127,7 +1127,7 @@ impl Agent {
 
     /// Runs Claude Code's login in the tray, then starts the agent again once it is done.
     fn login(self: &Rc<Self>) {
-        match self.jobs.run_named("login", "claude /login", true, Some(self.cwd.clone())) {
+        match self.jobs.run_named("login", "claude /login", true, Some(self.cwd.clone()), None) {
             Ok(job) => {
                 self.view.show_job(job);
                 // Once the login has worked, the agent starts again (one watch at a time).

@@ -303,8 +303,7 @@ impl Workspace {
                     }
                     None => None,
                 };
-                let id = agent.jobs.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd)?;
-                agent.jobs.set_by(id, agent.id);
+                agent.jobs.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd, Some(agent.id))?;
                 Ok(json!({ "name": name }))
             })(),
             "job_output" => (|| {

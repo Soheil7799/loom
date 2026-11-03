@@ -1,9 +1,11 @@
 //! `loom mcp`: the MCP server loom gives every agent (stdio, one JSON-RPC message per line).
-//! Its tools act on the running app through the control socket: named jobs in the tray
+//! Its tools act on the running app through the core API (the `tool` command): named jobs in the tray
 //! (loom's answer to herdr's named panes), files opened for the user, notifications. With the
 //! Notes add-on on, also the user's notes: searched and read here, from the vault's index.
 //!
-//! LOOM_SOCKET and LOOM_AGENT, set by loom when it starts the agent, say where and who.
+//! LOOM_SOCKET, set by loom when it starts the agent, says where loom's API is. Who the
+//! agent is, loom works out from the process that connects (this one, under the agent's), never
+//! from what it says: an agent can't act as another.
 
 use std::collections::HashMap;
 use std::io::{BufRead, Write};
@@ -14,7 +16,6 @@ use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
 
-use crate::control;
 
 const PROTOCOL: &str = "2025-06-18";
 
@@ -23,8 +24,15 @@ static NOTES: Mutex<Option<crate::notes::Index>> = Mutex::new(None);
 
 /// The Notes vault loom has (None: the add-on is off, or no vault chosen).
 fn vault(socket: &str, agent: u32) -> Option<PathBuf> {
-    let info = control::call(socket, agent, "notes_info", json!({})).ok()?;
+    let info = call(socket, agent, "notes_info", json!({})).ok()?;
     info["vault"].as_str().map(PathBuf::from)
+}
+
+/// One of the agent's tools, done by loom (`tool` in the core API, for agents only).
+fn call(socket: &str, _agent: u32, name: &str, params: Value) -> Result<Value, String> {
+    use crate::api::cli::{Connection, new_id};
+    let mut loom = Connection::open(std::path::Path::new(socket)).map_err(|e| format!("{e}; is loom still open?"))?;
+    loom.command(&new_id(), "tool", json!({ "name": name, "params": params })).map_err(|e| e.message)
 }
 
 /// Calls in flight, by request id: set to stop one (the client cancelled it).
@@ -303,16 +311,16 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
     let args = &params["arguments"];
     let result = match params["name"].as_str().unwrap_or("") {
         "loom_wait" => wait(socket, agent, args, cancelled),
-        "loom_run" => control::call(socket, agent, "run_job", args.clone()).map(|v| {
+        "loom_run" => call(socket, agent, "run_job", args.clone()).map(|v| {
             format!("Started job {} in loom's tray. Use loom_wait or loom_output to follow it.", v["name"].as_str().unwrap_or("?"))
         }),
-        "loom_output" => control::call(socket, agent, "job_output", args.clone()).map(describe_job),
-        "loom_stop" => control::call(socket, agent, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),
-        "loom_jobs" => control::call(socket, agent, "list_jobs", json!({})).map(|v| pretty(&v)),
-        "loom_open" => control::call(socket, agent, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
+        "loom_output" => call(socket, agent, "job_output", args.clone()).map(describe_job),
+        "loom_stop" => call(socket, agent, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),
+        "loom_jobs" => call(socket, agent, "list_jobs", json!({})).map(|v| pretty(&v)),
+        "loom_open" => call(socket, agent, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
         "loom_edit" => edit(socket, agent, args, cancelled),
-        "loom_notify" => control::call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
-        "loom_agents" => control::call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
+        "loom_notify" => call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
+        "loom_agents" => call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
         tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
         tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, agent, tool, args),
         other => Err(format!("unknown tool {other}")),
@@ -329,7 +337,7 @@ fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
     let lines = args["lines"].as_u64().unwrap_or(40);
     let started = Instant::now();
     loop {
-        let job = control::call(socket, agent, "job_output", json!({ "name": args["name"], "lines": 400 }))?;
+        let job = call(socket, agent, "job_output", json!({ "name": args["name"], "lines": 400 }))?;
         let output = job["output"].as_str().unwrap_or("");
         let matched = until.is_some_and(|u| output.contains(u));
         if !job["running"].as_bool().unwrap_or(false) || matched || started.elapsed() >= timeout {
@@ -354,7 +362,7 @@ fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
 
 /// loom_edit: the file opened for the user, then waiting (cancellable) for Done or Cancel.
 fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
-    let asked = control::call(socket, agent, "request_edit", json!({ "path": args["path"], "message": args["message"] }))?;
+    let asked = call(socket, agent, "request_edit", json!({ "path": args["path"], "message": args["message"] }))?;
     let id = asked["id"].as_u64().ok_or("loom did not open the file")?;
     let path = asked["path"].as_str().unwrap_or("").to_owned();
     let secret = args["secret"].as_bool().unwrap_or(true);
@@ -362,14 +370,14 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
     let template = std::fs::read_to_string(&path).unwrap_or_default();
     loop {
         if cancelled.load(Ordering::Relaxed) {
-            let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
+            let _ = call(socket, agent, "edit_cancel", json!({ "id": id }));
             return Err("cancelled".to_owned());
         }
-        let state = control::call(socket, agent, "edit_state", json!({ "id": id }))?;
+        let state = call(socket, agent, "edit_state", json!({ "id": id }))?;
         match state["state"].as_str().unwrap_or("gone") {
             "waiting" => std::thread::sleep(Duration::from_millis(500)),
             "done" => {
-                let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
+                let _ = call(socket, agent, "edit_cancel", json!({ "id": id }));
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
                 return Ok(if secret {
                     format!("The user filled in {path} and pressed Done. {} Don't read the file or print its values: use it as it is.", keys_set(&template, &text))
@@ -378,7 +386,7 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
                 });
             }
             "cancelled" => {
-                let _ = control::call(socket, agent, "edit_cancel", json!({ "id": id }));
+                let _ = call(socket, agent, "edit_cancel", json!({ "id": id }));
                 return Ok(format!("The user cancelled: {path} was not filled in. Ask them what to do instead."));
             }
             _ => return Err("the request is gone (loom was closed or restarted)".to_owned()),

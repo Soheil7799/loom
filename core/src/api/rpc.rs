@@ -38,6 +38,7 @@ pub const UNSUPPORTED_PROTOCOL: i64 = -32003;
 pub const NOT_FOUND: i64 = -32010;
 pub const FORBIDDEN: i64 = -32011;
 pub const CONFLICT: i64 = -32012;
+pub const FAILED: i64 = -32013;
 
 /// Where a session's lines go.
 pub struct Out {
@@ -80,6 +81,7 @@ impl From<Error> for Failure {
             Error::Forbidden(_) => (FORBIDDEN, "forbidden"),
             Error::Invalid(_) => (INVALID_PARAMS, "invalid"),
             Error::Conflict(_) => (CONFLICT, "conflict"),
+            Error::Failed(_) => (FAILED, "failed"),
         };
         Failure { code, message: error.to_string(), data: json!({ "kind": kind }) }
     }

@@ -27,9 +27,13 @@ pub fn log_path() -> PathBuf {
 }
 
 impl Process {
-    /// Starts `program` in `cwd` (with `env` set); `on_line` gets each line read (None: the
-    /// output ended).
-    pub fn spawn(program: &[String], cwd: &Path, env: &[(&str, &str)], name: &str, on_line: impl Fn(Option<Value>) + 'static) -> std::io::Result<Rc<Process>> {
+    /// Starts `program` in `cwd` (with `env` set), in a scope of `agent`'s if it is an agent's
+    /// (`scope`); `on_line` gets each line read (None: the output ended).
+    pub fn spawn(program: &[String], cwd: &Path, env: &[(&str, &str)], name: &str, agent: Option<u32>, on_line: impl Fn(Option<Value>) + 'static) -> std::io::Result<Rc<Process>> {
+        let program = &match agent {
+            Some(agent) => crate::scope::wrap(program, agent),
+            None => program.to_vec(),
+        };
         let log = log_path();
         if let Some(dir) = log.parent() {
             let _ = std::fs::create_dir_all(dir);
