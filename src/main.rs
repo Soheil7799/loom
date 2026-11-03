@@ -137,6 +137,8 @@ fn main() -> glib::ExitCode {
     // The notes vault in the core API (warp).
     loom_core::notes_api::serve();
     loom_core::api::blobs::serve();
+    loom_core::agent::commands::serve();
+    loom_core::jobs_api::serve();
     log::name_for(&app_id);
     log::install();
     // GTK's own warnings go into the log too.

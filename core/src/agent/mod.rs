@@ -19,7 +19,7 @@ use crate::provider::{self, Conn, Incoming};
 use crate::rt::Timer;
 use crate::state::Saved;
 
-mod commands;
+pub mod commands;
 pub mod form;
 pub mod transcript;
 pub mod view;

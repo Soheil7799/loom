@@ -258,7 +258,10 @@ mod tests {
     use super::*;
     use crate::api::Limits;
 
-    fn session(hub: &Hub, who: Principal) -> (Rc<Session>, Rc<RefCell<Vec<Value>>>, Rc<Cell<bool>>) {
+    /// A session, the lines it sent, and whether its client keeps up.
+    type Test = (Rc<Session>, Rc<RefCell<Vec<Value>>>, Rc<Cell<bool>>);
+
+    fn session(hub: &Hub, who: Principal) -> Test {
         let lines: Rc<RefCell<Vec<Value>>> = Rc::default();
         let room = Rc::new(Cell::new(true));
         let (sent, has_room) = (lines.clone(), room.clone());

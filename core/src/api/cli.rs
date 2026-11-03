@@ -64,6 +64,11 @@ impl Connection {
         Ok(connection)
     }
 
+    /// How long a read waits (None: for ever); past it, reading fails.
+    pub fn set_read_timeout(&self, timeout: Option<std::time::Duration>) -> Result<(), Failure> {
+        self.reader.get_ref().set_read_timeout(timeout).map_err(io)
+    }
+
     fn send(&mut self, message: &Value) -> Result<(), Failure> {
         writeln!(self.writer, "{message}").map_err(io)
     }

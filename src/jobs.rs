@@ -423,8 +423,8 @@ impl Job {
         self.draw();
     }
 
-    /// What came for its terminal, fed to it: a screen (it starts over), or bytes (they go on
-    /// where it is; any others mean some were missed, and a fresh screen is asked for).
+    /// What came for its terminal, fed to it: a screen (it starts over), or bytes (what it
+    /// lacks of them; bytes past where it is mean some were missed: a fresh screen is asked for).
     fn draw(&self) {
         let messages = match self.output.borrow().as_ref() {
             Some(sub) => sub.drain(),
@@ -448,13 +448,13 @@ impl Job {
                     missed = false;
                 }
                 Op::Bytes { offset, data, .. } if !missed => {
-                    if offset != self.offset.get() {
+                    // What its screen already holds is dropped; past where it is, some were missed.
+                    let Some(bytes) = wire::unseen(self.offset.get(), offset, &data) else {
                         missed = true;
                         continue;
-                    }
-                    let bytes = wire::bytes_of(&data);
+                    };
                     self.term.feed(&bytes);
-                    self.offset.set(offset + bytes.len() as u64);
+                    self.offset.set(self.offset.get() + bytes.len() as u64);
                 }
                 _ => {}
             }

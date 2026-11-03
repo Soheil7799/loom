@@ -712,6 +712,35 @@ impl App {
             let app = weak.upgrade().ok_or("loom is closing")?;
             app.control(agent, method, params)
         });
+        // Agents started and closed through the API: by people only (the window, the CLI).
+        let human = |who: &loom_core::api::Principal| matches!(who, loom_core::api::Principal::Window | loom_core::api::Principal::Cli);
+        let weak = Rc::downgrade(self);
+        loom_core::api::hub().handle("new_agent", move |who, params| {
+            use loom_core::api::Error;
+            if !human(who) {
+                return Err(Error::Forbidden("starting agents".into()));
+            }
+            let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let folder = params["folder"].as_str().map(|f| crate::state::expand(Path::new(f))).ok_or_else(|| Error::Invalid("new_agent needs a folder".into()))?;
+            if !folder.is_absolute() || !folder.is_dir() {
+                return Err(Error::Invalid(format!("{} is not a folder", folder.display())));
+            }
+            let agent = app.add_agent(Saved::new(folder));
+            app.refresh_sidebar();
+            Ok(serde_json::json!({ "agent": agent.id.to_string() }))
+        });
+        let weak = Rc::downgrade(self);
+        loom_core::api::hub().handle("close_agent", move |who, params| {
+            use loom_core::api::Error;
+            if !human(who) {
+                return Err(Error::Forbidden("closing agents".into()));
+            }
+            let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let id = params["agent"].as_str().ok_or_else(|| Error::Invalid("which agent?".into()))?;
+            let agent = id.parse().ok().and_then(|id| app.agent_by_id(id)).ok_or_else(|| Error::NotFound(format!("agent {id}")))?;
+            app.close_agent(&agent);
+            Ok(serde_json::json!({}))
+        });
         // The core API, for the CLI and the clients to come (`loom api --help`).
         let ws = Rc::downgrade(&self.ws);
         let path = loom_core::api::socket::socket_path(&self.app_id);

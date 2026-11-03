@@ -22,16 +22,22 @@ thread_local! {
     static AGENTS: RefCell<HashMap<u32, Weak<Agent>>> = RefCell::default();
 }
 
-/// `agent` can be told things through the API from now on (the commands are set up with the
-/// first one).
+/// `agent` can be told things through the API from now on.
 pub(super) fn register(agent: &Rc<Agent>) {
-    let first = AGENTS.with_borrow_mut(|agents| {
+    AGENTS.with_borrow_mut(|agents| {
         agents.retain(|_, a| a.strong_count() > 0);
-        let first = agents.is_empty();
         agents.insert(agent.id, Rc::downgrade(agent));
-        first
     });
-    if first {
+    serve();
+}
+
+thread_local! {
+    static SERVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Registers the commands (once; a client learns of them at `initialize`, agents or not).
+pub fn serve() {
+    if !SERVED.with(|s| s.replace(true)) {
         handle();
     }
 }

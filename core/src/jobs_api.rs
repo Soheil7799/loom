@@ -9,7 +9,8 @@
 //!   terminal; an `upsert` of the item (a new run) starts over. The screen is worked out for
 //!   each new follower, the bytes sent only while someone follows.
 //!
-//! Commands: `stop_job` and `restart_job` (`{job}`), for loom's window and the CLI.
+//! Commands, for loom's window and the CLI: `run_job` (`{project, command, name?}`: a new job
+//! in that project's tray; `{job}` back), `stop_job` and `restart_job` (`{job}`).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -28,13 +29,8 @@ thread_local! {
 /// Publishes `jobs` in the core API from its `events`, which come out again (for a UI that
 /// still wants them). Runs on the core's thread.
 pub fn published(jobs: &Jobs, events: Receiver<Event>) -> Receiver<Event> {
-    let first = PROJECTS.with_borrow_mut(|projects| {
-        projects.push(jobs.clone());
-        projects.len() == 1
-    });
-    if first {
-        handle();
-    }
+    PROJECTS.with_borrow_mut(|projects| projects.push(jobs.clone()));
+    serve();
     crate::api::hub().store("jobs");
     let (tx, rx) = async_channel::unbounded();
     let jobs = jobs.clone();
@@ -76,13 +72,11 @@ fn publish(jobs: &Jobs, event: &Event, told: &mut HashMap<Id, u64>) {
             if !output.followed() {
                 return;
             }
-            // The followers' screen may hold some of these bytes already (it was worked out
-            // after they were printed, before they were told here): only the rest goes.
-            let held = output.get("output").and_then(|o| o["offset"].as_u64()).unwrap_or(0);
-            let skip = held.saturating_sub(start) as usize;
-            if skip < bytes.len() {
-                output.bytes("output", start + skip as u64, &bytes[skip..]);
-            }
+            // All of them, at their offset: a follower whose screen was worked out after some
+            // were printed (but before they were told here) drops what it has (`wire::unseen`).
+            // Followers that came at different moments are at different offsets, so the store
+            // can't trim them for everyone.
+            output.bytes("output", start, bytes);
         }
         Event::Removed(id) => {
             hub.store("jobs").remove(&id.to_string());
@@ -130,8 +124,33 @@ fn screen(jobs: &Jobs, id: Id) -> Value {
     json!({ "id": "output", "rows": rows, "cols": cols, "screen": wire::base64(&data), "offset": printed })
 }
 
+thread_local! {
+    static SERVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Registers the commands (once; a client learns of them at `initialize`, trays or not).
+pub fn serve() {
+    if !SERVED.with(|s| s.replace(true)) {
+        handle();
+    }
+}
+
 fn handle() {
     let hub = crate::api::hub();
+    hub.handle("run_job", |who, params| {
+        if !matches!(who, Principal::Window | Principal::Cli) {
+            return Err(Error::Forbidden("jobs, but from loom's window or the CLI".into()));
+        }
+        let project = params["project"].as_str().ok_or_else(|| Error::Invalid("which project?".into()))?;
+        let command = params["command"].as_str().filter(|c| !c.trim().is_empty()).ok_or_else(|| Error::Invalid("run_job needs a command".into()))?;
+        let jobs = PROJECTS.with_borrow(|projects| projects.iter().find(|p| p.cwd() == std::path::Path::new(project)).cloned());
+        let jobs = jobs.ok_or_else(|| Error::NotFound(format!("project {project}")))?;
+        let name = match params["name"].as_str().filter(|n| !n.trim().is_empty()) {
+            Some(name) => name.to_owned(),
+            None => command.split_whitespace().next().unwrap_or("job").rsplit('/').next().unwrap_or("job").to_owned(),
+        };
+        Ok(json!({ "job": jobs.run(&name, command, None).to_string() }))
+    });
     hub.handle("stop_job", |who, params| {
         let (jobs, id) = target(who, params)?;
         jobs.stop(id);

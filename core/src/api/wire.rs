@@ -45,7 +45,9 @@ pub enum Op {
     /// The items' order: these ids first, in this order; ids not here keep theirs, after them.
     Order { ids: Vec<String> },
     /// Bytes added to an item's byte stream (a job's output): `data` (base64) starts at byte
-    /// `offset` of it. The item's `offset` says where it is: an op starting elsewhere is a gap.
+    /// `offset` of it. The item's `offset` says where a follower's copy is: bytes before it
+    /// it has already (its screen was made after them) and drops; an op starting past it
+    /// means some were missed (a gap: resync). See [`unseen`].
     Bytes { id: String, offset: u64, data: String },
     #[serde(other)]
     Unknown,
@@ -87,7 +89,8 @@ pub fn apply(items: &mut Vec<Value>, op: &Op) {
         }
         Op::Bytes { id, offset, data } => {
             if let Some(i) = at(items, id) {
-                items[i]["offset"] = Value::from(offset + bytes_of(data).len() as u64);
+                let had = items[i]["offset"].as_u64().unwrap_or(0);
+                items[i]["offset"] = Value::from(had.max(offset + bytes_of(data).len() as u64));
             }
         }
         Op::Order { ids } => {
@@ -102,6 +105,17 @@ pub fn apply(items: &mut Vec<Value>, op: &Op) {
         }
         Op::Unknown => {}
     }
+}
+
+/// Of bytes `data` (base64) starting at byte `offset` of a stream, those a follower whose copy
+/// is at byte `at` lacks (empty: it has them all); None: some before them were missed.
+pub fn unseen(at: u64, offset: u64, data: &str) -> Option<Vec<u8>> {
+    if offset > at {
+        return None;
+    }
+    let bytes = bytes_of(data);
+    let skip = ((at - offset) as usize).min(bytes.len());
+    Some(bytes[skip..].to_vec())
 }
 
 /// Bytes as the API carries them (base64).
@@ -144,6 +158,20 @@ mod tests {
         assert_eq!(m.body, Body::Unknown);
         let m: Message = serde_json::from_value(json!({"sub": "s1", "seq": 2, "kind": "changes", "later": 1, "ops": [{"op": "twist", "id": "a"}, {"op": "remove", "id": "a", "why": "x"}]})).unwrap();
         assert_eq!(m.body, Body::Changes { ops: vec![Op::Unknown, Op::Remove { id: "a".into() }] });
+    }
+
+    #[test]
+    fn a_follower_takes_only_the_bytes_its_copy_lacks() {
+        let data = base64(b"0123456789ab");
+        assert_eq!(unseen(10, 0, &data), Some(b"ab".to_vec()), "a screen made after the first ten");
+        assert_eq!(unseen(0, 0, &data), Some(b"0123456789ab".to_vec()));
+        assert_eq!(unseen(20, 0, &data), Some(Vec::new()), "all held already");
+        assert_eq!(unseen(5, 6, &data), None, "one byte missed");
+        let mut items = vec![json!({ "id": "output", "offset": 10 })];
+        apply(&mut items, &Op::Bytes { id: "output".into(), offset: 0, data: data.clone() });
+        assert_eq!(items[0]["offset"], 12);
+        apply(&mut items, &Op::Bytes { id: "output".into(), offset: 0, data: base64(b"01") });
+        assert_eq!(items[0]["offset"], 12, "never back");
     }
 
     #[test]
