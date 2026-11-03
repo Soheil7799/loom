@@ -12,6 +12,9 @@ use serde_json::Value;
 
 use super::wire::{self, Body, Message, Op, id_of};
 
+/// What brings a store's items up to date before a snapshot.
+type Refresh = Rc<dyn Fn(&Store)>;
+
 /// How big things get before they are split or dropped.
 #[derive(Clone, Copy, Debug)]
 pub struct Limits {
@@ -34,6 +37,9 @@ pub struct Store(Rc<Inner>);
 struct Inner {
     name: String,
     limits: Limits,
+    /// Brings the items up to date before a snapshot (a resource worked out only while
+    /// someone follows it).
+    refresh: RefCell<Option<Refresh>>,
     /// Whether changes go out by themselves (on the core's thread, once idle) or only on
     /// `flush` (tests, which have no main loop).
     auto: bool,
@@ -52,7 +58,17 @@ struct State {
 
 impl Store {
     pub(crate) fn new(name: &str, limits: Limits, auto: bool) -> Store {
-        Store(Rc::new(Inner { name: name.to_string(), limits, auto, state: RefCell::default() }))
+        Store(Rc::new(Inner { name: name.to_string(), limits, refresh: RefCell::default(), auto, state: RefCell::default() }))
+    }
+
+    /// `refresh` brings the items up to date whenever a subscriber is about to get them.
+    pub fn on_subscribe(&self, refresh: impl Fn(&Store) + 'static) {
+        *self.0.refresh.borrow_mut() = Some(Rc::new(refresh));
+    }
+
+    /// Whether anyone follows it.
+    pub fn followed(&self) -> bool {
+        self.0.state.borrow().subs.iter().any(|w| w.strong_count() > 0)
     }
 
     pub fn name(&self) -> &str {
@@ -230,6 +246,10 @@ impl Store {
     /// Follows the store: the snapshot is waiting in the subscription when this returns;
     /// `ready` is called whenever more is (it should `drain` it, soon).
     pub(crate) fn subscribe(&self, id: String, ready: Box<dyn Fn()>) -> Subscription {
+        let refresh = self.0.refresh.borrow().clone();
+        if let Some(refresh) = refresh {
+            refresh(self);
+        }
         let sub = Rc::new(SubInner { id, store: Rc::downgrade(&self.0), out: RefCell::default(), ready });
         self.snapshot_into(&sub);
         self.0.state.borrow_mut().subs.push(Rc::downgrade(&sub));

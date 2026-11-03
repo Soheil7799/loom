@@ -11,6 +11,7 @@ pub mod control;
 pub mod history;
 pub mod hub;
 pub mod jobs;
+pub mod jobs_api;
 pub mod journal;
 pub mod log;
 pub mod mcp;

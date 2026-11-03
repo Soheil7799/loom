@@ -71,6 +71,8 @@ impl Tray {
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
         let (core, events) = Jobs::new(cwd);
+        // Through the core API's publisher (warp): what the tray draws, `jobs` shows too.
+        let events = loom_core::jobs_api::published(&core, events);
         let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default() });
         let weak = Rc::downgrade(&tray);
         glib::spawn_future_local(async move {
@@ -99,11 +101,17 @@ impl Tray {
     /// What a job did, drawn.
     fn show(self: &Rc<Self>, event: Event) {
         let id = match &event {
-            Event::Added(id) | Event::Started(id) | Event::Restarting(id) | Event::Output(id, _) | Event::Exited(id, _) => *id,
+            Event::Added(id) | Event::Started(id) | Event::Restarting(id) | Event::Output(id, _) | Event::Exited(id, _) | Event::Removed(id) => *id,
         };
+
+        if matches!(event, Event::Removed(_)) {
+            return;
+        }
         let Some(job) = self.adopt(id) else { return };
         match event {
             Event::Added(_) => {}
+            // Its chip went with it (the tray removed it).
+            Event::Removed(_) => {}
             Event::Started(_) => {
                 // Run again, maybe with another command (an agent's run_job).
                 if let Some(info) = self.core.info(id) {

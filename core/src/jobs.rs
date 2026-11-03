@@ -22,6 +22,9 @@ const DRAIN: Duration = Duration::from_millis(500);
 
 pub type Id = u64;
 
+/// Ids for jobs, unique across projects (the core API names jobs by them alone).
+static NEXT: AtomicU64 = AtomicU64::new(1);
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// A new job (its name and command: `info`).
@@ -34,6 +37,8 @@ pub enum Event {
     Output(Id, Vec<u8>),
     /// It ended: the exit code, None when killed by a signal or unknown.
     Exited(Id, Option<i64>),
+    /// It was removed (stopped and forgotten).
+    Removed(Id),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -54,7 +59,6 @@ pub struct Jobs {
 struct Inner {
     cwd: PathBuf,
     jobs: Mutex<Vec<Arc<Job>>>,
-    next: AtomicU64,
     events: async_channel::Sender<Event>,
 }
 
@@ -93,7 +97,7 @@ impl Jobs {
     /// Jobs running in `cwd`, and where their events arrive.
     pub fn new(cwd: PathBuf) -> (Jobs, async_channel::Receiver<Event>) {
         let (events, rx) = async_channel::unbounded();
-        let inner = Inner { cwd, jobs: Mutex::default(), next: AtomicU64::new(1), events };
+        let inner = Inner { cwd, jobs: Mutex::default(), events };
         (Jobs { inner: Arc::new(inner) }, rx)
     }
 
@@ -122,7 +126,7 @@ impl Jobs {
 
     /// Runs `command` as a new job, whatever else bears its name (the user's own runs).
     pub fn run(&self, name: &str, command: &str, cwd: Option<PathBuf>) -> Id {
-        let id = self.inner.next.fetch_add(1, Ordering::Relaxed);
+        let id = NEXT.fetch_add(1, Ordering::Relaxed);
         let size = PtySize { rows: 24, cols: 80, pixel_width: 0, pixel_height: 0 };
         let job = Arc::new(Job {
             id,
@@ -164,6 +168,7 @@ impl Jobs {
     pub fn remove(&self, id: Id) {
         self.stop(id);
         self.inner.jobs.lock().unwrap().retain(|job| job.id != id);
+        self.inner.emit(Event::Removed(id));
     }
 
     /// Stops every job (on quit).
@@ -213,6 +218,16 @@ impl Jobs {
     /// Every job, oldest first.
     pub fn list(&self) -> Vec<Info> {
         self.inner.jobs.lock().unwrap().iter().map(|job| info(job)).collect()
+    }
+
+    /// Its screen as terminal output that draws it again (escapes and all), and its size
+    /// (rows, columns).
+    pub fn screen(&self, id: Id) -> Option<(Vec<u8>, u16, u16)> {
+        let job = self.get(id)?;
+        let state = job.state.lock().unwrap();
+        let screen = state.screen.screen();
+        let (rows, cols) = screen.size();
+        Some((screen.contents_formatted(), rows, cols))
     }
 
     /// The last `lines` lines it printed, as text.
