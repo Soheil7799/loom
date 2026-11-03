@@ -208,6 +208,12 @@ impl Workspace {
         self.agents.borrow().iter().find(|a| a.id == id).cloned()
     }
 
+    /// The agent whose process is `pid`: its adapter, or a job it ran.
+    pub fn agent_of_process(&self, pid: u32) -> Option<u32> {
+        let agents = self.agents.borrow();
+        agents.iter().find(|a| a.adapter_pid() == Some(pid)).map(|a| a.id).or_else(|| agents.iter().find_map(|a| a.jobs.agent_of(pid)))
+    }
+
     /// The open agent with conversation `session`.
     pub fn agent_with_session(&self, session: &str) -> Option<Rc<Agent>> {
         self.agents.borrow().iter().find(|a| a.session_id().as_deref() == Some(session)).cloned()
@@ -297,7 +303,8 @@ impl Workspace {
                     }
                     None => None,
                 };
-                agent.jobs.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd)?;
+                let id = agent.jobs.run_named(&name, command, params["restart"].as_bool().unwrap_or(false), cwd)?;
+                agent.jobs.set_by(id, agent.id);
                 Ok(json!({ "name": name }))
             })(),
             "job_output" => (|| {

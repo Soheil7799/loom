@@ -93,6 +93,11 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);
     }
+    // `loom api …`: the core API's command-line client (no window).
+    if std::env::args().nth(1).as_deref() == Some("api") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        return glib::ExitCode::from(loom_core::api::cli::run(&args) as u8);
+    }
     // `loom bridge <name>`: a bridge, started by loom itself (see bridges.rs).
     if std::env::args().nth(1).as_deref() == Some("bridge") {
         return match std::env::args().nth(2).as_deref() {
@@ -131,6 +136,7 @@ fn main() -> glib::ExitCode {
     settings::init(&app_id);
     // The notes vault in the core API (warp).
     loom_core::notes_api::serve();
+    loom_core::api::blobs::serve();
     log::name_for(&app_id);
     log::install();
     // GTK's own warnings go into the log too.

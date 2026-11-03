@@ -77,6 +77,8 @@ struct State {
     /// Asked to run again while still running: the exit starts it (one restart, however many
     /// times it was asked).
     restart_pending: bool,
+    /// The agent that ran it (its runs then speak to the API as that agent).
+    by: Option<u32>,
     run: Option<Run>,
     /// Counts runs, so a late thread of an old run touches nothing.
     generation: u64,
@@ -138,6 +140,7 @@ impl Jobs {
                 cwd,
                 outcome: None,
                 restart_pending: false,
+                by: None,
                 run: None,
                 generation: 0,
                 size,
@@ -243,6 +246,18 @@ impl Jobs {
 
     fn get(&self, id: Id) -> Option<Arc<Job>> {
         self.inner.jobs.lock().unwrap().iter().find(|job| job.id == id).cloned()
+    }
+
+    /// Marks job `id` as run by agent `agent` (kept through reruns: the command is the agent's).
+    pub fn set_by(&self, id: Id, agent: u32) {
+        if let Some(job) = self.get(id) {
+            job.state.lock().unwrap().by = Some(agent);
+        }
+    }
+
+    /// The agent whose job runs as process `pid`, if one does.
+    pub fn agent_of(&self, pid: u32) -> Option<u32> {
+        self.find(|s| s.run.as_ref().is_some_and(|r| r.pid == Some(pid))).and_then(|job| job.state.lock().unwrap().by)
     }
 
     fn find(&self, test: impl Fn(&State) -> bool) -> Option<Arc<Job>> {

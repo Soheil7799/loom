@@ -38,6 +38,12 @@ pub fn put(bytes: Blob) -> String {
             }
         }
     });
+    serve();
+    id
+}
+
+/// Registers the `blob` command (once; clients learn of it at `initialize`).
+pub fn serve() {
     if !SERVED.with(|served| served.replace(true)) {
         super::hub().handle("blob", |who, params| {
             if matches!(who, Principal::Agent(_)) {
@@ -48,7 +54,6 @@ pub fn put(bytes: Blob) -> String {
             Ok(json!({ "data": wire::base64(&bytes) }))
         });
     }
-    id
 }
 
 thread_local! {

@@ -712,6 +712,13 @@ impl App {
             let app = weak.upgrade().ok_or("loom is closing")?;
             app.control(agent, method, params)
         });
+        // The core API, for the CLI and the clients to come (`loom api --help`).
+        let ws = Rc::downgrade(&self.ws);
+        let path = loom_core::api::socket::socket_path(&self.app_id);
+        let owner = move |pid| ws.upgrade()?.agent_of_process(pid).map(|id| loom_core::api::Principal::Agent(id.to_string()));
+        if let Err(err) = loom_core::api::socket::serve(&path, owner) {
+            eprintln!("loom: no API socket at {}: {err}", path.display());
+        }
     }
 
     fn apply_settings(&self, s: &settings::Settings) {

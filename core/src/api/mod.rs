@@ -13,6 +13,9 @@
 //! wins and the others are told it was answered.
 
 pub mod blobs;
+pub mod cli;
+pub mod rpc;
+pub mod socket;
 mod store;
 pub mod wire;
 
@@ -148,7 +151,28 @@ impl Hub {
 
     /// What command `method` does (the part of the core that owns it says, once).
     pub fn handle(&self, method: &str, handler: impl Fn(&Principal, &Value) -> Result<Value, Error> + 'static) {
+        debug_assert!(!rpc::RESERVED.contains(&method), "{method} is one of the protocol's own methods");
         self.0.handlers.borrow_mut().insert(method.to_string(), Rc::new(handler));
+    }
+
+    /// The commands there are, sorted (what `initialize` tells a client).
+    pub fn commands(&self) -> Vec<String> {
+        let mut names: Vec<String> = self.0.handlers.borrow().keys().cloned().collect();
+        names.sort();
+        names
+    }
+
+    pub fn has_command(&self, method: &str) -> bool {
+        self.0.handlers.borrow().contains_key(method)
+    }
+
+    pub fn limits(&self) -> Limits {
+        self.0.limits
+    }
+
+    /// Whether changes go out by themselves (see `Hub::new`, `Hub::manual`).
+    pub fn auto(&self) -> bool {
+        self.0.auto
     }
 
     /// The resource `name`, made empty if it isn't there yet.
