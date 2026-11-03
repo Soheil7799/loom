@@ -116,6 +116,8 @@ pub struct Chat {
     pub input: gtk::TextView,
     last: RefCell<Last>,
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
+    /// The conversation's text messages as the core's entries (warp), by entry id.
+    entries: RefCell<HashMap<String, Rc<Message>>>,
     /// Subagents at work this turn: their task's tool call, what they last did, when.
     crew: RefCell<Vec<Crew>>,
     /// What the agent's workflows are at (see set_workflow_note).
@@ -569,6 +571,7 @@ impl Chat {
             last: RefCell::new(Last::None),
             group: RefCell::default(),
             tools: RefCell::default(),
+            entries: RefCell::default(),
             crew: RefCell::default(),
             workflow_note: RefCell::default(),
             crew_list,
@@ -2026,7 +2029,55 @@ impl Chat {
         self.group.take();
         self.messages.borrow_mut().clear();
         self.tools.borrow_mut().clear();
+        self.entries.borrow_mut().clear();
         self.set_plan(&Value::Null);
+    }
+
+    /// Entry `item` of the core's `conversation/<agent>` (warp): drawn the first time it
+    /// comes, its text and message id kept up to date after. Text entries only (`user`,
+    /// `agent`, `thought`): the rest is still drawn by the View's calls.
+    pub fn entry(&self, item: &Value) {
+        let (Some(id), Some(kind)) = (item["id"].as_str(), item["kind"].as_str()) else { return };
+        let text = item["text"].as_str().unwrap_or_default();
+        let known = self.entries.borrow().get(id).cloned();
+        let message = match known {
+            Some(message) => message,
+            None => {
+                let kind = match kind {
+                    "user" => Kind::User,
+                    "agent" => Kind::Agent,
+                    "thought" => Kind::Thought,
+                    _ => return,
+                };
+                // The summary a compacted conversation goes on from: folded, its own kind of block.
+                let message = if kind == Kind::User && text.trim_start().starts_with(SUMMARY_START) {
+                    self.summary()
+                } else {
+                    if kind == Kind::User {
+                        self.scroll_to_latest();
+                    }
+                    self.message(kind)
+                };
+                // Nothing streams onto it but its own entry.
+                *self.last.borrow_mut() = Last::None;
+                self.entries.borrow_mut().insert(id.to_owned(), message.clone());
+                message
+            }
+        };
+        if *message.text.borrow() != text {
+            *message.text.borrow_mut() = text.to_owned();
+            message.render_soon();
+        }
+        if let Some(said) = item["message"].as_str() {
+            *message.id.borrow_mut() = Some(said.to_owned());
+        }
+    }
+
+    /// Text added to entry `id`'s `field` (a streaming reply).
+    pub fn entry_append(&self, id: &str, field: &str, text: &str) {
+        let Some(message) = self.entries.borrow().get(id).cloned().filter(|_| field == "text") else { return };
+        message.text.borrow_mut().push_str(text);
+        message.render_soon();
     }
 
     pub fn user(&self, text: &str) {

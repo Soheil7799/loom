@@ -2,6 +2,7 @@
 //! the chat's buttons and keys wired to the agent.
 
 use std::any::Any;
+use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::Instant;
@@ -9,6 +10,7 @@ use std::time::Instant;
 use gtk::{gio, glib, prelude::*};
 use loom_core::agent::Agent;
 use loom_core::agent::view::{Card, Crew, Form, Png, View, Workflow};
+use loom_core::api::{Body, Op, Principal, Store, Subscription};
 use loom_core::jobs::Id;
 use serde_json::Value;
 
@@ -18,11 +20,77 @@ use crate::jobs::Tray;
 pub struct ChatView {
     pub chat: Rc<Chat>,
     tray: Weak<Tray>,
+    /// The agent's conversation in the core, once followed: the chat's text comes from it.
+    follow: RefCell<Option<Rc<Follow>>>,
 }
 
 impl ChatView {
     pub fn new(chat: Rc<Chat>, tray: &Rc<Tray>) -> Rc<ChatView> {
-        Rc::new(ChatView { chat, tray: Rc::downgrade(tray) })
+        Rc::new(ChatView { chat, tray: Rc::downgrade(tray), follow: RefCell::default() })
+    }
+
+    /// The chat's text drawn from the core's resource `conversation` from now on (warp); not
+    /// followed (no such resource), it is drawn by the View's calls as before.
+    pub fn follow(&self, conversation: &str) {
+        let client = loom_core::api::hub().connect(Principal::Window);
+        let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(conversation), chat: Rc::downgrade(&self.chat) });
+        let weak = Rc::downgrade(&follow);
+        let Ok(sub) = client.subscribe(conversation, move || {
+            if let Some(follow) = weak.upgrade() {
+                follow.update();
+            }
+        }) else {
+            return;
+        };
+        *follow.sub.borrow_mut() = Some(sub);
+        follow.update();
+        *self.follow.borrow_mut() = Some(follow);
+    }
+
+    fn following(&self) -> bool {
+        self.follow.borrow().is_some()
+    }
+
+    /// What the core has for the chat, drawn now: before anything the View draws straight
+    /// (a tool card, a notice), so that the order stays the conversation's.
+    fn sync(&self) {
+        let store = self.follow.borrow().as_ref().map(|f| f.store.clone());
+        if let Some(store) = store {
+            store.flush();
+        }
+    }
+}
+
+/// A chat following its agent's conversation in the core.
+struct Follow {
+    sub: RefCell<Option<Subscription>>,
+    store: Store,
+    chat: Weak<Chat>,
+}
+
+impl Follow {
+    fn update(&self) {
+        let Some(chat) = self.chat.upgrade() else { return };
+        let messages = match self.sub.borrow().as_ref() {
+            Some(sub) => sub.drain(),
+            None => return,
+        };
+        for message in messages {
+            match message.body {
+                // A snapshot (the first, or after a resync): what isn't drawn yet is.
+                Body::Page { items } => items.iter().for_each(|item| chat.entry(item)),
+                Body::Changes { ops } => {
+                    for op in &ops {
+                        match op {
+                            Op::Upsert { item } => chat.entry(item),
+                            Op::Append { id, field, text } => chat.entry_append(id, field, text),
+                            _ => {}
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 }
 
@@ -43,6 +111,9 @@ fn bytes(pngs: Vec<Png>) -> Vec<glib::Bytes> {
 
 /// The chat's buttons and keys, to `agent`.
 pub fn wire(agent: &Rc<Agent>, chat: &Rc<Chat>) {
+    if let Some(view) = agent.view.as_any().downcast_ref::<ChatView>() {
+        view.follow(&loom_core::agent::conversation(agent.id));
+    }
     let weak = Rc::downgrade(agent);
     *chat.on_crew_open.borrow_mut() = Some(Rc::new(move |key: String| {
         if let Some(agent) = weak.upgrade() {
@@ -181,75 +252,102 @@ impl View for ChatView {
         self
     }
     fn clear(&self) {
+        self.sync();
         self.chat.clear();
     }
     fn has_messages(&self) -> bool {
+        self.sync();
         self.chat.has_messages()
     }
     fn last_reply(&self) -> Option<String> {
+        self.sync();
         self.chat.last_reply()
     }
     fn user(&self, text: &str) {
-        self.chat.user(text);
+        if !self.following() {
+            self.chat.user(text);
+        }
     }
     fn user_chunk(&self, text: &str) {
-        self.chat.user_chunk(text);
+        if !self.following() {
+            self.chat.user_chunk(text);
+        }
     }
     fn user_images(&self, pngs: &[Png]) {
+        self.sync();
         self.chat.user_images(&bytes(pngs.to_vec()));
     }
     fn user_image_data(&self, base64: &str) {
+        self.sync();
         self.chat.user_image_data(base64);
     }
     fn agent_text_with(&self, text: &str, id: Option<&str>) {
-        self.chat.agent_text_with(text, id);
+        if !self.following() {
+            self.chat.agent_text_with(text, id);
+        }
     }
     fn thought(&self, text: &str) {
-        self.chat.thought(text);
+        if !self.following() {
+            self.chat.thought(text);
+        }
     }
     fn notice(&self, text: &str, class: &str) {
+        self.sync();
         self.chat.notice(text, class);
     }
     fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
+        self.sync();
         self.chat.notice_action(text, button, action);
     }
     fn notice_choice(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
+        self.sync();
         self.chat.notice_choice(text, button, action);
     }
     fn tool(&self, update: &Value) {
+        self.sync();
         self.chat.tool(update);
     }
     fn tool_output(&self, id: &str, data: &str) {
+        self.sync();
         self.chat.tool_output(id, data);
     }
     fn tool_exit(&self, id: &str, code: Option<i64>) {
+        self.sync();
         self.chat.tool_exit(id, code);
     }
     fn tool_button(&self, id: &str, label: &str, tip: &str, action: Rc<dyn Fn()>) {
+        self.sync();
         self.chat.tool_button(id, label, tip, action);
     }
     fn open_tool(&self, id: &str) {
+        self.sync();
         self.chat.open_tool(id);
     }
     fn go_to_tool(&self, id: &str) {
+        self.sync();
         self.chat.go_to_tool(id);
     }
     fn set_plan(&self, entries: &Value) {
         self.chat.set_plan(entries);
     }
     fn turn_done(&self, seconds: u64) {
+        self.sync();
         self.chat.turn_done(seconds);
     }
     fn turn_undo(&self, undo: Rc<dyn Fn()>) {
+        self.sync();
         self.chat.turn_undo(undo);
     }
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card> {
+        self.sync();
         Rc::new(self.chat.permission(question, detail, markdown, options, choose))
     }
     fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<dyn Form> {
+        self.sync();
         self.chat.form(message, schema, answer)
     }
     fn workflow(&self, tool_id: &str, launch: crate::workflow::Launch, live: bool, alive: Box<dyn Fn() -> bool>, on_changed: Rc<dyn Fn()>, on_stop: Rc<dyn Fn()>) -> Rc<dyn Workflow> {
+        self.sync();
         let run = crate::workflow::Run::new(tool_id, launch, live, alive);
         // An agent of it opened: its transcript, in place of the conversation.
         let chat = Rc::downgrade(&self.chat);
@@ -344,7 +442,7 @@ impl View for ChatView {
         self.chat.restore_unsent(messages.into_iter().map(|(text, images)| (text, bytes(images))).collect());
     }
     fn sub_view(&self) -> Rc<dyn View> {
-        Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone() })
+        Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone(), follow: RefCell::default() })
     }
     fn show_aside(&self, view: &Rc<dyn View>, title: &str) {
         if let Some(view) = view.as_any().downcast_ref::<ChatView>() {

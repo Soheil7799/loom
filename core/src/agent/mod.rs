@@ -1618,6 +1618,7 @@ impl Agent {
                 // agent): it is sent, and the agent stays awake.
                 let came_in = !agent.queue.borrow().is_empty() || !agent.waiting.borrow().is_empty();
                 if agent.resting.replace(false) && !agent.focused.get() && !agent.awake.get() && !came_in {
+                    agent.recorded.transcript.borrow_mut().settle();
                     agent.refresh_status();
                     agent.suspend();
                     return;

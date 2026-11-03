@@ -1,7 +1,8 @@
 //! The conversation as data: what an agent's view is told, kept for whoever reads it from
 //! outside loom's window (the bridges' `history`). The view draws it; this remembers it.
 //!
-//! Entries, in order: `user` (`text`, `pictures`), `agent` and `thought` (`text`), `tool`
+//! Entries, in order: `user` (`text`, `pictures`), `agent` (`text`, `message`: the agent's id
+//! for the latest message in it) and `thought` (`text`), `tool`
 //! (`id`, `title`, `tool`: its kind, `status`, `parent`: the task it runs under, `output`: the
 //! end of what it printed, `exit`), `notice` (`text`, `class`) and `turn` (`seconds`: how long
 //! the turn took). Entries change as they stream in; each change is a new revision, so a reader
@@ -112,6 +113,11 @@ impl Transcript {
         i
     }
 
+    /// The turn ended with nothing after it (the agent went to rest): what streamed is whole.
+    pub fn settle(&mut self) {
+        self.close_open();
+    }
+
     /// The entry text was streaming into is whole.
     fn close_open(&mut self) {
         if let Some((i, ..)) = self.open.take()
@@ -206,12 +212,21 @@ impl Transcript {
                 if let (Some(store), Some(meta)) = (&self.store, self.meta.get(i)) {
                     store.append(&meta.id, "text", &added);
                 }
+                if let Some(id) = id
+                    && self.entries[i].1["message"].as_str() != Some(id)
+                {
+                    self.change(i, |entry| entry["message"] = json!(id));
+                }
                 if id.is_some() {
                     self.open = Some((i, kind, id.map(str::to_owned)));
                 }
             }
             _ => {
-                let i = self.push(json!({ "kind": kind, "text": text }));
+                let mut entry = json!({ "kind": kind, "text": text });
+                if let Some(id) = id {
+                    entry["message"] = json!(id);
+                }
+                let i = self.push(entry);
                 self.open = Some((i, kind, id.map(str::to_owned)));
             }
         }
@@ -698,7 +713,14 @@ mod tests {
         t.chunk("agent", "Again", Some("m2"));
         let streamed = sync(&store, &sub, &mut mirror);
         assert_eq!(got.len() + streamed.len(), 2, "one message a flush");
-        assert_eq!(serde_json::to_value(&streamed[0]).unwrap()["ops"], json!([{ "op": "append", "id": "e3", "field": "text", "text": "lo\n\nAgain" }]));
+        // Another message of the agent's in it: the whole entry, with its message id.
+        assert_eq!(
+            serde_json::to_value(&streamed[0]).unwrap()["ops"],
+            json!([{ "op": "upsert", "item": { "id": "e3", "kind": "agent", "text": "Hello\n\nAgain", "message": "m2", "turn_id": "t1", "status": "streaming" } }])
+        );
+        t.chunk("agent", "!", Some("m2"));
+        let more = sync(&store, &sub, &mut mirror);
+        assert_eq!(serde_json::to_value(&more[0]).unwrap()["ops"], json!([{ "op": "append", "id": "e3", "field": "text", "text": "!" }]));
         assert_eq!(brief(&mirror), ["e1 t0 notice done", "e2 t1 user done", "e3 t1 agent streaming"]);
 
         t.tool(&json!({ "toolCallId": "call_1", "title": "Run ls", "kind": "execute", "status": "in_progress" }));
