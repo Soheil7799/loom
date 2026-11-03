@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
@@ -29,7 +30,7 @@ const LINE: u64 = 16 << 20;
 const HIGH: usize = 256;
 
 enum Event {
-    Open { conn: u64, pid: u32, lines: mpsc::Sender<String>, waiting: Arc<AtomicUsize> },
+    Open { conn: u64, pid: u32, pidfd: Option<OwnedFd>, lines: mpsc::Sender<String>, waiting: Arc<AtomicUsize> },
     Line { conn: u64, line: String },
     /// The writer caught up: what waits can go.
     Writable { conn: u64 },
@@ -61,9 +62,15 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
         let mut sessions: HashMap<u64, Rc<Session>> = HashMap::new();
         while let Ok(event) = rx.recv().await {
             match event {
-                Event::Open { conn, pid, lines, waiting } => {
-                    let who = principal_of(pid, &owner);
+                Event::Open { conn, pid, pidfd, lines, waiting } => {
+                    let mut who = principal_of(pid, &owner);
+                    // The process ended (its id may be another's by now): what was read of
+                    // it can't be trusted, and it is placed nowhere.
+                    if pidfd.as_ref().is_some_and(|fd| !alive(fd)) {
+                        who = Principal::Agent("unplaced".into());
+                    }
                     crate::log::debug!("api".to_string(), "connection {conn} from process {pid}: {who:?}");
+                    let peer = serde_json::json!({ "principal": super::rpc::principal_json(&who), "pid": pid, "command": command_line(pid) });
                     let counted = waiting.clone();
                     let out = Out {
                         send: Box::new(move |line| {
@@ -72,7 +79,9 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
                         }),
                         room: Box::new(move || waiting.load(Ordering::Relaxed) < HIGH),
                     };
-                    sessions.insert(conn, Session::new(hub(), who, out));
+                    let session = Session::new(hub(), who, out);
+                    session.audit(peer);
+                    sessions.insert(conn, session);
                 }
                 Event::Line { conn, line } => {
                     // Not borrowed from the map while it runs (a command may take a while).
@@ -106,10 +115,12 @@ fn accept(listener: UnixListener, tx: async_channel::Sender<Event>) {
         if uid != me {
             continue;
         }
+        // Taken now, while the process is surely the one that connected.
+        let pidfd = peer_pidfd(&stream);
         let Ok(writer) = stream.try_clone() else { continue };
         let (lines, out) = mpsc::channel::<String>();
         let waiting = Arc::new(AtomicUsize::new(0));
-        if tx.send_blocking(Event::Open { conn, pid, lines, waiting: waiting.clone() }).is_err() {
+        if tx.send_blocking(Event::Open { conn, pid, pidfd, lines, waiting: waiting.clone() }).is_err() {
             return;
         }
         let events = tx.clone();
@@ -164,6 +175,32 @@ fn peer(stream: &UnixStream) -> Option<(u32, u32)> {
     (ok == 0).then_some((cred.uid, cred.pid as u32))
 }
 
+/// A handle on the process on the other end (Linux 6.5+; None before): it keeps naming that
+/// process even once its id is reused.
+fn peer_pidfd(stream: &UnixStream) -> Option<OwnedFd> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    const SO_PEERPIDFD: libc::c_int = 77;
+    let mut fd: libc::c_int = -1;
+    let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+    // SAFETY: getsockopt writes at most `len` bytes into `fd`.
+    let ok = unsafe { libc::getsockopt(stream.as_raw_fd(), libc::SOL_SOCKET, SO_PEERPIDFD, (&raw mut fd).cast(), &mut len) };
+    // SAFETY: on success `fd` is a new descriptor of ours.
+    (ok == 0 && fd >= 0).then(|| unsafe { OwnedFd::from_raw_fd(fd) })
+}
+
+/// Whether the process `pidfd` names still runs.
+fn alive(pidfd: &OwnedFd) -> bool {
+    use std::os::fd::AsRawFd;
+    // SAFETY: signal 0 checks only; no memory is passed.
+    unsafe { libc::syscall(libc::SYS_pidfd_send_signal, pidfd.as_raw_fd(), 0, std::ptr::null::<libc::siginfo_t>(), 0) == 0 }
+}
+
+/// Process `pid`'s command line, for the audit log.
+fn command_line(pid: u32) -> String {
+    let raw = std::fs::read(format!("/proc/{pid}/cmdline")).unwrap_or_default();
+    raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(String::from_utf8_lossy).collect::<Vec<_>>().join(" ")
+}
+
 /// Who process `pid` speaks for: the first of its ancestors `owner` knows, else the CLI.
 pub fn principal_of(pid: u32, owner: &impl Fn(u32) -> Option<Principal>) -> Principal {
     let me = std::process::id();
@@ -204,5 +241,38 @@ mod tests {
         assert_eq!(parent(pid), Some(std::process::id()));
         let _ = child.kill();
         let _ = child.wait();
+    }
+
+    /// The known escape, and why it costs nothing that matters: a process an agent left
+    /// running on its own (`setsid`, `nohup`, `cmd &` then the shell gone) is placed under no
+    /// agent, so it is taken for the CLI; and the CLI answers no agent's questions.
+    #[test]
+    fn a_process_cut_loose_from_its_agent_passes_for_the_cli_and_still_cannot_answer() {
+        let out = std::process::Command::new("sh").args(["-c", "setsid nohup sleep 5 >/dev/null 2>&1 & echo $!"]).output().unwrap();
+        let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
+        // Its shell has ended: it is the reaper's now, under no agent.
+        assert_ne!(parent(pid), Some(std::process::id()));
+        let agent_shells = |p: u32| (p == std::process::id()).then(|| Principal::Agent("1".into()));
+        assert_eq!(principal_of(pid, &agent_shells), Principal::Cli);
+        crate::agent::commands::serve();
+        let loose = hub().connect(Principal::Cli);
+        let answer = loose.command("a1", "answer", serde_json::json!({ "agent": "1", "entry": "e1", "option": "allow" }));
+        assert!(matches!(answer, Err(super::super::Error::Forbidden(_))), "{answer:?}");
+        // SAFETY: a plain kill of the sleep started above.
+        unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+
+    #[test]
+    fn a_connection_names_its_process_even_after_it_ends() {
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        // A pair's peer is this process: alive.
+        if let Some(fd) = peer_pidfd(&ours) {
+            assert!(alive(&fd));
+        }
+        drop(theirs);
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id();
+        child.wait().unwrap();
+        assert!(command_line(pid).is_empty(), "an ended process has no command line");
     }
 }

@@ -81,6 +81,15 @@ const REMEMBERED: usize = 512;
 
 impl std::error::Error for Error {}
 
+/// Whether this loom is a test instance (started with `LOOM_TEST_INSTANCE=1`, read once):
+/// there the CLI may do what only people in loom's window and its bridges may otherwise
+/// (answer agents' questions), so end-to-end tests can drive it. Set when loom starts,
+/// never by a client: a loom started this way hosts none of the user's agents.
+pub fn test_instance() -> bool {
+    static TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TEST.get_or_init(|| std::env::var("LOOM_TEST_INSTANCE").as_deref() == Ok("1"))
+}
+
 /// May `who` read `resource`?
 fn may_read(who: &Principal, resource: &str) -> bool {
     // The notes vault: the window, the CLI and the paired devices (not the Telegram bot).

@@ -4,6 +4,7 @@
 
 pub mod agent;
 pub mod api;
+pub mod audit;
 pub mod bridges;
 pub mod compacted;
 pub mod files;

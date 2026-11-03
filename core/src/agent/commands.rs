@@ -3,7 +3,8 @@
 //!
 //! - an agent (through its loom tools) does none of them;
 //! - a bridge (the phone, Telegram) sends no `!` commands and never answers "Always allow";
-//! - loom's window and the command-line client do everything.
+//! - the command-line client answers no questions (but in a test instance);
+//! - loom's window does everything.
 //!
 //! Their effect shows in `agents` and `conversation/<agent>`; a question answered elsewhere
 //! first is a `Conflict`.
@@ -54,6 +55,12 @@ fn handle() {
         Ok(json!({}))
     });
     hub.handle("answer", |who, params| {
+        // Answers are a person's: in loom's window or through a bridge they paired. The CLI is
+        // whatever loom can't place under an agent, so an agent's process that left its own
+        // tree would pass for it: it answers nothing (but in a test instance).
+        if *who == Principal::Cli && !crate::api::test_instance() {
+            return Err(Error::Forbidden("answering questions, but in loom's window or a paired bridge".into()));
+        }
         let agent = target(who, params, "answer questions")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("answer needs the question's entry".into()))?;
         let Some((serial, options, form)) = agent.question_entry(entry) else {

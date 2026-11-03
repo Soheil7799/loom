@@ -56,6 +56,8 @@ pub struct Session {
     client: RefCell<Option<Client>>,
     subs: RefCell<BTreeMap<String, Subscription>>,
     scheduled: Cell<bool>,
+    /// Who and which process, for the audit log (Null: commands aren't logged).
+    peer: RefCell<Value>,
     me: Weak<Session>,
 }
 
@@ -97,7 +99,12 @@ impl Session {
     /// A connection for `who` on `hub`. With an automatic hub, what subscriptions bring goes
     /// out once the core's thread is idle; with a manual one (tests), on `pump`.
     pub fn new(hub: Hub, who: Principal, out: Out) -> Rc<Session> {
-        Rc::new_cyclic(|me| Session { hub, who, out, client: RefCell::default(), subs: RefCell::default(), scheduled: Cell::new(false), me: me.clone() })
+        Rc::new_cyclic(|me| Session { hub, who, out, client: RefCell::default(), subs: RefCell::default(), scheduled: Cell::new(false), peer: RefCell::new(Value::Null), me: me.clone() })
+    }
+
+    /// Logs every command from now on (`audit`), with `peer` saying who sent it.
+    pub fn audit(&self, peer: Value) {
+        *self.peer.borrow_mut() = peer;
     }
 
     pub fn principal(&self) -> &Principal {
@@ -169,7 +176,12 @@ impl Session {
                 let id = id.as_str().filter(|i| !i.is_empty()).ok_or_else(|| {
                     Failure::new(INVALID_REQUEST, "a command's id must be a string unique to this client (a retry sends the same one)")
                 })?;
-                Ok(client.command(id, method, params.clone())?)
+                let result = client.command(id, method, params.clone());
+                let peer = self.peer.borrow();
+                if !peer.is_null() {
+                    crate::audit::record(&peer, method, params, result.as_ref().map(|_| ()).map_err(ToString::to_string));
+                }
+                Ok(result?)
             }
         }
     }

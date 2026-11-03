@@ -42,6 +42,8 @@ fn start() -> (Instance, Connection) {
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env_remove("LOOM_API")
+        // Only a test instance lets the CLI answer agents' questions.
+        .env("LOOM_TEST_INSTANCE", "1")
         .spawn()
         .expect("loom starts");
     let instance = Instance { child, root };
@@ -151,6 +153,8 @@ fn loom_through_its_api() {
     eprintln!("e2e: window_agrees_with_the_core ok");
     closing_an_agent_ends_its_conversation(&mut c, &agent);
     eprintln!("e2e: closing_an_agent_ends_its_conversation ok");
+    audit_log_has_every_command(&instance.root);
+    eprintln!("e2e: audit_log_has_every_command ok");
 }
 
 fn handshake(c: &Connection) {
@@ -174,6 +178,11 @@ fn settings_round_trip(c: &mut Connection) {
     assert_eq!(after[0]["text_scale"].as_f64(), Some(scale + 0.25));
     let wrong = c.command(&new_id(), "set_settings", json!({ "changes": { "telegram_token_set": true } }));
     assert!(wrong.is_err(), "a made-up or read-only setting is refused");
+    // What may send things off this machine is the window's to change.
+    for change in [json!({ "telegram_enabled": true }), json!({ "remote_enabled": true }), json!({ "default_mode": "bypassPermissions" })] {
+        let refused = c.command(&new_id(), "set_settings", json!({ "changes": change }));
+        assert!(refused.as_ref().is_err_and(|e| e.message.contains("window")), "{change} from the CLI: {refused:?}");
+    }
 }
 
 fn agents_list(c: &mut Connection, agent: &str, project: &Path) {
@@ -315,6 +324,19 @@ fn window_agrees_with_the_core(c: &mut Connection, agent: &str) {
         assert!(Instant::now() < deadline, "the window's copies differ from the core's: {:#}", report["wrong"]);
         std::thread::sleep(Duration::from_millis(200));
     }
+}
+
+/// Every command the socket took is in the audit log, with the process that sent it.
+fn audit_log_has_every_command(root: &Path) {
+    let log = std::fs::read_to_string(root.join("state/loom/audit-LoomE2e.jsonl")).expect("an audit log");
+    let lines: Vec<Value> = log.lines().map(|l| serde_json::from_str(l).unwrap()).collect();
+    for method in ["set_settings", "new_agent", "run_job", "restart_job", "close_agent"] {
+        assert!(lines.iter().any(|l| l["method"] == method), "{method} logged");
+    }
+    let refused = lines.iter().find(|l| l["ok"] == false).expect("refused commands logged too");
+    assert!(refused["error"].as_str().is_some());
+    assert_eq!(lines[0]["peer"]["principal"]["kind"], "cli");
+    assert!(lines[0]["peer"]["command"].as_str().unwrap().contains("e2e"), "{}", lines[0]["peer"]);
 }
 
 fn closing_an_agent_ends_its_conversation(c: &mut Connection, agent: &str) {

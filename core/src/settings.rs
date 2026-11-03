@@ -146,6 +146,13 @@ pub fn init(app_id: &str) {
         if !matches!(who, crate::api::Principal::Window | crate::api::Principal::Cli) {
             return Err(crate::api::Error::Forbidden("settings, but from loom's window or the CLI".into()));
         }
+        // What sends anything off this machine, or decides what agents may do, is changed in
+        // loom's window only (a loose agent passes for the CLI).
+        if *who != crate::api::Principal::Window
+            && let Some(name) = params["changes"].as_object().into_iter().flatten().map(|(name, _)| name).find(|name| WINDOW_ONLY.iter().any(|w| snake(w) == **name))
+        {
+            return Err(crate::api::Error::Forbidden(format!("{name}, but in loom's window")));
+        }
         let changed = with_changes(&get(), &params["changes"]).map_err(crate::api::Error::Invalid)?;
         update(|settings| *settings = changed);
         Ok(json!({}))
@@ -154,6 +161,21 @@ pub fn init(app_id: &str) {
 
 /// Settings written but never read through the core API (only whether they are set).
 const SECRETS: &[&str] = &["telegramToken", "remoteKey", "sttKey"];
+/// Settings only loom's window changes: the bridges and pairing (what may leave this
+/// machine), speech to text (audio sent to a service), and what agents run as and may do.
+const WINDOW_ONLY: &[&str] = &[
+    "telegramEnabled",
+    "telegramToken",
+    "telegramUser",
+    "remoteEnabled",
+    "remoteRelay",
+    "remoteDevices",
+    "sttEnabled",
+    "sttUrl",
+    "sttKey",
+    "adapter",
+    "defaultMode",
+];
 /// Settings the API never changes (made by loom itself).
 const MADE: &[&str] = &["remoteKey"];
 

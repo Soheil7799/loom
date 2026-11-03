@@ -134,6 +134,7 @@ fn main() -> glib::ExitCode {
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     settings::init(&app_id);
+    loom_core::audit::init(&app_id);
     // The notes vault in the core API (warp).
     loom_core::notes_api::serve();
     loom_core::api::blobs::serve();
