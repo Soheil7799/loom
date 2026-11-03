@@ -1,0 +1,9 @@
+{"sub":"s1","seq":1,"kind":"page","items":[{"id":"e1","text":"a"}]}
+{"sub":"s1","seq":2,"kind":"synced"}
+{"sub":"s1","seq":3,"kind":"resync","reason":"behind"}
+{"sub":"s1","seq":4,"kind":"page","items":[{"id":"e1","text":"a"},{"id":"e2","text":"x"}]}
+{"sub":"s1","seq":5,"kind":"page","items":[{"id":"e3","text":"x"},{"id":"e4","text":"x"}]}
+{"sub":"s1","seq":6,"kind":"page","items":[{"id":"e5","text":"x"},{"id":"e6","text":"x"}]}
+{"sub":"s1","seq":7,"kind":"page","items":[{"id":"e7","text":"x"},{"id":"e8","text":"x"}]}
+{"sub":"s1","seq":8,"kind":"synced"}
+{"sub":"s1","seq":9,"kind":"changes","ops":[{"op":"remove","id":"e1"},{"op":"order","ids":["e8"]}]}

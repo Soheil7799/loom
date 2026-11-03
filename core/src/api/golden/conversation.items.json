@@ -1,0 +1,38 @@
+[
+  {
+    "id": "e1",
+    "kind": "user",
+    "status": "done",
+    "turn_id": "t1",
+    "text": "hello"
+  },
+  {
+    "id": "e2",
+    "kind": "agent",
+    "status": "done",
+    "turn_id": "t1",
+    "text": "Hi."
+  },
+  {
+    "id": "e3",
+    "kind": "user",
+    "status": "done",
+    "turn_id": "t2",
+    "text": "list the files"
+  },
+  {
+    "id": "e4",
+    "kind": "agent",
+    "status": "done",
+    "turn_id": "t2",
+    "text": "There are three files."
+  },
+  {
+    "id": "e5",
+    "kind": "question",
+    "status": "done",
+    "turn_id": "t2",
+    "text": "Delete them?",
+    "answer": "No"
+  }
+]
