@@ -88,6 +88,11 @@ impl Store {
         self.0.state.borrow().items.clone()
     }
 
+    /// Whether changes wait to go out (a follower's copy is behind until they do).
+    pub fn unsent(&self) -> bool {
+        !self.0.state.borrow().pending.is_empty()
+    }
+
     pub fn get(&self, id: &str) -> Option<Value> {
         self.0.state.borrow().items.iter().rfind(|it| id_of(it) == Some(id)).cloned()
     }
@@ -394,6 +399,11 @@ impl Subscription {
                 Message { sub: self.0.id.clone(), seq: out.seq, body }
             })
             .collect()
+    }
+
+    /// Whether messages wait to be drained.
+    pub fn waiting(&self) -> bool {
+        !self.0.out.borrow().messages.is_empty()
     }
 
     /// Asks for a fresh snapshot (a client that saw a gap, or lost its copy).
