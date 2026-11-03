@@ -1,6 +1,6 @@
 [package]
 name = "loom-core"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2024"
 description = "What loom does, without a UI: jobs, agents, notes (the GTK app and later ones draw it)"
 license = "MIT"
