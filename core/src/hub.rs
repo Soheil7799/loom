@@ -232,6 +232,8 @@ pub struct Hub {
     /// when read: read again only when it grew.
     listed: RefCell<(u64, Rc<Vec<Value>>)>,
     view: RefCell<Option<Weak<dyn HubView>>>,
+    /// What Scribe is doing, as last said (for the core API's `scribe`).
+    doing: RefCell<String>,
 }
 
 impl Hub {
@@ -243,7 +245,67 @@ impl Hub {
             timers: RefCell::default(),
             listed: RefCell::default(),
             view: RefCell::default(),
+            doing: RefCell::default(),
         })
+    }
+
+    /// The core API's `scribe` (warp): `{id: "status", kind: "status", running, doing,
+    /// calls_left}`, then Scribe's questions (`kind: "question"`), the changes waiting for an
+    /// OK (`proposal`), what it wrote lately (`change`, newest first) and the changes said no
+    /// to that wait for a why (`teach`), each as kept, with `id` = `<kind>:<its id>`.
+    /// Commands (loom's window and the CLI only: they write to the vault): `scribe_answer {id,
+    /// answer}`, `scribe_decide {id, write}`, `scribe_undo {id}`, `id` being the item's own.
+    pub fn serve(self: &Rc<Self>) {
+        self.publish();
+        let hub = crate::api::hub();
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_answer", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            let answer = params["answer"].as_str().filter(|a| !a.trim().is_empty()).ok_or_else(|| crate::api::Error::Invalid("an answer, please".into()))?;
+            if !scribe.store.borrow().questions.iter().any(|q| q["id"].as_u64() == Some(id)) {
+                return Err(crate::api::Error::Conflict("not asked any more (answered already?)".into()));
+            }
+            scribe.answer(id, answer);
+            Ok(json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_decide", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            let write = params["write"].as_bool().ok_or_else(|| crate::api::Error::Invalid("write: true or false".into()))?;
+            if !scribe.store.borrow().pending.iter().any(|p| p["id"].as_u64() == Some(id)) {
+                return Err(crate::api::Error::Conflict("not waiting any more (decided already?)".into()));
+            }
+            scribe.decide(id, write);
+            Ok(json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_undo", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            scribe.undo(id);
+            Ok(json!({}))
+        });
+    }
+
+    fn publish(&self) {
+        let mut items = Vec::new();
+        {
+            // Asked while the store is being changed: the change's own refresh publishes it.
+            let Ok(store) = self.store.try_borrow() else { return };
+            let calls = if store.day == today() { store.calls } else { 0 };
+            let calls_left = crate::settings::get().notes_daily_calls.saturating_sub(calls);
+            items.push(json!({ "id": "status", "kind": "status", "running": self.running.get(), "doing": *self.doing.borrow(), "calls_left": calls_left }));
+            for (kind, list) in [("question", &store.questions), ("proposal", &store.pending), ("change", &store.recent), ("teach", &store.teach)] {
+                for (i, entry) in list.iter().enumerate() {
+                    let mut item = entry.clone();
+                    let Some(fields) = item.as_object_mut() else { continue };
+                    let own = entry["id"].as_u64().map_or_else(|| format!("at{i}"), |id| id.to_string());
+                    fields.insert("id".into(), json!(format!("{kind}:{own}")));
+                    fields.insert("kind".into(), json!(kind));
+                    items.push(item);
+                }
+            }
+        }
+        crate::api::hub().store("scribe").set(items);
     }
 
     pub fn set_view(self: &Rc<Self>, view: Weak<dyn HubView>) {
@@ -266,18 +328,22 @@ impl Hub {
     }
 
     fn refresh(&self) {
+        self.publish();
         if let Some(view) = self.view() {
             view.refresh();
         }
     }
 
     fn refresh_head(&self) {
+        self.publish();
         if let Some(view) = self.view() {
             view.refresh_head();
         }
     }
 
     fn status(&self, text: &str) {
+        *self.doing.borrow_mut() = text.to_owned();
+        self.publish();
         if let Some(view) = self.view() {
             view.status(text);
         }
@@ -999,5 +1065,45 @@ impl Hub {
             }
             hub.run_next();
         });
+    }
+}
+
+/// The Scribe and the item's own id a command is for, if `who` may write to the vault.
+fn scribe_target(scribe: &Weak<Hub>, who: &crate::api::Principal, params: &Value) -> Result<(Rc<Hub>, u64), crate::api::Error> {
+    if !matches!(who, crate::api::Principal::Window | crate::api::Principal::Cli) {
+        return Err(crate::api::Error::Forbidden("Scribe, but from loom's window or the CLI".into()));
+    }
+    let scribe = scribe.upgrade().ok_or_else(|| crate::api::Error::NotFound("Scribe".into()))?;
+    let id = params["id"].as_str().and_then(|id| id.rsplit(':').next()).and_then(|id| id.parse().ok()).ok_or_else(|| crate::api::Error::Invalid("which item (its id)?".into()))?;
+    Ok((scribe, id))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::api::{Error, Principal};
+
+    #[test]
+    fn scribe_shows_what_it_holds_and_only_the_window_acts_on_it() {
+        let scribe = Hub::new();
+        // What it holds, made up (nothing here writes to the vault).
+        *scribe.store.borrow_mut() = Store {
+            questions: vec![json!({ "id": 7, "topic": "Money", "question": "Which budget?", "options": ["2026"] })],
+            pending: vec![json!({ "id": 9, "note": "Finances/Budget.md", "why": "a new figure" })],
+            day: today(),
+            calls: 2,
+            ..Store::default()
+        };
+        scribe.serve();
+        let items = crate::api::hub().store("scribe").items();
+        let ids: Vec<&str> = items.iter().filter_map(|i| i["id"].as_str()).collect();
+        assert_eq!(ids, ["status", "question:7", "proposal:9"]);
+        assert_eq!(items[0]["calls_left"].as_u64(), Some(crate::settings::get().notes_daily_calls.saturating_sub(2)));
+        assert_eq!((items[1]["kind"].as_str(), items[1]["question"].as_str()), (Some("question"), Some("Which budget?")));
+        let phone = crate::api::hub().connect(Principal::Bridge("remote".into()));
+        assert!(matches!(phone.command("c1", "scribe_decide", json!({ "id": "proposal:9", "write": true })), Err(Error::Forbidden(_))));
+        let window = crate::api::hub().connect(Principal::Window);
+        assert!(matches!(window.command("c2", "scribe_answer", json!({ "id": "question:8", "answer": "2026" })), Err(Error::Conflict(_))));
+        assert!(matches!(window.command("c3", "scribe_decide", json!({ "id": "proposal:9" })), Err(Error::Invalid(_))));
     }
 }

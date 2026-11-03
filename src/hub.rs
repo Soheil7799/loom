@@ -188,6 +188,8 @@ impl Hub {
         let view: std::rc::Weak<Hub> = Rc::downgrade(&hub);
         *hub.me.borrow_mut() = view.clone();
         hub.core.set_view(view);
+        // Scribe in the core API too (warp).
+        hub.core.serve();
         hub.refresh();
         // The "since the last check" line ages.
         let weak = Rc::downgrade(&hub);
