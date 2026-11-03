@@ -35,6 +35,8 @@ pub struct Transcript {
     /// The entry a streamed piece of the same kind goes on, with the agent's message id.
     open: Option<(usize, &'static str, Option<String>)>,
     tools: HashMap<String, usize>,
+    /// The message just sent from loom (its pictures follow it), until anything else comes.
+    said: Option<usize>,
 }
 
 impl Transcript {
@@ -72,6 +74,7 @@ impl Transcript {
         let rev = self.bump();
         self.entries.push((rev, entry));
         self.open = None;
+        self.said = None;
         self.entries.len() - 1
     }
 
@@ -97,12 +100,12 @@ impl Transcript {
                 // Another message of the agent's: a paragraph of its own (as the view shows it).
                 let another = id.is_some() && said.is_some() && said.as_deref() != id;
                 self.change(i, |entry| {
-                    let mut all = entry["text"].as_str().unwrap_or("").to_owned();
-                    if another && !all.ends_with("\n\n") {
-                        all.push_str("\n\n");
+                    if let Value::String(all) = &mut entry["text"] {
+                        if another && !all.ends_with("\n\n") {
+                            all.push_str("\n\n");
+                        }
+                        all.push_str(text);
                     }
-                    all.push_str(text);
-                    entry["text"] = json!(all);
                 });
                 if id.is_some() {
                     self.open = Some((i, kind, id.map(str::to_owned)));
@@ -119,14 +122,17 @@ impl Transcript {
         if count == 0 {
             return;
         }
-        // On the message they came with, else on one of their own.
-        match self.entries.len().checked_sub(1).filter(|&i| self.entries[i].1["kind"] == "user") {
+        // On the message they were sent with, or the one being read back; else their own.
+        let reading = match self.open {
+            Some((i, "user", _)) => Some(i),
+            _ => None,
+        };
+        match self.said.take().or(reading) {
             Some(i) => self.change(i, |entry| entry["pictures"] = json!(entry["pictures"].as_u64().unwrap_or(0) + count as u64)),
             None => {
                 self.push(json!({ "kind": "user", "text": "", "pictures": count }));
             }
         }
-        self.open = None;
     }
 
     fn tool(&mut self, update: &Value) {
@@ -182,6 +188,11 @@ pub struct Recorded {
 }
 
 impl Recorded {
+    /// A message is being sent from loom: pictures that follow belong to it, not to the last.
+    pub fn message_starts(&self) {
+        self.transcript.borrow_mut().said = None;
+    }
+
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
         Recorded { inner, transcript: RefCell::new(transcript), usage: RefCell::new(json!({})) }
@@ -199,11 +210,14 @@ thread_local! {
 /// ones, as reported.
 pub fn merge_limits(old: &Value, new: &Value, now: i64) -> Value {
     let mut windows: Vec<Value> = old["windows"].as_array().cloned().unwrap_or_default();
+    // When Claude Code said it (an agent resends what it last heard with every update).
+    let at = new["at"].as_i64().unwrap_or(now);
     for window in new["windows"].as_array().into_iter().flatten() {
         let mut window = window.clone();
-        window["seenAt"] = json!(now);
+        window["seenAt"] = json!(at);
         match windows.iter().position(|w| w["kind"] == window["kind"]) {
-            Some(i) => windows[i] = window,
+            Some(i) if windows[i]["seenAt"].as_i64().unwrap_or(0) <= at => windows[i] = window,
+            Some(_) => {}
             None => windows.push(window),
         }
     }
@@ -223,7 +237,8 @@ pub fn merge_limits(old: &Value, new: &Value, now: i64) -> Value {
 /// The account's limits (`{plan, windows: [{kind, utilization, resetsAt, seenAt}]}`), null
 /// until an agent's answer brought them.
 pub fn account_limits() -> Value {
-    ACCOUNT.with_borrow(Clone::clone)
+    let now = crate::state::now() as i64;
+    ACCOUNT.with_borrow(|account| merge_limits(account, &Value::Null, now))
 }
 
 impl View for Recorded {
@@ -243,7 +258,10 @@ impl View for Recorded {
         self.inner.last_reply()
     }
     fn user(&self, text: &str) {
-        self.transcript.borrow_mut().push(json!({ "kind": "user", "text": text }));
+        let mut transcript = self.transcript.borrow_mut();
+        let i = transcript.push(json!({ "kind": "user", "text": text }));
+        transcript.said = Some(i);
+        drop(transcript);
         self.inner.user(text);
     }
     fn user_chunk(&self, text: &str) {
@@ -447,6 +465,44 @@ mod tests {
         assert_eq!(later["windows"][0]["kind"], "seven_day");
     }
 
+    #[test]
+    fn an_old_report_resent_never_beats_a_newer_one() {
+        let newer = merge_limits(&Value::Null, &json!({ "windows": [{ "kind": "five_hour", "utilization": 0.7, "resetsAt": 900 }], "at": 200 }), 210);
+        // Another agent resends what it heard at 100, at 220.
+        let resent = merge_limits(&newer, &json!({ "windows": [{ "kind": "five_hour", "utilization": 0.3, "resetsAt": 900 }], "at": 100 }), 220);
+        assert_eq!(resent["windows"][0]["utilization"], 0.7);
+        assert_eq!(resent["windows"][0]["seenAt"], 200);
+        // Read with nothing new, an expired window is left out.
+        assert_eq!(merge_limits(&resent, &Value::Null, 901), Value::Null);
+    }
+
+    #[test]
+    fn pictures_go_with_the_message_they_came_with() {
+        let mut t = Transcript::default();
+        // Sent from loom: "look", then a picture alone as a message of its own.
+        let i = t.push(json!({ "kind": "user", "text": "look" }));
+        t.said = Some(i);
+        t.said = None; // the next message starts
+        t.pictures(1);
+        let all = t.since("", 0);
+        assert_eq!(all["entries"].as_array().unwrap().len(), 2);
+        assert!(all["entries"][0].get("pictures").is_none());
+        assert_eq!(all["entries"][1]["pictures"], 1);
+        // Text and pictures sent together: one message.
+        let j = t.push(json!({ "kind": "user", "text": "both" }));
+        t.said = Some(j);
+        t.pictures(2);
+        assert_eq!(t.since("", 0)["entries"][2]["pictures"], 2);
+        // Read back: text, a picture, more text stay one message.
+        t.chunk("agent", "ok", None);
+        t.chunk("user", "before ", None);
+        t.pictures(1);
+        t.chunk("user", "after", None);
+        let entries = t.since("", 0)["entries"].as_array().unwrap().clone();
+        assert_eq!(entries.len(), 5);
+        assert_eq!((entries[4]["text"].as_str(), entries[4]["pictures"].as_u64()), (Some("before after"), Some(1)));
+    }
+
     use super::*;
 
     fn texts(t: &Transcript, after: u64) -> Vec<(u64, String, String)> {
@@ -461,7 +517,8 @@ mod tests {
     #[test]
     fn streams_into_entries_and_reads_back_what_changed() {
         let mut t = Transcript::default();
-        t.push(json!({ "kind": "user", "text": "hi" }));
+        let hi = t.push(json!({ "kind": "user", "text": "hi" }));
+        t.said = Some(hi);
         t.pictures(2);
         t.chunk("thought", "hm", None);
         t.chunk("agent", "Hel", Some("m1"));

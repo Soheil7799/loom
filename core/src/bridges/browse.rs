@@ -20,10 +20,10 @@ static INDEX: Mutex<Option<Index>> = Mutex::new(None);
 
 fn with_index<T>(root: &Path, use_it: impl FnOnce(&Index) -> T) -> T {
     let mut held = INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    if held.as_ref().is_none_or(|index| index.root() != root) {
-        *held = Some(Index::new(root));
-    }
-    let index = held.get_or_insert_with(|| Index::new(root));
+    let index = match held.take() {
+        Some(index) if index.root() == root => held.insert(index),
+        _ => held.insert(Index::new(root)),
+    };
     index.refresh();
     use_it(index)
 }
@@ -36,10 +36,16 @@ fn place(root: &Path, relative: &str) -> Result<PathBuf, String> {
     }
     let root = root.canonicalize().map_err(|_| "The vault folder is not there.".to_owned())?;
     let path = parts.iter().fold(root.clone(), |path, part| path.join(part)).canonicalize().map_err(|_| "It is no longer there.".to_owned())?;
-    if !path.starts_with(&root) {
+    if !path.starts_with(&root) || hidden(&root, &path) {
         return Err(OUTSIDE.into());
     }
     Ok(path)
+}
+
+/// Whether `path` (canonical, in `root`) is or is inside something hidden: a link's name may
+/// not be, what it points at may.
+fn hidden(root: &Path, path: &Path) -> bool {
+    path.strip_prefix(root).map_or(true, |inside| inside.components().any(|c| c.as_os_str().to_string_lossy().starts_with('.')))
 }
 
 /// `path`'s place in the vault at `root` (canonical), with `/`.
@@ -68,7 +74,7 @@ fn visible(root: &Path, folder: &Path) -> Vec<(String, PathBuf)> {
         .filter_map(|entry| {
             let name = entry.file_name().to_string_lossy().into_owned();
             let path = entry.path().canonicalize().ok()?;
-            (!name.starts_with('.') && path.starts_with(root)).then_some((name, path))
+            (!name.starts_with('.') && path.starts_with(root) && !hidden(root, &path)).then_some((name, path))
         })
         .collect()
 }
@@ -181,7 +187,9 @@ mod tests {
         std::fs::write(outside.join("secret.md"), "no").unwrap();
         std::os::unix::fs::symlink(&outside, root.join("Out")).unwrap();
         std::os::unix::fs::symlink(outside.join("secret.md"), root.join("leak.md")).unwrap();
-        for path in ["../x.md", "/etc/passwd", "Topics/../../x.md", ".obsidian/app.json", "Work/.hidden.md", "Out/secret.md", "leak.md", "a\\b.md"] {
+        // A link inside the vault to something hidden in it.
+        std::os::unix::fs::symlink(root.join(".obsidian/app.json"), root.join("config.md")).unwrap();
+        for path in ["../x.md", "/etc/passwd", "Topics/../../x.md", ".obsidian/app.json", "Work/.hidden.md", "Out/secret.md", "leak.md", "config.md", "a\\b.md"] {
             assert_eq!(read(&root, path).unwrap_err(), OUTSIDE, "{path}");
         }
         assert_eq!(list(&root, "Out").unwrap_err(), OUTSIDE);

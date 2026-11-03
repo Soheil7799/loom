@@ -424,6 +424,12 @@ impl Host {
         emit(to, told);
     }
 
+    /// A Notes chat's agent closed (only the remote bridge knew it).
+    pub fn notes_closed(&self, agent: u32) {
+        self.told.borrow_mut().remove(&agent);
+        emit(Some("remote"), json!({ "event": "closed", "agent": agent }));
+    }
+
     /// An agent closed.
     pub fn closed(&self, agent: u32) {
         self.told.borrow_mut().remove(&agent);
@@ -529,24 +535,30 @@ impl Host {
                 return;
             }
             // The files the agent created or changed, newest first: what it did, to look at.
-            "files" => agent().map(|agent| {
-                let files = agent.files();
-                Value::Array(
-                    files
-                        .iter()
-                        .map(|(path, mark)| {
-                            let size = std::fs::metadata(path).ok().map(|m| m.len());
-                            json!({
-                                "path": path.to_string_lossy(),
-                                "name": path.strip_prefix(&agent.cwd).unwrap_or(path).to_string_lossy(),
-                                "created": *mark == crate::agent::Mark::Created,
-                                "exists": size.is_some(),
-                                "size": size,
-                            })
-                        })
-                        .collect(),
-                )
-            }),
+            "files" => {
+                let files = match agent() {
+                    Ok(agent) => agent.files().into_iter().map(|(path, mark)| (path.strip_prefix(&agent.cwd).unwrap_or(&path).to_path_buf(), path, mark == crate::agent::Mark::Created)).collect::<Vec<_>>(),
+                    Err(why) => return answer(Err(why)),
+                };
+                let reply = reply.clone();
+                crate::rt::spawn_local(async move {
+                    let listed = crate::rt::spawn_blocking(move || {
+                        Value::Array(
+                            files
+                                .iter()
+                                .map(|(name, path, created)| {
+                                    let size = std::fs::metadata(path).ok().map(|m| m.len());
+                                    json!({ "path": path.to_string_lossy(), "name": name.to_string_lossy(), "created": created, "exists": size.is_some(), "size": size })
+                                })
+                                .collect(),
+                        )
+                    })
+                    .await
+                    .map_err(|_| "Could not list them.".to_owned());
+                    respond(&reply, listed);
+                });
+                return;
+            }
             // One of them, to read: only a file this agent wrote (never any other path), text
             // only, up to FILE_READ bytes. Off the UI's thread.
             "file" => {

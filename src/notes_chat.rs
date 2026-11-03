@@ -60,6 +60,8 @@ pub struct NotesChat {
     pub on_shown: RefCell<Option<Rc<dyn Fn()>>>,
     /// What happened to a chat's agent (for the phone, through the remote bridge).
     pub on_agent_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, &Event)>>>,
+    /// A chat's agent closed (for the phone).
+    pub on_closed: RefCell<Option<Rc<dyn Fn(u32)>>>,
 }
 
 /// Working, or waiting for an answer: a chat left like that keeps going.
@@ -117,6 +119,7 @@ impl NotesChat {
             on_attention: RefCell::default(),
             on_shown: RefCell::default(),
             on_agent_event: RefCell::default(),
+            on_closed: RefCell::default(),
         });
         let weak = Rc::downgrade(&chat);
         chat.list.connect_row_activated(move |_, row| {
@@ -211,6 +214,10 @@ impl NotesChat {
         self.record(&open);
         open.agent.stop();
         self.stack.remove(&open.page);
+        let closed = self.on_closed.borrow().clone();
+        if let Some(closed) = closed {
+            closed(open.agent.id);
+        }
     }
 
     /// An agent for chat `session` (None: a new chat), about `scope` if given, shown.

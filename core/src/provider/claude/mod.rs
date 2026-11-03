@@ -936,7 +936,7 @@ impl Link {
                     .collect();
                 if !windows.is_empty() {
                     let plan = self.init.borrow()["account"]["subscriptionType"].clone();
-                    *self.limits.borrow_mut() = json!({ "plan": plan, "windows": windows });
+                    *self.limits.borrow_mut() = json!({ "plan": plan, "windows": windows, "at": crate::state::now() });
                 }
                 self.usage();
             }

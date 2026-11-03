@@ -2348,6 +2348,12 @@ impl App {
                 app.bridges.notes_event(agent, event, looking);
             }
         }));
+        let weak = Rc::downgrade(self);
+        *self.notes_chat.on_closed.borrow_mut() = Some(Rc::new(move |agent: u32| {
+            if let Some(app) = weak.upgrade() {
+                app.bridges.notes_closed(agent);
+            }
+        }));
         // loom's Claude folder changed: every running session reads its skills and plugins again.
         let weak = Rc::downgrade(self);
         crate::plugin::on_changed(move || {

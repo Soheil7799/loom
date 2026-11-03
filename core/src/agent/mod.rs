@@ -199,6 +199,8 @@ pub struct Agent {
     pub view: Rc<dyn View>,
     /// The same view, keeping the conversation as data too (for `history`).
     recorded: Rc<transcript::Recorded>,
+    /// `history` already started it once to read it back.
+    history_woke: Cell<bool>,
     /// Its project's jobs.
     pub jobs: Jobs,
     session_id: RefCell<Option<String>>,
@@ -305,6 +307,7 @@ impl Agent {
             cwd: saved.cwd,
             view: recorded.clone(),
             recorded,
+            history_woke: Cell::new(false),
             jobs,
             session_id: RefCell::new(saved.session_id),
             title: RefCell::new(saved.title),
@@ -478,8 +481,9 @@ impl Agent {
     /// transcript.rs), and `loading` while it is being read back. One loom restored but nobody
     /// opened yet has not been read back: it is started, as opening it does.
     pub fn history(self: &Rc<Self>, epoch: &str, after: u64) -> Value {
-        let unread = self.recorded.transcript.borrow().is_empty() && self.session_id().is_some() && self.status() == Status::Suspended;
+        let unread = !self.history_woke.get() && self.recorded.transcript.borrow().is_empty() && self.session_id().is_some() && self.status() == Status::Suspended;
         if unread {
+            self.history_woke.set(true);
             self.start();
         }
         let mut answer = self.recorded.transcript.borrow().since(epoch, after);
@@ -1208,6 +1212,7 @@ impl Agent {
             self.show_waiting();
             return;
         }
+        self.recorded.message_starts();
         if !text.is_empty() {
             self.view.user(&text);
         }
@@ -1493,6 +1498,7 @@ impl Agent {
         self.show_waiting();
         let text = waiting.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n\n");
         let images: Vec<Png> = waiting.into_iter().flat_map(|(_, i)| i).collect();
+        self.recorded.message_starts();
         if !text.is_empty() {
             self.view.user(&text);
         }
