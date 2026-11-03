@@ -12,6 +12,7 @@
 //! changes to resources, for every client; where several may act (a question), the first
 //! wins and the others are told it was answered.
 
+pub mod blobs;
 mod store;
 pub mod wire;
 

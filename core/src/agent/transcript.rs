@@ -31,7 +31,11 @@ use crate::jobs::Id;
 use crate::workflow::Launch;
 
 /// How much of a command's output an entry keeps (its end).
-const OUTPUT: usize = 4000;
+const OUTPUT: usize = 16_000;
+/// What the bridges' `history` gets of it (as before the core API kept more).
+const BRIDGE_OUTPUT: usize = 4000;
+/// A tool's input or content past this is not kept (a huge file written): only that it was.
+const TOOL_PART: usize = 1 << 20;
 
 #[derive(Default)]
 pub struct Transcript {
@@ -84,6 +88,15 @@ impl Transcript {
             .map(|(i, (_, entry))| {
                 let mut entry = entry.clone();
                 entry["i"] = json!(i);
+                // The bridges' history as it was: no diffs, inputs or picture ids, a short tail.
+                if let Some(fields) = entry.as_object_mut() {
+                    for field in ["content", "input", "locations", "images"] {
+                        fields.remove(field);
+                    }
+                    if let Some(Value::String(output)) = fields.get_mut("output") {
+                        tail(output, BRIDGE_OUTPUT);
+                    }
+                }
                 entry
             })
             .collect();
@@ -250,7 +263,9 @@ impl Transcript {
         }
     }
 
-    fn pictures(&mut self, count: usize) {
+    /// Pictures sent (their ids in the core API's blobs: `images`, and how many: `pictures`).
+    fn pictures(&mut self, images: Vec<String>) {
+        let count = images.len();
         if count == 0 {
             return;
         }
@@ -260,9 +275,14 @@ impl Transcript {
             _ => None,
         };
         match self.said.take().or(reading) {
-            Some(i) => self.change(i, |entry| entry["pictures"] = json!(entry["pictures"].as_u64().unwrap_or(0) + count as u64)),
+            Some(i) => self.change(i, |entry| {
+                entry["pictures"] = json!(entry["pictures"].as_u64().unwrap_or(0) + count as u64);
+                let mut all = entry["images"].as_array().cloned().unwrap_or_default();
+                all.extend(images.into_iter().map(Value::String));
+                entry["images"] = Value::Array(all);
+            }),
             None => {
-                self.push(json!({ "kind": "user", "text": "", "pictures": count }));
+                self.push(json!({ "kind": "user", "text": "", "pictures": count, "images": images }));
             }
         }
     }
@@ -284,6 +304,14 @@ impl Transcript {
                     entry[field] = json!(value);
                 }
             }
+            // What the agent gave it (`input`), what it shows (`content`: diffs, text, a
+            // terminal) and where (`locations`), as ACP has them.
+            for (field, from) in [("input", "rawInput"), ("content", "content"), ("locations", "locations")] {
+                let value = &update[from];
+                if !value.is_null() {
+                    entry[field] = if value.to_string().len() > TOOL_PART { json!({ "too_large": true }) } else { value.clone() };
+                }
+            }
         });
     }
 
@@ -293,11 +321,7 @@ impl Transcript {
             let mut output = entry["output"].as_str().unwrap_or("").to_owned();
             output.push_str(data);
             if output.len() > OUTPUT {
-                let mut cut = output.len() - OUTPUT;
-                while !output.is_char_boundary(cut) {
-                    cut += 1;
-                }
-                output.drain(..cut);
+                tail(&mut output, OUTPUT);
             }
             entry["output"] = json!(output);
         });
@@ -307,6 +331,17 @@ impl Transcript {
         if let Some(&i) = self.tools.get(id) {
             self.change(i, |entry| entry["exit"] = json!(code));
         }
+    }
+}
+
+/// `text` cut to its last `keep` bytes (at a character's start).
+fn tail(text: &mut String, keep: usize) {
+    if text.len() > keep {
+        let mut cut = text.len() - keep;
+        while !text.is_char_boundary(cut) {
+            cut += 1;
+        }
+        text.drain(..cut);
     }
 }
 
@@ -518,11 +553,12 @@ impl View for Recorded {
         self.inner.user_chunk(text);
     }
     fn user_images(&self, pngs: &[Png]) {
-        self.transcript.borrow_mut().pictures(pngs.len());
+        self.transcript.borrow_mut().pictures(pngs.iter().map(|png| crate::api::blobs::put(png.clone())).collect());
         self.inner.user_images(pngs);
     }
     fn user_image_data(&self, base64: &str) {
-        self.transcript.borrow_mut().pictures(1);
+        let png = Png::from(crate::api::wire::bytes_of(base64.trim()));
+        self.transcript.borrow_mut().pictures(vec![crate::api::blobs::put(png)]);
         self.inner.user_image_data(base64);
     }
     fn agent_text_with(&self, text: &str, id: Option<&str>) {
@@ -579,11 +615,13 @@ impl View for Recorded {
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card> {
         let options_json: Vec<Value> = options.iter().map(|(id, name, kind)| json!({ "id": id, "name": name, "kind": kind })).collect();
         let entry = self.transcript.borrow_mut().question(json!({ "kind": "question", "text": question, "detail": detail, "options": options_json }));
+        self.inner.question_entry(&entry);
         let inner = self.inner.permission(question, detail, markdown, options, choose);
         Rc::new(RecordedCard { inner, transcript: Rc::downgrade(&self.transcript), entry })
     }
     fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<dyn Form> {
         let entry = self.transcript.borrow_mut().question(json!({ "kind": "question", "text": message, "form": schema }));
+        self.inner.question_entry(&entry);
         let inner = self.inner.form(message, schema, answer);
         let card = Rc::new(RecordedCard { inner: inner.card(), transcript: Rc::downgrade(&self.transcript), entry });
         Rc::new(RecordedForm { inner, card })
@@ -741,7 +779,7 @@ mod tests {
         let i = t.push(json!({ "kind": "user", "text": "look" }));
         t.said = Some(i);
         t.said = None; // the next message starts
-        t.pictures(1);
+        t.pictures(ids(1));
         let all = t.since("", 0);
         assert_eq!(all["entries"].as_array().unwrap().len(), 2);
         assert!(all["entries"][0].get("pictures").is_none());
@@ -749,12 +787,12 @@ mod tests {
         // Text and pictures sent together: one message.
         let j = t.push(json!({ "kind": "user", "text": "both" }));
         t.said = Some(j);
-        t.pictures(2);
+        t.pictures(ids(2));
         assert_eq!(t.since("", 0)["entries"][2]["pictures"], 2);
         // Read back: text, a picture, more text stay one message.
         t.chunk("agent", "ok", None);
         t.chunk("user", "before ", None);
-        t.pictures(1);
+        t.pictures(ids(1));
         t.chunk("user", "after", None);
         let entries = t.since("", 0)["entries"].as_array().unwrap().clone();
         assert_eq!(entries.len(), 5);
@@ -762,6 +800,11 @@ mod tests {
     }
 
     use super::*;
+
+    /// `n` picture ids.
+    fn ids(n: usize) -> Vec<String> {
+        (0..n).map(|i| format!("b{i}")).collect()
+    }
 
     fn texts(t: &Transcript, after: u64) -> Vec<(u64, String, String)> {
         t.since("", after)["entries"]
@@ -777,7 +820,7 @@ mod tests {
         let mut t = Transcript::default();
         let hi = t.push(json!({ "kind": "user", "text": "hi" }));
         t.said = Some(hi);
-        t.pictures(2);
+        t.pictures(ids(2));
         t.chunk("thought", "hm", None);
         t.chunk("agent", "Hel", Some("m1"));
         t.chunk("agent", "lo", Some("m1"));
@@ -793,7 +836,10 @@ mod tests {
 
         // An update changes the entry in place, and only it is new.
         let seen = t.since("", 0)["rev"].as_u64().unwrap();
-        t.tool(&json!({ "toolCallId": "t1", "status": "completed" }));
+        t.tool(&json!({ "toolCallId": "t1", "status": "completed", "rawInput": { "file_path": "a.rs" }, "content": [{ "type": "content", "content": { "type": "text", "text": "fn main" } }] }));
+        // The core API's entry has what the card draws; the bridges' history does not.
+        assert_eq!((t.item(3).unwrap()["input"]["file_path"].as_str(), t.item(3).unwrap()["content"][0]["type"].as_str()), (Some("a.rs"), Some("content")));
+        assert!(t.since("", 0)["entries"][3].get("content").is_none());
         t.tool_output("t1", &"x".repeat(OUTPUT + 10));
         t.tool_exit("t1", Some(0));
         let changed = t.since("", seen);
@@ -801,7 +847,9 @@ mod tests {
         assert_eq!(changed["entries"].as_array().unwrap().len(), 1);
         let tool = &changed["entries"][0];
         assert_eq!((tool["title"].as_str(), tool["status"].as_str(), tool["exit"].as_i64()), (Some("Read a.rs"), Some("completed"), Some(0)));
-        assert_eq!(tool["output"].as_str().unwrap().len(), OUTPUT);
+        // The bridges get the short tail they always had; the core API the longer one.
+        assert_eq!(tool["output"].as_str().unwrap().len(), BRIDGE_OUTPUT);
+        assert_eq!(t.item(3).unwrap()["output"].as_str().unwrap().len(), OUTPUT);
         assert!(t.since("", t.since("", 0)["rev"].as_u64().unwrap())["entries"].as_array().unwrap().is_empty());
     }
 

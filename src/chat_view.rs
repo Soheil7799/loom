@@ -24,16 +24,20 @@ pub struct ChatView {
     follow: RefCell<Option<Rc<Follow>>>,
     /// The core's `usage`, once followed: the chat's usage bar, cost and limits come from it.
     usage: RefCell<Option<Rc<Follow>>>,
+    /// The agent followed, and the entry the next question card is (it answers by it).
+    agent: std::cell::Cell<Option<u32>>,
+    question: RefCell<Option<String>>,
 }
 
 impl ChatView {
     pub fn new(chat: Rc<Chat>, tray: &Rc<Tray>) -> Rc<ChatView> {
-        Rc::new(ChatView { chat, tray: Rc::downgrade(tray), follow: RefCell::default(), usage: RefCell::default() })
+        Rc::new(ChatView { chat, tray: Rc::downgrade(tray), follow: RefCell::default(), usage: RefCell::default(), agent: std::cell::Cell::new(None), question: RefCell::default() })
     }
 
     /// The chat's text drawn from the core's resource `conversation` from now on (warp); not
     /// followed (no such resource), it is drawn by the View's calls as before.
     pub fn follow(&self, agent: u32) {
+        self.agent.set(Some(agent));
         *self.follow.borrow_mut() = Follow::start(&loom_core::agent::conversation(agent), Of::Conversation, &self.chat);
         *self.usage.borrow_mut() = Follow::start("usage", Of::Usage(agent.to_string()), &self.chat);
     }
@@ -158,11 +162,15 @@ fn bytes(pngs: Vec<Png>) -> Vec<glib::Bytes> {
 }
 
 /// Command `method` for `agent`, from loom's window through the core API (warp).
-fn command(agent: &Agent, method: &str, mut params: Value) {
-    params["agent"] = Value::String(agent.id.to_string());
+fn command(agent: &Agent, method: &str, params: Value) {
+    command_for(agent.id, method, params);
+}
+
+fn command_for(agent: u32, method: &str, mut params: Value) {
+    params["agent"] = Value::String(agent.to_string());
     let client = loom_core::api::hub().connect(Principal::Window);
     if let Err(err) = client.command(&loom_core::rt::uuid(), method, params) {
-        loom_core::log::debug!(format!("agent {}", agent.id), "{method} refused: {err}");
+        loom_core::log::debug!(format!("agent {agent}"), "{method} refused: {err}");
     }
 }
 
@@ -336,11 +344,17 @@ impl View for ChatView {
     }
     fn user_images(&self, pngs: &[Png]) {
         self.sync();
-        self.chat.user_images(&bytes(pngs.to_vec()));
+        // From the conversation's entries when followed.
+        if !self.following() {
+            self.chat.user_images(&bytes(pngs.to_vec()));
+        }
     }
     fn user_image_data(&self, base64: &str) {
         self.sync();
-        self.chat.user_image_data(base64);
+        // From the conversation's entries when followed.
+        if !self.following() {
+            self.chat.user_image_data(base64);
+        }
     }
     fn agent_text_with(&self, text: &str, id: Option<&str>) {
         if !self.following() {
@@ -366,15 +380,24 @@ impl View for ChatView {
     }
     fn tool(&self, update: &Value) {
         self.sync();
-        self.chat.tool(update);
+        // From the conversation's entries when followed.
+        if !self.following() {
+            self.chat.tool(update);
+        }
     }
     fn tool_output(&self, id: &str, data: &str) {
         self.sync();
-        self.chat.tool_output(id, data);
+        // From the conversation's entries when followed.
+        if !self.following() {
+            self.chat.tool_output(id, data);
+        }
     }
     fn tool_exit(&self, id: &str, code: Option<i64>) {
         self.sync();
-        self.chat.tool_exit(id, code);
+        // From the conversation's entries when followed.
+        if !self.following() {
+            self.chat.tool_exit(id, code);
+        }
     }
     fn tool_button(&self, id: &str, label: &str, tip: &str, action: Rc<dyn Fn()>) {
         self.sync();
@@ -401,10 +424,30 @@ impl View for ChatView {
     }
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card> {
         self.sync();
+        let choose = match (self.agent.get(), self.question.borrow_mut().take()) {
+            // Answered through the core API, as every client answers.
+            (Some(agent), Some(entry)) if self.following() => Rc::new(move |option: String| {
+                command_for(agent, "answer", serde_json::json!({ "entry": entry, "option": option }));
+            }) as Rc<dyn Fn(String)>,
+            _ => choose,
+        };
         Rc::new(self.chat.permission(question, detail, markdown, options, choose))
+    }
+    fn question_entry(&self, id: &str) {
+        *self.question.borrow_mut() = Some(id.to_owned());
     }
     fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<dyn Form> {
         self.sync();
+        let answer = match (self.agent.get(), self.question.borrow_mut().take()) {
+            (Some(agent), Some(entry)) if self.following() => Rc::new(move |content: Option<Value>| {
+                let params = match content {
+                    Some(content) => serde_json::json!({ "entry": entry, "content": content }),
+                    None => serde_json::json!({ "entry": entry, "skip": true }),
+                };
+                command_for(agent, "answer", params);
+            }) as Rc<dyn Fn(Option<Value>)>,
+            _ => answer,
+        };
         self.chat.form(message, schema, answer)
     }
     fn workflow(&self, tool_id: &str, launch: crate::workflow::Launch, live: bool, alive: Box<dyn Fn() -> bool>, on_changed: Rc<dyn Fn()>, on_stop: Rc<dyn Fn()>) -> Rc<dyn Workflow> {
@@ -509,7 +552,7 @@ impl View for ChatView {
         self.chat.restore_unsent(messages.into_iter().map(|(text, images)| (text, bytes(images))).collect());
     }
     fn sub_view(&self) -> Rc<dyn View> {
-        Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone(), follow: RefCell::default(), usage: RefCell::default() })
+        Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone(), follow: RefCell::default(), usage: RefCell::default(), agent: std::cell::Cell::new(None), question: RefCell::default() })
     }
     fn show_aside(&self, view: &Rc<dyn View>, title: &str) {
         if let Some(view) = view.as_any().downcast_ref::<ChatView>() {

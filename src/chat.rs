@@ -118,6 +118,8 @@ pub struct Chat {
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
     /// The conversation's text messages as the core's entries (warp), by entry id.
     entries: RefCell<HashMap<String, Rc<Message>>>,
+    /// How many of each entry's pictures are drawn.
+    entry_images: RefCell<HashMap<String, usize>>,
     /// Subagents at work this turn: their task's tool call, what they last did, when.
     crew: RefCell<Vec<Crew>>,
     /// What the agent's workflows are at (see set_workflow_note).
@@ -572,6 +574,7 @@ impl Chat {
             group: RefCell::default(),
             tools: RefCell::default(),
             entries: RefCell::default(),
+            entry_images: RefCell::default(),
             crew: RefCell::default(),
             workflow_note: RefCell::default(),
             crew_list,
@@ -2035,6 +2038,7 @@ impl Chat {
         self.messages.borrow_mut().clear();
         self.tools.borrow_mut().clear();
         self.entries.borrow_mut().clear();
+        self.entry_images.borrow_mut().clear();
         self.set_plan(&Value::Null);
     }
 
@@ -2043,7 +2047,17 @@ impl Chat {
     /// `agent`, `thought`): the rest is still drawn by the View's calls.
     pub fn entry(&self, item: &Value) {
         let (Some(id), Some(kind)) = (item["id"].as_str(), item["kind"].as_str()) else { return };
+        if kind == "tool" {
+            self.tool_entry(item);
+            return;
+        }
         let text = item["text"].as_str().unwrap_or_default();
+        let images = item["images"].as_array().map_or(0, Vec::len);
+        // Pictures sent alone: they are drawn, with no empty message above them.
+        if kind == "user" && text.is_empty() && images > 0 && !self.entries.borrow().contains_key(id) {
+            self.entry_pictures(id, item);
+            return;
+        }
         let known = self.entries.borrow().get(id).cloned();
         let message = match known {
             Some(message) => message,
@@ -2075,6 +2089,59 @@ impl Chat {
         }
         if let Some(said) = item["message"].as_str() {
             *message.id.borrow_mut() = Some(said.to_owned());
+        }
+        self.entry_pictures(id, item);
+    }
+
+    /// Entry `id`'s pictures not drawn yet, drawn (fetched from the core's blobs).
+    fn entry_pictures(&self, id: &str, item: &Value) {
+        let Some(images) = item["images"].as_array() else { return };
+        let drawn = self.entry_images.borrow().get(id).copied().unwrap_or(0);
+        if images.len() <= drawn {
+            return;
+        }
+        let pngs: Vec<glib::Bytes> = images[drawn..].iter().filter_map(|i| loom_core::api::blobs::get(i.as_str()?)).map(|png| glib::Bytes::from(&png[..])).collect();
+        self.entry_images.borrow_mut().insert(id.to_owned(), images.len());
+        self.user_images(&pngs);
+    }
+
+    /// A tool entry of the core's conversation (warp): its card, as ACP's update would draw
+    /// it, with its output and exit.
+    fn tool_entry(&self, item: &Value) {
+        let Some(call) = item["call"].as_str() else { return };
+        let mut update = serde_json::json!({ "toolCallId": call });
+        for (field, to) in [("title", "title"), ("tool", "kind")] {
+            if let Some(value) = item[field].as_str().filter(|v| !v.is_empty()) {
+                update[to] = Value::from(value);
+            }
+        }
+        update["status"] = Value::from(match item["status"].as_str() {
+            Some("streaming") => "in_progress",
+            Some("done") => "completed",
+            Some("failed") => "failed",
+            _ => "pending",
+        });
+        for (field, to) in [("input", "rawInput"), ("content", "content"), ("locations", "locations")] {
+            if !item[field].is_null() {
+                update[to] = item[field].clone();
+            }
+        }
+        if let Some(parent) = item["parent"].as_str() {
+            update["_meta"] = serde_json::json!({ "claudeCode": { "parentToolUseId": parent } });
+        }
+        self.tool(&update);
+        let Some(card) = self.tools.borrow().get(call).cloned() else { return };
+        if let Some(output) = item["output"].as_str()
+            && *card.output.borrow() != output
+        {
+            *card.output.borrow_mut() = output.to_owned();
+            card.output_button();
+            if card.revealer.reveals_child() {
+                card.render_soon();
+            }
+        }
+        if item.get("exit").is_some() && card.exit.get() != Some(item["exit"].as_i64()) {
+            self.tool_exit(call, item["exit"].as_i64());
         }
     }
 

@@ -103,6 +103,9 @@ pub trait View {
     fn set_plan(&self, entries: &Value);
     fn turn_done(&self, seconds: u64);
     fn turn_undo(&self, undo: Rc<dyn Fn()>);
+    /// The next question (`permission` or `form`) is entry `id` of the core API's
+    /// conversation: a UI that answers through the API answers it by that.
+    fn question_entry(&self, _id: &str) {}
     /// A permission question; `options`: (id, name, kind).
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card>;
     fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<dyn Form>;
