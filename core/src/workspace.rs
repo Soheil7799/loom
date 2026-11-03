@@ -166,11 +166,21 @@ impl Workspace {
         self.publish_agents();
     }
 
-    /// The core API's `agents` resource made what the workspace has now, in sidebar order
-    /// (only what changed goes out). Each: `id`, `title`, `project` (its name), `status`
-    /// (`suspended`, `starting`, `idle`, `working`, `blocked`, `failed`), `unseen`, `busy`,
-    /// `questions` (how many wait for an answer), `used` (when it was last used).
+    /// The core API's `agents` and `projects` resources made what the workspace has now, in
+    /// sidebar order (only what changed goes out).
+    ///
+    /// An agent: `id`, `title`, `project` (its name), `project_id`, `status` (`suspended`,
+    /// `starting`, `idle`, `working`, `blocked`, `failed`), `unseen`, `busy`, `questions` (how
+    /// many wait for an answer), `used` (when it was last used), `place` (where it works:
+    /// repo, branch, changes), `edited` (files it changed), `awake` (never suspended).
+    /// A project: `id`, `name`, `collapsed`.
     pub fn publish_agents(&self) {
+        let projects = self
+            .projects_in_order()
+            .iter()
+            .map(|p| json!({ "id": p.path.to_string_lossy(), "name": self.project_label(&p.path), "collapsed": p.collapsed }))
+            .collect();
+        crate::api::hub().store("projects").set(projects);
         let items = self
             .agents_in_order()
             .iter()
@@ -184,6 +194,10 @@ impl Workspace {
                     "busy": agent.is_busy(),
                     "questions": agent.open_questions().len(),
                     "used": crate::api::time(agent.used.get() as i64),
+                    "project_id": agent.project.to_string_lossy(),
+                    "place": agent.place(),
+                    "edited": agent.files().len(),
+                    "awake": agent.awake.get(),
                 })
             })
             .collect();

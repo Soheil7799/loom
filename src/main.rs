@@ -13,6 +13,7 @@ mod cheatsheet;
 mod column;
 mod control;
 mod devhooks;
+mod feed;
 mod files;
 mod history;
 mod hub;

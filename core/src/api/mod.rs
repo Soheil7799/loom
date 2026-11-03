@@ -123,6 +123,11 @@ pub fn time(unix_seconds: i64) -> Value {
     jiff::Timestamp::from_second(unix_seconds).map_or(Value::Null, |t| Value::String(t.to_string()))
 }
 
+/// A time the API gave (`time`), back as Unix seconds.
+pub fn seconds(time: &Value) -> Option<i64> {
+    time.as_str()?.parse::<jiff::Timestamp>().ok().map(|t| t.as_second())
+}
+
 impl Default for Hub {
     fn default() -> Self {
         Hub::new()

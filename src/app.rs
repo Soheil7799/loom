@@ -12,6 +12,7 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
 use crate::chat_view::AgentChat;
+use crate::feed::{Feed, SideAgent, SideProject};
 use crate::agent::{Agent, Event, Status};
 use crate::files::Files;
 use crate::jobs::Tray;
@@ -119,6 +120,10 @@ pub struct App {
     running: RefCell<Vec<u32>>,
     /// The Running list's rows, in order (for its drop lines).
     running_rows: RefCell<Vec<gtk::ListBoxRow>>,
+    /// What the sidebar draws: its copies of the core's `agents` and `projects`.
+    sidebar_feeds: RefCell<Option<(Feed, Feed)>>,
+    /// Something new waits in them: drawn once the window is idle.
+    sidebar_due: Cell<bool>,
     /// Each project's first and last sidebar rows (where a drop line shows).
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// The bridges (the Telegram bot: off unless switched on), each a process of its own.
@@ -482,7 +487,10 @@ impl App {
             project_edges: RefCell::default(),
             running: RefCell::default(),
             running_rows: RefCell::default(),
+            sidebar_feeds: RefCell::default(),
+            sidebar_due: Cell::new(false),
         });
+        this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
         this.wire_hub();
         let weak = Rc::downgrade(&this);
@@ -1959,7 +1967,7 @@ impl App {
                 id: agent.id,
                 title: agent.title(),
                 project: self.project_label(&agent.project),
-                place: place_of(agent),
+                place: agent.place(),
                 status: agent.status(),
                 unseen: agent.unseen.get(),
                 waiting: agent.questions().into_iter().map(|(_, title, _)| title).collect(),
@@ -2884,14 +2892,57 @@ impl App {
         self.window.set_title(Some(&title));
     }
 
-    fn refresh_sidebar(self: &Rc<Self>) {
-        // Whatever the sidebar draws anew (an agent moved, a project renamed), the API too.
+    /// The sidebar subscribes to the core's `agents` and `projects` (warp): what comes is
+    /// drawn once the window is idle.
+    fn follow_sidebar(self: &Rc<Self>) {
         self.ws.publish_agents();
+        let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
+        let ready = || {
+            let weak = Rc::downgrade(self);
+            move || {
+                let Some(app) = weak.upgrade() else { return };
+                if !app.sidebar_due.replace(true) {
+                    let weak = Rc::downgrade(&app);
+                    glib::idle_add_local_once(move || {
+                        if let Some(app) = weak.upgrade()
+                            && app.sidebar_due.get()
+                        {
+                            app.draw_sidebar();
+                        }
+                    });
+                }
+            }
+        };
+        let agents = Feed::new(&client, "agents", ready());
+        let projects = Feed::new(&client, "projects", ready());
+        *self.sidebar_feeds.borrow_mut() = agents.zip(projects);
+    }
+
+    /// The sidebar drawn now: what changed in the workspace (an agent moved, a project
+    /// renamed, the focus) published to the core, then drawn from what it sends.
+    fn refresh_sidebar(self: &Rc<Self>) {
+        self.ws.publish_agents();
+        for resource in ["agents", "projects"] {
+            loom_core::api::hub().store(resource).flush();
+        }
+        self.draw_sidebar();
+    }
+
+    /// The sidebar drawn from its copies of `agents` and `projects`.
+    fn draw_sidebar(self: &Rc<Self>) {
+        self.sidebar_due.set(false);
+        let (agents, projects): (Vec<SideAgent>, Vec<SideProject>) = {
+            let feeds = self.sidebar_feeds.borrow();
+            let Some((agents, projects)) = feeds.as_ref() else { return };
+            agents.update();
+            projects.update();
+            (agents.items().iter().filter_map(SideAgent::from).collect(), projects.items().iter().filter_map(SideProject::from).collect())
+        };
         self.refresh_title();
         if self.notes_mode.get() {
             let (mut working, mut waiting) = (0, 0);
-            for agent in self.ws.agents.borrow().iter() {
-                match agent.status() {
+            for agent in &agents {
+                match agent.status {
                     Status::Working => working += 1,
                     Status::Blocked => waiting += 1,
                     _ => {}
@@ -2918,23 +2969,23 @@ impl App {
         }
         let mut rows = Vec::new();
         let mut edges = HashMap::new();
-        let focused = self.focused.borrow().clone();
-        let projects = self.projects_in_order();
-        let agents = self.agents_in_order();
+        let focused = self.focused.borrow().as_ref().map(|f| f.id);
         // The running agents, numbered (Ctrl+1…9), each with its ☕; the projects below as
         // ever (a running agent is in both).
-        let running = self.running_agents();
+        let order = self.running_order(agents.iter().filter(|a| a.status != Status::Suspended).map(|a| a.id).collect());
+        let running: Vec<&SideAgent> = order.iter().filter_map(|id| agents.iter().find(|a| a.id == *id)).collect();
         let mut running_rows = Vec::new();
         if settings::get().show_running && !running.is_empty() {
             self.list.append(&heading_row(&format!("RUNNING · {}", running.len()), None));
             rows.push(Row::Heading);
-            for (i, agent) in running.iter().enumerate() {
-                let row = self.running_row(agent, i);
-                if focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
+            for (i, item) in running.iter().enumerate() {
+                let Some(agent) = self.ws.agent(item.id) else { continue };
+                let row = self.running_row(item, i);
+                if focused == Some(item.id) {
                     row.add_css_class("current");
                 }
                 self.list.append(&row);
-                rows.push(Row::Agent(agent.clone()));
+                rows.push(Row::Agent(agent));
                 running_rows.push(row);
             }
             self.list.append(&heading_row("PROJECTS", Some(self)));
@@ -2942,7 +2993,7 @@ impl App {
         }
         *self.running_rows.borrow_mut() = running_rows;
         for project in &projects {
-            let mine: Vec<&Rc<Agent>> = agents.iter().filter(|a| a.project == project.path).collect();
+            let mine: Vec<&SideAgent> = agents.iter().filter(|a| a.project == project.path).collect();
             // Each project a card: its header on top, its agents inside, the last one closing it
             // (closed, or with none, the header is the whole card).
             let header = self.project_row(project, &mine);
@@ -2958,20 +3009,21 @@ impl App {
                 continue;
             }
             let count = mine.len();
-            let alike = |agent: &Rc<Agent>| mine.iter().filter(|a| a.title() == agent.title()).count() > 1;
+            let alike = |agent: &SideAgent| mine.iter().filter(|a| a.title == agent.title).count() > 1;
             let alike: Vec<bool> = mine.iter().map(|a| alike(a)).collect();
-            for (i, agent) in mine.into_iter().enumerate() {
-                let row = agent_row(agent, alike[i], agent.session_id().is_some_and(|s| self.hub.asks_about(&s)));
+            for (i, item) in mine.into_iter().enumerate() {
+                let Some(agent) = self.ws.agent(item.id) else { continue };
+                let row = agent_row(item, alike[i], agent.session_id().is_some_and(|s| self.hub.asks_about(&s)));
                 if i + 1 == count {
                     row.add_css_class("last");
                     last = row.clone();
                 }
                 self.project_drop_zone(&row, &project.path, false);
                 self.list.append(&row);
-                if focused.as_ref().is_some_and(|f| Rc::ptr_eq(f, agent)) {
+                if focused == Some(item.id) {
                     self.list.select_row(Some(&row));
                 }
-                rows.push(Row::Agent(agent.clone()));
+                rows.push(Row::Agent(agent));
             }
             edges.insert(project.path.clone(), (header, last));
         }
@@ -3017,7 +3069,7 @@ impl App {
     }
 
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
-    fn project_row(self: &Rc<Self>, project: &Project, agents: &[&Rc<Agent>]) -> gtk::ListBoxRow {
+    fn project_row(self: &Rc<Self>, project: &SideProject, agents: &[&SideAgent]) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         let arrow = gtk::Button::with_label(if project.collapsed { "▸" } else { "▾" });
         arrow.add_css_class("flat");
@@ -3030,12 +3082,12 @@ impl App {
                 app.toggle_collapsed(&path);
             }
         });
-        let name = gtk::Label::builder().label(self.project_label(&project.path)).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        let name = gtk::Label::builder().label(&project.name).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         name.add_css_class("project-name");
         line.append(&arrow);
         line.append(&name);
-        let waiting = agents.iter().filter(|a| a.status() == Status::Blocked).count();
-        let working = agents.iter().filter(|a| matches!(a.status(), Status::Working | Status::Starting)).count();
+        let waiting = agents.iter().filter(|a| a.status == Status::Blocked).count();
+        let working = agents.iter().filter(|a| matches!(a.status, Status::Working | Status::Starting)).count();
         if waiting > 0 {
             let badge = gtk::Label::new(Some(&format!("⚑ {waiting}")));
             badge.add_css_class("badge-wait");
@@ -3058,7 +3110,7 @@ impl App {
         let add = gtk::Button::with_label("+");
         add.add_css_class("flat");
         add.add_css_class("add");
-        add.set_tooltip_text(Some(&format!("New or past conversation in {}", self.project_label(&project.path))));
+        add.set_tooltip_text(Some(&format!("New or past conversation in {}", project.name)));
         let weak = Rc::downgrade(self);
         let path = project.path.clone();
         add.connect_clicked(move |_| {
@@ -3120,45 +3172,52 @@ impl App {
     /// one that started running joins at the end.
     fn running_agents(&self) -> Vec<Rc<Agent>> {
         let agents = self.ws.agents.borrow().clone();
-        let live = |a: &Rc<Agent>| a.status() != Status::Suspended;
+        let order = self.running_order(agents.iter().filter(|a| a.status() != Status::Suspended).map(|a| a.id).collect());
+        order.iter().filter_map(|id| agents.iter().find(|a| a.id == *id).cloned()).collect()
+    }
+
+    /// The Running list's order, given the agents running now (`live`).
+    fn running_order(&self, live: Vec<u32>) -> Vec<u32> {
         let mut order = self.running.borrow_mut();
-        order.retain(|id| agents.iter().any(|a| a.id == *id && live(a)));
-        for agent in agents.iter().filter(|a| live(a)) {
-            if !order.contains(&agent.id) {
-                order.push(agent.id);
+        order.retain(|id| live.contains(id));
+        for id in live {
+            if !order.contains(&id) {
+                order.push(id);
             }
         }
-        order.iter().filter_map(|id| agents.iter().find(|a| a.id == *id).cloned()).collect()
+        order.clone()
     }
 
     /// A row of the Running list: its number (Ctrl+1…9), dot, name, project, and the ☕ that
     /// keeps it awake. Dragged, it moves within the list.
-    fn running_row(self: &Rc<Self>, agent: &Rc<Agent>, index: usize) -> gtk::ListBoxRow {
+    fn running_row(self: &Rc<Self>, agent: &SideAgent, index: usize) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let number = gtk::Label::new(Some(&if index < 9 { (index + 1).to_string() } else { String::new() }));
         number.add_css_class("running-number");
         number.set_width_chars(1);
         let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
         dot.add_css_class("dot");
-        let status = agent.status();
-        dot.add_css_class(if status == Status::Idle && agent.unseen.get() { "done" } else { status.css() });
-        let title = gtk::Label::builder().label(agent.title()).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        let status = agent.status;
+        dot.add_css_class(if status == Status::Idle && agent.unseen { "done" } else { status.css() });
+        let title = gtk::Label::builder().label(&agent.title).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         title.add_css_class("agent-title");
-        let project = gtk::Label::builder().label(self.project_label(&agent.project)).max_width_chars(12).ellipsize(pango::EllipsizeMode::End).build();
+        let project = gtk::Label::builder().label(&agent.project_name).max_width_chars(12).ellipsize(pango::EllipsizeMode::End).build();
         project.add_css_class("running-project");
         // Not a focus stop: clicked, the sidebar is rebuilt, and focus left on it would land on
         // another row (scrolling the list away).
-        let awake = gtk::Button::builder().child(&crate::logo::cup(14, agent.awake.get())).focus_on_click(false).build();
+        let awake = gtk::Button::builder().child(&crate::logo::cup(14, agent.awake)).focus_on_click(false).build();
         awake.update_property(&[gtk::accessible::Property::Label("Keep awake")]);
         awake.add_css_class("flat");
         awake.add_css_class("awake");
-        if agent.awake.get() {
+        if agent.awake {
             awake.add_css_class("on");
         }
-        awake.set_tooltip_text(Some(if agent.awake.get() { "Kept awake: never suspended while idle (click to allow it)" } else { "Keep it awake: never suspended while idle" }));
-        let (weak, target) = (Rc::downgrade(self), Rc::downgrade(agent));
+        awake.set_tooltip_text(Some(if agent.awake { "Kept awake: never suspended while idle (click to allow it)" } else { "Keep it awake: never suspended while idle" }));
+        let (weak, target) = (Rc::downgrade(self), agent.id);
         awake.connect_clicked(move |_| {
-            if let (Some(app), Some(agent)) = (weak.upgrade(), target.upgrade()) {
+            if let Some(app) = weak.upgrade()
+                && let Some(agent) = app.ws.agent(target)
+            {
                 agent.awake.set(!agent.awake.get());
                 app.save();
                 app.refresh_sidebar();
@@ -3436,16 +3495,6 @@ impl App {
     }
 }
 
-/// Where an agent works: the repo it last touched (named when it isn't the project itself),
-/// its branch and changes; else the subfolder it runs in.
-fn place_of(agent: &Rc<Agent>) -> String {
-    match agent.repo() {
-        Some(repo) if repo.path == agent.project => repo.summary(),
-        Some(repo) => format!("{} · {}", repo.name(), repo.summary()),
-        None => agent.cwd.strip_prefix(&agent.project).ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
-    }
-}
-
 /// A heading row of the sidebar ("RUNNING · 3", "PROJECTS"); the projects' one carries
 /// collapse-all and expand-all.
 fn heading_row(text: &str, app: Option<&Rc<App>>) -> gtk::ListBoxRow {
@@ -3473,26 +3522,26 @@ fn heading_row(text: &str, app: Option<&Rc<App>>) -> gtk::ListBoxRow {
     row
 }
 
-fn agent_row(agent: &Rc<Agent>, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
+fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("dot");
-    let status = agent.status();
-    dot.add_css_class(if status == Status::Idle && agent.unseen.get() { "done" } else { status.css() });
+    let status = agent.status;
+    dot.add_css_class(if status == Status::Idle && agent.unseen { "done" } else { status.css() });
     dot.set_valign(gtk::Align::Center);
     let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
     names.set_hexpand(true);
-    let title = gtk::Label::builder().label(agent.title()).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+    let title = gtk::Label::builder().label(&agent.title).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
     title.add_css_class("agent-title");
-    if agent.status() == Status::Suspended {
+    if agent.status == Status::Suspended {
         title.add_css_class("resting");
     }
     // Another of the same name in this project: when each was last used tells them apart.
-    if alike && agent.used.get() > 0 {
+    if alike && agent.used > 0 {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         title.set_hexpand(false);
         line.append(&title);
-        let when = gtk::Label::new(Some(&format!("· {}", crate::overview::ago(crate::state::now().saturating_sub(agent.used.get())))));
+        let when = gtk::Label::new(Some(&format!("· {}", crate::overview::ago(crate::state::now().saturating_sub(agent.used)))));
         when.add_css_class("dup");
         when.add_css_class("small");
         line.append(&when);
@@ -3501,7 +3550,7 @@ fn agent_row(agent: &Rc<Agent>, alike: bool, scribe_asks: bool) -> gtk::ListBoxR
         names.append(&title);
     }
     let state = match status {
-        Status::Idle if agent.unseen.get() => "done".to_owned(),
+        Status::Idle if agent.unseen => "done".to_owned(),
         Status::Blocked => "needs you".to_owned(),
         // The resting states say nothing (most agents are in one): the dot is enough.
         Status::Idle | Status::Suspended => String::new(),
@@ -3509,9 +3558,9 @@ fn agent_row(agent: &Rc<Agent>, alike: bool, scribe_asks: bool) -> gtk::ListBoxR
     };
     // Where it works: the repo it last touched (name when it isn't the project itself), its
     // branch and changes; else the subfolder it runs in.
-    let place = place_of(agent);
+    let place = agent.place.clone();
     // Files it wrote or edited in this conversation.
-    let edited = match agent.files().len() {
+    let edited = match agent.edited {
         0 => String::new(),
         n => format!("✎{n}"),
     };

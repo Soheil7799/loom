@@ -535,6 +535,16 @@ impl Agent {
         self.repos.borrow().clone()
     }
 
+    /// Where it works, in a few words: the repo it last touched (its name when it isn't the
+    /// project itself), branch and changes; else the subfolder it runs in.
+    pub fn place(self: &Rc<Self>) -> String {
+        match self.repo() {
+            Some(repo) if repo.path == self.project => repo.summary(),
+            Some(repo) => format!("{} · {}", repo.name(), repo.summary()),
+            None => self.cwd.strip_prefix(&self.project).ok().map(|p| p.to_string_lossy().into_owned()).unwrap_or_default(),
+        }
+    }
+
     /// The latest repo's status as last read. Never waits on git: a stale or missing one is
     /// read again in the background, and the agent reports Changed when it arrives.
     pub fn repo(self: &Rc<Self>) -> Option<crate::repos::Repo> {
