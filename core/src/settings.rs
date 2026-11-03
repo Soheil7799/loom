@@ -140,7 +140,83 @@ pub fn init(app_id: &str) {
     let settings = std::fs::read_to_string(&file).map(|t| parse(&t)).unwrap_or_default();
     FILE.with(|f| *f.borrow_mut() = Some(file));
     crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
+    publish(&settings);
     CURRENT.with(|c| *c.borrow_mut() = Some(settings));
+    crate::api::hub().handle("set_settings", |who, params| {
+        if !matches!(who, crate::api::Principal::Window | crate::api::Principal::Cli) {
+            return Err(crate::api::Error::Forbidden("settings, but from loom's window or the CLI".into()));
+        }
+        let changed = with_changes(&get(), &params["changes"]).map_err(crate::api::Error::Invalid)?;
+        update(|settings| *settings = changed);
+        Ok(json!({}))
+    });
+}
+
+/// Settings written but never read through the core API (only whether they are set).
+const SECRETS: &[&str] = &["telegramToken", "remoteKey", "sttKey"];
+/// Settings the API never changes (made by loom itself).
+const MADE: &[&str] = &["remoteKey"];
+
+/// `name` (camelCase, as in the file) as the API names it (snake_case).
+fn snake(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_uppercase() {
+            out.push('_');
+        }
+        out.push(c.to_ascii_lowercase());
+    }
+    out
+}
+
+/// The core API's `settings`: one item (`id: "settings"`) with every setting under its
+/// snake_case name, but the secrets: for those, only whether they are set (`telegram_token_set`…).
+pub fn item(settings: &Settings) -> Value {
+    let all: Value = serde_json::from_str(&render(settings)).unwrap_or_default();
+    let mut item = serde_json::Map::new();
+    item.insert("id".into(), json!("settings"));
+    for (name, value) in all.as_object().into_iter().flatten() {
+        if SECRETS.contains(&name.as_str()) {
+            item.insert(format!("{}_set", snake(name)), json!(value.as_str().is_some_and(|v| !v.is_empty())));
+        } else {
+            item.insert(snake(name), value.clone());
+        }
+    }
+    Value::Object(item)
+}
+
+fn publish(settings: &Settings) {
+    crate::api::hub().store("settings").upsert(item(settings));
+}
+
+/// `settings` with `changes` (snake_case names, as the API gives them) made; Err names what
+/// can't be changed so.
+pub fn with_changes(settings: &Settings, changes: &Value) -> Result<Settings, String> {
+    let changes = changes.as_object().ok_or("changes must be an object")?;
+    let mut all: Value = serde_json::from_str(&render(settings)).unwrap_or_default();
+    for (name, value) in changes {
+        let Some(key) = all.as_object().and_then(|a| a.keys().find(|k| snake(k) == *name)).cloned() else {
+            return Err(format!("no setting {name}"));
+        };
+        if MADE.contains(&key.as_str()) {
+            return Err(format!("{name} is made by loom"));
+        }
+        if std::mem::discriminant(&all[&key]) != std::mem::discriminant(value) && !(all[&key].is_number() && value.is_number()) {
+            return Err(format!("{name}: not a {}", kind(&all[&key])));
+        }
+        all[&key] = value.clone();
+    }
+    Ok(parse(&all.to_string()))
+}
+
+fn kind(value: &Value) -> &'static str {
+    match value {
+        Value::Bool(_) => "true or false",
+        Value::Number(_) => "number",
+        Value::String(_) => "text",
+        Value::Array(_) => "list",
+        _ => "value of its kind",
+    }
 }
 
 pub fn get() -> Settings {
@@ -157,6 +233,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
     }
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
     crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
+    publish(&settings);
     crate::log::debug!("settings", "changed: {}", {
         let text = render(&settings).replace('\n', " ");
         let text = if settings.telegram_token.is_empty() { text } else { text.replace(&settings.telegram_token, "…") };
@@ -321,6 +398,21 @@ mod tests {
             ..Settings::default()
         };
         assert_eq!(parse(&render(&s)), s);
+    }
+
+    #[test]
+    fn the_api_sees_settings_but_never_secrets_and_changes_them_by_name() {
+        let s = Settings { telegram_token: "1:abc".into(), remote_key: "k".into(), idle_minutes: 30, ..Settings::default() };
+        let item = item(&s);
+        assert_eq!((item["id"].as_str(), item["idle_minutes"].as_u64()), (Some("settings"), Some(30)));
+        assert_eq!((item["telegram_token_set"].as_bool(), item["stt_key_set"].as_bool()), (Some(true), Some(false)));
+        assert!(!item.to_string().contains("1:abc") && item.get("telegram_token").is_none() && item.get("remote_key").is_none());
+        let changed = with_changes(&s, &json!({ "idle_minutes": 5, "show_thinking": false, "stt_key": "secret" })).unwrap();
+        assert_eq!((changed.idle_minutes, changed.show_thinking, changed.stt_key.as_str()), (5, false, "secret"));
+        assert_eq!(changed.telegram_token, "1:abc", "what isn't named stays");
+        assert!(with_changes(&s, &json!({ "remote_key": "mine" })).is_err());
+        assert!(with_changes(&s, &json!({ "idle_minutes": "soon" })).is_err());
+        assert!(with_changes(&s, &json!({ "weather": 1 })).is_err());
     }
 
     #[test]
