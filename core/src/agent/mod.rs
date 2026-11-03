@@ -294,6 +294,11 @@ pub struct Agent {
     on_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, Event)>>>,
 }
 
+/// The core API's name for agent `id`'s conversation.
+pub fn conversation(id: u32) -> String {
+    format!("conversation/{id}")
+}
+
 impl Agent {
     /// Agent `id` from `saved`, in `project` (see repos::project_of).
     pub fn new(id: u32, saved: Saved, project: PathBuf, jobs: Jobs, view: Rc<dyn View>) -> Rc<Agent> {
@@ -301,6 +306,7 @@ impl Agent {
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
         let recorded = Rc::new(transcript::Recorded::new(view));
+        recorded.publish(&conversation(id));
         let agent = Rc::new(Agent {
             id,
             project,

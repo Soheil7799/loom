@@ -68,6 +68,10 @@ impl Store {
         self.0.state.borrow().items.iter().rfind(|it| id_of(it) == Some(id)).cloned()
     }
 
+    fn has(&self, id: &str) -> bool {
+        self.0.state.borrow().items.iter().rev().any(|it| id_of(it) == Some(id))
+    }
+
     /// Adds `item` at the end, or replaces the one with its id. Items must be JSON objects
     /// with a string `id`; others are refused (and a debug build stops on them).
     pub fn upsert(&self, item: Value) {
@@ -79,14 +83,14 @@ impl Store {
     }
 
     pub fn remove(&self, id: &str) {
-        if self.get(id).is_some() {
+        if self.has(id) {
             self.change(Op::Remove { id: id.to_string() });
         }
     }
 
     /// Adds `text` to the end of `field` (streaming text).
     pub fn append(&self, id: &str, field: &str, text: &str) {
-        if !text.is_empty() && self.get(id).is_some() {
+        if !text.is_empty() && self.has(id) {
             self.change(Op::Append { id: id.to_string(), field: field.to_string(), text: text.to_string() });
         }
     }
@@ -183,6 +187,27 @@ impl Store {
         }
     }
 
+    /// Replaces all the items at once (a conversation emptied, or read back from the start):
+    /// subscribers get a resync (`reset`) and the new snapshot, not a remove for each item.
+    pub fn reset(&self, items: Vec<Value>) {
+        let subs: Vec<_> = {
+            let mut s = self.0.state.borrow_mut();
+            if s.gone {
+                return;
+            }
+            s.items = items.into_iter().filter(|it| id_of(it).is_some()).collect();
+            s.pending.clear();
+            s.subs.retain(|w| w.strong_count() > 0);
+            s.subs.iter().filter_map(Weak::upgrade).collect()
+        };
+        for sub in &subs {
+            self.resync(sub, "reset");
+        }
+        for sub in subs {
+            (sub.ready)();
+        }
+    }
+
     /// Ends the resource: subscribers get `gone`, and nothing more.
     pub fn close(&self) {
         let subs: Vec<_> = {
@@ -242,6 +267,18 @@ impl Store {
 fn coalesce(ops: &[Op]) -> Vec<Op> {
     let mut out: Vec<Op> = Vec::with_capacity(ops.len());
     for op in ops {
+        // A whole item replaces what was just sent of it (a tool's output, as it grows).
+        if let Op::Upsert { item } = op
+            && let Some(last) = out.last_mut()
+            && match last {
+                Op::Upsert { item: it } => id_of(it) == id_of(item),
+                Op::Append { id, .. } => Some(id.as_str()) == id_of(item),
+                _ => false,
+            }
+        {
+            *last = op.clone();
+            continue;
+        }
         if let Op::Append { id, field, text } = op {
             match out.last_mut() {
                 Some(Op::Append { id: last, field: f, text: t }) if last == id && f == field => {

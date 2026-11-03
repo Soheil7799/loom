@@ -104,6 +104,25 @@ impl Hub {
     }
 }
 
+thread_local! {
+    static HUB: Hub = Hub::new();
+}
+
+/// The core's resources (one set, on the core's thread).
+pub fn hub() -> Hub {
+    HUB.with(Hub::clone)
+}
+
+/// Ends resource `name` of the core's hub (nothing, if the thread is ending).
+pub fn close(name: &str) {
+    let _ = HUB.try_with(|hub| hub.close(name));
+}
+
+/// A time as the API gives times: RFC 3339, UTC (`2026-11-03T12:00:00Z`).
+pub fn time(unix_seconds: i64) -> Value {
+    jiff::Timestamp::from_second(unix_seconds).map_or(Value::Null, |t| Value::String(t.to_string()))
+}
+
 impl Default for Hub {
     fn default() -> Self {
         Hub::new()

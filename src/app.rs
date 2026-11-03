@@ -2180,7 +2180,7 @@ impl App {
             closed.truncate(state::CLOSED_KEPT);
         }
         self.chat_stack.remove(&agent.chat().root);
-        self.ws.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
+        self.ws.remove_agent(agent);
         if focused_left {
             *self.focused.borrow_mut() = None;
         }
@@ -2885,6 +2885,8 @@ impl App {
     }
 
     fn refresh_sidebar(self: &Rc<Self>) {
+        // Whatever the sidebar draws anew (an agent moved, a project renamed), the API too.
+        self.ws.publish_agents();
         self.refresh_title();
         if self.notes_mode.get() {
             let (mut working, mut waiting) = (0, 0);

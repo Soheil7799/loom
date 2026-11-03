@@ -46,11 +46,12 @@ pub struct Workspace {
     pub schedules: RefCell<Vec<Schedule>>,
     next_id: Cell<u32>,
     host: RefCell<Option<Weak<dyn Host>>>,
+    me: Weak<Workspace>,
 }
 
 impl Workspace {
     pub fn new(app_id: &str) -> Rc<Workspace> {
-        Rc::new(Workspace {
+        Rc::new_cyclic(|me| Workspace {
             app_id: app_id.to_owned(),
             projects: RefCell::default(),
             agents: RefCell::default(),
@@ -58,6 +59,7 @@ impl Workspace {
             schedules: RefCell::default(),
             next_id: Cell::new(1),
             host: RefCell::default(),
+            me: me.clone(),
         })
     }
 
@@ -141,14 +143,51 @@ impl Workspace {
         let agent = Agent::new(id, saved, project, jobs, view);
         agent.view.set_show_thinking(settings::get().show_thinking);
         let weak = Rc::downgrade(&host);
+        let ws = self.me.clone();
         agent.on_event(move |agent, event| {
+            if let Some(ws) = ws.upgrade() {
+                ws.publish_agents();
+            }
             if let Some(host) = weak.upgrade() {
                 host.agent_event(agent, event);
             }
         });
         self.agents.borrow_mut().push(agent.clone());
+        self.publish_agents();
         host.agent_added(&agent);
         agent
+    }
+
+    /// Takes `agent` out of the workspace (the UI has closed it): its conversation's
+    /// subscribers are told it is gone.
+    pub fn remove_agent(&self, agent: &Rc<Agent>) {
+        self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
+        crate::api::close(&crate::agent::conversation(agent.id));
+        self.publish_agents();
+    }
+
+    /// The core API's `agents` resource made what the workspace has now, in sidebar order
+    /// (only what changed goes out). Each: `id`, `title`, `project` (its name), `status`
+    /// (`suspended`, `starting`, `idle`, `working`, `blocked`, `failed`), `unseen`, `busy`,
+    /// `questions` (how many wait for an answer), `used` (when it was last used).
+    pub fn publish_agents(&self) {
+        let items = self
+            .agents_in_order()
+            .iter()
+            .map(|agent| {
+                json!({
+                    "id": agent.id.to_string(),
+                    "title": agent.title(),
+                    "project": self.project_label(&agent.project),
+                    "status": agent.status().css(),
+                    "unseen": agent.unseen.get(),
+                    "busy": agent.is_busy(),
+                    "questions": agent.open_questions().len(),
+                    "used": crate::api::time(agent.used.get() as i64),
+                })
+            })
+            .collect();
+        crate::api::hub().store("agents").set(items);
     }
 
     pub fn agent(&self, id: u32) -> Option<Rc<Agent>> {

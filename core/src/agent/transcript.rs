@@ -7,6 +7,11 @@
 //! the turn took). Entries change as they stream in; each change is a new revision, so a reader
 //! asks only for what changed after the last revision it saw. Revisions count within an
 //! `epoch` (one per transcript, so per agent and per run of loom): from another, all of it.
+//!
+//! It is also the core API's `conversation/<agent>` resource: each entry published with an
+//! `id` of its own (`e1`, `e2`…; a tool's call id is its `call`), the `turn_id` of the turn it
+//! belongs to (a turn starts with the user's message) and a `status`: `streaming` while text
+//! still comes, a tool's `pending`, `streaming`, `done` or `failed`; else `done`.
 
 use std::any::Any;
 use std::cell::RefCell;
@@ -18,6 +23,7 @@ use std::time::Instant;
 use serde_json::{Value, json};
 
 use super::view::{Card, Crew, Form, Png, View, Workflow};
+use crate::api::Store;
 use crate::jobs::Id;
 use crate::workflow::Launch;
 
@@ -37,6 +43,22 @@ pub struct Transcript {
     tools: HashMap<String, usize>,
     /// The message just sent from loom (its pictures follow it), until anything else comes.
     said: Option<usize>,
+    /// Each entry's id, turn and status in the API, beside `entries`.
+    meta: Vec<Meta>,
+    /// Entries made so far: an id is never given twice, even after `clear`.
+    made: u64,
+    /// Turns begun so far; `replied`: something other than the user's message came in this
+    /// one (the user's next message begins another).
+    turns: u64,
+    replied: bool,
+    /// Where the conversation is published, once it is.
+    store: Option<Store>,
+}
+
+struct Meta {
+    id: String,
+    turn: String,
+    status: &'static str,
 }
 
 impl Transcript {
@@ -71,14 +93,43 @@ impl Transcript {
     }
 
     fn push(&mut self, entry: Value) -> usize {
+        self.close_open();
+        let kind = entry["kind"].as_str().unwrap_or("");
+        if kind != "user" {
+            self.replied = true;
+        } else if self.replied || self.turns == 0 {
+            self.turns += 1;
+            self.replied = false;
+        }
+        let status = if matches!(kind, "agent" | "thought") { "streaming" } else { "done" };
+        self.made += 1;
+        self.meta.push(Meta { id: format!("e{}", self.made), turn: format!("t{}", self.turns), status });
         let rev = self.bump();
         self.entries.push((rev, entry));
-        self.open = None;
         self.said = None;
-        self.entries.len() - 1
+        let i = self.entries.len() - 1;
+        self.publish(i);
+        i
+    }
+
+    /// The entry text was streaming into is whole.
+    fn close_open(&mut self) {
+        if let Some((i, ..)) = self.open.take()
+            && let Some(meta) = self.meta.get_mut(i)
+            && meta.status == "streaming"
+        {
+            meta.status = "done";
+            self.publish(i);
+        }
     }
 
     fn change(&mut self, i: usize, change: impl FnOnce(&mut Value)) {
+        self.touch(i, change);
+        self.publish(i);
+    }
+
+    /// Changes entry `i` without publishing it (the caller tells the API what changed).
+    fn touch(&mut self, i: usize, change: impl FnOnce(&mut Value)) {
         let rev = self.bump();
         if let Some((at, entry)) = self.entries.get_mut(i) {
             *at = rev;
@@ -88,9 +139,52 @@ impl Transcript {
 
     fn clear(&mut self) {
         self.entries.clear();
+        self.meta.clear();
         self.tools.clear();
         self.open = None;
+        self.replied = true;
         self.cleared = self.bump();
+        if let Some(store) = &self.store {
+            store.reset(Vec::new());
+        }
+    }
+
+    /// Entry `i` as the API gives it.
+    fn item(&self, i: usize) -> Option<Value> {
+        let (_, entry) = self.entries.get(i)?;
+        let meta = self.meta.get(i)?;
+        let mut item = entry.clone();
+        let map = item.as_object_mut()?;
+        let call = map.remove("id");
+        let status = match map.remove("status") {
+            // A tool's, as the agent reports it (ACP: pending, in_progress, completed, failed).
+            Some(Value::String(acp)) => match acp.as_str() {
+                "in_progress" => "streaming",
+                "completed" => "done",
+                "failed" => "failed",
+                _ => "pending",
+            },
+            _ => meta.status,
+        };
+        map.insert("id".into(), json!(meta.id));
+        map.insert("turn_id".into(), json!(meta.turn));
+        map.insert("status".into(), json!(status));
+        if let Some(call) = call {
+            map.insert("call".into(), call);
+        }
+        Some(item)
+    }
+
+    fn publish(&self, i: usize) {
+        if let (Some(store), Some(item)) = (&self.store, self.item(i)) {
+            store.upsert(item);
+        }
+    }
+
+    /// Publishes the conversation in `store` from now on (all of it, then each change).
+    pub fn publish_to(&mut self, store: Store) {
+        store.reset((0..self.entries.len()).filter_map(|i| self.item(i)).collect());
+        self.store = Some(store);
     }
 
     /// A piece of a message streaming in, onto the last one if it is of the same kind.
@@ -99,14 +193,19 @@ impl Transcript {
             Some((i, open, said)) if open == kind => {
                 // Another message of the agent's: a paragraph of its own (as the view shows it).
                 let another = id.is_some() && said.is_some() && said.as_deref() != id;
-                self.change(i, |entry| {
+                let mut added = String::new();
+                self.touch(i, |entry| {
                     if let Value::String(all) = &mut entry["text"] {
                         if another && !all.ends_with("\n\n") {
-                            all.push_str("\n\n");
+                            added.push_str("\n\n");
                         }
-                        all.push_str(text);
+                        added.push_str(text);
+                        all.push_str(&added);
                     }
                 });
+                if let (Some(store), Some(meta)) = (&self.store, self.meta.get(i)) {
+                    store.append(&meta.id, "text", &added);
+                }
                 if id.is_some() {
                     self.open = Some((i, kind, id.map(str::to_owned)));
                 }
@@ -187,7 +286,20 @@ pub struct Recorded {
     pub usage: RefCell<Value>,
 }
 
+impl Drop for Recorded {
+    fn drop(&mut self) {
+        if let Some(store) = &self.transcript.get_mut().store {
+            crate::api::close(store.name());
+        }
+    }
+}
+
 impl Recorded {
+    /// Published as resource `name` of the core API (`conversation/<agent>`).
+    pub fn publish(&self, name: &str) {
+        self.transcript.borrow_mut().publish_to(crate::api::hub().store(name));
+    }
+
     /// A message is being sent from loom: pictures that follow belong to it, not to the last.
     pub fn message_starts(&self) {
         self.transcript.borrow_mut().said = None;
@@ -545,6 +657,74 @@ mod tests {
         assert_eq!((tool["title"].as_str(), tool["status"].as_str(), tool["exit"].as_i64()), (Some("Read a.rs"), Some("completed"), Some(0)));
         assert_eq!(tool["output"].as_str().unwrap().len(), OUTPUT);
         assert!(t.since("", t.since("", 0)["rev"].as_u64().unwrap())["entries"].as_array().unwrap().is_empty());
+    }
+
+    /// A conversation as the API's subscriber sees it, after each flush.
+    fn followed(t: &mut Transcript) -> (crate::api::Store, crate::api::Subscription, crate::api::Mirror) {
+        let hub = crate::api::Hub::manual(crate::api::Limits::default());
+        t.publish_to(hub.store("conversation/1"));
+        let sub = hub.connect(crate::api::Principal::Window).subscribe("conversation/1", || {}).unwrap();
+        let mut mirror = crate::api::Mirror::default();
+        for m in sub.drain() {
+            mirror.apply(&m);
+        }
+        (hub.store("conversation/1"), sub, mirror)
+    }
+
+    fn sync(store: &crate::api::Store, sub: &crate::api::Subscription, mirror: &mut crate::api::Mirror) -> Vec<crate::api::Message> {
+        store.flush();
+        let got = sub.drain();
+        for m in &got {
+            assert_ne!(mirror.apply(m), crate::api::Applied::Gap);
+        }
+        got
+    }
+
+    fn brief(mirror: &crate::api::Mirror) -> Vec<String> {
+        mirror.items.iter().map(|e| format!("{} {} {} {}", e["id"].as_str().unwrap(), e["turn_id"].as_str().unwrap(), e["kind"].as_str().unwrap(), e["status"].as_str().unwrap())).collect()
+    }
+
+    #[test]
+    fn the_api_follows_the_conversation_entry_by_entry() {
+        let mut t = Transcript::default();
+        t.push(json!({ "kind": "notice", "text": "Started.", "class": "dim" }));
+        let (store, sub, mut mirror) = followed(&mut t);
+        assert_eq!(brief(&mirror), ["e1 t0 notice done"]);
+
+        t.push(json!({ "kind": "user", "text": "hi" }));
+        t.chunk("agent", "Hel", Some("m1"));
+        let got = sync(&store, &sub, &mut mirror);
+        t.chunk("agent", "lo", Some("m1"));
+        t.chunk("agent", "Again", Some("m2"));
+        let streamed = sync(&store, &sub, &mut mirror);
+        assert_eq!(got.len() + streamed.len(), 2, "one message a flush");
+        assert_eq!(serde_json::to_value(&streamed[0]).unwrap()["ops"], json!([{ "op": "append", "id": "e3", "field": "text", "text": "lo\n\nAgain" }]));
+        assert_eq!(brief(&mirror), ["e1 t0 notice done", "e2 t1 user done", "e3 t1 agent streaming"]);
+
+        t.tool(&json!({ "toolCallId": "call_1", "title": "Run ls", "kind": "execute", "status": "in_progress" }));
+        t.tool_output("call_1", "a.rs\n");
+        sync(&store, &sub, &mut mirror);
+        assert_eq!(brief(&mirror)[2..], ["e3 t1 agent done", "e4 t1 tool streaming"]);
+        assert_eq!((mirror.items[3]["call"].as_str(), mirror.items[3]["output"].as_str()), (Some("call_1"), Some("a.rs\n")));
+        t.tool(&json!({ "toolCallId": "call_1", "status": "failed" }));
+        t.push(json!({ "kind": "turn", "seconds": 3 }));
+        // The next message: another turn.
+        t.push(json!({ "kind": "user", "text": "again" }));
+        sync(&store, &sub, &mut mirror);
+        assert_eq!(brief(&mirror)[3..], ["e4 t1 tool failed", "e5 t1 turn done", "e6 t2 user done"]);
+
+        let mut all = Vec::new();
+        for i in 0..t.entries.len() {
+            all.push(t.item(i).unwrap());
+        }
+        assert_eq!(mirror.items, all, "the subscriber has what the core has");
+
+        // Emptied (a new conversation): a resync, and ids never given again.
+        t.clear();
+        t.chunk("user", "fresh", None);
+        let got = sync(&store, &sub, &mut mirror);
+        assert_eq!(serde_json::to_value(&got[0]).unwrap()["reason"], "reset");
+        assert_eq!(brief(&mirror), ["e7 t3 user done"]);
     }
 
     #[test]
