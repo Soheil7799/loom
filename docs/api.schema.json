@@ -1,0 +1,1382 @@
+{
+  "title": "loom's core API",
+  "protocol": 1,
+  "message": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Message",
+    "description": "One message on a subscription. `seq` counts the subscription's messages from 1, with no\ngaps: a client that sees one asks for a resync.",
+    "type": "object",
+    "properties": {
+      "sub": {
+        "type": "string"
+      },
+      "seq": {
+        "type": "integer",
+        "format": "uint64",
+        "minimum": 0
+      }
+    },
+    "required": [
+      "sub",
+      "seq"
+    ],
+    "oneOf": [
+      {
+        "description": "Part of the resource as it is now, in order; pages follow each other until `synced`.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "page"
+          },
+          "items": {
+            "type": "array",
+            "items": true
+          }
+        },
+        "required": [
+          "kind",
+          "items"
+        ]
+      },
+      {
+        "description": "The snapshot is whole: what follows are changes to it.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "synced"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      {
+        "description": "Changes, applied together and in order (never half of them).",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "changes"
+          },
+          "ops": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/Op"
+            }
+          }
+        },
+        "required": [
+          "kind",
+          "ops"
+        ]
+      },
+      {
+        "description": "Forget what you have: a fresh snapshot follows (`reason`: `behind`, `asked`…).",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "resync"
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "reason"
+        ]
+      },
+      {
+        "description": "The resource is no more (an agent was closed); nothing follows.",
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "gone"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      },
+      {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "const": "unknown"
+          }
+        },
+        "required": [
+          "kind"
+        ]
+      }
+    ],
+    "$defs": {
+      "Op": {
+        "description": "A change to a resource: an ordered list of items, each a JSON object with a string `id`.",
+        "oneOf": [
+          {
+            "description": "The whole item: it replaces the one with its id, or is added at the end.",
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "const": "upsert"
+              },
+              "item": true
+            },
+            "required": [
+              "op",
+              "item"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "const": "remove"
+              },
+              "id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "id"
+            ]
+          },
+          {
+            "description": "Text added to the end of one of an item's string fields (streaming text).",
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "const": "append"
+              },
+              "id": {
+                "type": "string"
+              },
+              "field": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "id",
+              "field",
+              "text"
+            ]
+          },
+          {
+            "description": "The items' order: these ids first, in this order; ids not here keep theirs, after them.",
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "const": "order"
+              },
+              "ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "op",
+              "ids"
+            ]
+          },
+          {
+            "description": "Bytes added to an item's byte stream (a job's output): `data` (base64) starts at byte\n`offset` of it. The item's `offset` says where a follower's copy is: bytes before it\nit has already (its screen was made after them) and drops; an op starting past it\nmeans some were missed (a gap: resync). See [`unseen`].",
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "const": "bytes"
+              },
+              "id": {
+                "type": "string"
+              },
+              "offset": {
+                "type": "integer",
+                "format": "uint64",
+                "minimum": 0
+              },
+              "data": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "op",
+              "id",
+              "offset",
+              "data"
+            ]
+          },
+          {
+            "type": "object",
+            "properties": {
+              "op": {
+                "type": "string",
+                "const": "unknown"
+              }
+            },
+            "required": [
+              "op"
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "resources": {
+    "agents": {
+      "description": "The open agents, in the sidebar's order (Notes chats not among them).",
+      "who": [
+        "window",
+        "cli",
+        "bridge",
+        "agent"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          },
+          "project": {
+            "type": "string",
+            "description": "its project's name"
+          },
+          "project_id": {
+            "type": "string",
+            "description": "its project's id (folder)"
+          },
+          "status": {
+            "type": "string",
+            "description": "idle, working, asking, suspended, …"
+          },
+          "unseen": {
+            "type": "boolean",
+            "description": "something new the user hasn't seen"
+          },
+          "busy": {
+            "type": "boolean",
+            "description": "a turn under way"
+          },
+          "questions": {
+            "type": "integer",
+            "description": "questions waiting"
+          },
+          "used": {
+            "type": "string",
+            "description": "last used (RFC 3339)"
+          },
+          "place": {
+            "type": "string",
+            "description": "where in the project it works (a repo, a folder)"
+          },
+          "edited": {
+            "type": "integer",
+            "description": "files it changed"
+          },
+          "awake": {
+            "type": "boolean",
+            "description": "kept from resting"
+          },
+          "looking": {
+            "type": "boolean",
+            "description": "the user has it in front of them in loom"
+          },
+          "last_turn": {
+            "type": "object",
+            "description": "{turns, seconds, error, cancelled}: `turns` grows as each ends"
+          },
+          "failed": {
+            "type": "object",
+            "description": "{times, why}: its process failing"
+          },
+          "unsent": {
+            "type": "object",
+            "description": "{times, count}: queued messages that never went out"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "project",
+          "project_id",
+          "status",
+          "unseen",
+          "busy",
+          "questions",
+          "used",
+          "place",
+          "edited",
+          "awake"
+        ]
+      }
+    },
+    "projects": {
+      "description": "The projects, in the sidebar's order.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "its folder"
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "collapsed": {
+            "type": "boolean",
+            "description": "folded in the sidebar"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "collapsed"
+        ]
+      }
+    },
+    "conversation/<agent>": {
+      "description": "An agent's conversation: Agent → turn → entry. Questions are entries `awaiting_user` until answered (`answer`).",
+      "who": [
+        "window",
+        "cli",
+        "bridge",
+        "agent (its own)"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "e1, e2…"
+          },
+          "kind": {
+            "type": "string",
+            "description": "user, agent, thought, tool, question, notice, turn…; an unknown one is drawn plainly"
+          },
+          "status": {
+            "type": "string",
+            "description": "pending, streaming, awaiting_user, done, failed, cancelled"
+          },
+          "turn_id": {
+            "type": "string",
+            "description": "t1, t2…: the turn it belongs to"
+          },
+          "text": {
+            "type": "string",
+            "description": "text; streamed as `append` ops"
+          },
+          "message": {
+            "type": "string",
+            "description": "the agent's id for it (rewind, forks)"
+          },
+          "images": {
+            "type": "array",
+            "description": "pictures: blob ids (`blob`)"
+          },
+          "call": {
+            "type": "string",
+            "description": "a tool's call id"
+          },
+          "title": {
+            "type": "string",
+            "description": "a tool's title"
+          },
+          "tool": {
+            "type": "string",
+            "description": "a tool's kind"
+          },
+          "input": {
+            "type": "object",
+            "description": "a tool's input"
+          },
+          "content": {
+            "type": "array",
+            "description": "a tool's content (diffs…)"
+          },
+          "locations": {
+            "type": "array",
+            "description": "files a tool touched"
+          },
+          "output": {
+            "type": "string",
+            "description": "a tool's output (its last 16,000 characters)"
+          },
+          "exit": {
+            "type": "integer",
+            "description": "a command's exit code"
+          },
+          "parent": {
+            "type": "string",
+            "description": "the task a tool is part of"
+          },
+          "detail": {
+            "type": "string",
+            "description": "a question's detail"
+          },
+          "options": {
+            "type": "array",
+            "description": "a permission question's options: {id, name, kind}"
+          },
+          "form": {
+            "type": "object",
+            "description": "a form question's JSON Schema"
+          },
+          "answer": {
+            "type": "string",
+            "description": "how a question was answered"
+          },
+          "seconds": {
+            "type": "integer",
+            "description": "a turn's length"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "status"
+        ]
+      }
+    },
+    "usage": {
+      "description": "The account's limits and each agent's context and cost.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`account`, or an agent's id"
+          },
+          "kind": {
+            "type": "string",
+            "description": "account or agent"
+          },
+          "plan": {
+            "type": "string",
+            "description": "the account's plan"
+          },
+          "windows": {
+            "type": "array",
+            "description": "limits: {kind, utilization, resets_at, seen_at}"
+          },
+          "used": {
+            "type": "integer",
+            "description": "an agent's context used"
+          },
+          "size": {
+            "type": "integer",
+            "description": "its context's size"
+          },
+          "cost": {
+            "type": "object",
+            "description": "{amount, currency}"
+          },
+          "limit": {
+            "type": "object",
+            "description": "a spending limit"
+          }
+        },
+        "required": [
+          "id",
+          "kind"
+        ]
+      }
+    },
+    "jobs": {
+      "description": "Every project's jobs, oldest first.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": ""
+          },
+          "project_id": {
+            "type": "string",
+            "description": ""
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "command": {
+            "type": "string",
+            "description": ""
+          },
+          "status": {
+            "type": "string",
+            "description": "running, restarting, exited"
+          },
+          "exit_code": {
+            "type": "integer",
+            "description": ""
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "name",
+          "command",
+          "status"
+        ]
+      }
+    },
+    "job/<id>": {
+      "description": "A job's terminal: its screen, then `bytes` ops at their offsets (drop what the screen holds; past it, resync). A new run: an `upsert`.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`output`"
+          },
+          "rows": {
+            "type": "integer",
+            "description": ""
+          },
+          "cols": {
+            "type": "integer",
+            "description": ""
+          },
+          "screen": {
+            "type": "string",
+            "description": "base64 terminal bytes drawing its screen"
+          },
+          "offset": {
+            "type": "integer",
+            "description": "the stream's byte the screen is at"
+          }
+        },
+        "required": [
+          "id",
+          "rows",
+          "cols",
+          "screen",
+          "offset"
+        ]
+      }
+    },
+    "settings": {
+      "description": "One item: every setting by its snake_case name; secrets only as `<name>_set`.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`settings`"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "vault/<folder>": {
+      "description": "A folder of the notes vault (`vault/`: the top), folders first; it follows the files.",
+      "who": [
+        "window",
+        "cli",
+        "bridge:remote"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "its path"
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "path": {
+            "type": "string",
+            "description": ""
+          },
+          "kind": {
+            "type": "string",
+            "description": "folder, note, file, error"
+          },
+          "count": {
+            "type": "integer",
+            "description": "a folder's entries"
+          },
+          "title": {
+            "type": "string",
+            "description": "a note's"
+          },
+          "size": {
+            "type": "integer",
+            "description": ""
+          },
+          "modified": {
+            "type": "integer",
+            "description": ""
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "path",
+          "kind"
+        ]
+      }
+    },
+    "note/<path>": {
+      "description": "One note (or file), as read; it follows the file.",
+      "who": [
+        "window",
+        "cli",
+        "bridge:remote"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`note`, or `error`"
+          },
+          "path": {
+            "type": "string",
+            "description": ""
+          },
+          "text": {
+            "type": "string",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          },
+          "tags": {
+            "type": "array",
+            "description": ""
+          },
+          "links": {
+            "type": "array",
+            "description": ""
+          },
+          "backlinks": {
+            "type": "array",
+            "description": ""
+          },
+          "modified": {
+            "type": "integer",
+            "description": ""
+          },
+          "message": {
+            "type": "string",
+            "description": "an error's"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "notes_chats": {
+      "description": "loom's Notes chats.",
+      "who": [
+        "window",
+        "cli",
+        "bridge:remote"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "its session"
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          },
+          "updated": {
+            "type": "string",
+            "description": ""
+          },
+          "mark": {
+            "type": "string",
+            "description": ""
+          },
+          "current": {
+            "type": "boolean",
+            "description": "the one open"
+          }
+        },
+        "required": [
+          "id",
+          "title"
+        ]
+      }
+    },
+    "scribe": {
+      "description": "Scribe: what it does, asks, proposes and wrote.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`status`, or `<list>:<n>`"
+          },
+          "list": {
+            "type": "string",
+            "description": "questions, proposals, recent, teach"
+          },
+          "doing": {
+            "type": "string",
+            "description": "status: what it is doing"
+          },
+          "running": {
+            "type": "boolean",
+            "description": ""
+          },
+          "calls_left": {
+            "type": "integer",
+            "description": ""
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
+    "bridge/<name>": {
+      "description": "A bridge's events: each an item added and taken away at once (a snapshot is empty).",
+      "who": [
+        "bridge (that one)"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": ""
+          },
+          "event": {
+            "type": "object",
+            "description": "a bridge-protocol event"
+          }
+        },
+        "required": [
+          "id",
+          "event"
+        ]
+      }
+    }
+  },
+  "commands": {
+    "send": {
+      "description": "A message to an agent, as typed in its chat. Bridges send no `!` commands.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "text": {
+            "type": "string",
+            "description": "the message (text or pictures are needed)"
+          },
+          "images": {
+            "type": "array",
+            "description": "pictures, base64, any format the UI reads"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "answer": {
+      "description": "Answers a question waiting in a conversation; the first answer wins (later ones: conflict). Bridges never answer \"Always allow\"; the CLI answers nothing (but in a test instance, LOOM_TEST_INSTANCE=1).",
+      "who": [
+        "window",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "entry": {
+            "type": "string",
+            "description": "the question's entry id"
+          },
+          "option": {
+            "type": "string",
+            "description": "a permission question: the chosen option's id"
+          },
+          "content": {
+            "type": "object",
+            "description": "a form: what was filled in"
+          },
+          "skip": {
+            "type": "boolean",
+            "description": "a form: skipped"
+          }
+        },
+        "required": [
+          "agent",
+          "entry"
+        ]
+      },
+      "result": "{}"
+    },
+    "stop": {
+      "description": "Stops the agent's turn.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "new_agent": {
+      "description": "Starts an agent in a folder.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "an absolute folder: its project"
+          }
+        },
+        "required": [
+          "folder"
+        ]
+      },
+      "result": "{agent}"
+    },
+    "close_agent": {
+      "description": "Closes an agent (its conversation resource ends: gone).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "run_job": {
+      "description": "A new job in the project's tray.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "the project's id (its folder)"
+          },
+          "command": {
+            "type": "string",
+            "description": "a shell command"
+          },
+          "name": {
+            "type": "string",
+            "description": "the job's name (else its program's)"
+          }
+        },
+        "required": [
+          "project",
+          "command"
+        ]
+      },
+      "result": "{job}"
+    },
+    "stop_job": {
+      "description": "Stops a job.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "the job's id"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      },
+      "result": "{}"
+    },
+    "restart_job": {
+      "description": "Runs a job again (its output starts over).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "the job's id"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      },
+      "result": "{}"
+    },
+    "set_settings": {
+      "description": "Changes settings. What may send things off this machine or decides what agents may do (bridges, pairing, speech to text, the agent program, the default mode) only from loom's window.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "changes": {
+            "type": "object",
+            "description": "settings by their names in `settings`, with new values"
+          }
+        },
+        "required": [
+          "changes"
+        ]
+      },
+      "result": "{}"
+    },
+    "search_notes": {
+      "description": "Searches the notes vault.",
+      "who": [
+        "window",
+        "cli",
+        "bridge:remote"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "words, all of them in a note"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "results at most (30; 100 at most)"
+          }
+        },
+        "required": [
+          "query"
+        ]
+      },
+      "result": "{results: [{path, title, folder, snippet, modified}]}"
+    },
+    "blob": {
+      "description": "Bytes kept by id (pictures), base64.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a blob id (an entry's `images`)"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{data}"
+    },
+    "scribe_answer": {
+      "description": "Answers Scribe's question.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          },
+          "answer": {
+            "type": "string",
+            "description": "the answer"
+          }
+        },
+        "required": [
+          "id",
+          "answer"
+        ]
+      },
+      "result": "{}"
+    },
+    "scribe_decide": {
+      "description": "Decides on a change Scribe proposes.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          },
+          "write": {
+            "type": "boolean",
+            "description": "OK (true) or not"
+          }
+        },
+        "required": [
+          "id",
+          "write"
+        ]
+      },
+      "result": "{}"
+    },
+    "scribe_undo": {
+      "description": "Undoes what Scribe wrote.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{}"
+    },
+    "scribe_drop": {
+      "description": "Drops an item from Scribe's lists.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{}"
+    },
+    "scribe_teach": {
+      "description": "Tells Scribe why it was wrong.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          },
+          "said": {
+            "type": "string",
+            "description": "why not"
+          }
+        },
+        "required": [
+          "id",
+          "said"
+        ]
+      },
+      "result": "{}"
+    },
+    "scribe_keep_rule": {
+      "description": "Keeps a rule Scribe proposes.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          },
+          "rule": {
+            "type": "string",
+            "description": "the rule"
+          }
+        },
+        "required": [
+          "id",
+          "rule"
+        ]
+      },
+      "result": "{}"
+    },
+    "scribe_forget": {
+      "description": "Forgets a rule Scribe learned.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` item"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{}"
+    },
+    "save": {
+      "description": "A file for an agent, saved in its folder under `<bridge>-files/` (never over another).",
+      "who": [
+        "bridge"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "name": {
+            "type": "string",
+            "description": "the file's name"
+          },
+          "data": {
+            "type": "string",
+            "description": "its bytes, base64"
+          }
+        },
+        "required": [
+          "agent",
+          "name",
+          "data"
+        ]
+      },
+      "result": "{path}"
+    },
+    "transcribe": {
+      "description": "Speech to text with loom's settings (its key never leaves loom).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "audio": {
+            "type": "string",
+            "description": "the recording, base64"
+          },
+          "name": {
+            "type": "string",
+            "description": "its file name"
+          },
+          "mime": {
+            "type": "string",
+            "description": "its type"
+          }
+        },
+        "required": [
+          "audio"
+        ]
+      },
+      "result": "{text}"
+    },
+    "bridge_state": {
+      "description": "What the bridge says of itself (any object), shown in Settings.",
+      "who": [
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "result": "{}"
+    },
+    "bridge": {
+      "description": "The bridge protocol, for bridges that still speak it (the remote one, for the phone app already shipped); its events: `bridge/<name>`.",
+      "who": [
+        "bridge"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "method": {
+            "type": "string",
+            "description": "a request of docs/bridges.md"
+          },
+          "params": {
+            "type": "object",
+            "description": "its parameters"
+          }
+        },
+        "required": [
+          "method"
+        ]
+      },
+      "result": "{ok} or {error}"
+    },
+    "tool": {
+      "description": "An agent's loom tools (its MCP server), as the agent loom found the caller to be.",
+      "who": [
+        "agent"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "a loom tool's request (run_job, job_output, open_file, …)"
+          },
+          "params": {
+            "type": "object",
+            "description": "its parameters"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": "the tool's answer"
+    }
+  }
+}

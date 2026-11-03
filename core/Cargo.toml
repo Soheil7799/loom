@@ -18,6 +18,7 @@ uuid = { version = "1", features = ["v4"] }
 portable-pty = "0.9"
 vt100 = "0.16"
 notify = "8.2"
+schemars = "1"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

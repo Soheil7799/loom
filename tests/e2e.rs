@@ -172,6 +172,18 @@ fn handshake(c: &Connection) {
     for needed in ["send", "answer", "stop", "run_job", "restart_job", "set_settings", "new_agent", "blob"] {
         assert!(commands.contains(&needed), "no {needed} in {commands:?}");
     }
+    // The spec (docs/api.md) lists what a running loom has, no more, no less (extensions
+    // under `_` aside).
+    let spec = loom_core::api::spec::COMMANDS;
+    for name in commands.iter().filter(|n| !n.starts_with('_')) {
+        assert!(spec.iter().any(|c| c.name == *name), "{name} is not in core/src/api/spec.rs");
+    }
+    for listed in spec {
+        assert!(commands.contains(&listed.name), "spec.rs lists {}, which loom doesn't have", listed.name);
+    }
+    for resource in ["agents", "projects", "conversation/1", "usage", "jobs", "job/1", "settings", "vault/", "note/a.md", "notes_chats", "scribe", "bridge/remote"] {
+        assert!(loom_core::api::spec::resource_of(resource).is_some(), "{resource} is not in spec.rs");
+    }
 }
 
 fn settings_round_trip(c: &mut Connection) {

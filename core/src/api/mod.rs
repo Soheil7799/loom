@@ -16,6 +16,7 @@ pub mod blobs;
 pub mod cli;
 pub mod rpc;
 pub mod shared;
+pub mod spec;
 pub mod socket;
 mod store;
 pub mod wire;

@@ -8,7 +8,7 @@ use serde_json::Value;
 
 /// One message on a subscription. `seq` counts the subscription's messages from 1, with no
 /// gaps: a client that sees one asks for a resync.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Message {
     pub sub: String,
     pub seq: u64,
@@ -16,7 +16,7 @@ pub struct Message {
     pub body: Body,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Body {
     /// Part of the resource as it is now, in order; pages follow each other until `synced`.
@@ -34,7 +34,7 @@ pub enum Body {
 }
 
 /// A change to a resource: an ordered list of items, each a JSON object with a string `id`.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "op", rename_all = "snake_case")]
 pub enum Op {
     /// The whole item: it replaces the one with its id, or is added at the end.
