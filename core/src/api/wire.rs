@@ -44,8 +44,18 @@ pub enum Op {
     Append { id: String, field: String, text: String },
     /// The items' order: these ids first, in this order; ids not here keep theirs, after them.
     Order { ids: Vec<String> },
+    /// Bytes added to an item's byte stream (a job's output): `data` (base64) starts at byte
+    /// `offset` of it. The item's `offset` says where it is: an op starting elsewhere is a gap.
+    Bytes { id: String, offset: u64, data: String },
     #[serde(other)]
     Unknown,
+}
+
+impl Op {
+    /// A snapshot's item as the op that would bring it (a client drawing both alike).
+    pub fn from_item(item: Value) -> Op {
+        Op::Upsert { item }
+    }
 }
 
 /// An item's id (items without one are refused before they get anywhere).
@@ -75,6 +85,11 @@ pub fn apply(items: &mut Vec<Value>, op: &Op) {
                 append_to(&mut items[i], field, text);
             }
         }
+        Op::Bytes { id, offset, data } => {
+            if let Some(i) = at(items, id) {
+                items[i]["offset"] = Value::from(offset + bytes_of(data).len() as u64);
+            }
+        }
         Op::Order { ids } => {
             let mut first = Vec::with_capacity(items.len());
             for id in ids {
@@ -87,6 +102,16 @@ pub fn apply(items: &mut Vec<Value>, op: &Op) {
         }
         Op::Unknown => {}
     }
+}
+
+/// Bytes as the API carries them (base64).
+pub fn base64(bytes: &[u8]) -> String {
+    data_encoding::BASE64.encode(bytes)
+}
+
+/// Bytes the API carried (base64); nothing when it is not base64.
+pub fn bytes_of(data: &str) -> Vec<u8> {
+    data_encoding::BASE64.decode(data.as_bytes()).unwrap_or_default()
 }
 
 /// `field` of `item` with `text` added (set if it was missing or not text).

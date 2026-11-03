@@ -82,6 +82,8 @@ struct State {
     generation: u64,
     size: PtySize,
     screen: vt100::Parser,
+    /// Bytes this run printed into `screen` so far (the byte offset its output is at).
+    printed: u64,
 }
 
 struct Run {
@@ -140,6 +142,7 @@ impl Jobs {
                 generation: 0,
                 size,
                 screen: vt100::Parser::new(size.rows, size.cols, SCROLLBACK),
+                printed: 0,
             }),
         });
         self.inner.jobs.lock().unwrap().push(job.clone());
@@ -220,14 +223,15 @@ impl Jobs {
         self.inner.jobs.lock().unwrap().iter().map(|job| info(job)).collect()
     }
 
-    /// Its screen as terminal output that draws it again (escapes and all), and its size
-    /// (rows, columns).
-    pub fn screen(&self, id: Id) -> Option<(Vec<u8>, u16, u16)> {
+    /// Its screen as terminal output that draws it again (escapes and all), its size (rows,
+    /// columns), and how many bytes of this run's output it holds (in the order `Output`
+    /// events tell them: the next one's bytes past that are new to it).
+    pub fn screen(&self, id: Id) -> Option<(Vec<u8>, u16, u16, u64)> {
         let job = self.get(id)?;
         let state = job.state.lock().unwrap();
         let screen = state.screen.screen();
         let (rows, cols) = screen.size();
-        Some((screen.contents_formatted(), rows, cols))
+        Some((screen.contents_formatted(), rows, cols, state.printed))
     }
 
     /// The last `lines` lines it printed, as text.
@@ -275,6 +279,7 @@ impl Inner {
         state.generation += 1;
         state.outcome = None;
         state.screen = vt100::Parser::new(state.size.rows, state.size.cols, SCROLLBACK);
+        state.printed = 0;
         let generation = state.generation;
         let cwd = state.cwd.clone().unwrap_or_else(|| self.cwd.clone());
         let (child, reader, run) = match spawn(&state.command, &cwd, state.size) {
@@ -282,6 +287,7 @@ impl Inner {
             Err(err) => {
                 let message = format!("loom: could not start: {err}\r\n");
                 state.screen.process(message.as_bytes());
+                state.printed += message.len() as u64;
                 state.outcome = Some(Some(127));
                 drop(state);
                 self.emit(Event::Started(job.id));
@@ -308,6 +314,7 @@ impl Inner {
                             break;
                         }
                         state.screen.process(&buf[..n]);
+                        state.printed += n as u64;
                         drop(state);
                         inner.emit(Event::Output(read_job.id, buf[..n].to_vec()));
                     }

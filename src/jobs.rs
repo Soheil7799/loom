@@ -1,15 +1,18 @@
 //! The job tray: one chip per command along the bottom of a project. A chip peeks its
 //! terminal in a popover; pinning docks the terminal above the tray.
 //!
-//! The commands themselves run in loom-core (`loom_core::jobs`); here they are drawn: each
-//! terminal is fed what its job prints, and sends back the keys typed into it and its size.
+//! The commands themselves run in loom-core (`loom_core::jobs`); here they are drawn from
+//! the core API (warp): the chips from `jobs`, each terminal from its `job/<id>` (the screen,
+//! then the bytes the job prints), sending back the keys typed into it and its size.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use gtk::{glib, prelude::*};
-use loom_core::jobs::{Event, Id, Jobs};
+use loom_core::api::{Body, Op, Principal, Subscription, wire};
+use loom_core::jobs::{Id, Jobs};
+use serde_json::Value;
 use vte::prelude::*;
 
 use crate::term;
@@ -30,6 +33,11 @@ pub struct Job {
     size_watch: Cell<u64>,
     docked: RefCell<Option<gtk::Box>>,
     tray: Weak<Tray>,
+    /// Its `job/<id>` in the core, once followed, and the byte offset its terminal is at.
+    output: RefCell<Option<Subscription>>,
+    offset: Cell<u64>,
+    /// Its status in `jobs` as last drawn ("" before it was seen there).
+    state: RefCell<String>,
 }
 
 pub struct Tray {
@@ -45,6 +53,8 @@ pub struct Tray {
     pub on_finish: RefCell<Option<Rc<dyn Fn(&str, Option<i64>)>>>,
     /// Told when a job is pinned or unpinned.
     pub on_dock: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The core's `jobs`, followed: what the chips draw.
+    feed: RefCell<Option<crate::feed::Feed>>,
 }
 
 impl Tray {
@@ -71,16 +81,17 @@ impl Tray {
         dock.set_homogeneous(true);
         dock.add_css_class("dock");
         let (core, events) = Jobs::new(cwd);
-        // Through the core API's publisher (warp): what the tray draws, `jobs` shows too.
-        let events = loom_core::jobs_api::published(&core, events);
-        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default() });
+        // The core API publishes its jobs; the tray draws from what it publishes.
+        drop(loom_core::jobs_api::published(&core, events));
+        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default() });
         let weak = Rc::downgrade(&tray);
-        glib::spawn_future_local(async move {
-            while let Ok(event) = events.recv().await {
-                let Some(tray) = weak.upgrade() else { return };
-                tray.show(event);
+        let client = loom_core::api::hub().connect(Principal::Window);
+        *tray.feed.borrow_mut() = crate::feed::Feed::new(&client, "jobs", move || {
+            if let Some(tray) = weak.upgrade() {
+                tray.sync();
             }
         });
+        tray.sync();
         tray
     }
 
@@ -98,44 +109,28 @@ impl Tray {
         Some(self.add(id, &info.name, &info.command))
     }
 
-    /// What a job did, drawn.
-    fn show(self: &Rc<Self>, event: Event) {
-        let id = match &event {
-            Event::Added(id) | Event::Started(id) | Event::Restarting(id) | Event::Output(id, _) | Event::Exited(id, _) | Event::Removed(id) => *id,
+    /// The chips drawn as the core's `jobs` has this project's jobs now.
+    fn sync(self: &Rc<Self>) {
+        let items: Vec<Value> = {
+            let feed = self.feed.borrow();
+            let Some(feed) = feed.as_ref() else { return };
+            feed.update();
+            feed.items().clone()
         };
-
-        if matches!(event, Event::Removed(_)) {
-            return;
+        let cwd = self.core.cwd().to_string_lossy().into_owned();
+        let mine: Vec<&Value> = items.iter().filter(|item| item["project_id"].as_str() == Some(cwd.as_str())).collect();
+        for item in &mine {
+            let Some(id) = item["id"].as_str().and_then(|id| id.parse::<Id>().ok()) else { continue };
+            let job = match self.by_id(id) {
+                Some(job) => job,
+                None => self.add(id, item["name"].as_str().unwrap_or_default(), item["command"].as_str().unwrap_or_default()),
+            };
+            job.show(item);
         }
-        let Some(job) = self.adopt(id) else { return };
-        match event {
-            Event::Added(_) => {}
-            // Its chip went with it (the tray removed it).
-            Event::Removed(_) => {}
-            Event::Started(_) => {
-                // Run again, maybe with another command (an agent's run_job).
-                if let Some(info) = self.core.info(id) {
-                    job.chip.set_tooltip_text(Some(&info.command));
-                }
-                job.term.reset(true, true);
-                job.dot.remove_css_class("done");
-                job.dot.remove_css_class("failed");
-                job.dot.add_css_class("working");
-                job.status.set_label("running");
-            }
-            // Its old output goes now, so nobody reads it as the new run's.
-            Event::Restarting(_) => {
-                job.term.reset(true, true);
-                job.status.set_label("restarting");
-            }
-            Event::Output(_, bytes) => job.term.feed(&bytes),
-            Event::Exited(_, code) => {
-                job.finish(code);
-                let told = self.on_finish.borrow().clone();
-                if let Some(told) = told {
-                    told(&job.title.label(), code);
-                }
-            }
+        // Removed elsewhere (seen there once, gone now): its chip goes too.
+        let gone: Vec<Rc<Job>> = self.jobs.borrow().iter().filter(|job| !job.state.borrow().is_empty() && !mine.iter().any(|item| item["id"].as_str() == Some(job.id.to_string().as_str()))).cloned().collect();
+        for job in gone {
+            self.drop_chip(&job);
         }
     }
 
@@ -199,6 +194,9 @@ impl Tray {
             size_watch: Cell::new(0),
             docked: RefCell::default(),
             tray: Rc::downgrade(self),
+            output: RefCell::default(),
+            offset: Cell::new(0),
+            state: RefCell::default(),
         });
         // And its size: VTE has no signal for it, so it is looked at twice a second while it is
         // shown (not on every frame, which would keep the window drawing all the time).
@@ -272,6 +270,8 @@ impl Tray {
         self.chips.append(&chip);
         self.hint.set_visible(false);
         self.jobs.borrow_mut().push(job.clone());
+        // Its output, if the core has told of it yet (else once `jobs` lists it).
+        job.follow();
         job
     }
 
@@ -336,9 +336,18 @@ impl Tray {
     }
 
     fn remove(&self, job: &Rc<Job>) {
+        self.core.remove(job.id);
+        self.drop_chip(job);
+    }
+
+    /// Its chip and terminal gone from the tray.
+    fn drop_chip(&self, job: &Rc<Job>) {
+        if !self.jobs.borrow().iter().any(|other| Rc::ptr_eq(other, job)) {
+            return;
+        }
         self.unpin(job);
         job.popover.popdown();
-        self.core.remove(job.id);
+        job.output.borrow_mut().take();
         job.popover.unparent();
         self.chips.remove(&job.chip);
         self.jobs.borrow_mut().retain(|other| !Rc::ptr_eq(other, job));
@@ -360,6 +369,101 @@ impl Tray {
 }
 
 impl Job {
+    /// Its item in `jobs` drawn: its status (and the tray told when it ends), its command.
+    fn show(self: &Rc<Self>, item: &Value) {
+        if self.output.borrow().is_none() {
+            self.follow();
+        }
+        if let Some(command) = item["command"].as_str() {
+            self.chip.set_tooltip_text(Some(command));
+        }
+        let status = item["status"].as_str().unwrap_or("running").to_owned();
+        let before = self.state.replace(status.clone());
+        if before == status {
+            return;
+        }
+        match status.as_str() {
+            "exited" => {
+                let code = item["exit_code"].as_i64();
+                self.finish(code);
+                // Told only of an end seen happen (not of one that was over when it came).
+                if !before.is_empty()
+                    && let Some(told) = self.tray.upgrade().and_then(|tray| tray.on_finish.borrow().clone())
+                {
+                    told(&self.title.label(), code);
+                }
+            }
+            // Its old output goes now, so nobody reads it as the new run's.
+            "restarting" => {
+                self.term.reset(true, true);
+                self.status.set_label("restarting");
+            }
+            _ => {
+                for class in ["done", "failed"] {
+                    self.dot.remove_css_class(class);
+                }
+                self.dot.add_css_class("working");
+                self.status.set_label("running");
+            }
+        }
+    }
+
+    /// Its terminal follows `job/<id>` from now on.
+    fn follow(self: &Rc<Self>) {
+        let client = loom_core::api::hub().connect(Principal::Window);
+        let weak = Rc::downgrade(self);
+        let Ok(sub) = client.subscribe(&format!("job/{}", self.id), move || {
+            if let Some(job) = weak.upgrade() {
+                job.draw();
+            }
+        }) else {
+            return;
+        };
+        *self.output.borrow_mut() = Some(sub);
+        self.draw();
+    }
+
+    /// What came for its terminal, fed to it: a screen (it starts over), or bytes (they go on
+    /// where it is; any others mean some were missed, and a fresh screen is asked for).
+    fn draw(&self) {
+        let messages = match self.output.borrow().as_ref() {
+            Some(sub) => sub.drain(),
+            None => return,
+        };
+        let mut items = Vec::new();
+        let mut missed = false;
+        for message in messages {
+            match message.body {
+                Body::Page { items: page } => items.extend(page.into_iter().map(Op::from_item)),
+                Body::Changes { ops } => items.extend(ops),
+                _ => {}
+            }
+        }
+        for op in items {
+            match op {
+                Op::Upsert { item } if item["id"] == "output" => {
+                    self.term.reset(true, true);
+                    self.term.feed(&wire::bytes_of(item["screen"].as_str().unwrap_or_default()));
+                    self.offset.set(item["offset"].as_u64().unwrap_or(0));
+                    missed = false;
+                }
+                Op::Bytes { offset, data, .. } if !missed => {
+                    if offset != self.offset.get() {
+                        missed = true;
+                        continue;
+                    }
+                    let bytes = wire::bytes_of(&data);
+                    self.term.feed(&bytes);
+                    self.offset.set(offset + bytes.len() as u64);
+                }
+                _ => {}
+            }
+        }
+        if missed && let Some(sub) = self.output.borrow().as_ref() {
+            sub.resync();
+        }
+    }
+
     /// Name, status and buttons above the terminal; `docked` picks Unpin over Pin.
     fn frame(self: &Rc<Self>, docked: bool) -> gtk::Box {
         let frame = gtk::Box::new(gtk::Orientation::Vertical, 4);

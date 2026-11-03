@@ -224,6 +224,24 @@ impl Store {
         }
     }
 
+    /// Replaces an item without telling anyone: for an item its followers keep up to date
+    /// another way (a job's screen, which they keep by its bytes), made current for the next.
+    pub fn refresh_item(&self, item: Value) {
+        let Some(id) = id_of(&item).map(str::to_owned) else { return };
+        let mut s = self.0.state.borrow_mut();
+        match s.items.iter().rposition(|it| id_of(it) == Some(id.as_str())) {
+            Some(i) => s.items[i] = item,
+            None => s.items.push(item),
+        }
+    }
+
+    /// Bytes added to item `id`'s byte stream at `offset`.
+    pub fn bytes(&self, id: &str, offset: u64, bytes: &[u8]) {
+        if !bytes.is_empty() && self.has(id) {
+            self.change(Op::Bytes { id: id.to_string(), offset, data: wire::base64(bytes) });
+        }
+    }
+
     /// Ends the resource: subscribers get `gone`, and nothing more.
     pub fn close(&self) {
         let subs: Vec<_> = {
@@ -298,6 +316,18 @@ fn coalesce(ops: &[Op]) -> Vec<Op> {
         {
             *last = op.clone();
             continue;
+        }
+        // Bytes that go on from the last ones: one op.
+        if let Op::Bytes { id, offset, data } = op
+            && let Some(Op::Bytes { id: last, offset: at, data: had }) = out.last_mut()
+            && last == id
+        {
+            let mut joined = wire::bytes_of(had);
+            if *at + joined.len() as u64 == *offset {
+                joined.extend(wire::bytes_of(data));
+                *had = wire::base64(&joined);
+                continue;
+            }
         }
         if let Op::Append { id, field, text } = op {
             match out.last_mut() {
@@ -504,6 +534,28 @@ mod tests {
         s.upsert(json!({"id": "b"}));
         s.flush();
         assert_eq!(bodies(&sub), vec![json!({"sub": "s1", "seq": 3, "kind": "gone"})]);
+    }
+
+    #[test]
+    fn bytes_that_follow_each_other_go_as_one_op_and_move_the_offset() {
+        let s = store();
+        s.upsert(json!({"id": "output", "screen": "", "offset": 4}));
+        let sub = s.subscribe("s1".into(), Box::new(|| {}));
+        sub.drain();
+        s.bytes("output", 4, b"ab");
+        s.bytes("output", 6, b"c");
+        s.bytes("output", 9, b"z");
+        s.flush();
+        let ops = bodies(&sub)[0]["ops"].clone();
+        assert_eq!(ops, json!([
+            {"op": "bytes", "id": "output", "offset": 4, "data": "YWJj"},
+            {"op": "bytes", "id": "output", "offset": 9, "data": "eg=="},
+        ]));
+        assert_eq!(s.get("output").unwrap()["offset"], 10);
+        // Quietly made current for the next follower: the first is told nothing.
+        s.refresh_item(json!({"id": "output", "screen": "c2NyZWVu", "offset": 10}));
+        s.flush();
+        assert!(sub.drain().is_empty());
     }
 
     #[test]

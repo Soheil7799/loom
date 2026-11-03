@@ -2,11 +2,12 @@
 //!
 //! - `jobs`: every project's jobs, oldest first: `{id, project_id, name, command, status:
 //!   "running" | "restarting" | "exited", exit_code}`.
-//! - `job/<id>`: what job `id` shows, as one item `{id: "output", rows, cols, data}`: `data` is
-//!   terminal output (escapes and all, as text) that draws the job's screen when fed to a
-//!   terminal, and grows by `append` as the job prints. An `upsert` of it starts over: a new
-//!   run, or the text grown past `KEEP` (then it is the screen again, not its history).
-//!   Worked out only while someone follows it.
+//! - `job/<id>`: what job `id` shows, as raw terminal bytes (research/core-api §3): one item
+//!   `{id: "output", rows, cols, screen, offset}`, `screen` (base64) drawing the job's screen
+//!   as it was when `offset` bytes of this run's output had been printed; then `bytes` ops,
+//!   each starting at its byte offset. A follower feeds `screen`, then each op's bytes, to a
+//!   terminal; an `upsert` of the item (a new run) starts over. The screen is worked out for
+//!   each new follower, the bytes sent only while someone follows.
 //!
 //! Commands: `stop_job` and `restart_job` (`{job}`), for loom's window and the CLI.
 
@@ -16,19 +17,16 @@ use std::collections::HashMap;
 use async_channel::Receiver;
 use serde_json::{Value, json};
 
-use crate::api::{Error, Principal, Store};
+use crate::api::{Error, Principal, Store, wire};
 use crate::jobs::{Event, Id, Jobs};
-
-/// How much output a follower's item holds before it starts over from the screen.
-const KEEP: usize = 64 * 1024;
 
 thread_local! {
     /// Every project's jobs, to find a job by id.
     static PROJECTS: RefCell<Vec<Jobs>> = RefCell::default();
 }
 
-/// Publishes `jobs` in the core API from its `events`, which come out again for the UI.
-/// Runs on the core's thread.
+/// Publishes `jobs` in the core API from its `events`, which come out again (for a UI that
+/// still wants them). Runs on the core's thread.
 pub fn published(jobs: &Jobs, events: Receiver<Event>) -> Receiver<Event> {
     let first = PROJECTS.with_borrow_mut(|projects| {
         projects.push(jobs.clone());
@@ -41,54 +39,55 @@ pub fn published(jobs: &Jobs, events: Receiver<Event>) -> Receiver<Event> {
     let (tx, rx) = async_channel::unbounded();
     let jobs = jobs.clone();
     crate::rt::spawn_local(async move {
-        // Bytes ending in the middle of a character, until the rest comes.
-        let mut partial: HashMap<Id, Vec<u8>> = HashMap::new();
+        // Each job's run: bytes told so far (the next `Output` starts there).
+        let mut told: HashMap<Id, u64> = HashMap::new();
         while let Ok(event) = events.recv().await {
-            publish(&jobs, &event, &mut partial);
-            if tx.send(event).await.is_err() {
-                break;
-            }
+            publish(&jobs, &event, &mut told);
+            // Nobody takes them any more: they are published all the same.
+            let _ = tx.try_send(event);
         }
         PROJECTS.with_borrow_mut(|projects| projects.retain(|p| p.cwd() != jobs.cwd()));
     });
     rx
 }
 
-fn publish(jobs: &Jobs, event: &Event, partial: &mut HashMap<Id, Vec<u8>>) {
+fn publish(jobs: &Jobs, event: &Event, told: &mut HashMap<Id, u64>) {
     let hub = crate::api::hub();
     match event {
-        Event::Added(id) | Event::Restarting(id) | Event::Exited(id, _) => item(jobs, *id, matches!(event, Event::Restarting(_))),
+        Event::Added(id) => {
+            output_store(jobs, *id);
+            item(jobs, *id, false);
+        }
+        Event::Restarting(id) | Event::Exited(id, _) => item(jobs, *id, matches!(event, Event::Restarting(_))),
         Event::Started(id) => {
             item(jobs, *id, false);
-            partial.remove(id);
+            told.insert(*id, 0);
+            // A new run: followers start over from its screen.
             let output = output_store(jobs, *id);
             if output.followed() {
                 output.upsert(screen(jobs, *id));
             }
         }
         Event::Output(id, bytes) => {
+            let at = told.entry(*id).or_default();
+            let start = *at;
+            *at += bytes.len() as u64;
             let output = hub.store(&format!("job/{id}"));
             if !output.followed() {
-                partial.remove(id);
                 return;
             }
-            let mut held = partial.remove(id).unwrap_or_default();
-            held.extend_from_slice(bytes);
-            let (text, rest) = whole_chars(held);
-            if !rest.is_empty() {
-                partial.insert(*id, rest);
-            }
-            let long = output.get("output").and_then(|o| o["data"].as_str().map(str::len)).unwrap_or(0) + text.len() > KEEP;
-            if long {
-                output.upsert(screen(jobs, *id));
-            } else {
-                output.append("output", "data", &text);
+            // The followers' screen may hold some of these bytes already (it was worked out
+            // after they were printed, before they were told here): only the rest goes.
+            let held = output.get("output").and_then(|o| o["offset"].as_u64()).unwrap_or(0);
+            let skip = held.saturating_sub(start) as usize;
+            if skip < bytes.len() {
+                output.bytes("output", start + skip as u64, &bytes[skip..]);
             }
         }
         Event::Removed(id) => {
             hub.store("jobs").remove(&id.to_string());
             hub.close(&format!("job/{id}"));
-            partial.remove(id);
+            told.remove(id);
         }
     }
 }
@@ -113,42 +112,22 @@ fn item(jobs: &Jobs, id: Id, restarting: bool) {
     }));
 }
 
-/// `job/<id>`, made the first time, with its screen brought up to date for each new follower.
+/// `job/<id>`, made the first time; each new follower gets the screen as it is then (the
+/// others keep theirs by the bytes, so they are not told).
 fn output_store(jobs: &Jobs, id: Id) -> Store {
-    let hub = crate::api::hub();
-    let name = format!("job/{id}");
-    let store = hub.store(&name);
+    let store = crate::api::hub().store(&format!("job/{id}"));
     if store.get("output").is_none() {
         let kept = jobs.clone();
-        store.on_subscribe(move |store| {
-            if !store.followed() {
-                store.upsert(screen(&kept, id));
-            }
-        });
-        store.upsert(screen(jobs, id));
+        store.on_subscribe(move |store| store.refresh_item(screen(&kept, id)));
+        store.refresh_item(screen(jobs, id));
     }
     store
 }
 
 /// Job `id`'s screen as `job/<id>`'s item.
 fn screen(jobs: &Jobs, id: Id) -> Value {
-    let (data, rows, cols) = jobs.screen(id).unwrap_or_default();
-    json!({ "id": "output", "rows": rows, "cols": cols, "data": String::from_utf8_lossy(&data) })
-}
-
-/// `bytes` as text, but for an unfinished character at the end (returned to wait for the
-/// rest). Bytes that are no UTF-8 at all become U+FFFD.
-fn whole_chars(bytes: Vec<u8>) -> (String, Vec<u8>) {
-    // Where the last character starts, and how long it says it is.
-    let start = (bytes.len().saturating_sub(4)..bytes.len()).rev().find(|&i| bytes[i] & 0xC0 != 0x80);
-    let cut = match start.map(|i| (i, bytes[i])) {
-        Some((i, lead)) if lead >= 0xC0 => {
-            let wants = if lead >= 0xF0 { 4 } else if lead >= 0xE0 { 3 } else { 2 };
-            if bytes.len() - i < wants { i } else { bytes.len() }
-        }
-        _ => bytes.len(),
-    };
-    (String::from_utf8_lossy(&bytes[..cut]).into_owned(), bytes[cut..].to_vec())
+    let (data, rows, cols, printed) = jobs.screen(id).unwrap_or_default();
+    json!({ "id": "output", "rows": rows, "cols": cols, "screen": wire::base64(&data), "offset": printed })
 }
 
 fn handle() {
@@ -205,11 +184,25 @@ mod tests {
             }
         }
         crate::api::hub().store(&format!("job/{id}")).flush();
-        for m in sub.as_ref().unwrap().drain() {
-            mirror.apply(&m);
+        let stream = sub.as_ref().unwrap().drain();
+        for m in &stream {
+            mirror.apply(m);
         }
-        let data = mirror.items[0]["data"].as_str().unwrap();
-        assert!(data.contains("one") && data.contains("twé"), "{data:?}");
+        // The screen and the bytes after it, fed in order, are all it printed.
+        let mut printed = wire::bytes_of(mirror.items[0]["screen"].as_str().unwrap());
+        for m in &stream {
+            if let crate::api::Body::Changes { ops } = &m.body {
+                for op in ops {
+                    if let crate::api::Op::Bytes { data, .. } = op {
+                        printed.extend(wire::bytes_of(data));
+                    }
+                }
+            }
+        }
+        let text = String::from_utf8_lossy(&printed);
+        assert!(text.contains("one") && text.contains("twé"), "{text:?}");
+        // Where the stream is: every byte the run printed (the terminal makes each \n a \r\n).
+        assert_eq!(mirror.items[0]["offset"].as_u64(), jobs.screen(id).map(|s| s.3));
         let listed = crate::api::hub().store("jobs").get(&id.to_string()).unwrap();
         assert_eq!((listed["name"].as_str(), listed["status"].as_str(), listed["exit_code"].as_i64()), (Some("greet"), Some("exited"), Some(0)));
         // A command for it: not from a bridge.
@@ -220,18 +213,5 @@ mod tests {
         jobs.remove(id);
         publish(&jobs, &Event::Removed(id), &mut partial);
         assert!(crate::api::hub().store("jobs").get(&id.to_string()).is_none());
-    }
-
-    #[test]
-    fn characters_split_between_reads_wait_for_their_rest() {
-        let text = "héllo €".as_bytes().to_vec();
-        let (first, rest) = whole_chars(text[..9].to_vec());
-        assert_eq!((first.as_str(), rest.len()), ("héllo ", 2));
-        let mut joined = rest;
-        joined.extend_from_slice(&text[9..]);
-        assert_eq!(whole_chars(joined), ("€".to_owned(), Vec::new()));
-        // Not UTF-8 at all: replaced, and nothing held back for ever.
-        let (bad, rest) = whole_chars(vec![b'a', 0xFF, b'b']);
-        assert_eq!((bad.as_str(), rest.len()), ("a\u{FFFD}b", 0));
     }
 }
