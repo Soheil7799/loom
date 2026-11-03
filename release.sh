@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gets a release ready: `./release.sh 0.2.0` sets that version (Cargo.toml, Cargo.lock),
+# Gets a release ready: `./release.sh 0.2.0` sets that version (every crate's Cargo.toml, Cargo.lock),
 # commits it and tags v0.2.0. Pushing the tag (`git push origin main v0.2.0`) has GitHub
 # build and publish the release (.github/workflows/release.yml).
 set -euo pipefail
@@ -19,7 +19,10 @@ if git rev-parse -q --verify "refs/tags/v$version" >/dev/null; then
     exit 1
 fi
 
-sed -i "0,/^version = .*/s//version = \"$version\"/" Cargo.toml
+# The app and its crates (loom-core, loom-link, loom-remote) share the version.
+for manifest in Cargo.toml core/Cargo.toml link/Cargo.toml remote/Cargo.toml; do
+    sed -i "0,/^version = .*/s//version = \"$version\"/" "$manifest"
+done
 cargo update --workspace --offline --quiet # Cargo.lock follows
 if [[ -n $(git status --porcelain) ]]; then
     git commit -q -am "loom $version"
