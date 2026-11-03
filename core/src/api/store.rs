@@ -66,6 +66,14 @@ impl Store {
         *self.0.refresh.borrow_mut() = Some(Rc::new(refresh));
     }
 
+    /// Brings the items up to date as for a new subscriber (what changed goes out).
+    pub fn refresh(&self) {
+        let refresh = self.0.refresh.borrow().clone();
+        if let Some(refresh) = refresh {
+            refresh(self);
+        }
+    }
+
     /// Whether anyone follows it.
     pub fn followed(&self) -> bool {
         self.0.state.borrow().subs.iter().any(|w| w.strong_count() > 0)

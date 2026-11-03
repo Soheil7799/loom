@@ -126,6 +126,11 @@ impl Hub {
         self.0.providers.borrow_mut().push((prefix.to_string(), Rc::new(provide)));
     }
 
+    /// The resources whose names start with `prefix`.
+    pub fn stores_with(&self, prefix: &str) -> Vec<Store> {
+        self.0.stores.borrow().iter().filter(|(name, _)| name.starts_with(prefix)).map(|(_, store)| store.clone()).collect()
+    }
+
     /// The resource `name`, if it is there or can be made.
     fn find(&self, name: &str) -> Option<Store> {
         if let Some(store) = self.0.stores.borrow().get(name).cloned() {
