@@ -1329,6 +1329,10 @@ pub fn run(main_loop: impl FnOnce()) -> i32 {
         }
     };
     crate::log::name_for(&app_id);
+    // Its connection to the core API, as loom handed it down (the bot moves onto it next;
+    // for now it is opened, so a loom that hands none, or a refusal, shows in the log).
+    let api = super::client::api("telegram");
+    crate::log::debug!("telegram", "core API: {}", api.as_ref().map_or("none handed down".to_owned(), |a| a.hello["principal"].to_string()));
     // Told first, asked second: nothing happens in between unheard.
     let events = match loom.subscribe() {
         Ok(events) => events,
@@ -1357,6 +1361,7 @@ pub fn run(main_loop: impl FnOnce()) -> i32 {
         }
     });
     main_loop();
+    drop(api);
     0
 }
 

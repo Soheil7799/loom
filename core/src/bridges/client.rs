@@ -7,6 +7,22 @@ use std::path::PathBuf;
 
 use serde_json::{Value, json};
 
+/// The fd loom handed this bridge its API connection on (-1: none, or taken).
+static API_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+
+/// This bridge's connection to the core API, as loom handed it down (once; None after, or
+/// from a loom that hands none). loom fixed who it is: this bridge.
+pub fn api(name: &str) -> Option<crate::api::cli::Connection> {
+    use std::os::fd::FromRawFd;
+    let fd = API_FD.swap(-1, std::sync::atomic::Ordering::Relaxed);
+    if fd < 0 {
+        return None;
+    }
+    // SAFETY: loom left `fd` open for this process, and it is taken once.
+    let stream = unsafe { UnixStream::from_raw_fd(fd) };
+    crate::api::cli::Connection::over(stream, &format!("loom bridge {name}")).ok()
+}
+
 #[derive(Clone)]
 pub struct Client {
     socket: PathBuf,
@@ -27,6 +43,9 @@ impl Client {
             let _ = std::io::stdin().read_to_end(&mut Vec::new());
             std::process::exit(0);
         });
+        if let Some(fd) = hello["api_fd"].as_i64().and_then(|fd| i32::try_from(fd).ok()) {
+            API_FD.store(fd, std::sync::atomic::Ordering::Relaxed);
+        }
         let client = Client { socket: PathBuf::from(socket), secret: secret.to_owned() };
         Ok((client, hello["app"].as_str().unwrap_or("").to_owned()))
     }

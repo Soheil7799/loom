@@ -105,6 +105,27 @@ thread_local! {
 }
 
 /// The bridge socket of this app id, beside the control socket.
+/// The file descriptor a bridge finds its API connection on (`api_fd` in the hello line).
+pub const API_FD: i32 = 3;
+
+/// `command`'s process gets `stream` as `API_FD` (the only descriptor of ours it keeps).
+fn hand_down(command: &mut Command, stream: &UnixStream) {
+    let handed = std::os::fd::AsRawFd::as_raw_fd(stream);
+    // SAFETY: dup2 and fcntl only, between fork and exec.
+    unsafe {
+        use std::os::unix::process::CommandExt;
+        command.pre_exec(move || {
+            if handed == API_FD {
+                // Already there: only kept open across exec.
+                libc::fcntl(API_FD, libc::F_SETFD, 0);
+            } else if libc::dup2(handed, API_FD) < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+}
+
 pub fn socket_path(app_id: &str) -> PathBuf {
     let control = crate::control::socket_path(app_id);
     let stem = control.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "loom".to_owned());
@@ -261,11 +282,17 @@ impl Host {
         }
     }
 
+    /// Starts bridge `name`: its process, with its API connection handed down.
     fn start(self: &Rc<Self>, name: &'static str) {
         let Some(settings) = self.settings_for(name, &crate::settings::get()) else { return };
         let secret = random(32);
         let Ok(exe) = std::env::current_exe() else { return };
-        let process = match Command::new(exe).args(["bridge", name]).stdin(Stdio::piped()).spawn() {
+        // Its connection to the core API, made here: the bridge gets the other end as fd 3.
+        let Ok((ours, theirs)) = UnixStream::pair() else { return };
+        let mut command = Command::new(exe);
+        command.args(["bridge", name]).stdin(Stdio::piped());
+        hand_down(&mut command, &theirs);
+        let process = match command.spawn() {
             Ok(process) => process,
             Err(err) => {
                 crate::log::debug!("bridges", "{name} did not start: {err}");
@@ -273,11 +300,15 @@ impl Host {
                 return;
             }
         };
+        drop(theirs);
+        if let Err(err) = crate::api::socket::hand(ours, crate::api::Principal::Bridge(name.to_owned()), process.id()) {
+            crate::log::debug!("bridges", "{name} has no API connection: {err}");
+        }
         // Known before the bridge can use it.
         SECRETS.lock().unwrap().push((secret.clone(), name.to_owned()));
         let mut process = process;
         let Some(mut stdin) = process.stdin.take() else { return };
-        let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id }).to_string() + "\n";
+        let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id, "api_fd": API_FD }).to_string() + "\n";
         let _ = stdin.write_all(hello.as_bytes()).and_then(|()| stdin.flush());
         crate::log::debug!("bridges", "{name} started (pid {})", process.id());
         set_state(name, json!({ "state": "connecting" }));
@@ -776,6 +807,19 @@ fn set_state(name: &str, state: Value) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_bridge_finds_its_connection_on_fd_3() {
+        let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", "echo hello >&3"]);
+        super::hand_down(&mut command, &theirs);
+        command.status().unwrap();
+        drop(theirs);
+        let mut line = String::new();
+        std::io::BufRead::read_line(&mut std::io::BufReader::new(ours), &mut line).unwrap();
+        assert_eq!(line, "hello\n");
+    }
+
     use super::*;
 
     #[test]

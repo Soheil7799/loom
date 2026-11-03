@@ -13,8 +13,13 @@ when switched off. When loom closes, the bridge's stdin closes and the bridge en
 loom writes one line on the bridge's stdin:
 
 ```json
-{"socket": "/run/user/1000/loom/loom-bridges.sock", "secret": "…", "app": "dev.shirvani.Loom"}
+{"socket": "/run/user/1000/loom/loom-bridges.sock", "secret": "…", "app": "dev.shirvani.Loom", "api_fd": 3}
 ```
+
+`api_fd`: the file descriptor the bridge's connection to loom's core API is on, already
+made by loom (one end of a socket pair). Who it is on that connection is fixed by loom: this
+bridge, with a bridge's rights (no "Always allow", no `!` commands; Telegram reads no notes).
+Bridges are moving onto it; until they have, the bridge socket below still answers.
 
 The secret is made for that run only. It is never written to disk, the environment or the
 arguments. The bridge socket is not the API socket agents use: an agent can't reach it

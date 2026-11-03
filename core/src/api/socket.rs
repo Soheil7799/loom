@@ -30,7 +30,8 @@ const LINE: u64 = 16 << 20;
 const HIGH: usize = 256;
 
 enum Event {
-    Open { conn: u64, pid: u32, pidfd: Option<OwnedFd>, lines: mpsc::Sender<String>, waiting: Arc<AtomicUsize> },
+    /// `who`: fixed by loom (a connection it handed down); None: worked out from the peer.
+    Open { conn: u64, pid: u32, pidfd: Option<OwnedFd>, who: Option<Principal>, lines: mpsc::Sender<String>, waiting: Arc<AtomicUsize> },
     Line { conn: u64, line: String },
     /// The writer caught up: what waits can go.
     Writable { conn: u64 },
@@ -57,16 +58,17 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
     let (tx, rx) = async_channel::unbounded::<Event>();
+    let _ = SENDER.set(tx.clone());
     std::thread::spawn(move || accept(listener, tx));
     crate::rt::spawn_local(async move {
         let mut sessions: HashMap<u64, Rc<Session>> = HashMap::new();
         while let Ok(event) = rx.recv().await {
             match event {
-                Event::Open { conn, pid, pidfd, lines, waiting } => {
-                    let mut who = principal_of(pid, &owner);
+                Event::Open { conn, pid, pidfd, who: given, lines, waiting } => {
+                    let mut who = given.clone().unwrap_or_else(|| principal_of(pid, &owner));
                     // The process ended (its id may be another's by now): what was read of
                     // it can't be trusted, and it is placed nowhere.
-                    if pidfd.as_ref().is_some_and(|fd| !alive(fd)) {
+                    if given.is_none() && pidfd.as_ref().is_some_and(|fd| !alive(fd)) {
                         who = Principal::Agent("unplaced".into());
                     }
                     crate::log::debug!("api".to_string(), "connection {conn} from process {pid}: {who:?}");
@@ -103,9 +105,36 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
     Ok(())
 }
 
+/// Where connections go once `serve` runs (`hand` puts its own there too).
+static SENDER: std::sync::OnceLock<async_channel::Sender<Event>> = std::sync::OnceLock::new();
+/// Connections' numbers.
+static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// Serves one end of a connection loom made itself, as `who` (a bridge it starts gets the
+/// other end): no socket path, no secret, nothing another process could claim. `pid`: the
+/// process given the other end, for the audit log.
+pub fn hand(stream: UnixStream, who: Principal, pid: u32) -> Result<(), String> {
+    let tx = SENDER.get().ok_or("the API isn't served")?;
+    open(stream, tx, pid, None, Some(who))
+}
+
+/// Starts serving `stream`: its writer and reader threads, once the core's thread knows it.
+fn open(stream: UnixStream, tx: &async_channel::Sender<Event>, pid: u32, pidfd: Option<OwnedFd>, who: Option<Principal>) -> Result<(), String> {
+    let conn = NEXT.fetch_add(1, Ordering::Relaxed);
+    let writer = stream.try_clone().map_err(|e| e.to_string())?;
+    let (lines, out) = mpsc::channel::<String>();
+    let waiting = Arc::new(AtomicUsize::new(0));
+    tx.send_blocking(Event::Open { conn, pid, pidfd, who, lines, waiting: waiting.clone() }).map_err(|_| "loom is closing".to_owned())?;
+    let events = tx.clone();
+    std::thread::spawn(move || write(writer, out, waiting, conn, events));
+    let events = tx.clone();
+    std::thread::spawn(move || read(stream, conn, events));
+    Ok(())
+}
+
 fn accept(listener: UnixListener, tx: async_channel::Sender<Event>) {
     let me = unsafe { libc::getuid() };
-    for (conn, stream) in (1u64..).zip(listener.incoming()) {
+    for stream in listener.incoming() {
         let Ok(stream) = stream else {
             // Out of file descriptors, say: wait rather than spin.
             std::thread::sleep(std::time::Duration::from_millis(200));
@@ -117,16 +146,9 @@ fn accept(listener: UnixListener, tx: async_channel::Sender<Event>) {
         }
         // Taken now, while the process is surely the one that connected.
         let pidfd = peer_pidfd(&stream);
-        let Ok(writer) = stream.try_clone() else { continue };
-        let (lines, out) = mpsc::channel::<String>();
-        let waiting = Arc::new(AtomicUsize::new(0));
-        if tx.send_blocking(Event::Open { conn, pid, pidfd, lines, waiting: waiting.clone() }).is_err() {
+        if open(stream, &tx, pid, pidfd, None).is_err() && tx.is_closed() {
             return;
         }
-        let events = tx.clone();
-        std::thread::spawn(move || write(writer, out, waiting, conn, events));
-        let events = tx.clone();
-        std::thread::spawn(move || read(stream, conn, events));
     }
 }
 
@@ -264,6 +286,41 @@ mod tests {
         assert!(matches!(answer, Err(super::super::Error::Forbidden(_))), "{answer:?}");
         // SAFETY: a plain kill of the sleep started above.
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
+    }
+
+    /// A connection loom handed down (a bridge's) is who loom said, with that one's rights,
+    /// whatever process uses it.
+    #[test]
+    fn a_handed_down_connection_is_the_bridge_loom_made_it_for() {
+        type Task = std::pin::Pin<Box<dyn std::future::Future<Output = ()>>>;
+        let tasks: Rc<std::cell::RefCell<Vec<Task>>> = Rc::default();
+        let queue = tasks.clone();
+        crate::rt::set_host(move |f| queue.borrow_mut().push(f), |_, _| {});
+        let path = std::env::temp_dir().join(format!("loom-handed-{}", std::process::id())).join("api.sock");
+        serve(&path, |_| None).unwrap();
+        crate::settings::init("dev.shirvani.LoomHandedTest");
+        let (ours, theirs) = UnixStream::pair().unwrap();
+        hand(ours, Principal::Bridge("telegram".into()), std::process::id()).unwrap();
+        let client = std::thread::spawn(move || {
+            let mut bot = crate::api::cli::Connection::over(theirs, "test bridge").unwrap();
+            let refused_vault = bot.subscribe("vault/").err().map(|e| e.code);
+            let refused_settings = bot.command("c1", "set_settings", serde_json::json!({ "changes": { "text_scale": 2 } })).err().map(|e| e.code);
+            (bot.hello["principal"].clone(), refused_vault, refused_settings)
+        });
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !client.is_finished() {
+            assert!(std::time::Instant::now() < deadline, "the bridge got no answers");
+            let mut pending: Vec<Task> = tasks.borrow_mut().drain(..).collect();
+            pending.retain_mut(|task| task.as_mut().poll(&mut cx).is_pending());
+            tasks.borrow_mut().extend(pending);
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        let (principal, vault, settings) = client.join().unwrap();
+        assert_eq!(principal, serde_json::json!({ "kind": "bridge", "name": "telegram" }));
+        assert_eq!(vault, Some(super::super::rpc::FORBIDDEN), "the Telegram bot reads no notes");
+        assert_eq!(settings, Some(super::super::rpc::FORBIDDEN), "nor changes settings");
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
     #[test]

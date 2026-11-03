@@ -57,9 +57,14 @@ pub fn new_id() -> String {
 impl Connection {
     pub fn open(socket: &std::path::Path) -> Result<Connection, Failure> {
         let stream = UnixStream::connect(socket).map_err(|e| io(format!("loom is not reachable at {} ({e})", socket.display())))?;
+        Connection::over(stream, "loom api")
+    }
+
+    /// Over a connection already made (one loom handed down: a bridge's), as client `name`.
+    pub fn over(stream: UnixStream, name: &str) -> Result<Connection, Failure> {
         let writer = stream.try_clone().map_err(io)?;
         let mut connection = Connection { reader: BufReader::new(stream), writer, next: 0, hello: Value::Null, early: Vec::new() };
-        let params = json!({ "protocol": { "min": super::rpc::PROTOCOL, "max": super::rpc::PROTOCOL }, "client": { "name": "loom api", "version": env!("CARGO_PKG_VERSION") }, "capabilities": {} });
+        let params = json!({ "protocol": { "min": super::rpc::PROTOCOL, "max": super::rpc::PROTOCOL }, "client": { "name": name, "version": env!("CARGO_PKG_VERSION") }, "capabilities": {} });
         connection.hello = connection.request("initialize", params)?;
         Ok(connection)
     }
