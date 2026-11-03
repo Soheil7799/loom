@@ -29,10 +29,29 @@ fn vault(socket: &str, agent: u32) -> Option<PathBuf> {
 }
 
 /// One of the agent's tools, done by loom (`tool` in the core API, for agents only).
-fn call(socket: &str, _agent: u32, name: &str, params: Value) -> Result<Value, String> {
+fn call(socket: &str, agent: u32, name: &str, params: Value) -> Result<Value, String> {
     use crate::api::cli::{Connection, new_id};
+    // Started by an older loom, still running (its control socket, not `…-api.sock`): its
+    // protocol, until it is restarted. Goes with the next release.
+    if !socket.ends_with("-api.sock") {
+        return legacy_call(socket, agent, name, params);
+    }
     let mut loom = Connection::open(std::path::Path::new(socket)).map_err(|e| format!("{e}; is loom still open?"))?;
     loom.command(&new_id(), "tool", json!({ "name": name, "params": params })).map_err(|e| e.message)
+}
+
+/// An older loom's control protocol: one request naming the agent, one answer.
+fn legacy_call(socket: &str, agent: u32, method: &str, params: Value) -> Result<Value, String> {
+    use std::io::BufReader;
+    let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("loom is not reachable ({e}); is it still open?"))?;
+    writeln!(stream, "{}", json!({ "agent": agent, "method": method, "params": params })).map_err(|e| e.to_string())?;
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).map_err(|e| e.to_string())?;
+    let answer: Value = serde_json::from_str(&line).map_err(|e| format!("bad answer from loom: {e}"))?;
+    match answer.get("error").and_then(Value::as_str) {
+        Some(error) => Err(error.to_owned()),
+        None => Ok(answer["ok"].clone()),
+    }
 }
 
 /// Calls in flight, by request id: set to stop one (the client cancelled it).

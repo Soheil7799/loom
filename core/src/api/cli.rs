@@ -87,6 +87,9 @@ impl Connection {
         self.send(&json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }))?;
         loop {
             let Some(message) = self.line()? else { return Err(io("loom closed the connection")) };
+            if message["jsonrpc"] != "2.0" {
+                return Err(io("that socket doesn't speak loom's API (an older loom?)"));
+            }
             if message["method"] == "subscription" {
                 if let Ok(m) = serde_json::from_value(message["params"].clone()) {
                     self.early.push(m);
