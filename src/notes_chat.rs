@@ -121,6 +121,13 @@ impl NotesChat {
             on_agent_event: RefCell::default(),
             on_closed: RefCell::default(),
         });
+        // The core API's `notes_chats` (warp): read again for each new follower.
+        let weak = Rc::downgrade(&chat);
+        loom_core::api::hub().store("notes_chats").on_subscribe(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.refresh();
+            }
+        });
         let weak = Rc::downgrade(&chat);
         chat.list.connect_row_activated(move |_, row| {
             if let Some(chat) = weak.upgrade() {
@@ -437,6 +444,7 @@ impl NotesChat {
         if let Some(shown) = self.on_shown.borrow().clone() {
             shown();
         }
+        self.publish();
         if let Some(open) = self.open.borrow().iter().find(|o| Rc::ptr_eq(&o.agent, agent)) {
             self.stack.set_visible_child(&open.page);
             open.starters.set_visible(agent.session_id().is_none() && !agent.is_busy());
@@ -480,7 +488,30 @@ impl NotesChat {
         *self.listing.borrow_mut() = listing;
     }
 
+    /// The core API's `notes_chats`: the vault's past chats, newest first, each `{id: its
+    /// session, title, updated, mark: "working" | "blocked" | null, current}`.
+    fn publish(&self) {
+        let current = self.current.borrow().as_ref().and_then(|a| a.session_id());
+        let marked = self.marked.borrow();
+        let items = self
+            .pasts
+            .borrow()
+            .iter()
+            .map(|past| {
+                serde_json::json!({
+                    "id": past.session_id,
+                    "title": past.title,
+                    "updated": past.updated,
+                    "mark": marked.iter().find(|(s, _)| *s == past.session_id).map(|(_, css)| *css),
+                    "current": current.as_deref() == Some(past.session_id.as_str()),
+                })
+            })
+            .collect();
+        loom_core::api::hub().store("notes_chats").set(items);
+    }
+
     fn fill(&self) {
+        self.publish();
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }

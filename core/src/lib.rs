@@ -17,6 +17,7 @@ pub mod log;
 pub mod mcp;
 pub mod memory;
 pub mod notes;
+pub mod notes_api;
 pub mod notes_chat;
 pub mod paths;
 pub mod plugin;

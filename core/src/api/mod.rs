@@ -68,6 +68,10 @@ pub type Handler = Rc<dyn Fn(&Principal, &Value) -> Result<Value, Error>>;
 /// A command done: (principal, id), and its result.
 type Done = ((String, String), Result<Value, Error>);
 
+/// Sets up a resource made when first asked for (given the rest of its name); false: no such
+/// resource.
+pub type Provider = Rc<dyn Fn(&Store, &str) -> bool>;
+
 /// Command results kept to answer a replay (per principal and id), the oldest dropped first.
 const REMEMBERED: usize = 512;
 
@@ -75,8 +79,11 @@ impl std::error::Error for Error {}
 
 /// May `who` read `resource`?
 fn may_read(who: &Principal, resource: &str) -> bool {
+    // The notes vault: the window, the CLI and the paired devices (not the Telegram bot).
+    let vault = resource.starts_with("vault/") || resource.starts_with("note/") || resource == "notes_chats";
     match who {
-        Principal::Window | Principal::Cli | Principal::Bridge(_) => true,
+        Principal::Window | Principal::Cli => true,
+        Principal::Bridge(name) => !vault || name == "remote",
         Principal::Agent(me) => resource == "agents" || resource.strip_prefix("conversation/") == Some(me.as_str()),
     }
 }
@@ -91,6 +98,8 @@ struct HubInner {
     limits: Limits,
     auto: bool,
     handlers: RefCell<HashMap<String, Handler>>,
+    /// Resources made when first asked for, by the start of their name (`vault/`).
+    providers: RefCell<Vec<(String, Provider)>>,
     /// Commands done: (principal, id) and their result, newest last.
     done: RefCell<VecDeque<Done>>,
 }
@@ -107,7 +116,28 @@ impl Hub {
     }
 
     fn with(limits: Limits, auto: bool) -> Hub {
-        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), done: RefCell::default() }))
+        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), providers: RefCell::default(), done: RefCell::default() }))
+    }
+
+    /// Resources named `prefix…` are made when a client first asks for one: `provide` sets
+    /// the new store up (given the rest of the name), or says there is no such resource.
+    pub fn provide(&self, prefix: &str, provide: impl Fn(&Store, &str) -> bool + 'static) {
+        self.0.providers.borrow_mut().push((prefix.to_string(), Rc::new(provide)));
+    }
+
+    /// The resource `name`, if it is there or can be made.
+    fn find(&self, name: &str) -> Option<Store> {
+        if let Some(store) = self.0.stores.borrow().get(name).cloned() {
+            return Some(store);
+        }
+        let provider = self.0.providers.borrow().iter().find(|(prefix, _)| name.starts_with(prefix.as_str())).map(|(prefix, p)| (prefix.len(), p.clone()));
+        let (at, provide) = provider?;
+        let store = Store::new(name, self.0.limits, self.0.auto);
+        if !provide(&store, &name[at..]) {
+            return None;
+        }
+        self.0.stores.borrow_mut().insert(name.to_string(), store.clone());
+        Some(store)
     }
 
     /// What command `method` does (the part of the core that owns it says, once).
@@ -184,10 +214,6 @@ impl Client {
     /// Follows `resource`: its snapshot waits in the subscription already; `ready` is called
     /// when more does.
     pub fn subscribe(&self, resource: &str, ready: impl Fn() + 'static) -> Result<Subscription, Error> {
-        let store = self.hub.0.stores.borrow().get(resource).cloned();
-        let Some(store) = store else {
-            return Err(Error::NotFound(resource.to_string()));
-        };
         if !may_read(&self.who, resource) {
             // An agent learns nothing of what it may not read, not even that it exists.
             return Err(match self.who {
@@ -195,6 +221,9 @@ impl Client {
                 _ => Error::Forbidden(resource.to_string()),
             });
         }
+        let Some(store) = self.hub.find(resource) else {
+            return Err(Error::NotFound(resource.to_string()));
+        };
         self.next.set(self.next.get() + 1);
         Ok(store.subscribe(format!("s{}", self.next.get()), Box::new(ready)))
     }
