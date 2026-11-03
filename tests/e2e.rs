@@ -534,3 +534,31 @@ fn the_telegram_bot_through_the_api() {
     bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "say no agents are open", |b| b["text"].as_str().is_some_and(|t| t.contains("No agents open")));
     eprintln!("e2e telegram: closing told");
 }
+
+/// The remote bridge (the phone's) starts and speaks the bridge protocol over the API as
+/// itself. Its relay is a closed port on this machine and iroh's minimal setup looks nothing
+/// up: nothing goes out.
+#[test]
+#[ignore = "opens a window: cargo test --test e2e -- --ignored"]
+fn the_remote_bridge_through_the_api() {
+    let settings = |root: &Path| {
+        let file = json!({ "remoteEnabled": true, "remoteRelay": "http://127.0.0.1:9" });
+        std::fs::write(root.join("config/loom/settings-LoomE2eRemote.json"), file.to_string()).unwrap();
+    };
+    let (instance, _c) = start_as("dev.shirvani.LoomE2eRemote", settings, &[]);
+    let log = instance.root.join("state/loom/audit-LoomE2eRemote.jsonl");
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let asked = |method: &str| {
+        std::fs::read_to_string(&log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|l| {
+            l["method"] == "bridge" && l["ok"] == true && l["peer"]["principal"] == json!({ "kind": "bridge", "name": "remote" }) && l["params"].as_str().is_some_and(|p| p.contains(&format!("\"method\":\"{method}\"")))
+        })
+    };
+    while !(asked("hello") && asked("state")) {
+        assert!(Instant::now() < deadline, "the remote bridge never said hello and its state through the API: {}", std::fs::read_to_string(&log).unwrap_or_default());
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    eprintln!("e2e remote: hello and state through the API, as the remote bridge");
+    assert!(!instance.root.join("loom-LoomE2eRemote-bridges.sock").exists());
+    let old = loom_core::paths::runtime_dir().join("loom/loom-LoomE2eRemote-bridges.sock");
+    assert!(!old.exists(), "no bridge socket any more");
+}

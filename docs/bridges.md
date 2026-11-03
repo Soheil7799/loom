@@ -13,31 +13,34 @@ when switched off. When loom closes, the bridge's stdin closes and the bridge en
 loom writes one line on the bridge's stdin:
 
 ```json
-{"socket": "/run/user/1000/loom/loom-bridges.sock", "secret": "…", "app": "dev.shirvani.Loom", "api_fd": 3}
+{"app": "dev.shirvani.Loom", "api_fd": 3, "settings": {…}}
 ```
 
-`api_fd`: the file descriptor the bridge's connection to loom's core API is on, already
-made by loom (one end of a socket pair). Who it is on that connection is fixed by loom: this
-bridge, with a bridge's rights (no "Always allow", no `!` commands; Telegram reads no notes).
-The Telegram bot is on it: `bridges::link` gives it the requests and events below, made
-from the API's `agents` and each agent's conversation (a question's `serial` is its entry's
-number), and acts by the API's commands. Its own settings, token included, come in
-`settings` on this line only (the API never carries secrets); it is started again when they
-change. The remote bridge still uses the bridge socket below, until it moves too.
+- `api_fd`: the file descriptor the bridge's connection to loom's core API is on, already
+  made by loom (one end of a socket pair). Who is on that connection loom fixed: this
+  bridge, with a bridge's rights (no "Always allow", no `!` commands; Telegram reads no
+  notes). There is no socket to connect to and no secret: nothing else can act as the
+  bridge, so an agent can't answer its own permission requests through it.
+- `settings`: this bridge's own settings, its token or key included. They come on this line
+  only (the API never carries secrets); a bridge whose settings change is told (`settings`
+  event) or started again.
 
-The secret is made for that run only. It is never written to disk, the environment or the
-arguments. The bridge socket is not the API socket agents use: an agent can't reach it
-without the secret, so it can't answer its own permission requests.
+The Telegram bot uses the API itself: `bridges::link` makes the requests and events below
+from the API's `agents` and each agent's conversation (a question's `serial` is its entry's
+number) and acts by the API's commands. The remote bridge passes its phone's requests on
+as they are, through the API's `bridge` command.
 
 ## Requests
 
-Connect to the socket, write one line, read one line back:
+On the API connection (after `initialize`), the command `bridge`:
 
 ```json
-{"secret": "…", "method": "agents", "params": {}}
+{"jsonrpc": "2.0", "id": "r1", "method": "bridge", "params": {"method": "agents", "params": {}}}
 ```
 
-→ `{"ok": …}` or `{"error": "…"}`.
+Its result: `{"ok": …}` or `{"error": "…"}`. The events: follow the resource `bridge/<name>` (`subscribe`);
+each event is an item added to it (`upsert`, its `event` field) and taken away at once, so a
+snapshot is always empty.
 
 | Method | Params | Answer |
 |---|---|---|
@@ -100,8 +103,8 @@ start.
 
 ## Events
 
-Write `{"secret": "…", "method": "subscribe"}` and keep the connection open. loom writes one
-event per line:
+Subscribe to `bridge/<name>` on the API connection; each event is the `event` field of an
+item added to it (the item is taken away at once):
 
 | Event | With |
 |---|---|

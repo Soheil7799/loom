@@ -17,7 +17,6 @@ use std::time::Duration;
 use serde_json::{Value, json};
 
 use super::Link;
-use super::client::Client;
 use super::link::Link as Loom;
 use crate::agent::{Asking, Status};
 
@@ -1323,7 +1322,7 @@ fn html(markdown: &str) -> String {
 
 /// `loom bridge telegram`: started by loom (never by hand), until loom stops it or closes.
 pub fn run(main_loop: impl FnOnce()) -> i32 {
-    let (_, app_id, settings) = match Client::from_stdin() {
+    let (app_id, settings) = match super::client::from_stdin() {
         Ok(started) => started,
         Err(why) => {
             eprintln!("loom bridge telegram: {why}");

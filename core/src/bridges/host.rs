@@ -3,16 +3,17 @@
 //!
 //! Each bridge is a process of its own (`loom bridge <name>`), started by loom while the
 //! settings switch it on and stopped with it (its stdin closes when loom goes). It talks to
-//! loom over the bridge socket, which is not the agents' control socket: every request carries
-//! the secret loom gave that bridge on its stdin when starting it (never on disk, in the
-//! environment or the arguments), so an agent can't answer its own permission requests.
+//! loom over the core API, on a connection loom makes and hands it when starting it (fd 3):
+//! nothing else can connect as it, so an agent can't answer its own permission requests.
 //!
-//! One JSON object per line:
-//! - `{"secret", "method", "params"}` → `{"ok": …}` or `{"error": "…"}`, one request a connection;
-//! - `{"secret", "method": "subscribe"}`: the connection stays open and loom writes events on it,
-//!   `{"event": "agent" | "asked" | "done" | "unsent" | "failed" | "closed" | "settings", …}`.
+//! The bridge protocol (docs/bridges.md) rides on it for the bridges that still speak it (the
+//! remote bridge, for the phone app already shipped): a request is the API's `bridge` command
+//! (`{method, params}` → `{"ok": …}` or `{"error": "…"}`), the events are the `bridge/<name>`
+//! resource's items, each added and taken away at once
+//! (`{"event": "agent" | "asked" | "done" | "unsent" | "failed" | "closed" | "settings", …}`).
+//! The Telegram bot is on the API itself (`link`).
 //!
-//! What a bridge can do is the methods in `Host::handle`, nothing else.
+//! What a bridge can do through `bridge` is the methods in `Host::handle`, nothing else.
 
 #[cfg(test)]
 use super::asking_from;
@@ -20,9 +21,9 @@ use super::{Link, random, random_hex};
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 use std::sync::{Arc, Mutex};
@@ -46,16 +47,8 @@ const BRIDGES: &[&str] = &["telegram", "remote"];
 const PAIRING: Duration = Duration::from_secs(600);
 
 /// The running bridges' secrets: (secret, bridge).
-static SECRETS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
-/// The subscribed connections: (bridge, where its events go).
-static SUBSCRIBERS: Mutex<Vec<(String, async_channel::Sender<String>)>> = Mutex::new(Vec::new());
-
-struct Request {
-    bridge: String,
-    method: String,
-    params: Value,
-    reply: async_channel::Sender<Value>,
-}
+/// Events told so far (their items' ids).
+static EVENTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct Running {
     /// Kept open: the bridge stops when it closes (and loom with it).
@@ -73,6 +66,7 @@ pub struct Host {
     ws: RefCell<Weak<Workspace>>,
     to_png: RefCell<Option<ToPng>>,
     app_id: String,
+    /// Where an older loom's bridge socket was (removed if left).
     socket: PathBuf,
     running: RefCell<HashMap<&'static str, Running>>,
     /// Starts that failed in a row, per bridge (the wait before the next grows).
@@ -104,7 +98,11 @@ thread_local! {
     static HOST: RefCell<Weak<Host>> = RefCell::new(Weak::new());
 }
 
-/// The bridge socket of this app id, beside the control socket.
+/// The bridges' host, while loom runs.
+pub(crate) fn current() -> Option<Rc<Host>> {
+    HOST.with(|h| h.borrow().upgrade())
+}
+
 /// The file descriptor a bridge finds its API connection on (`api_fd` in the hello line).
 pub const API_FD: i32 = 3;
 
@@ -126,7 +124,8 @@ fn hand_down(command: &mut Command, stream: &UnixStream) {
     }
 }
 
-pub fn socket_path(app_id: &str) -> PathBuf {
+/// The old bridge socket's path (gone; a file a crashed older loom left is removed).
+fn old_socket_path(app_id: &str) -> PathBuf {
     let control = crate::control::socket_path(app_id);
     let stem = control.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| "loom".to_owned());
     control.with_file_name(format!("{stem}-bridges.sock"))
@@ -162,7 +161,7 @@ impl Host {
             ws: RefCell::new(Weak::new()),
             to_png: RefCell::default(),
             app_id: app_id.to_owned(),
-            socket: socket_path(app_id),
+            socket: old_socket_path(app_id),
             running: RefCell::default(),
             failures: RefCell::default(),
             told: RefCell::default(),
@@ -172,49 +171,14 @@ impl Host {
         })
     }
 
-    /// Listens on the bridge socket, then starts the bridges the settings switch on.
+    /// Starts the bridges the settings switch on (the API serves them).
     pub fn attach(self: &Rc<Self>, ws: &Rc<Workspace>, to_png: ToPng) {
         *self.ws.borrow_mut() = Rc::downgrade(ws);
         crate::agent::commands::set_to_png(to_png.clone());
         *self.to_png.borrow_mut() = Some(to_png);
         HOST.with(|h| *h.borrow_mut() = Rc::downgrade(self));
-        self.listen();
-        self.apply(&crate::settings::get());
-    }
-
-    fn listen(self: &Rc<Self>) {
-        if let Some(dir) = self.socket.parent() {
-            let _ = std::fs::create_dir_all(dir);
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
-        }
         let _ = std::fs::remove_file(&self.socket);
-        let listener = match UnixListener::bind(&self.socket) {
-            Ok(listener) => listener,
-            Err(err) => {
-                eprintln!("loom: no bridge socket at {}: {err}", self.socket.display());
-                return;
-            }
-        };
-        let (tx, rx) = async_channel::unbounded::<Request>();
-        std::thread::spawn(move || {
-            for stream in listener.incoming() {
-                match stream {
-                    Ok(stream) => {
-                        let tx = tx.clone();
-                        std::thread::spawn(move || connection(stream, tx));
-                    }
-                    Err(_) => std::thread::sleep(Duration::from_millis(200)),
-                }
-            }
-        });
-        let weak = Rc::downgrade(self);
-        crate::rt::spawn_local(async move {
-            while let Ok(request) = rx.recv().await {
-                let Some(host) = weak.upgrade() else { break };
-                host.handle(&request.bridge, &request.method, &request.params, request.reply);
-            }
-        });
+        self.apply(&crate::settings::get());
     }
 
     /// Starts, stops or tells each bridge as the settings say.
@@ -306,11 +270,10 @@ impl Host {
             crate::log::debug!("bridges", "{name} has no API connection: {err}");
         }
         // Known before the bridge can use it.
-        SECRETS.lock().unwrap().push((secret.clone(), name.to_owned()));
         let mut process = process;
         let Some(mut stdin) = process.stdin.take() else { return };
         // Its own settings too (its token: on this pipe only, never through the API).
-        let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id, "api_fd": API_FD, "settings": settings }).to_string() + "\n";
+        let hello = json!({ "app": self.app_id, "api_fd": API_FD, "settings": settings }).to_string() + "\n";
         let _ = stdin.write_all(hello.as_bytes()).and_then(|()| stdin.flush());
         crate::log::debug!("bridges", "{name} started (pid {})", process.id());
         set_state(name, json!({ "state": "connecting" }));
@@ -331,7 +294,6 @@ impl Host {
 
     fn stop(&self, name: &str) {
         if let Some(running) = self.running.borrow_mut().remove(name) {
-            forget_secret(&running.secret);
             drop(running.stdin);
             let mut child = running.child.lock().unwrap();
             if matches!(child.try_wait(), Ok(None)) {
@@ -344,7 +306,6 @@ impl Host {
     /// Bridge `name` (the run with `secret`) exited: started again if still wanted, a bit later
     /// each time it keeps failing.
     fn ended(self: &Rc<Self>, name: &'static str, secret: &str) {
-        forget_secret(secret);
         let started = {
             let mut running = self.running.borrow_mut();
             // Stopped (or restarted) on purpose: nothing to do.
@@ -467,6 +428,11 @@ impl Host {
     pub fn closed(&self, agent: u32) {
         self.told.borrow_mut().remove(&agent);
         emit(None, json!({ "event": "closed", "agent": agent }));
+    }
+
+    /// A request from bridge `bridge` (the API's `bridge` command), answered on `reply`.
+    pub(crate) fn request(self: &Rc<Self>, bridge: &str, method: &str, p: &Value, reply: async_channel::Sender<Value>) {
+        self.handle(bridge, method, p, reply);
     }
 
     /// A request from bridge `bridge`, answered on `reply` (now, or when it is done).
@@ -689,56 +655,27 @@ fn respond(reply: &async_channel::Sender<Value>, result: Result<Value, String>) 
     });
 }
 
-fn forget_secret(secret: &str) {
-    SECRETS.lock().unwrap().retain(|(s, _)| s != secret);
+/// The bridges whose events are followed (`bridge/<name>`).
+fn followers() -> Vec<crate::api::Store> {
+    let hub = crate::api::hub();
+    ["remote", "telegram"].iter().filter_map(|name| hub.existing(&format!("bridge/{name}"))).filter(crate::api::Store::followed).collect()
 }
 
 fn subscribed() -> bool {
-    !SUBSCRIBERS.lock().unwrap().is_empty()
+    !followers().is_empty()
 }
 
-/// An event to every subscribed bridge (`to`: only that one).
+/// An event to every bridge following its events (`to`: only that one): an item added to
+/// `bridge/<name>` and taken away at once (a follower reads the ops; a snapshot is empty).
 fn emit(to: Option<&str>, event: Value) {
-    let line = event.to_string();
-    SUBSCRIBERS.lock().unwrap().retain(|(bridge, tx)| to.is_some_and(|to| to != bridge) || tx.try_send(line.clone()).is_ok());
-}
-
-fn connection(stream: UnixStream, tx: async_channel::Sender<Request>) {
-    let Ok(mut writer) = stream.try_clone() else { return };
-    let mut line = String::new();
-    if BufReader::new(stream).read_line(&mut line).is_err() {
-        return;
-    }
-    let request: Value = match serde_json::from_str(&line) {
-        Ok(request) => request,
-        Err(err) => {
-            let _ = writeln!(writer, "{}", json!({ "error": format!("bad request: {err}") }));
-            return;
+    for store in followers() {
+        if to.is_some_and(|to| store.name() != format!("bridge/{to}")) {
+            continue;
         }
-    };
-    let secret = request["secret"].as_str().unwrap_or("");
-    let bridge = SECRETS.lock().unwrap().iter().find(|(s, _)| !secret.is_empty() && s == secret).map(|(_, b)| b.clone());
-    let Some(bridge) = bridge else {
-        let _ = writeln!(writer, "{}", json!({ "error": "not a bridge of this loom" }));
-        return;
-    };
-    let method = request["method"].as_str().unwrap_or("").to_owned();
-    if method == "subscribe" {
-        let (events, rx) = async_channel::unbounded::<String>();
-        SUBSCRIBERS.lock().unwrap().push((bridge, events));
-        while let Ok(event) = rx.recv_blocking() {
-            if writeln!(writer, "{event}").is_err() {
-                return;
-            }
-        }
-        return;
+        let id = format!("e{}", EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
+        store.upsert(json!({ "id": id, "event": event }));
+        store.remove(&id);
     }
-    let (reply, answer) = async_channel::bounded(1);
-    if tx.send_blocking(Request { bridge, method, params: request["params"].clone(), reply }).is_err() {
-        return;
-    }
-    let answer = answer.recv_blocking().unwrap_or_else(|_| json!({ "error": "loom is closing" }));
-    let _ = writeln!(writer, "{answer}");
 }
 
 fn asking_json(serial: u64, a: &Asking) -> Value {
@@ -811,6 +748,28 @@ pub(crate) fn set_state(name: &str, state: Value) {
 
 #[cfg(test)]
 mod tests {
+    /// An event for the remote bridge reaches it as an item added (then taken away) to
+    /// `bridge/remote`, which no one else may follow.
+    #[test]
+    fn a_bridges_events_come_on_its_own_resource() {
+        use crate::api::{Body, Op, Principal};
+        crate::rt::set_host(|_| {}, |_, _| {});
+        super::super::api::serve();
+        let hub = crate::api::hub();
+        let phone = hub.connect(Principal::Bridge("remote".into()));
+        let sub = phone.subscribe("bridge/remote", || {}).unwrap();
+        sub.drain();
+        assert!(hub.connect(Principal::Cli).subscribe("bridge/remote", || {}).is_err(), "the CLI doesn't read it");
+        assert!(hub.connect(Principal::Bridge("telegram".into())).subscribe("bridge/remote", || {}).is_err(), "nor another bridge");
+        super::emit(Some("remote"), serde_json::json!({ "event": "done", "agent": { "id": 1 } }));
+        super::emit(Some("telegram"), serde_json::json!({ "event": "not for the phone" }));
+        hub.store("bridge/remote").flush();
+        let ops: Vec<Op> = sub.drain().into_iter().flat_map(|m| match m.body { Body::Changes { ops } => ops, _ => Vec::new() }).collect();
+        let events: Vec<serde_json::Value> = ops.iter().filter_map(|op| match op { Op::Upsert { item } => Some(item["event"].clone()), _ => None }).collect();
+        assert_eq!(events, [serde_json::json!({ "event": "done", "agent": { "id": 1 } })]);
+        assert!(hub.store("bridge/remote").items().is_empty(), "a snapshot holds no old events");
+    }
+
     #[test]
     fn a_bridge_finds_its_connection_on_fd_3() {
         let (ours, theirs) = std::os::unix::net::UnixStream::pair().unwrap();

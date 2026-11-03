@@ -7,6 +7,9 @@
 //!   never leaves loom); `{text}` back once heard. Loom's window, the CLI and bridges.
 //! - `bridge_state` (any object): what the bridge says of itself, shown in Settings. Bridges
 //!   only, each its own.
+//! - `bridge` (`{method, params}`): a request of the bridge protocol (docs/bridges.md),
+//!   `{"ok"}` or `{"error"}` back; its events in the resource `bridge/<name>`. For the
+//!   bridges that still speak it (the remote one, for the shipped phone app).
 //!
 //! `save` and `transcribe` are answered once done (off the core's thread).
 
@@ -58,6 +61,20 @@ pub fn serve() {
             reply(heard.map(|text| json!({ "text": text })).map_err(Error::Failed));
         });
     });
+    // The bridge protocol (docs/bridges.md) for a bridge that still speaks it: one request,
+    // answered as the bridge socket did (`{"ok"}` / `{"error"}`).
+    hub.handle_later("bridge", |who, params, reply| {
+        let Principal::Bridge(bridge) = who else { return reply(Err(Error::Forbidden("the bridge protocol, but for bridges".into()))) };
+        let Some(host) = super::host::current() else { return reply(Err(Error::Failed("loom is closing".into()))) };
+        let method = params["method"].as_str().unwrap_or("").to_owned();
+        let (answer, answered) = async_channel::bounded(1);
+        host.request(bridge, &method, &params["params"], answer);
+        crate::rt::spawn_local(async move {
+            reply(Ok(answered.recv().await.unwrap_or_else(|_| json!({ "error": "loom is closing" }))));
+        });
+    });
+    // Its events: `bridge/<name>`, for that bridge alone (may_read).
+    hub.provide("bridge/", |_, name| matches!(name, "remote" | "telegram"));
     hub.handle("bridge_state", |who, params| {
         let Principal::Bridge(bridge) = who else { return Err(Error::Forbidden("a bridge's state, but from that bridge".into())) };
         super::host::set_state(bridge, params.clone());

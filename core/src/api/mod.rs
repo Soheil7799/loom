@@ -110,6 +110,10 @@ pub fn test_instance() -> bool {
 fn may_read(who: &Principal, resource: &str) -> bool {
     // The notes vault: the window, the CLI and the paired devices (not the Telegram bot).
     let vault = resource.starts_with("vault/") || resource.starts_with("note/") || resource == "notes_chats";
+    // A bridge's events: that bridge's alone.
+    if let Some(name) = resource.strip_prefix("bridge/") {
+        return *who == Principal::Bridge(name.to_owned());
+    }
     match who {
         Principal::Window | Principal::Cli => true,
         Principal::Bridge(name) => !vault || name == "remote",

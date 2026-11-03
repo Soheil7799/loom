@@ -20,7 +20,7 @@ loom decides, when a connection is made; a client never says who it is.
 |---|---|---|
 | window | loom's own window | in-process, no socket |
 | agent | an agent's tools, its commands, the jobs it ran in the tray | the connecting process is in that agent's systemd scope, or descends from its process or job |
-| bridge | Telegram, a paired phone | started by loom, over the bridge socket |
+| bridge | Telegram, a paired phone | started by loom, on a connection loom made and handed to it |
 | CLI | anything else of yours (`loom api` in a terminal, a script) | none of the above |
 
 Each agent's process, and each job an agent runs in the tray, starts in a systemd scope of
