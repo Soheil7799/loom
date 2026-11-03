@@ -147,7 +147,7 @@ fn loom_through_its_api() {
         agent_turn_with_question(&mut c, &agent);
     eprintln!("e2e: agent_turn_with_question ok");
     }
-    window_agrees_with_the_core(&mut c);
+    window_agrees_with_the_core(&mut c, &agent);
     eprintln!("e2e: window_agrees_with_the_core ok");
     closing_an_agent_ends_its_conversation(&mut c, &agent);
     eprintln!("e2e: closing_an_agent_ends_its_conversation ok");
@@ -296,7 +296,7 @@ fn agent_turn_with_question(c: &mut Connection, agent: &str) {
 
 /// Dev builds: the window's copies of what it follows are what the core has (a moment
 /// given for what is still on its way).
-fn window_agrees_with_the_core(c: &mut Connection) {
+fn window_agrees_with_the_core(c: &mut Connection, agent: &str) {
     if !c.hello["capabilities"]["commands"].as_array().unwrap().iter().any(|m| m == "_selfcheck") {
         eprintln!("e2e: no _selfcheck (a release build): skipped");
         return;
@@ -305,7 +305,8 @@ fn window_agrees_with_the_core(c: &mut Connection) {
     loop {
         let report = command(c, "_selfcheck", json!({}));
         let checked: Vec<&str> = report["checked"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-        for resource in ["agents", "projects", "jobs"] {
+        let chat = format!("conversation/{agent}");
+        for resource in ["agents", "projects", "jobs", chat.as_str()] {
             assert!(checked.contains(&resource), "the window follows {resource}: {checked:?}");
         }
         if report["wrong"].as_array().unwrap().is_empty() {

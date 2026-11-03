@@ -60,6 +60,32 @@ impl ChatView {
     }
 }
 
+thread_local! {
+    /// The chats following a conversation (for the dev builds' self-check).
+    static FOLLOWING: RefCell<Vec<(String, Weak<Follow>)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Dev builds: where the chats differ from their conversations, and which were checked. A
+/// chat with messages still on their way, or whose conversation has changes unsent, is
+/// skipped (behind, not wrong).
+pub fn self_check() -> (Vec<String>, Vec<String>) {
+    let (mut wrong, mut checked) = (Vec::new(), Vec::new());
+    FOLLOWING.with_borrow_mut(|following| {
+        following.retain(|(_, f)| f.strong_count() > 0);
+        for (resource, follow) in following.iter() {
+            let Some(follow) = follow.upgrade() else { continue };
+            let Some(chat) = follow.chat.upgrade() else { continue };
+            checked.push(resource.clone());
+            let behind = follow.sub.borrow().as_ref().is_none_or(Subscription::waiting) || follow.store.unsent();
+            if behind {
+                continue;
+            }
+            wrong.extend(chat.differences(&follow.store.items()).into_iter().map(|line| format!("{resource} {line}")));
+        }
+    });
+    (wrong, checked)
+}
+
 /// What a chat follows in the core.
 enum Of {
     /// Its agent's conversation: the text messages.
@@ -91,6 +117,9 @@ impl Follow {
             .ok()?;
         *follow.sub.borrow_mut() = Some(sub);
         follow.update();
+        if cfg!(debug_assertions) && matches!(follow.of, Of::Conversation) {
+            FOLLOWING.with_borrow_mut(|f| f.push((resource.to_owned(), Rc::downgrade(&follow))));
+        }
         Some(follow)
     }
 

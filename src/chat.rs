@@ -2145,6 +2145,49 @@ impl Chat {
         }
     }
 
+    /// Dev builds: where what this chat drew differs from its conversation's entries `items`
+    /// (each a line; empty: they agree).
+    pub fn differences(&self, items: &[Value]) -> Vec<String> {
+        let mut wrong = Vec::new();
+        let (entries, tools, images) = (self.entries.borrow(), self.tools.borrow(), self.entry_images.borrow());
+        for item in items {
+            let Some(id) = item["id"].as_str() else { continue };
+            match item["kind"].as_str() {
+                Some("user" | "agent" | "thought") => {
+                    let text = item["text"].as_str().unwrap_or_default();
+                    match entries.get(id) {
+                        Some(drawn) if *drawn.text.borrow() != text => {
+                            wrong.push(format!("{id}: its text is drawn as {} bytes, the entry has {}", drawn.text.borrow().len(), text.len()));
+                        }
+                        None if !text.is_empty() => wrong.push(format!("{id}: not drawn")),
+                        _ => {}
+                    }
+                    let pictures = item["images"].as_array().map_or(0, Vec::len);
+                    if pictures > 0 && images.get(id).copied().unwrap_or(0) != pictures {
+                        wrong.push(format!("{id}: {} of {pictures} pictures drawn", images.get(id).copied().unwrap_or(0)));
+                    }
+                }
+                Some("tool") => {
+                    let Some(call) = item["call"].as_str() else { continue };
+                    let Some(card) = tools.get(call) else {
+                        wrong.push(format!("{id}: no card for tool {call}"));
+                        continue;
+                    };
+                    if let Some(output) = item["output"].as_str()
+                        && *card.output.borrow() != output
+                    {
+                        wrong.push(format!("{id}: the card shows {} bytes of output, the entry has {}", card.output.borrow().len(), output.len()));
+                    }
+                    if item.get("exit").is_some() && card.exit.get() != Some(item["exit"].as_i64()) {
+                        wrong.push(format!("{id}: the card's exit is {:?}, the entry's {}", card.exit.get(), item["exit"]));
+                    }
+                }
+                _ => {}
+            }
+        }
+        wrong
+    }
+
     /// Text added to entry `id`'s `field` (a streaming reply).
     pub fn entry_append(&self, id: &str, field: &str, text: &str) {
         let Some(message) = self.entries.borrow().get(id).cloned().filter(|_| field == "text") else { return };

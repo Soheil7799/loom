@@ -91,6 +91,7 @@ pub fn self_check() -> Vec<String> {
             }
         }
     });
+    wrong.extend(crate::chat_view::self_check().0);
     wrong
 }
 
@@ -111,7 +112,8 @@ pub fn watch_copies() {
             return Err(loom_core::api::Error::Forbidden("_selfcheck".into()));
         }
         let wrong = self_check();
-        let feeds = FEEDS.with_borrow(|feeds| feeds.iter().filter(|w| w.sub.strong_count() > 0).map(|w| w.resource.clone()).collect::<Vec<_>>());
+        let mut feeds = FEEDS.with_borrow(|feeds| feeds.iter().filter(|w| w.sub.strong_count() > 0).map(|w| w.resource.clone()).collect::<Vec<_>>());
+        feeds.extend(crate::chat_view::self_check().1);
         Ok(serde_json::json!({ "checked": feeds, "wrong": wrong }))
     });
 }
