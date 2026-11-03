@@ -139,6 +139,7 @@ fn main() -> glib::ExitCode {
     loom_core::api::blobs::serve();
     loom_core::agent::commands::serve();
     loom_core::jobs_api::serve();
+    loom_core::bridges::api::serve();
     feed::watch_copies();
     log::name_for(&app_id);
     log::install();

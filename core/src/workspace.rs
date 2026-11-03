@@ -37,6 +37,9 @@ pub enum Act {
     Remove,
 }
 
+/// Whether the user has an agent in front of them (the UI's answer).
+pub type Looking = Rc<dyn Fn(&Agent) -> bool>;
+
 pub struct Workspace {
     pub app_id: String,
     pub projects: RefCell<Vec<Project>>,
@@ -45,6 +48,9 @@ pub struct Workspace {
     pub closed: RefCell<Vec<Saved>>,
     pub schedules: RefCell<Vec<Schedule>>,
     next_id: Cell<u32>,
+    /// Whether the user has an agent in front of them in loom (the UI says; a bridge then
+    /// stays quiet about it).
+    pub looking: RefCell<Option<Looking>>,
     host: RefCell<Option<Weak<dyn Host>>>,
     me: Weak<Workspace>,
 }
@@ -58,6 +64,7 @@ impl Workspace {
             closed: RefCell::default(),
             schedules: RefCell::default(),
             next_id: Cell::new(1),
+            looking: RefCell::default(),
             host: RefCell::default(),
             me: me.clone(),
         })
@@ -198,6 +205,17 @@ impl Workspace {
                     "place": agent.place(),
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),
+                    "looking": self.looking.borrow().as_ref().is_some_and(|f| f(agent)),
+                    // How the last turn ended: `turns` grows with each one.
+                    "last_turn": {
+                        "turns": agent.turns_ended.get(),
+                        "seconds": agent.last_took.get(),
+                        "error": agent.last_error.borrow().clone(),
+                        "cancelled": agent.last_cancelled.get(),
+                    },
+                    // Each grows with its event: `times`, and what the last one was.
+                    "failed": { "times": agent.failures.borrow().0, "why": agent.failures.borrow().1 },
+                    "unsent": { "times": agent.unsent.get().0, "count": agent.unsent.get().1 },
                 })
             })
             .collect();

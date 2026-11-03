@@ -19,7 +19,11 @@ loom writes one line on the bridge's stdin:
 `api_fd`: the file descriptor the bridge's connection to loom's core API is on, already
 made by loom (one end of a socket pair). Who it is on that connection is fixed by loom: this
 bridge, with a bridge's rights (no "Always allow", no `!` commands; Telegram reads no notes).
-Bridges are moving onto it; until they have, the bridge socket below still answers.
+The Telegram bot is on it: `bridges::link` gives it the requests and events below, made
+from the API's `agents` and each agent's conversation (a question's `serial` is its entry's
+number), and acts by the API's commands. Its own settings, token included, come in
+`settings` on this line only (the API never carries secrets); it is started again when they
+change. The remote bridge still uses the bridge socket below, until it moves too.
 
 The secret is made for that run only. It is never written to disk, the environment or the
 arguments. The bridge socket is not the API socket agents use: an agent can't reach it

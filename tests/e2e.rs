@@ -31,23 +31,31 @@ impl Drop for Instance {
 }
 
 fn start() -> (Instance, Connection) {
-    let root = std::env::temp_dir().join(format!("loom-e2e-{}", std::process::id()));
+    start_as(APP_ID, |_| {}, &[])
+}
+
+/// A loom of app id `app_id`, its folders made and `prepare`d (a settings file, say) before it
+/// starts with `env` set too.
+fn start_as(app_id: &str, prepare: impl FnOnce(&Path), env: &[(&str, String)]) -> (Instance, Connection) {
+    let root = std::env::temp_dir().join(format!("loom-e2e-{}-{}", std::process::id(), app_id.rsplit('.').next().unwrap_or("x")));
     let _ = std::fs::remove_dir_all(&root);
-    for dir in ["config", "data", "state", "project", "vault"] {
+    for dir in ["config/loom", "data", "state", "project", "vault"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }
+    prepare(&root);
     let child = Command::new(env!("CARGO_BIN_EXE_loom"))
-        .env("LOOM_APP_ID", APP_ID)
+        .env("LOOM_APP_ID", app_id)
         .env("XDG_CONFIG_HOME", root.join("config"))
         .env("XDG_DATA_HOME", root.join("data"))
         .env("XDG_STATE_HOME", root.join("state"))
         .env_remove("LOOM_API")
         // Only a test instance lets the CLI answer agents' questions.
         .env("LOOM_TEST_INSTANCE", "1")
+        .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .spawn()
         .expect("loom starts");
     let instance = Instance { child, root };
-    let socket = loom_core::api::socket::socket_path(APP_ID);
+    let socket = loom_core::api::socket::socket_path(app_id);
     let deadline = Instant::now() + Duration::from_secs(30);
     let connection = loop {
         if let Ok(connection) = Connection::open(&socket) {
@@ -353,4 +361,176 @@ fn closing_an_agent_ends_its_conversation(c: &mut Connection, agent: &str) {
     command(c, "close_agent", json!({ "agent": agent }));
     until(c, &mut chat, Duration::from_secs(10), "gone", |f| f.mirror.gone);
     assert!(!c.get("agents").unwrap().iter().any(|a| a["id"] == agent));
+}
+
+// ---- the Telegram bot, against a stand-in for Telegram -----------------------------------
+
+/// Telegram's Bot API as far as the bot uses it, on 127.0.0.1: updates the test queues, and
+/// every call the bot makes, kept.
+#[derive(Default)]
+struct FakeTelegram {
+    updates: std::collections::VecDeque<Value>,
+    calls: Vec<(String, Value)>,
+    next: i64,
+}
+
+type Shared = std::sync::Arc<(std::sync::Mutex<FakeTelegram>, std::sync::Condvar)>;
+
+fn fake_telegram() -> (String, Shared) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let shared: Shared = Shared::default();
+    let state = shared.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let state = state.clone();
+            std::thread::spawn(move || serve_telegram(stream, &state));
+        }
+    });
+    (url, shared)
+}
+
+fn serve_telegram(stream: std::net::TcpStream, state: &Shared) {
+    use std::io::{BufRead, BufReader, Read, Write};
+    let mut writer = stream.try_clone().unwrap();
+    let mut reader = BufReader::new(stream);
+    loop {
+        let mut request = String::new();
+        if reader.read_line(&mut request).unwrap_or(0) == 0 {
+            return;
+        }
+        let mut length = 0;
+        loop {
+            let mut header = String::new();
+            reader.read_line(&mut header).unwrap();
+            if header.trim().is_empty() {
+                break;
+            }
+            if let Some(n) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = n.trim().parse().unwrap_or(0);
+            }
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        let body: Value = serde_json::from_slice(&body).unwrap_or(Value::Null);
+        let method = request.split_whitespace().nth(1).unwrap_or("").rsplit('/').next().unwrap_or("").to_owned();
+        let (lock, wake) = &**state;
+        let result = match method.as_str() {
+            "getMe" => json!({ "id": 7, "is_bot": true, "first_name": "loom", "username": "loom_test_bot" }),
+            // Asking for what is left over (the bot does at its start, to skip it): nothing.
+            "getUpdates" if body["timeout"] == 0 => json!([]),
+            "getUpdates" => {
+                let mut fake = lock.lock().unwrap();
+                fake.calls.push((method.clone(), body.clone()));
+                wake.notify_all();
+                let (mut fake, _) = wake.wait_timeout_while(fake, Duration::from_millis(500), |f| f.updates.is_empty()).unwrap();
+                Value::Array(fake.updates.drain(..).collect())
+            }
+            _ => {
+                let mut fake = lock.lock().unwrap();
+                fake.next += 1;
+                fake.calls.push((method.clone(), body.clone()));
+                wake.notify_all();
+                json!({ "message_id": 1000 + fake.next, "chat": { "id": 42 }, "date": 0, "text": body["text"] })
+            }
+        };
+        let answer = json!({ "ok": true, "result": result }).to_string();
+        let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n", answer.len());
+        if writer.write_all(head.as_bytes()).and_then(|()| writer.write_all(answer.as_bytes())).is_err() {
+            return;
+        }
+    }
+}
+
+/// The user (42) writes `text` to the bot.
+fn user_says(state: &Shared, text: &str) {
+    let (lock, wake) = &**state;
+    let mut fake = lock.lock().unwrap();
+    fake.next += 1;
+    let id = fake.next;
+    fake.updates.push_back(json!({ "update_id": id, "message": { "message_id": id, "from": { "id": 42, "is_bot": false, "first_name": "Me" }, "chat": { "id": 42, "type": "private" }, "date": 0, "text": text } }));
+    wake.notify_all();
+}
+
+/// The user taps an inline button whose data is `data`.
+fn user_taps(state: &Shared, data: &str) {
+    let (lock, wake) = &**state;
+    let mut fake = lock.lock().unwrap();
+    fake.next += 1;
+    let id = fake.next;
+    fake.updates.push_back(json!({ "update_id": id, "callback_query": { "id": format!("cb{id}"), "from": { "id": 42, "is_bot": false, "first_name": "Me" }, "message": { "message_id": 1, "chat": { "id": 42, "type": "private" }, "date": 0 }, "data": data } }));
+    wake.notify_all();
+}
+
+/// Waits for the bot's call `method` whose body satisfies `test`, from the `from`th call on
+/// (`what` says what, if it never comes); its body, and where the next search starts.
+fn bot_calls(state: &Shared, from: usize, method: &str, within: Duration, what: &str, test: impl Fn(&Value) -> bool) -> (Value, usize) {
+    let (lock, wake) = &**state;
+    let deadline = Instant::now() + within;
+    let mut fake = lock.lock().unwrap();
+    loop {
+        if let Some(at) = fake.calls.iter().skip(from).position(|(m, b)| m == method && test(b)) {
+            return (fake.calls[from + at].1.clone(), from + at + 1);
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        assert!(!left.is_zero(), "the bot never did {what}; it called: {:#?}", fake.calls.iter().skip(from).map(|(m, b)| format!("{m} {b}")).collect::<Vec<_>>());
+        fake = wake.wait_timeout(fake, left).unwrap().0;
+    }
+}
+
+#[test]
+#[ignore = "opens a window: cargo test --test e2e -- --ignored"]
+fn the_telegram_bot_through_the_api() {
+    let (url, telegram) = fake_telegram();
+    let settings = |root: &Path| {
+        let file = json!({ "telegramEnabled": true, "telegramToken": "123:test", "telegramUser": 42 });
+        std::fs::write(root.join("config/loom/settings-LoomE2eTg.json"), file.to_string()).unwrap();
+    };
+    // LOOM_CONTROL marks a test instance: only then does the bot talk to a stand-in server.
+    let env = [("LOOM_TELEGRAM_API", url), ("LOOM_CONTROL", "/nonexistent/loom-e2e-controls".to_owned())];
+    let (instance, mut c) = start_as("dev.shirvani.LoomE2eTg", settings, &env);
+    let (_, at) = bot_calls(&telegram, 0, "getUpdates", Duration::from_secs(30), "poll Telegram", |b| b["timeout"] != 0);
+    eprintln!("e2e telegram: the bot runs");
+    let project = instance.root.join("project");
+    let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
+    // Written to with no agent picked: the agents, as a keyboard (made from the API's `agents`).
+    user_says(&telegram, "hello");
+    let (menu, at) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "offer the agents", |b| b["reply_markup"]["keyboard"].is_array());
+    let label = menu["reply_markup"]["keyboard"][0][0]["text"].as_str().unwrap().to_owned();
+    assert!(label.contains("project"), "the agent's project in {label:?}");
+    user_says(&telegram, &label);
+    let (_, at) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "say who it writes to", |b| b["text"].as_str().is_some_and(|t| t.contains("Your messages go to it")));
+    eprintln!("e2e telegram: an agent picked");
+    // A shell command never goes through a bridge.
+    user_says(&telegram, "!ls");
+    let (_, mut at) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "refuse a ! command", |b| b["text"].as_str().is_some_and(|t| t.contains("! commands")));
+    if std::env::var_os("LOOM_E2E_AGENT").is_some() {
+        user_says(&telegram, "Reply with exactly: telegram ok");
+        let (done, next) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(120), "tell the turn's end", |b| b["text"].as_str().is_some_and(|t| t.contains("telegram ok")));
+        eprintln!("e2e telegram: the reply came back: {}", done["text"]);
+        at = next;
+        let chat = c.get(&format!("conversation/{agent}")).unwrap();
+        assert!(chat.iter().any(|e| e["kind"] == "user" && e["text"] == "Reply with exactly: telegram ok"), "sent through the API");
+        // A question, answered with the bot's buttons: Blue picked, then Send.
+        user_says(&telegram, "Use the AskUserQuestion tool once to ask me which colour I prefer, with the options Red and Blue. Then reply with only the colour I chose.");
+        let blue = |b: &Value| b["reply_markup"]["inline_keyboard"].as_array().into_iter().flatten().flat_map(|row| row.as_array().into_iter().flatten()).find(|k| k["text"].as_str().is_some_and(|t| t.contains("Blue"))).cloned();
+        let (asked, next) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(120), "ask with buttons", |b| blue(b).is_some());
+        let button = |text: &str| asked["reply_markup"]["inline_keyboard"].as_array().into_iter().flatten().flat_map(|row| row.as_array().into_iter().flatten()).find(|k| k["text"].as_str().is_some_and(|t| t.contains(text))).and_then(|k| k["callback_data"].as_str().map(str::to_owned));
+        let pick = blue(&asked).unwrap()["callback_data"].as_str().unwrap().to_owned();
+        user_taps(&telegram, &pick);
+        let send = button("Send").expect("a Send button");
+        user_taps(&telegram, &send);
+        let (done, next) = bot_calls(&telegram, next, "sendMessage", Duration::from_secs(120), "tell the answered turn's end", |b| b["text"].as_str().is_some_and(|t| t.contains("done in") && t.contains("Blue")));
+        eprintln!("e2e telegram: answered with buttons: {}", done["text"]);
+        at = next;
+        let log = std::fs::read_to_string(instance.root.join("state/loom/audit-LoomE2eTg.jsonl")).unwrap();
+        assert!(log.lines().any(|l| l.contains("\"method\":\"answer\"") && l.contains("\"ok\":true") && l.contains("telegram")), "the answer went through the API as the bot");
+        assert!(log.lines().any(|l| l.contains("\"method\":\"send\"") && l.contains("\"kind\":\"bridge\"") && l.contains("telegram")), "logged as the bot's");
+    }
+    // Closed in loom: the bot knows no agents any more.
+    command(&mut c, "close_agent", json!({ "agent": agent }));
+    std::thread::sleep(Duration::from_millis(500));
+    user_says(&telegram, "hello again");
+    bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "say no agents are open", |b| b["text"].as_str().is_some_and(|t| t.contains("No agents open")));
+    eprintln!("e2e telegram: closing told");
 }

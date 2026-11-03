@@ -281,6 +281,12 @@ pub struct Agent {
     pub last_turn: Cell<Instant>,
     /// How long the last turn took (seconds).
     pub last_took: Cell<u64>,
+    /// Turns ended (each `Done`): a client sees a new one end when it grows.
+    pub turns_ended: Cell<u64>,
+    /// Times its process failed, and why the last time.
+    pub failures: RefCell<(u64, String)>,
+    /// Times queued messages never went out, and how many the last time.
+    pub unsent: Cell<(u64, u64)>,
     /// When it was last used (Unix seconds): the overview's order.
     pub used: Cell<u64>,
     /// Kept awake (the ☕ in the Running list): never suspended for being idle.
@@ -360,6 +366,9 @@ impl Agent {
             last_active: Cell::new(Instant::now()),
             last_turn: Cell::new(Instant::now()),
             last_took: Cell::new(0),
+            turns_ended: Cell::new(0),
+            failures: RefCell::default(),
+            unsent: Cell::new((0, 0)),
             used: Cell::new(used),
             awake: Cell::new(saved.awake),
             resting: Cell::new(false),
@@ -442,6 +451,15 @@ impl Agent {
     }
 
     fn emit(self: &Rc<Self>, event: Event) {
+        match &event {
+            Event::Done => self.turns_ended.set(self.turns_ended.get() + 1),
+            Event::Failed(why) => {
+                let mut failures = self.failures.borrow_mut();
+                *failures = (failures.0 + 1, why.clone());
+            }
+            Event::Unsent(count) => self.unsent.set((self.unsent.get().0 + 1, *count as u64)),
+            _ => {}
+        }
         let f = self.on_event.borrow().clone();
         if let Some(f) = f {
             f(self, event);

@@ -512,6 +512,8 @@ impl App {
             agent.chat().input.grab_focus();
         }));
         crate::theme::status_colors(&this.window);
+        // The API first: the bridges `wire` starts are handed connections to it.
+        this.listen();
         this.wire(&new_button, &settings_button);
         let (weak, place) = (Rc::downgrade(&this), notes_place.downgrade());
         settings::on_change(move |_| {
@@ -555,7 +557,6 @@ impl App {
         *this.me.borrow_mut() = host.clone();
         this.ws.set_host(host);
         this.restore();
-        this.listen();
         this
     }
 
@@ -717,6 +718,8 @@ impl App {
             let name = params["name"].as_str().ok_or_else(|| Error::Invalid("which tool?".into()))?;
             app.control(id, name, &params["params"]).map_err(Error::Failed)
         });
+        let weak = Rc::downgrade(self);
+        *self.ws.looking.borrow_mut() = Some(Rc::new(move |agent| weak.upgrade().is_some_and(|app| app.looking_at(agent))));
         // Agents started and closed through the API: by people only (the window, the CLI).
         let human = |who: &loom_core::api::Principal| matches!(who, loom_core::api::Principal::Window | loom_core::api::Principal::Cli);
         let weak = Rc::downgrade(self);
@@ -2309,8 +2312,13 @@ impl App {
         });
     }
 
+    /// Whether the user has `agent` in front of them (the window active, the agent in view).
+    fn looking_at(&self, agent: &Agent) -> bool {
+        self.window.is_active() && (agent.focused.get() || self.pinned.borrow().as_ref().is_some_and(|p| p.id == agent.id))
+    }
+
     fn agent_event(self: &Rc<Self>, agent: &Rc<Agent>, event: Event) {
-        let looking = self.window.is_active() && (agent.focused.get() || self.is_pinned(agent));
+        let looking = self.looking_at(agent);
         if !matches!(event, Event::Changed) {
             crate::log::debug!(format!("agent {}", agent.id), "event {} (looking: {looking})", match &event {
                 Event::Changed => "changed".to_owned(),
@@ -2325,6 +2333,10 @@ impl App {
             });
         }
         self.bridges.agent_event(agent, &event, looking);
+        // The API's `agents` says it too (with `looking` as it is now).
+        if !matches!(event, Event::Changed) {
+            self.ws.publish_agents();
+        }
         match event {
             Event::Changed => {
                 self.toast_settled(agent);

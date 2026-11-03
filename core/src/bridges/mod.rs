@@ -8,9 +8,11 @@ use crate::agent::Asking;
 pub mod browse;
 pub mod client;
 pub mod host;
+pub mod link;
 pub mod telegram;
 
-pub use host::{Host, pair, remote_program, socket_path, state_of, watch};
+pub mod api;
+pub use host::{Host, ToPng, decode, pair, remote_program, safe_name, socket_path, state_of, watch};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Link {

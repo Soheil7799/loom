@@ -13,14 +13,18 @@ static API_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(
 /// This bridge's connection to the core API, as loom handed it down (once; None after, or
 /// from a loom that hands none). loom fixed who it is: this bridge.
 pub fn api(name: &str) -> Option<crate::api::cli::Connection> {
+    crate::api::cli::Connection::over(handed()?, &format!("loom bridge {name}")).ok()
+}
+
+/// The connection itself, as loom handed it down (once).
+pub fn handed() -> Option<UnixStream> {
     use std::os::fd::FromRawFd;
     let fd = API_FD.swap(-1, std::sync::atomic::Ordering::Relaxed);
     if fd < 0 {
         return None;
     }
     // SAFETY: loom left `fd` open for this process, and it is taken once.
-    let stream = unsafe { UnixStream::from_raw_fd(fd) };
-    crate::api::cli::Connection::over(stream, &format!("loom bridge {name}")).ok()
+    Some(unsafe { UnixStream::from_raw_fd(fd) })
 }
 
 #[derive(Clone)]
@@ -32,7 +36,8 @@ pub struct Client {
 impl Client {
     /// What loom wrote on stdin (the socket, this run's secret, its app id). From then on the
     /// bridge ends when stdin closes: loom has gone.
-    pub fn from_stdin() -> Result<(Client, String), String> {
+    /// Also this bridge's settings, as loom gave them.
+    pub fn from_stdin() -> Result<(Client, String, Value), String> {
         let mut line = String::new();
         std::io::stdin().read_line(&mut line).map_err(|e| e.to_string())?;
         let hello: Value = serde_json::from_str(&line).map_err(|_| "a bridge is started by loom, not by hand".to_owned())?;
@@ -47,7 +52,7 @@ impl Client {
             API_FD.store(fd, std::sync::atomic::Ordering::Relaxed);
         }
         let client = Client { socket: PathBuf::from(socket), secret: secret.to_owned() };
-        Ok((client, hello["app"].as_str().unwrap_or("").to_owned()))
+        Ok((client, hello["app"].as_str().unwrap_or("").to_owned(), hello["settings"].clone()))
     }
 
     fn connect(&self, method: &str, params: Value) -> Result<UnixStream, String> {

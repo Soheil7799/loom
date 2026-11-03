@@ -18,6 +18,7 @@ use serde_json::{Value, json};
 
 use super::Link;
 use super::client::Client;
+use super::link::Link as Loom;
 use crate::agent::{Asking, Status};
 
 /// Telegram takes 4096 characters a message; a long reply goes in parts of this many.
@@ -108,7 +109,8 @@ impl View {
 }
 
 struct Bot {
-    loom: Client,
+    /// loom, through the core API (the bridge protocol on top of it).
+    loom: Rc<Loom>,
     /// The agents as loom last told them, in its sidebar's order.
     agents: RefCell<Vec<View>>,
     /// Speech to text is set up in loom.
@@ -149,7 +151,7 @@ struct Bot {
 }
 
 impl Bot {
-    fn new(loom: Client) -> Rc<Bot> {
+    fn new(loom: Rc<Loom>) -> Rc<Bot> {
         Rc::new(Bot {
             loom,
             agents: RefCell::default(),
@@ -259,7 +261,7 @@ impl Bot {
 
     /// One request to loom.
     fn loom(&self, method: &str, params: Value) -> Result<Value, String> {
-        let result = self.loom.call(method, params);
+        let result = self.loom.call(method, &params);
         if let Err(why) = &result {
             crate::log::debug!("telegram", "loom said no to {method}: {why}");
         }
@@ -828,11 +830,11 @@ impl Bot {
         // The agent is found again when it is heard (a reply to a question may fill it in).
         let message = message.clone();
         self.fetch(&message.clone(), &file, move |bot, audio| {
-            let (weak, loom) = (Rc::downgrade(bot), bot.loom.clone());
+            let (weak, loom) = (Rc::downgrade(bot), bot.loom.shared());
             let audio = data_encoding::BASE64.encode(&audio);
             crate::rt::spawn_local(async move {
                 let asked = json!({ "audio": audio, "name": name, "mime": mime });
-                let result = crate::rt::spawn_blocking(move || loom.call("transcribe", asked)).await.unwrap_or_else(|_| Err("the request stopped".into()));
+                let result = crate::rt::spawn_blocking(move || loom.call("transcribe", asked).map(|heard| heard["text"].clone())).await.unwrap_or_else(|_| Err("the request stopped".into()));
                 let Some(bot) = weak.upgrade() else { return };
                 match result.and_then(|text| text.as_str().map(str::to_owned).ok_or_else(|| "no text came back".to_owned())) {
                     Ok(text) if text.is_empty() => bot.say("Heard nothing in it.", About::Nothing),
@@ -1321,7 +1323,7 @@ fn html(markdown: &str) -> String {
 
 /// `loom bridge telegram`: started by loom (never by hand), until loom stops it or closes.
 pub fn run(main_loop: impl FnOnce()) -> i32 {
-    let (loom, app_id) = match Client::from_stdin() {
+    let (_, app_id, settings) = match Client::from_stdin() {
         Ok(started) => started,
         Err(why) => {
             eprintln!("loom bridge telegram: {why}");
@@ -1329,30 +1331,20 @@ pub fn run(main_loop: impl FnOnce()) -> i32 {
         }
     };
     crate::log::name_for(&app_id);
-    // Its connection to the core API, as loom handed it down (the bot moves onto it next;
-    // for now it is opened, so a loom that hands none, or a refusal, shows in the log).
-    let api = super::client::api("telegram");
-    crate::log::debug!("telegram", "core API: {}", api.as_ref().map_or("none handed down".to_owned(), |a| a.hello["principal"].to_string()));
-    // Told first, asked second: nothing happens in between unheard.
-    let events = match loom.subscribe() {
-        Ok(events) => events,
-        Err(why) => {
-            eprintln!("loom bridge telegram: {why}");
-            return 1;
-        }
+    // loom, through the connection it handed down (who the bot is, loom fixed).
+    let Some(stream) = super::client::handed() else {
+        eprintln!("loom bridge telegram: loom handed down no API connection");
+        return 1;
     };
-    let hello = match loom.call("hello", json!({})) {
-        Ok(hello) => hello,
+    let (loom, events) = match Loom::start(stream, "telegram", settings.clone()) {
+        Ok(started) => started,
         Err(why) => {
             eprintln!("loom bridge telegram: {why}");
             return 1;
         }
     };
     let bot = Bot::new(loom);
-    for agent in hello["agents"].as_array().into_iter().flatten() {
-        bot.seen(agent);
-    }
-    bot.settings(&hello["settings"]);
+    bot.settings(&settings);
     let weak = Rc::downgrade(&bot);
     crate::rt::spawn_local(async move {
         while let Ok(event) = events.recv().await {
@@ -1361,7 +1353,6 @@ pub fn run(main_loop: impl FnOnce()) -> i32 {
         }
     });
     main_loop();
-    drop(api);
     0
 }
 

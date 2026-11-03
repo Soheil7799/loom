@@ -131,7 +131,10 @@ impl Session {
         };
         // A notification (no id): nothing is answered; loom takes none yet.
         let Some(id) = id else { return };
-        let result = self.call(method, &id, &params);
+        if self.client.borrow().is_some() && !RESERVED.contains(&method) && self.hub.has_command(method) {
+            return self.command(&id, method, &params);
+        }
+        let result = self.call(method, &params);
         self.respond(&id, result);
         // A new subscription's snapshot follows its answer.
         if method == "subscribe" {
@@ -139,7 +142,7 @@ impl Session {
         }
     }
 
-    fn call(&self, method: &str, id: &Value, params: &Value) -> Result<Value, Failure> {
+    fn call(&self, method: &str, params: &Value) -> Result<Value, Failure> {
         if method == "initialize" {
             return self.initialize(params);
         }
@@ -173,19 +176,26 @@ impl Session {
                 subs.get(sub).ok_or_else(|| Failure::from(Error::NotFound(format!("subscription {sub}"))))?.resync();
                 Ok(json!({}))
             }
-            _ if !self.hub.has_command(method) => Err(Failure::new(METHOD_NOT_FOUND, format!("no method {method}"))),
-            _ => {
-                let id = id.as_str().filter(|i| !i.is_empty()).ok_or_else(|| {
-                    Failure::new(INVALID_REQUEST, "a command's id must be a string unique to this client (a retry sends the same one)")
-                })?;
-                let result = client.command(id, method, params.clone());
-                let peer = self.peer.borrow();
-                if !peer.is_null() {
-                    crate::audit::record(&peer, method, params, result.as_ref().map(|_| ()).map_err(ToString::to_string));
-                }
-                Ok(result?)
-            }
+            _ => Err(Failure::new(METHOD_NOT_FOUND, format!("no method {method}"))),
         }
+    }
+
+    /// A command: answered when it is done (at once, or later), and logged.
+    fn command(&self, id: &Value, method: &str, params: &Value) {
+        let Some(command_id) = id.as_str().filter(|i| !i.is_empty()) else {
+            return self.respond(id, Err(Failure::new(INVALID_REQUEST, "a command's id must be a string unique to this client (a retry sends the same one)")));
+        };
+        let (me, id, logged, method_name) = (self.me.clone(), id.clone(), params.clone(), method.to_owned());
+        let client = self.client.borrow();
+        let Some(client) = client.as_ref() else { return };
+        client.command_later(command_id, method, params.clone(), move |result| {
+            let Some(session) = me.upgrade() else { return };
+            let peer = session.peer.borrow().clone();
+            if !peer.is_null() {
+                crate::audit::record(&peer, &method_name, &logged, result.as_ref().map(|_| ()).map_err(ToString::to_string));
+            }
+            session.respond(&id, result.map_err(Failure::from));
+        });
     }
 
     fn initialize(&self, params: &Value) -> Result<Value, Failure> {

@@ -34,6 +34,13 @@ pub(super) fn register(agent: &Rc<Agent>) {
 
 thread_local! {
     static SERVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// How pictures sent in become PNG (the UI's toolkit reads them).
+    static TO_PNG: RefCell<Option<crate::bridges::ToPng>> = const { RefCell::new(None) };
+}
+
+/// How pictures sent with `send` are read (set by the UI, once).
+pub fn set_to_png(to_png: crate::bridges::ToPng) {
+    TO_PNG.with_borrow_mut(|t| *t = Some(to_png));
 }
 
 /// Registers the commands (once; a client learns of them at `initialize`, agents or not).
@@ -45,14 +52,52 @@ pub fn serve() {
 
 fn handle() {
     let hub = crate::api::hub();
-    hub.handle("send", |who, params| {
-        let agent = target(who, params, "send messages")?;
-        let text = params["text"].as_str().filter(|t| !t.trim().is_empty()).ok_or_else(|| Error::Invalid("send needs text".into()))?;
-        if matches!(who, Principal::Bridge(_)) && text.trim_start().starts_with('!') {
-            return Err(Error::Forbidden("`!` commands from a bridge".into()));
+    // Text, and pictures (`images`: base64, any format the UI reads) sent as pasted ones:
+    // those are read off the core's thread, so the answer comes once they are.
+    hub.handle_later("send", |who, params, reply| {
+        let checked = (|| {
+            let agent = target(who, params, "send messages")?;
+            let text = params["text"].as_str().unwrap_or("").to_owned();
+            let images: Vec<String> = params["images"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(str::to_owned)).collect();
+            if text.trim().is_empty() && images.is_empty() {
+                return Err(Error::Invalid("send needs text or pictures".into()));
+            }
+            if matches!(who, Principal::Bridge(_)) && text.trim_start().starts_with('!') {
+                return Err(Error::Forbidden("`!` commands from a bridge".into()));
+            }
+            Ok((agent, text, images))
+        })();
+        let (agent, text, images) = match checked {
+            Ok(checked) => checked,
+            Err(err) => return reply(Err(err)),
+        };
+        if images.is_empty() {
+            agent.submit_with(text, Vec::new());
+            return reply(Ok(json!({})));
         }
-        agent.submit_with(text.to_owned(), Vec::new());
-        Ok(json!({}))
+        let Some(to_png) = TO_PNG.with_borrow(Clone::clone) else { return reply(Err(Error::Failed("pictures can't be read here".into()))) };
+        let agent = Rc::downgrade(&agent);
+        crate::rt::spawn_local(async move {
+            let pngs = crate::rt::spawn_blocking(move || {
+                images
+                    .iter()
+                    .map(|data| {
+                        let bytes = crate::bridges::decode(data).ok_or("That picture could not be read.")?;
+                        to_png(bytes).map(super::view::Png::from).map_err(|_| "That picture could not be read.".to_owned())
+                    })
+                    .collect::<Result<Vec<_>, String>>()
+            })
+            .await
+            .unwrap_or_else(|_| Err("That picture could not be read.".into()));
+            reply(match (pngs, agent.upgrade()) {
+                (Err(why), _) => Err(Error::Invalid(why)),
+                (_, None) => Err(Error::NotFound("that agent is closed".into())),
+                (Ok(pngs), Some(agent)) => {
+                    agent.submit_with(text, pngs);
+                    Ok(json!({}))
+                }
+            });
+        });
     });
     hub.handle("answer", |who, params| {
         // Answers are a person's: in loom's window or through a bridge they paired. The CLI is
@@ -97,7 +142,7 @@ fn handle() {
 }
 
 /// The agent a command is for (`agent`: its id), if `who` may tell agents anything.
-fn target(who: &Principal, params: &Value, what: &str) -> Result<Rc<Agent>, Error> {
+pub(crate) fn target(who: &Principal, params: &Value, what: &str) -> Result<Rc<Agent>, Error> {
     if matches!(who, Principal::Agent(_)) {
         return Err(Error::Forbidden(format!("an agent may not {what}")));
     }

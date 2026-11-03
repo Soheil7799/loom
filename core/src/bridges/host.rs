@@ -175,6 +175,7 @@ impl Host {
     /// Listens on the bridge socket, then starts the bridges the settings switch on.
     pub fn attach(self: &Rc<Self>, ws: &Rc<Workspace>, to_png: ToPng) {
         *self.ws.borrow_mut() = Rc::downgrade(ws);
+        crate::agent::commands::set_to_png(to_png.clone());
         *self.to_png.borrow_mut() = Some(to_png);
         HOST.with(|h| *h.borrow_mut() = Rc::downgrade(self));
         self.listen();
@@ -308,7 +309,8 @@ impl Host {
         SECRETS.lock().unwrap().push((secret.clone(), name.to_owned()));
         let mut process = process;
         let Some(mut stdin) = process.stdin.take() else { return };
-        let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id, "api_fd": API_FD }).to_string() + "\n";
+        // Its own settings too (its token: on this pipe only, never through the API).
+        let hello = json!({ "socket": self.socket, "secret": secret, "app": self.app_id, "api_fd": API_FD, "settings": settings }).to_string() + "\n";
         let _ = stdin.write_all(hello.as_bytes()).and_then(|()| stdin.flush());
         crate::log::debug!("bridges", "{name} started (pid {})", process.id());
         set_state(name, json!({ "state": "connecting" }));
@@ -665,6 +667,8 @@ impl Host {
 fn restarts_on(name: &str) -> &'static [&'static str] {
     match name {
         "remote" => &["key", "relay"],
+        // The bot has its settings from its start only (on the API, no secrets go).
+        "telegram" => &["token", "user", "speech", "debug"],
         _ => &[],
     }
 }
@@ -754,13 +758,13 @@ fn asking_json(serial: u64, a: &Asking) -> Value {
 
 /// Base64 as clients send it: line breaks and missing padding are fine (Android's default
 /// breaks lines; GLib, which read it before, took both).
-fn decode(text: &str) -> Option<Vec<u8>> {
+pub fn decode(text: &str) -> Option<Vec<u8>> {
     let clean: String = text.chars().filter(|c| !c.is_ascii_whitespace()).collect();
     BASE64_NOPAD.decode(clean.trim_end_matches('=').as_bytes()).ok()
 }
 
 /// A sent file's name, safe as a file name here (no folders, nothing hidden).
-fn safe_name(name: &str) -> String {
+pub fn safe_name(name: &str) -> String {
     let name: String = name.chars().map(|c| if c == '/' || c == '\\' || c.is_control() { '_' } else { c }).collect();
     let name = name.trim_start_matches('.').trim();
     if name.is_empty() { "file".to_owned() } else { name.to_owned() }
@@ -790,7 +794,7 @@ pub fn watch(name: &str, f: impl Fn(&Value) -> bool + 'static) {
     }
 }
 
-fn set_state(name: &str, state: Value) {
+pub(crate) fn set_state(name: &str, state: Value) {
     if state_of(name) == state {
         return;
     }

@@ -15,6 +15,7 @@
 pub mod blobs;
 pub mod cli;
 pub mod rpc;
+pub mod shared;
 pub mod socket;
 mod store;
 pub mod wire;
@@ -71,6 +72,19 @@ impl fmt::Display for Error {
 /// What a command does, given who sent it and its parameters (an object).
 pub type Handler = Rc<dyn Fn(&Principal, &Value) -> Result<Value, Error>>;
 
+/// Where a command answered later puts its result (called once).
+pub type Reply = Box<dyn FnOnce(Result<Value, Error>)>;
+
+/// What a command answered later does: it calls `Reply` when done (a picture converted, a
+/// recording heard), on the core's thread.
+pub type Later = Rc<dyn Fn(&Principal, &Value, Reply)>;
+
+#[derive(Clone)]
+enum Handling {
+    Now(Handler),
+    Later(Later),
+}
+
 /// A command done: (principal, id), and its result.
 type Done = ((String, String), Result<Value, Error>);
 
@@ -112,7 +126,9 @@ struct HubInner {
     stores: RefCell<HashMap<String, Store>>,
     limits: Limits,
     auto: bool,
-    handlers: RefCell<HashMap<String, Handler>>,
+    handlers: RefCell<HashMap<String, Handling>>,
+    /// Commands answered later, still being done: (principal, id).
+    pending: RefCell<Vec<(String, String)>>,
     /// Resources made when first asked for, by the start of their name (`vault/`).
     providers: RefCell<Vec<(String, Provider)>>,
     /// Commands done: (principal, id) and their result, newest last.
@@ -131,7 +147,7 @@ impl Hub {
     }
 
     fn with(limits: Limits, auto: bool) -> Hub {
-        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), providers: RefCell::default(), done: RefCell::default() }))
+        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), pending: RefCell::default(), providers: RefCell::default(), done: RefCell::default() }))
     }
 
     /// Resources named `prefix…` are made when a client first asks for one: `provide` sets
@@ -168,7 +184,22 @@ impl Hub {
     /// What command `method` does (the part of the core that owns it says, once).
     pub fn handle(&self, method: &str, handler: impl Fn(&Principal, &Value) -> Result<Value, Error> + 'static) {
         debug_assert!(!rpc::RESERVED.contains(&method), "{method} is one of the protocol's own methods");
-        self.0.handlers.borrow_mut().insert(method.to_string(), Rc::new(handler));
+        self.0.handlers.borrow_mut().insert(method.to_string(), Handling::Now(Rc::new(handler)));
+    }
+
+    /// What command `method` does, answered later: `handler` calls the `Reply` when done.
+    pub fn handle_later(&self, method: &str, handler: impl Fn(&Principal, &Value, Reply) + 'static) {
+        debug_assert!(!rpc::RESERVED.contains(&method), "{method} is one of the protocol's own methods");
+        self.0.handlers.borrow_mut().insert(method.to_string(), Handling::Later(Rc::new(handler)));
+    }
+
+    /// Keeps `result` for a replay of command `key`.
+    fn remember(&self, key: (String, String), result: Result<Value, Error>) {
+        let mut done = self.0.done.borrow_mut();
+        done.push_back((key, result));
+        if done.len() > REMEMBERED {
+            done.pop_front();
+        }
     }
 
     /// The commands there are, sorted (what `initialize` tells a client).
@@ -275,28 +306,52 @@ impl Client {
     }
 
     /// Does command `method` (`id`: made by the client, unique to it). Sent again with an id
-    /// already used, it is not done again: the first result comes back.
+    /// already used, it is not done again: the first result comes back. A command answered
+    /// later that isn't done at once fails here: use `command_later`.
     pub fn command(&self, id: &str, method: &str, params: Value) -> Result<Value, Error> {
+        let got: Rc<RefCell<Option<Result<Value, Error>>>> = Rc::default();
+        let into = got.clone();
+        self.command_later(id, method, params, move |result| *into.borrow_mut() = Some(result));
+        got.take().unwrap_or_else(|| Err(Error::Failed("still being done: its answer comes later".into())))
+    }
+
+    /// Does command `method`; `reply` gets the result, now or once it is done.
+    pub fn command_later(&self, id: &str, method: &str, params: Value, reply: impl FnOnce(Result<Value, Error>) + 'static) {
         if id.is_empty() {
-            return Err(Error::Invalid("a command needs an id".into()));
+            return reply(Err(Error::Invalid("a command needs an id".into())));
         }
         let key = (format!("{:?}", self.who), id.to_string());
-        if let Some((_, result)) = self.hub.0.done.borrow().iter().find(|(k, _)| *k == key) {
-            return result.clone();
+        let replayed = self.hub.0.done.borrow().iter().find(|(k, _)| *k == key).map(|(_, r)| r.clone());
+        if let Some(result) = replayed {
+            return reply(result);
+        }
+        if self.hub.0.pending.borrow().contains(&key) {
+            return reply(Err(Error::Conflict("still being done (sent before with this id)".into())));
         }
         let handler = self.hub.0.handlers.borrow().get(method).cloned();
-        let result = match handler {
-            None => Err(Error::NotFound(format!("command {method}"))),
-            Some(_) if !params.is_object() => Err(Error::Invalid("params must be an object".into())),
+        match handler {
+            None => reply(Err(Error::NotFound(format!("command {method}")))),
+            Some(_) if !params.is_object() => reply(Err(Error::Invalid("params must be an object".into()))),
             // Not borrowed while it runs: a command may lead to others.
-            Some(handler) => handler(&self.who, &params),
-        };
-        let mut done = self.hub.0.done.borrow_mut();
-        done.push_back((key, result.clone()));
-        if done.len() > REMEMBERED {
-            done.pop_front();
+            Some(Handling::Now(handler)) => {
+                let result = handler(&self.who, &params);
+                self.hub.remember(key, result.clone());
+                reply(result);
+            }
+            Some(Handling::Later(handler)) => {
+                self.hub.0.pending.borrow_mut().push(key.clone());
+                let hub = self.hub.clone();
+                handler(
+                    &self.who,
+                    &params,
+                    Box::new(move |result| {
+                        hub.0.pending.borrow_mut().retain(|k| *k != key);
+                        hub.remember(key, result.clone());
+                        reply(result);
+                    }),
+                );
+            }
         }
-        result
     }
 }
 
