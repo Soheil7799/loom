@@ -9,6 +9,29 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use crate::settings::{self, Settings};
 use crate::bridges::Link;
 
+/// The settings as the core API's `settings` has them (warp); the secrets, which it never
+/// gives anyone, from the core itself: this window shows you your own.
+fn current() -> Settings {
+    let item = crate::feed::snapshot("settings").into_iter().next().unwrap_or_default();
+    loom_core::settings::from_item(&item, &settings::get())
+}
+
+/// A change made in this window, made through the core API (`set_settings`), as any client
+/// makes one.
+fn update(change: impl FnOnce(&mut Settings)) {
+    let old = current();
+    let mut new = old.clone();
+    change(&mut new);
+    let changes = loom_core::settings::changes(&old, &new);
+    if changes.as_object().is_none_or(|c| c.is_empty()) {
+        return;
+    }
+    let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
+    if let Err(err) = client.command(&loom_core::rt::uuid(), "set_settings", serde_json::json!({ "changes": changes })) {
+        loom_core::log::write("settings", &format!("not changed: {err}"));
+    }
+}
+
 const MODES: &[(&str, &str)] = &[
     ("", "Claude Code's default"),
     ("default", "Ask before acting"),
@@ -44,7 +67,7 @@ fn go_to(list: &gtk::ListBox, name: &str) {
 }
 
 pub fn open(parent: &impl IsA<gtk::Window>) {
-    let s = settings::get();
+    let s = current();
     let window = gtk::Window::builder()
         .title("loom settings")
         .transient_for(parent)
@@ -257,7 +280,7 @@ fn switch(on: bool, set: impl Fn(&mut Settings, bool) + 'static) -> gtk::Switch 
     let switch = gtk::Switch::builder().active(on).valign(gtk::Align::Center).build();
     switch.connect_active_notify(move |s| {
         let on = s.is_active();
-        settings::update(|settings| set(settings, on));
+        update(|settings| set(settings, on));
     });
     switch
 }
@@ -275,7 +298,7 @@ fn dropdown<T: PartialEq + Clone + 'static>(choices: &[(T, &str)], current: T, e
     dropdown.connect_selected_notify(move |d| {
         if let Some((value, _)) = options.get(d.selected() as usize) {
             let value = value.clone();
-            settings::update(|s| set(s, value));
+            update(|s| set(s, value));
         }
     });
     dropdown
@@ -374,7 +397,7 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     at.set_tooltip_text(Some("Percent of the context"));
     at.connect_value_changed(|b| {
         let value = b.value() as u64;
-        settings::update(|s| s.compact_at = value);
+        update(|s| s.compact_at = value);
     });
     let on = switch(s.compact_alert, |s, on| s.compact_alert = on);
     let spin = at.clone();
@@ -442,7 +465,7 @@ fn appearance(s: &Settings) -> gtk::Box {
     font.connect_font_desc_notify(|b| {
         if let Some(desc) = b.font_desc() {
             let name = desc.to_string();
-            settings::update(|s| s.terminal_font = name);
+            update(|s| s.terminal_font = name);
         }
     });
     row(&text, "Terminal font", "The scratchpad and the tray's terminals.", &font);
@@ -503,7 +526,7 @@ fn telegram(s: &Settings) -> gtk::Box {
     accept.connect_clicked(move |_| {
         let id = chosen.get();
         if id != 0 {
-            settings::update(|s| s.telegram_user = id);
+            update(|s| s.telegram_user = id);
         }
     });
     content.append(&card);
@@ -511,7 +534,7 @@ fn telegram(s: &Settings) -> gtk::Box {
     let setup = section("Setup");
     let token = gtk::PasswordEntry::builder().text(&s.telegram_token).show_peek_icon(true).placeholder_text("123456:ABC…").build();
     token.add_css_class("mono");
-    on_done(&token, |text| settings::update(|s| s.telegram_token = text));
+    on_done(&token, |text| update(|s| s.telegram_token = text));
     row_stacked(&setup, "Bot token", "Make a bot with @BotFather in Telegram (/newbot) and paste the token it gives.", &token);
     let user = gtk::Entry::builder()
         .text(if s.telegram_user == 0 { String::new() } else { s.telegram_user.to_string() })
@@ -528,7 +551,7 @@ fn telegram(s: &Settings) -> gtk::Box {
         }
         entry.remove_css_class("error");
         entry.set_tooltip_text(None);
-        settings::update(|s| s.telegram_user = id);
+        update(|s| s.telegram_user = id);
     });
     row_stacked(
         &setup,
@@ -589,7 +612,7 @@ fn telegram(s: &Settings) -> gtk::Box {
         link.set_visible(linking.is_some());
         code.set_label(linking.as_deref().unwrap_or(""));
         // Linked by the code: the account shows below too.
-        let id = settings::get().telegram_user;
+        let id = current().telegram_user;
         if id != 0 && (!user.has_focus() || user.text().is_empty()) && user.text() != id.to_string() {
             user.set_text(&id.to_string());
         }
@@ -684,7 +707,7 @@ fn remote(s: &Settings) -> gtk::Box {
     accept.connect_clicked(move |_| {
         let (id, name) = chosen.borrow().clone();
         if !id.is_empty() {
-            settings::update(|s| {
+            update(|s| {
                 if !s.remote_devices.iter().any(|(d, _)| *d == id) {
                     s.remote_devices.push((id, name));
                 }
@@ -709,7 +732,7 @@ fn remote(s: &Settings) -> gtk::Box {
     let connection = section("Connection");
     let relay = gtk::Entry::builder().text(&s.remote_relay).placeholder_text("empty: n0's public relays").build();
     relay.add_css_class("mono");
-    on_done(&relay, |text| settings::update(|s| s.remote_relay = text));
+    on_done(&relay, |text| update(|s| s.remote_relay = text));
     row_stacked(
         &connection,
         "Relay",
@@ -728,7 +751,7 @@ fn remote(s: &Settings) -> gtk::Box {
             while let Some(child) = list.first_child() {
                 list.remove(&child);
             }
-            for (id, name) in settings::get().remote_devices {
+            for (id, name) in current().remote_devices {
                 let here = online.borrow().contains(&id);
                 let short: String = id.chars().take(10).collect();
                 let line = gtk::Box::new(gtk::Orientation::Horizontal, 16);
@@ -736,7 +759,7 @@ fn remote(s: &Settings) -> gtk::Box {
                 line.append(&texts(&name, &format!("{short}…{}", if here { " · connected now" } else { "" })));
                 let remove = flat_button("Remove");
                 remove.set_valign(gtk::Align::Center);
-                remove.connect_clicked(move |_| settings::update(|s| s.remote_devices.retain(|(d, _)| *d != id)));
+                remove.connect_clicked(move |_| update(|s| s.remote_devices.retain(|(d, _)| *d != id)));
                 line.append(&remove);
                 list.append(&line);
             }
@@ -839,7 +862,7 @@ fn advanced(s: &Settings) -> gtk::Box {
     let other = section("Other editor");
     let editor = gtk::Entry::builder().text(&s.editor).placeholder_text("the system's default app").build();
     editor.add_css_class("mono");
-    on_done(&editor, |text| settings::update(|s| s.editor = text));
+    on_done(&editor, |text| update(|s| s.editor = text));
     row_stacked(&other, "Command", "Ctrl+Shift+O opens the file there (code, gnome-text-editor…); empty uses the app your system opens it with.", &editor);
     content.append(&other);
 
@@ -848,7 +871,7 @@ fn advanced(s: &Settings) -> gtk::Box {
     entry.add_css_class("mono");
     entry.connect_changed(|e| {
         let text = e.text().trim().to_owned();
-        settings::update(|s| s.adapter = text);
+        update(|s| s.adapter = text);
     });
     let example = crate::provider::default_adapter().join(" ");
     row_stacked(
@@ -890,18 +913,18 @@ fn voice(s: &Settings) -> gtk::Box {
     row(&voice, "Use speech to text", "The microphone in the message box, and voice messages sent to the Telegram bot.", &switch(s.stt_enabled, |s, on| s.stt_enabled = on));
     let url = gtk::Entry::builder().text(&s.stt_url).placeholder_text("https://api.groq.com/openai/v1  ·  http://127.0.0.1:8000/v1").build();
     url.add_css_class("mono");
-    on_done(&url, |text| settings::update(|s| s.stt_url = text));
+    on_done(&url, |text| update(|s| s.stt_url = text));
     row_stacked(&voice, "Address", "An OpenAI-style transcription API: Groq, OpenAI, or a Whisper server of your own (speaches, LocalAI, whisper.cpp).", &url);
     let key = gtk::PasswordEntry::builder().text(&s.stt_key).show_peek_icon(true).placeholder_text("Empty for a local server").build();
     key.add_css_class("mono");
-    on_done(&key, |text| settings::update(|s| s.stt_key = text));
+    on_done(&key, |text| update(|s| s.stt_key = text));
     row_stacked(&voice, "API key", "", &key);
     let model = gtk::Entry::builder().text(&s.stt_model).placeholder_text("none").width_chars(22).build();
     model.add_css_class("mono");
-    on_done(&model, |text| settings::update(|s| s.stt_model = text));
+    on_done(&model, |text| update(|s| s.stt_model = text));
     row(&voice, "Model", "As the service names it (Groq: whisper-large-v3-turbo; OpenAI: whisper-1). A local server may need none.", &model);
     let language = gtk::Entry::builder().text(&s.stt_language).placeholder_text("fa, en…").width_chars(8).build();
-    on_done(&language, |text| settings::update(|s| s.stt_language = text));
+    on_done(&language, |text| update(|s| s.stt_language = text));
     row(&voice, "Language", "Empty: found from the speech. Or a code: fa, en, it…", &language);
     let test = flat_button("Test");
     let result = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(40).build();
@@ -993,7 +1016,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let show = {
         let (path, state, topics, window) = (path.clone(), state.clone(), topics.downgrade(), window.downgrade());
         move || {
-            let s = settings::get();
+            let s = current();
             let vault = s.notes_vault.trim().to_owned();
             path.set_css_classes(if vault.is_empty() { &["dim"] } else { &["mono"] });
             if vault.is_empty() {
@@ -1038,7 +1061,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let refresh = show.clone();
     on.connect_active_notify(move |on| {
         let active = on.is_active();
-        settings::update(|s| s.notes_enabled = active);
+        update(|s| s.notes_enabled = active);
         refresh();
     });
     row(&main, "Use Notes", "What you tell your agents is kept in the vault below, sorted by topic.", &on);
@@ -1047,7 +1070,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let (w, refresh) = (window.clone(), show.clone());
     choose.connect_clicked(move |_| {
         let dialog = gtk::FileDialog::builder().title("A folder for the vault").modal(true).build();
-        let current = settings::get().notes_vault;
+        let current = current().notes_vault;
         if !current.is_empty() {
             dialog.set_initial_folder(Some(&gio::File::for_path(crate::state::expand(std::path::Path::new(&current)))));
         }
@@ -1062,7 +1085,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
             let use_it = {
                 let refresh = refresh.clone();
                 move || {
-                    settings::update(|s| s.notes_vault = chosen.clone());
+                    update(|s| s.notes_vault = chosen.clone());
                     refresh();
                 }
             };
@@ -1099,7 +1122,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     calls.set_value(s.notes_daily_calls as f64);
     calls.connect_value_changed(|b| {
         let value = b.value() as u64;
-        settings::update(|s| s.notes_daily_calls = value);
+        update(|s| s.notes_daily_calls = value);
     });
     row(&main, "Calls a day", "At most this many calls to Claude a day for notes (one per piece of a conversation read, plus one per topic it touches). Past it, checks wait for tomorrow.", &calls);
     let model = dropdown(&[("haiku".to_owned(), "Haiku"), ("sonnet".to_owned(), "Sonnet"), ("opus".to_owned(), "Opus")], s.scribe_model.clone(), Clone::clone, |s, v| s.scribe_model = v);

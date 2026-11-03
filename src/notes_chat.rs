@@ -51,6 +51,8 @@ pub struct NotesChat {
     listing: RefCell<Option<std::rc::Weak<crate::provider::Conn>>>,
     /// The chats working or waiting, as last listed (their rows are marked).
     marked: RefCell<Vec<(String, &'static str)>>,
+    /// The core API's `notes_chats`, followed: what the list draws (warp).
+    feed: RefCell<Option<crate::feed::Feed>>,
     /// The notes a turn changed, for the Notes history: (note, before, after), the session and
     /// the chat's title.
     pub on_edits: RefCell<Option<Rc<dyn Fn(Vec<(String, Option<String>, String)>, String, String)>>>,
@@ -115,15 +117,21 @@ impl NotesChat {
             pasts: RefCell::default(),
             listing: RefCell::default(),
             marked: RefCell::default(),
+            feed: RefCell::default(),
             on_edits: RefCell::default(),
             on_attention: RefCell::default(),
             on_shown: RefCell::default(),
             on_agent_event: RefCell::default(),
             on_closed: RefCell::default(),
         });
-        // The core API's `notes_chats` (warp): read again for each new follower.
+        // The core API's `notes_chats` (warp): read again for each new follower; the list
+        // draws from it too.
+        // (The list's own subscription first: it reads nothing anew when the window starts.)
+        let store = loom_core::api::hub().store("notes_chats");
+        let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
+        *chat.feed.borrow_mut() = crate::feed::Feed::new(&client, "notes_chats", || {});
         let weak = Rc::downgrade(&chat);
-        loom_core::api::hub().store("notes_chats").on_subscribe(move |_| {
+        store.on_subscribe(move |_| {
             if let Some(chat) = weak.upgrade() {
                 chat.refresh();
             }
@@ -511,31 +519,40 @@ impl NotesChat {
     }
 
     fn fill(&self) {
+        // Drawn from what the core API has: published, then read back as any client reads it.
         self.publish();
+        loom_core::api::hub().store("notes_chats").flush();
+        let items: Vec<serde_json::Value> = match self.feed.borrow().as_ref() {
+            Some(feed) => {
+                feed.update();
+                feed.items().clone()
+            }
+            None => Vec::new(),
+        };
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
-        let marked = self.marked.borrow();
-        for past in self.pasts.borrow().iter() {
+        for item in &items {
+            let updated = item["updated"].as_str().unwrap_or_default();
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             let words = gtk::Box::new(gtk::Orientation::Vertical, 1);
             words.set_hexpand(true);
-            let title = gtk::Label::builder().label(past.title.as_deref().unwrap_or("A chat")).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
-            let when = gtk::Label::builder().label(history::ago(&past.updated)).xalign(0.0).build();
+            let title = gtk::Label::builder().label(item["title"].as_str().unwrap_or("A chat")).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+            let when = gtk::Label::builder().label(history::ago(updated)).xalign(0.0).build();
             when.add_css_class("dim");
             when.add_css_class("small");
             words.append(&title);
             words.append(&when);
             line.append(&words);
             // Working, or waiting for you.
-            if let Some((_, css)) = marked.iter().find(|(s, _)| *s == past.session_id) {
+            if let Some(css) = item["mark"].as_str() {
                 let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
                 dot.add_css_class("dot");
                 dot.add_css_class(css);
                 line.append(&dot);
             }
             let row = gtk::ListBoxRow::builder().child(&line).build();
-            row.set_widget_name(history::day_of(&past.updated));
+            row.set_widget_name(history::day_of(updated));
             self.list.append(&row);
         }
         self.note.set_label(if self.pasts.borrow().is_empty() { "Your chats with the notes show here." } else { "" });

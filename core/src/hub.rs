@@ -249,12 +249,15 @@ impl Hub {
         })
     }
 
-    /// The core API's `scribe` (warp): `{id: "status", kind: "status", running, doing,
-    /// calls_left}`, then Scribe's questions (`kind: "question"`), the changes waiting for an
+    /// The core API's `scribe` (warp): `{id: "status", list: "status", running, doing,
+    /// calls_left}`, then Scribe's questions (`list: "question"`), the changes waiting for an
     /// OK (`proposal`), what it wrote lately (`change`, newest first) and the changes said no
-    /// to that wait for a why (`teach`), each as kept, with `id` = `<kind>:<its id>`.
-    /// Commands (loom's window and the CLI only: they write to the vault): `scribe_answer {id,
-    /// answer}`, `scribe_decide {id, write}`, `scribe_undo {id}`, `id` being the item's own.
+    /// to that wait for a why (`teach`), each with its own fields as kept, `id` being
+    /// `<list>:<its number>` and `own_id` that number.
+    /// Commands (loom's window and the CLI only: they write to the vault), `id` being the
+    /// item's: `scribe_answer {id, answer}`, `scribe_decide {id, write}`, `scribe_undo {id}`,
+    /// `scribe_drop {id}` (a question left unanswered), `scribe_teach {id, said}` (why not),
+    /// `scribe_keep_rule {id, rule}`, `scribe_forget {id}` (a why-not dropped).
     pub fn serve(self: &Rc<Self>) {
         self.publish();
         let hub = crate::api::hub();
@@ -284,6 +287,32 @@ impl Hub {
             scribe.undo(id);
             Ok(json!({}))
         });
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_drop", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            scribe.drop_question(id);
+            Ok(json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_teach", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            let said = params["said"].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| crate::api::Error::Invalid("why not? (said)".into()))?;
+            scribe.teach(id, said);
+            Ok(json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_keep_rule", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            let rule = params["rule"].as_str().filter(|r| !r.trim().is_empty()).ok_or_else(|| crate::api::Error::Invalid("which rule?".into()))?;
+            scribe.keep_rule(id, rule);
+            Ok(json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_forget", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            scribe.forget_teaching(id);
+            Ok(json!({}))
+        });
     }
 
     fn publish(&self) {
@@ -293,14 +322,15 @@ impl Hub {
             let Ok(store) = self.store.try_borrow() else { return };
             let calls = if store.day == today() { store.calls } else { 0 };
             let calls_left = crate::settings::get().notes_daily_calls.saturating_sub(calls);
-            items.push(json!({ "id": "status", "kind": "status", "running": self.running.get(), "doing": *self.doing.borrow(), "calls_left": calls_left }));
-            for (kind, list) in [("question", &store.questions), ("proposal", &store.pending), ("change", &store.recent), ("teach", &store.teach)] {
-                for (i, entry) in list.iter().enumerate() {
+            items.push(json!({ "id": "status", "list": "status", "running": self.running.get(), "doing": *self.doing.borrow(), "calls_left": calls_left }));
+            for (list, entries) in [("question", &store.questions), ("proposal", &store.pending), ("change", &store.recent), ("teach", &store.teach)] {
+                for (i, entry) in entries.iter().enumerate() {
                     let mut item = entry.clone();
                     let Some(fields) = item.as_object_mut() else { continue };
                     let own = entry["id"].as_u64().map_or_else(|| format!("at{i}"), |id| id.to_string());
-                    fields.insert("id".into(), json!(format!("{kind}:{own}")));
-                    fields.insert("kind".into(), json!(kind));
+                    fields.insert("own_id".into(), entry["id"].clone());
+                    fields.insert("id".into(), json!(format!("{list}:{own}")));
+                    fields.insert("list".into(), json!(list));
                     items.push(item);
                 }
             }
@@ -1099,7 +1129,7 @@ mod tests {
         let ids: Vec<&str> = items.iter().filter_map(|i| i["id"].as_str()).collect();
         assert_eq!(ids, ["status", "question:7", "proposal:9"]);
         assert_eq!(items[0]["calls_left"].as_u64(), Some(crate::settings::get().notes_daily_calls.saturating_sub(2)));
-        assert_eq!((items[1]["kind"].as_str(), items[1]["question"].as_str()), (Some("question"), Some("Which budget?")));
+        assert_eq!((items[1]["list"].as_str(), items[1]["own_id"].as_u64(), items[1]["question"].as_str()), (Some("question"), Some(7), Some("Which budget?")));
         let phone = crate::api::hub().connect(Principal::Bridge("remote".into()));
         assert!(matches!(phone.command("c1", "scribe_decide", json!({ "id": "proposal:9", "write": true })), Err(Error::Forbidden(_))));
         let window = crate::api::hub().connect(Principal::Window);

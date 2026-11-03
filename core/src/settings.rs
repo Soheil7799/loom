@@ -209,6 +209,35 @@ pub fn with_changes(settings: &Settings, changes: &Value) -> Result<Settings, St
     Ok(parse(&all.to_string()))
 }
 
+/// The settings as the API's `settings` item has them, with the secrets (which it never has)
+/// taken from `secrets`.
+pub fn from_item(item: &Value, secrets: &Settings) -> Settings {
+    let named = render(&Settings::default());
+    let defaults: Value = serde_json::from_str(&named).unwrap_or_default();
+    let mut all = serde_json::Map::new();
+    for (key, default) in defaults.as_object().into_iter().flatten() {
+        all.insert(key.clone(), item.get(snake(key)).cloned().unwrap_or_else(|| default.clone()));
+    }
+    let mut settings = parse(&Value::Object(all).to_string());
+    settings.telegram_token = secrets.telegram_token.clone();
+    settings.remote_key = secrets.remote_key.clone();
+    settings.stt_key = secrets.stt_key.clone();
+    settings
+}
+
+/// What differs from `old` in `new`, as `set_settings`' changes (snake_case names; secrets as
+/// they are: they can be written, never read).
+pub fn changes(old: &Settings, new: &Settings) -> Value {
+    let (old, new): (Value, Value) = (serde_json::from_str(&render(old)).unwrap_or_default(), serde_json::from_str(&render(new)).unwrap_or_default());
+    let mut changed = serde_json::Map::new();
+    for (key, value) in new.as_object().into_iter().flatten() {
+        if old.get(key) != Some(value) {
+            changed.insert(snake(key), value.clone());
+        }
+    }
+    Value::Object(changed)
+}
+
 fn kind(value: &Value) -> &'static str {
     match value {
         Value::Bool(_) => "true or false",
@@ -413,6 +442,13 @@ mod tests {
         assert!(with_changes(&s, &json!({ "remote_key": "mine" })).is_err());
         assert!(with_changes(&s, &json!({ "idle_minutes": "soon" })).is_err());
         assert!(with_changes(&s, &json!({ "weather": 1 })).is_err());
+        // Read back from the item (secrets from elsewhere), changed by name: the same settings.
+        assert_eq!(from_item(&item, &s), s);
+        let mut new = s.clone();
+        new.idle_minutes = 9;
+        new.telegram_token = "2:xyz".into();
+        assert_eq!(changes(&s, &new), json!({ "idle_minutes": 9, "telegram_token": "2:xyz" }));
+        assert_eq!(with_changes(&s, &changes(&s, &new)).unwrap(), new);
     }
 
     #[test]

@@ -45,6 +45,17 @@ impl Feed {
     }
 }
 
+/// `resource` as it is now: subscribed, read and let go (a window built once from it).
+pub fn snapshot(resource: &str) -> Vec<Value> {
+    let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
+    let Ok(sub) = client.subscribe(resource, || {}) else { return Vec::new() };
+    let mut mirror = Mirror::default();
+    for message in sub.drain() {
+        mirror.apply(&message);
+    }
+    mirror.items
+}
+
 /// An agent as the sidebar draws it (the `agents` resource's item).
 pub struct SideAgent {
     pub id: u32,

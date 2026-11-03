@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gtk::{glib, pango, prelude::*};
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use loom_core::hub::{HubView, PAGE, RECENT, clock, day_heading, day_of, log_path, when};
 
@@ -21,6 +21,10 @@ pub struct Hub {
     pub panel: gtk::Box,
     /// Scribe at work (in loom-core).
     pub core: Rc<loom_core::hub::Hub>,
+    /// The core API's `scribe`, followed: what the panel's lists draw (warp).
+    feed: RefCell<Option<crate::feed::Feed>>,
+    /// Something new waits in it: drawn once the window is idle.
+    due: Cell<bool>,
     /// Itself (for what the core calls with only a reference).
     me: RefCell<std::rc::Weak<Hub>>,
     /// The conversation the window shows: (session, title).
@@ -123,6 +127,8 @@ impl Hub {
             on_history: RefCell::default(),
             panel,
             core: loom_core::hub::Hub::new(),
+            feed: RefCell::default(),
+            due: Cell::new(false),
             me: RefCell::default(),
             current: RefCell::default(),
             status,
@@ -188,8 +194,23 @@ impl Hub {
         let view: std::rc::Weak<Hub> = Rc::downgrade(&hub);
         *hub.me.borrow_mut() = view.clone();
         hub.core.set_view(view);
-        // Scribe in the core API too (warp).
+        // Scribe in the core API (warp): the panel's lists draw from it.
         hub.core.serve();
+        let weak = Rc::downgrade(&hub);
+        let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
+        *hub.feed.borrow_mut() = crate::feed::Feed::new(&client, "scribe", move || {
+            let Some(hub) = weak.upgrade() else { return };
+            if !hub.due.replace(true) {
+                let weak = Rc::downgrade(&hub);
+                glib::idle_add_local_once(move || {
+                    if let Some(hub) = weak.upgrade()
+                        && hub.due.get()
+                    {
+                        hub.refresh();
+                    }
+                });
+            }
+        });
         hub.refresh();
         // The "since the last check" line ages.
         let weak = Rc::downgrade(&hub);
@@ -248,8 +269,30 @@ impl Hub {
         while let Some(child) = self.body.first_child() {
             self.body.remove(&child);
         }
-        let store = self.core.store.borrow();
-        if store.questions.is_empty() && store.pending.is_empty() && store.recent.is_empty() && store.teach.is_empty() {
+        // What the core's `scribe` has now (each with Scribe's own number as its id, as the
+        // cards act by it).
+        self.due.set(false);
+        loom_core::api::hub().store("scribe").flush();
+        let items: Vec<Value> = match self.feed.borrow().as_ref() {
+            Some(feed) => {
+                feed.update();
+                feed.items().clone()
+            }
+            None => Vec::new(),
+        };
+        let list = |name: &str| -> Vec<Value> {
+            items
+                .iter()
+                .filter(|i| i["list"] == name)
+                .map(|i| {
+                    let mut own = i.clone();
+                    own["id"] = i["own_id"].clone();
+                    own
+                })
+                .collect()
+        };
+        let (questions, pending, recent, teach) = (list("question"), list("proposal"), list("change"), list("teach"));
+        if questions.is_empty() && pending.is_empty() && recent.is_empty() && teach.is_empty() {
             let empty = gtk::Label::builder()
                 .label("Questions Scribe has, changes waiting for your OK, and what it wrote in your notes show up here.")
                 .wrap(true)
@@ -261,34 +304,34 @@ impl Hub {
             self.body.append(&empty);
         }
         let answered = |t: &&Value| t["kind"].as_str() == Some("answer");
-        if store.teach.iter().any(|t| !answered(&t)) {
+        if teach.iter().any(|t| !answered(&t)) {
             self.body.append(&heading("WHY NOT?"));
-            for t in store.teach.iter().filter(|t| !answered(t)) {
+            for t in teach.iter().filter(|t| !answered(t)) {
                 self.body.append(&self.teach_card(t));
             }
         }
-        if store.teach.iter().any(|t| answered(&t)) {
+        if teach.iter().any(|t| answered(&t)) {
             self.body.append(&heading("RULES FROM YOUR ANSWERS"));
-            for t in store.teach.iter().filter(answered) {
+            for t in teach.iter().filter(answered) {
                 self.body.append(&self.teach_card(t));
             }
         }
-        if !store.questions.is_empty() {
+        if !questions.is_empty() {
             self.body.append(&heading("QUESTIONS"));
-            for q in &store.questions {
+            for q in &questions {
                 self.body.append(&self.question_card(q));
             }
         }
-        if !store.pending.is_empty() {
+        if !pending.is_empty() {
             self.body.append(&heading("WAITING FOR YOUR OK"));
-            for p in &store.pending {
+            for p in &pending {
                 self.body.append(&self.change_card(p, true));
             }
         }
-        if !store.recent.is_empty() {
+        if !recent.is_empty() {
             self.body.append(&heading("WRITTEN"));
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 4);
-            for p in store.recent.iter().take(RECENT) {
+            for p in recent.iter().take(RECENT) {
                 rows.append(&self.change_row(p, true));
             }
             self.body.append(&rows);
@@ -307,7 +350,6 @@ impl Hub {
             });
             self.body.append(&all);
         }
-        drop(store);
         if let Some(changed) = self.on_changed.borrow().as_ref() {
             changed();
         }
@@ -344,7 +386,6 @@ impl Hub {
             card.append(&said);
         }
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let weak = Rc::downgrade(self);
         match t["stage"].as_str() {
             Some("drafting") => {
                 let busy = gtk::Label::builder().label("Drafting a rule…").xalign(0.0).build();
@@ -365,28 +406,19 @@ impl Hub {
                 let keep = gtk::Button::with_label("Keep it");
                 keep.add_css_class("suggested-action");
                 let (entry, chosen) = (rule.clone(), card.downgrade());
-                let kept = move |hub: &Rc<Hub>| {
+                let kept = move || {
                     let text = entry.text().trim().to_owned();
                     if !text.is_empty() {
                         if let Some(card) = chosen.upgrade() {
                             card.set_sensitive(false);
                         }
-                        hub.core.keep_rule(id, &text);
+                        scribe("scribe_keep_rule", json!({ "id": format!("teach:{id}"), "rule": text }));
                     }
                 };
                 let kept = Rc::new(kept);
-                let (w, k) = (weak.clone(), kept.clone());
-                rule.connect_activate(move |_| {
-                    if let Some(hub) = w.upgrade() {
-                        k(&hub);
-                    }
-                });
-                let w = weak.clone();
-                keep.connect_clicked(move |_| {
-                    if let Some(hub) = w.upgrade() {
-                        kept(&hub);
-                    }
-                });
+                let k = kept.clone();
+                rule.connect_activate(move |_| k());
+                keep.connect_clicked(move |_| kept());
                 card.append(&rule);
                 line.append(&keep);
             }
@@ -399,14 +431,14 @@ impl Hub {
                 says.add_css_class("small");
                 card.append(&says);
                 let why = gtk::Entry::builder().placeholder_text("Why not? Enter").hexpand(true).build();
-                let (w, chosen) = (weak.clone(), card.downgrade());
+                let chosen = card.downgrade();
                 why.connect_activate(move |entry| {
                     let text = entry.text().trim().to_owned();
-                    if let (Some(hub), false) = (w.upgrade(), text.is_empty()) {
+                    if !text.is_empty() {
                         if let Some(card) = chosen.upgrade() {
                             card.set_sensitive(false);
                         }
-                        hub.core.teach(id, &text);
+                        scribe("scribe_teach", json!({ "id": format!("teach:{id}"), "said": text }));
                     }
                 });
                 line.append(&why);
@@ -414,11 +446,7 @@ impl Hub {
         }
         let skip = gtk::Button::with_label(if t["stage"].as_str() == Some("draft") { "Drop" } else { "Skip" });
         skip.add_css_class("flat");
-        skip.connect_clicked(move |_| {
-            if let Some(hub) = weak.upgrade() {
-                hub.core.forget_teaching(id);
-            }
-        });
+        skip.connect_clicked(move |_| scribe("scribe_forget", json!({ "id": format!("teach:{id}") })));
         line.append(&skip);
         card.append(&line);
         card
@@ -437,15 +465,13 @@ impl Hub {
         for option in q["options"].as_array().into_iter().flatten().filter_map(Value::as_str) {
             let button = gtk::Button::with_label(option);
             button.add_css_class("prefs-button");
-            let (weak, option, chosen) = (Rc::downgrade(self), option.to_owned(), card.downgrade());
+            let (option, chosen) = (option.to_owned(), card.downgrade());
             button.connect_clicked(move |button| {
-                if let Some(hub) = weak.upgrade() {
-                    button.add_css_class("chosen");
-                    if let Some(card) = chosen.upgrade() {
-                        card.set_sensitive(false);
-                    }
-                    hub.core.answer(id, &option);
+                button.add_css_class("chosen");
+                if let Some(card) = chosen.upgrade() {
+                    card.set_sensitive(false);
                 }
+                scribe("scribe_answer", json!({ "id": format!("question:{id}"), "answer": option }));
             });
             if let Some(label) = button.child().and_downcast::<gtk::Label>() {
                 label.set_wrap(true);
@@ -455,24 +481,19 @@ impl Hub {
         }
         // An answer of one's own (another currency, a date…).
         let own = gtk::Entry::builder().placeholder_text("Or your own answer, Enter").hexpand(true).build();
-        let (weak, chosen) = (Rc::downgrade(self), card.downgrade());
+        let chosen = card.downgrade();
         own.connect_activate(move |entry| {
             let text = entry.text().trim().to_owned();
-            if let (Some(hub), false) = (weak.upgrade(), text.is_empty()) {
+            if !text.is_empty() {
                 if let Some(card) = chosen.upgrade() {
                     card.set_sensitive(false);
                 }
-                hub.core.answer(id, &text);
+                scribe("scribe_answer", json!({ "id": format!("question:{id}"), "answer": text }));
             }
         });
         let skip = gtk::Button::with_label("Skip");
         skip.add_css_class("flat");
-        let weak = Rc::downgrade(self);
-        skip.connect_clicked(move |_| {
-            if let Some(hub) = weak.upgrade() {
-                hub.core.drop_question(id);
-            }
-        });
+        skip.connect_clicked(move |_| scribe("scribe_drop", json!({ "id": format!("question:{id}") })));
         card.append(&options);
         let last = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         last.append(&own);
@@ -530,13 +551,11 @@ impl Hub {
                 let undo = gtk::Button::builder().label("Undo").halign(gtk::Align::Start).build();
                 undo.add_css_class("prefs-button");
                 undo.set_tooltip_text(Some("Put the note back as it was before this change"));
-                let (weak, id) = (Rc::downgrade(&hub), v["id"].as_u64().unwrap_or(0));
+                let id = v["id"].as_u64().unwrap_or(0);
                 undo.connect_clicked(move |button| {
-                    if let Some(hub) = weak.upgrade() {
-                        button.set_sensitive(false);
-                        button.set_label("Undoing…");
-                        hub.core.undo(id);
-                    }
+                    button.set_sensitive(false);
+                    button.set_label("Undoing…");
+                    scribe("scribe_undo", json!({ "id": format!("change:{id}") }));
                 });
                 card.append(&undo);
                 // A comment on it: Scribe changes the note as the user says.
@@ -708,24 +727,18 @@ impl Hub {
             approve.add_css_class("suggested-action");
             let reject = gtk::Button::with_label("Don't");
             reject.add_css_class("prefs-button");
-            let weak = Rc::downgrade(self);
             // Pressed: said at once (it may wait for a check that is running).
             let pressed = buttons.clone();
             approve.connect_clicked(move |button| {
-                if let Some(hub) = weak.upgrade() {
-                    pressed.set_sensitive(false);
-                    button.set_label("Writing…");
-                    hub.core.decide(id, true);
-                }
+                pressed.set_sensitive(false);
+                button.set_label("Writing…");
+                scribe("scribe_decide", json!({ "id": format!("proposal:{id}"), "write": true }));
             });
-            let weak = Rc::downgrade(self);
             let pressed = buttons.clone();
             reject.connect_clicked(move |button| {
-                if let Some(hub) = weak.upgrade() {
-                    pressed.set_sensitive(false);
-                    button.set_label("Not writing…");
-                    hub.core.decide(id, false);
-                }
+                pressed.set_sensitive(false);
+                button.set_label("Not writing…");
+                scribe("scribe_decide", json!({ "id": format!("proposal:{id}"), "write": false }));
             });
             buttons.append(&approve);
             buttons.append(&reject);
@@ -846,5 +859,13 @@ impl HubView for Hub {
         {
             hub.fill_page();
         }
+    }
+}
+
+/// Scribe told through the core API, as every client tells it (warp).
+fn scribe(method: &str, params: Value) {
+    let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
+    if let Err(err) = client.command(&loom_core::rt::uuid(), method, params) {
+        loom_core::log::debug!("scribe", "{method} refused: {err}");
     }
 }
