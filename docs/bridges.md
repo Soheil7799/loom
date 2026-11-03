@@ -17,7 +17,7 @@ loom writes one line on the bridge's stdin:
 ```
 
 The secret is made for that run only. It is never written to disk, the environment or the
-arguments. The bridge socket is not the agents' control socket: an agent can't reach it
+arguments. The bridge socket is not the API socket agents use: an agent can't reach it
 without the secret, so it can't answer its own permission requests.
 
 ## Requests
