@@ -19,6 +19,7 @@ use crate::provider::{self, Conn, Incoming};
 use crate::rt::Timer;
 use crate::state::Saved;
 
+mod commands;
 pub mod form;
 pub mod transcript;
 pub mod view;
@@ -374,6 +375,7 @@ impl Agent {
             agent.repos.borrow_mut().push(repo);
         }
         agent.refresh_header();
+        commands::register(&agent);
         agent
     }
 
@@ -1760,6 +1762,27 @@ impl Agent {
     pub fn write_in_form(&self, serial: u64, text: &str) -> bool {
         let pending = self.pending.borrow();
         pending.iter().find(|q| q.serial == serial).and_then(|q| q.form.as_ref()).is_some_and(|f| f.write(text))
+    }
+
+    /// Question entry `entry` (its id in the core API's conversation), if it still waits:
+    /// its serial, its options (id, name, kind) and whether it is a form.
+    pub fn question_entry(&self, entry: &str) -> Option<(u64, Vec<(String, String, String)>, bool)> {
+        let pending = self.pending.borrow();
+        let question = pending.iter().find(|q| q.card.entry().as_deref() == Some(entry))?;
+        Some((question.serial, question.options.clone(), question.form.is_some()))
+    }
+
+    /// Permission question `serial` answered with option `option_id` (if still open).
+    pub fn choose_serial(self: &Rc<Self>, serial: u64, option_id: &str) {
+        let index = self.pending.borrow().iter().position(|p| p.serial == serial);
+        if let Some(index) = index {
+            self.choose(index, option_id);
+        }
+    }
+
+    /// Form `serial` answered with `content` (None: skipped).
+    pub fn answer_form(self: &Rc<Self>, serial: u64, content: Option<Value>) {
+        self.reply_form(serial, content);
     }
 
     /// Skips form `serial` (Claude goes on without an answer).

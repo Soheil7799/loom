@@ -4,21 +4,23 @@
 //! Entries, in order: `user` (`text`, `pictures`), `agent` (`text`, `message`: the agent's id
 //! for the latest message in it) and `thought` (`text`), `tool`
 //! (`id`, `title`, `tool`: its kind, `status`, `parent`: the task it runs under, `output`: the
-//! end of what it printed, `exit`), `notice` (`text`, `class`) and `turn` (`seconds`: how long
-//! the turn took). Entries change as they stream in; each change is a new revision, so a reader
+//! end of what it printed, `exit`), `notice` (`text`, `class`), `question` (`text`, `detail`,
+//! `options`: [{id, name, kind}] for a permission, `form`: the schema for a form; once
+//! settled, `answer`) and `turn` (`seconds`: how long the turn took). Entries change as they stream in; each change is a new revision, so a reader
 //! asks only for what changed after the last revision it saw. Revisions count within an
 //! `epoch` (one per transcript, so per agent and per run of loom): from another, all of it.
 //!
 //! It is also the core API's `conversation/<agent>` resource: each entry published with an
 //! `id` of its own (`e1`, `e2`…; a tool's call id is its `call`), the `turn_id` of the turn it
 //! belongs to (a turn starts with the user's message) and a `status`: `streaming` while text
-//! still comes, a tool's `pending`, `streaming`, `done` or `failed`; else `done`.
+//! still comes, a tool's `pending`, `streaming`, `done` or `failed`, a question's
+//! `awaiting_user` until answered (`done`) or dropped (`cancelled`); else `done`.
 
 use std::any::Any;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 use std::time::Instant;
 
 use serde_json::{Value, json};
@@ -111,6 +113,22 @@ impl Transcript {
         let i = self.entries.len() - 1;
         self.publish(i);
         i
+    }
+
+    /// A question for the user: its entry's id.
+    fn question(&mut self, entry: Value) -> String {
+        let i = self.push(entry);
+        self.meta[i].status = "awaiting_user";
+        self.publish(i);
+        self.meta[i].id.clone()
+    }
+
+    /// Question `id` settled: answered (`answer` "→ …") or dropped (any other words).
+    fn settled(&mut self, id: &str, answer: &str) {
+        let Some(i) = self.meta.iter().position(|m| m.id == id) else { return };
+        self.meta[i].status = if answer.starts_with('→') { "done" } else { "cancelled" };
+        let answer = answer.trim_start_matches('→').trim().to_owned();
+        self.change(i, |entry| entry["answer"] = json!(answer));
     }
 
     /// The turn ended with nothing after it (the agent went to rest): what streamed is whole.
@@ -296,14 +314,14 @@ impl Transcript {
 /// to the view it wraps untouched.
 pub struct Recorded {
     inner: Rc<dyn View>,
-    pub transcript: RefCell<Transcript>,
+    pub transcript: Rc<RefCell<Transcript>>,
     /// Its usage as last told: `{used, size}` of its context, `cost` (as "$0.42").
     pub usage: RefCell<Value>,
 }
 
 impl Drop for Recorded {
     fn drop(&mut self) {
-        if let Some(store) = &self.transcript.get_mut().store {
+        if let Some(store) = &self.transcript.borrow().store {
             crate::api::close(store.name());
         }
     }
@@ -322,7 +340,62 @@ impl Recorded {
 
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { inner, transcript: RefCell::new(transcript), usage: RefCell::new(json!({})) }
+        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})) }
+    }
+}
+
+/// A question's card that also settles its entry in the conversation.
+struct RecordedCard {
+    inner: Rc<dyn Card>,
+    transcript: Weak<RefCell<Transcript>>,
+    entry: String,
+}
+
+impl Card for RecordedCard {
+    fn resolve(&self, answer: &str) {
+        if let Some(transcript) = self.transcript.upgrade() {
+            transcript.borrow_mut().settled(&self.entry, answer);
+        }
+        self.inner.resolve(answer);
+    }
+    fn entry(&self) -> Option<String> {
+        Some(self.entry.clone())
+    }
+}
+
+/// A question form whose card settles its entry.
+struct RecordedForm {
+    inner: Rc<dyn Form>,
+    card: Rc<dyn Card>,
+}
+
+impl Form for RecordedForm {
+    fn card(&self) -> Rc<dyn Card> {
+        self.card.clone()
+    }
+    fn content(&self) -> Result<Value, String> {
+        self.inner.content()
+    }
+    fn checked(&self) -> Option<Value> {
+        self.inner.checked()
+    }
+    fn summary(&self) -> String {
+        self.inner.summary()
+    }
+    fn choices(&self) -> Vec<(String, Vec<String>, bool, Vec<bool>)> {
+        self.inner.choices()
+    }
+    fn pick_in(&self, field: usize, option: usize) -> bool {
+        self.inner.pick_in(field, option)
+    }
+    fn writable(&self) -> bool {
+        self.inner.writable()
+    }
+    fn write(&self, text: &str) -> bool {
+        self.inner.write(text)
+    }
+    fn pick(&self, n: usize) -> bool {
+        self.inner.pick(n)
     }
 }
 
@@ -455,10 +528,16 @@ impl View for Recorded {
         self.inner.turn_undo(undo);
     }
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card> {
-        self.inner.permission(question, detail, markdown, options, choose)
+        let options_json: Vec<Value> = options.iter().map(|(id, name, kind)| json!({ "id": id, "name": name, "kind": kind })).collect();
+        let entry = self.transcript.borrow_mut().question(json!({ "kind": "question", "text": question, "detail": detail, "options": options_json }));
+        let inner = self.inner.permission(question, detail, markdown, options, choose);
+        Rc::new(RecordedCard { inner, transcript: Rc::downgrade(&self.transcript), entry })
     }
     fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<dyn Form> {
-        self.inner.form(message, schema, answer)
+        let entry = self.transcript.borrow_mut().question(json!({ "kind": "question", "text": message, "form": schema }));
+        let inner = self.inner.form(message, schema, answer);
+        let card = Rc::new(RecordedCard { inner: inner.card(), transcript: Rc::downgrade(&self.transcript), entry });
+        Rc::new(RecordedForm { inner, card })
     }
     fn workflow(&self, tool_id: &str, launch: Launch, live: bool, alive: Box<dyn Fn() -> bool>, on_changed: Rc<dyn Fn()>, on_stop: Rc<dyn Fn()>) -> Rc<dyn Workflow> {
         self.inner.workflow(tool_id, launch, live, alive, on_changed, on_stop)
@@ -747,6 +826,23 @@ mod tests {
         let got = sync(&store, &sub, &mut mirror);
         assert_eq!(serde_json::to_value(&got[0]).unwrap()["reason"], "reset");
         assert_eq!(brief(&mirror), ["e7 t3 user done"]);
+    }
+
+    #[test]
+    fn questions_wait_as_entries_until_answered_or_dropped() {
+        let mut t = Transcript::default();
+        let (store, sub, mut mirror) = followed(&mut t);
+        t.push(json!({ "kind": "user", "text": "clean up" }));
+        let asked = t.question(json!({ "kind": "question", "text": "Allow Bash?", "detail": "rm -r build", "options": [{ "id": "a", "name": "Allow", "kind": "allow_once" }] }));
+        let form = t.question(json!({ "kind": "question", "text": "Which colour?", "form": { "type": "object" } }));
+        sync(&store, &sub, &mut mirror);
+        assert_eq!(brief(&mirror), ["e1 t1 user done", "e2 t1 question awaiting_user", "e3 t1 question awaiting_user"]);
+        assert_eq!(mirror.items[1]["options"][0]["kind"], "allow_once");
+        t.settled(&asked, "→ Allow");
+        t.settled(&form, "Cancelled");
+        sync(&store, &sub, &mut mirror);
+        assert_eq!(brief(&mirror)[1..], ["e2 t1 question done", "e3 t1 question cancelled"]);
+        assert_eq!((mirror.items[1]["answer"].as_str(), mirror.items[2]["answer"].as_str()), (Some("Allow"), Some("Cancelled")));
     }
 
     #[test]

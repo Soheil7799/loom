@@ -109,6 +109,15 @@ fn bytes(pngs: Vec<Png>) -> Vec<glib::Bytes> {
     pngs.into_iter().map(glib::Bytes::from_owned).collect()
 }
 
+/// Command `method` for `agent`, from loom's window through the core API (warp).
+fn command(agent: &Agent, method: &str, mut params: Value) {
+    params["agent"] = Value::String(agent.id.to_string());
+    let client = loom_core::api::hub().connect(Principal::Window);
+    if let Err(err) = client.command(&loom_core::rt::uuid(), method, params) {
+        loom_core::log::debug!(format!("agent {}", agent.id), "{method} refused: {err}");
+    }
+}
+
 /// The chat's buttons and keys, to `agent`.
 pub fn wire(agent: &Rc<Agent>, chat: &Rc<Chat>) {
     if let Some(view) = agent.view.as_any().downcast_ref::<ChatView>() {
@@ -128,7 +137,11 @@ pub fn wire(agent: &Rc<Agent>, chat: &Rc<Chat>) {
     }));
     let weak = Rc::downgrade(agent);
     *chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images): (String, Vec<glib::Bytes>)| {
-        if let Some(agent) = weak.upgrade() {
+        let Some(agent) = weak.upgrade() else { return };
+        // Through the core API, as every client sends (pictures can't travel in it yet).
+        if images.is_empty() && !text.trim().is_empty() {
+            command(&agent, "send", serde_json::json!({ "text": text }));
+        } else {
             agent.submit_with(text, images.iter().map(|b| Png::from(&b[..])).collect());
         }
     }));
@@ -165,7 +178,7 @@ pub fn wire(agent: &Rc<Agent>, chat: &Rc<Chat>) {
     let weak = Rc::downgrade(agent);
     *chat.on_cancel.borrow_mut() = Some(Rc::new(move |()| {
         if let Some(agent) = weak.upgrade() {
-            agent.cancel();
+            command(&agent, "stop", serde_json::json!({}));
         }
     }));
     let weak = Rc::downgrade(agent);

@@ -1502,6 +1502,11 @@ impl Chat {
     }
 
     /// Sends `text` as the Compact button does: never through the input (test hook).
+    /// What Esc does while it works: stops the turn (for the test hooks).
+    pub fn press_stop(&self) {
+        self.call(&self.on_cancel, ());
+    }
+
     pub fn submit_direct(&self, text: &str) {
         self.call(&self.on_submit, (text.to_owned(), Vec::new()));
     }

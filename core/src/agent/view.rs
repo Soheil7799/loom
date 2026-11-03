@@ -34,6 +34,10 @@ pub struct Crew {
 /// A question's card: once answered elsewhere (or dropped), it says how.
 pub trait Card {
     fn resolve(&self, answer: &str);
+    /// The question's entry in the core API's conversation, if it has one.
+    fn entry(&self) -> Option<String> {
+        None
+    }
 }
 
 /// A question form as filled in so far (Claude Code's AskUserQuestion, an MCP server's).

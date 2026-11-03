@@ -19,6 +19,7 @@
 //! - `mode`: next permission mode
 //! - `split`: what Ctrl+\ does
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
+//! - `stop`: what Esc does while the focused agent works (through the chat)
 //! - `agent:<n>`: focus the n-th agent (from 1)
 //! - `new:<folder>`: start an agent in a folder
 //! - `name:<folder>=<name>`: names a project (empty: its folder's name)
@@ -353,6 +354,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // What Esc does: stops the turn, or a ! command.
         "cancel" => app.active_agent().ok_or("no agent")?.cancel(),
+        "stop" => app.active_agent().ok_or("no agent")?.chat().press_stop(),
         // A view over the focused conversation (as a subagent's), and back.
         "aside" => app.active_agent().ok_or("no agent")?.chat().show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
         "main" => {

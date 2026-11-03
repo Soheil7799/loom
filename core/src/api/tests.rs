@@ -149,3 +149,33 @@ fn a_mirror_notices_a_gap() {
     assert_eq!(mirror.apply(&at(3)), Applied::Gap);
     assert!(!mirror.synced);
 }
+
+#[test]
+fn a_command_sent_twice_is_done_once_and_the_first_answer_wins() {
+    let hub = Hub::manual(Limits::default());
+    let answered: Rc<RefCell<Option<String>>> = Rc::default();
+    let a = answered.clone();
+    hub.handle("answer", move |who, params| {
+        if matches!(who, Principal::Agent(_)) {
+            return Err(Error::Forbidden("answering".into()));
+        }
+        let mut answered = a.borrow_mut();
+        if answered.is_some() {
+            return Err(Error::Conflict("answered already".into()));
+        }
+        *answered = Some(params["option"].as_str().unwrap_or_default().to_string());
+        Ok(json!({}))
+    });
+    let window = hub.connect(Principal::Window);
+    let phone = hub.connect(Principal::Bridge("phone".into()));
+    let agent = hub.connect(Principal::Agent("a1".into()));
+    assert_eq!(agent.command("c1", "answer", json!({"option": "allow"})), Err(Error::Forbidden("answering".into())));
+    assert_eq!(phone.command("c1", "answer", json!({"option": "deny"})), Ok(json!({})));
+    // The same command again (a retry after a lost reply): not done again, same result.
+    assert_eq!(phone.command("c1", "answer", json!({"option": "deny"})), Ok(json!({})));
+    assert_eq!(window.command("c1", "answer", json!({"option": "allow"})), Err(Error::Conflict("answered already".into())));
+    assert_eq!(answered.borrow().as_deref(), Some("deny"));
+    assert_eq!(window.command("c2", "fly", json!({})), Err(Error::NotFound("command fly".into())));
+    assert_eq!(window.command("c3", "answer", json!([1])), Err(Error::Invalid("params must be an object".into())));
+    assert!(window.command("", "answer", json!({})).is_err());
+}

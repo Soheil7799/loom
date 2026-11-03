@@ -6,13 +6,19 @@
 //!
 //! In-process for now: a [`Client`] is a connection with a [`Principal`], and its messages
 //! are the ones a socket will carry later, unchanged.
+//!
+//! Commands (`send`, `answer`, `stop`…) carry an id the client makes: sent again with the same
+//! id, a command is not done again, the first result comes back. Their effect shows as
+//! changes to resources, for every client; where several may act (a question), the first
+//! wins and the others are told it was answered.
 
 mod store;
 pub mod wire;
 
 use std::cell::{Cell, RefCell};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::fmt;
+use std::rc::Rc;
 
 use serde_json::Value;
 
@@ -35,19 +41,35 @@ pub enum Principal {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
-    /// No such resource (or not one this principal may know of).
+    /// No such resource, command or target (or not one this principal may know of).
     NotFound(String),
+    /// Not for this principal.
     Forbidden(String),
+    /// The command's parameters don't make sense.
+    Invalid(String),
+    /// Too late: someone else acted first (a question already answered).
+    Conflict(String),
 }
 
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotFound(r) => write!(f, "no resource {r}"),
-            Error::Forbidden(r) => write!(f, "not allowed to read {r}"),
+            Error::NotFound(what) => write!(f, "not found: {what}"),
+            Error::Forbidden(what) => write!(f, "not allowed: {what}"),
+            Error::Invalid(why) => write!(f, "invalid: {why}"),
+            Error::Conflict(why) => write!(f, "{why}"),
         }
     }
 }
+
+/// What a command does, given who sent it and its parameters (an object).
+pub type Handler = Rc<dyn Fn(&Principal, &Value) -> Result<Value, Error>>;
+
+/// A command done: (principal, id), and its result.
+type Done = ((String, String), Result<Value, Error>);
+
+/// Command results kept to answer a replay (per principal and id), the oldest dropped first.
+const REMEMBERED: usize = 512;
 
 impl std::error::Error for Error {}
 
@@ -68,6 +90,9 @@ struct HubInner {
     stores: RefCell<HashMap<String, Store>>,
     limits: Limits,
     auto: bool,
+    handlers: RefCell<HashMap<String, Handler>>,
+    /// Commands done: (principal, id) and their result, newest last.
+    done: RefCell<VecDeque<Done>>,
 }
 
 impl Hub {
@@ -82,7 +107,12 @@ impl Hub {
     }
 
     fn with(limits: Limits, auto: bool) -> Hub {
-        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto }))
+        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), done: RefCell::default() }))
+    }
+
+    /// What command `method` does (the part of the core that owns it says, once).
+    pub fn handle(&self, method: &str, handler: impl Fn(&Principal, &Value) -> Result<Value, Error> + 'static) {
+        self.0.handlers.borrow_mut().insert(method.to_string(), Rc::new(handler));
     }
 
     /// The resource `name`, made empty if it isn't there yet.
@@ -162,6 +192,31 @@ impl Client {
         }
         self.next.set(self.next.get() + 1);
         Ok(store.subscribe(format!("s{}", self.next.get()), Box::new(ready)))
+    }
+
+    /// Does command `method` (`id`: made by the client, unique to it). Sent again with an id
+    /// already used, it is not done again: the first result comes back.
+    pub fn command(&self, id: &str, method: &str, params: Value) -> Result<Value, Error> {
+        if id.is_empty() {
+            return Err(Error::Invalid("a command needs an id".into()));
+        }
+        let key = (format!("{:?}", self.who), id.to_string());
+        if let Some((_, result)) = self.hub.0.done.borrow().iter().find(|(k, _)| *k == key) {
+            return result.clone();
+        }
+        let handler = self.hub.0.handlers.borrow().get(method).cloned();
+        let result = match handler {
+            None => Err(Error::NotFound(format!("command {method}"))),
+            Some(_) if !params.is_object() => Err(Error::Invalid("params must be an object".into())),
+            // Not borrowed while it runs: a command may lead to others.
+            Some(handler) => handler(&self.who, &params),
+        };
+        let mut done = self.hub.0.done.borrow_mut();
+        done.push_back((key, result.clone()));
+        if done.len() > REMEMBERED {
+            done.pop_front();
+        }
+        result
     }
 }
 
