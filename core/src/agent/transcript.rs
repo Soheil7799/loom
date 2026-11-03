@@ -317,6 +317,33 @@ pub struct Recorded {
     pub transcript: Rc<RefCell<Transcript>>,
     /// Its usage as last told: `{used, size}` of its context, `cost` (as "$0.42").
     pub usage: RefCell<Value>,
+    /// Its id in the core API's `usage`, once published.
+    agent: RefCell<Option<String>>,
+}
+
+/// The core API's `usage` resource: the account's limits (`{id: "account", kind: "account",
+/// plan, windows: [{kind, utilization, resets_at, seen_at}]}`) and each agent's
+/// (`{id: <agent>, kind: "agent", used, size, cost: {amount, currency}, limit: {kind,
+/// utilization, resets_at}}`: its context's tokens, what the conversation cost, and the
+/// account window Claude Code last reported with it). A share is 0.33 for 33%.
+const USAGE: &str = "usage";
+
+/// The account's limits (as merged here) as `usage`'s account item.
+fn account_item(limits: &Value) -> Value {
+    let windows: Vec<Value> = limits["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| {
+            json!({
+                "kind": w["kind"],
+                "utilization": w["utilization"],
+                "resets_at": w["resetsAt"].as_i64().map_or(Value::Null, crate::api::time),
+                "seen_at": w["seenAt"].as_i64().map_or(Value::Null, crate::api::time),
+            })
+        })
+        .collect();
+    json!({ "id": "account", "kind": "account", "plan": limits["plan"], "windows": windows })
 }
 
 impl Drop for Recorded {
@@ -324,13 +351,35 @@ impl Drop for Recorded {
         if let Some(store) = &self.transcript.borrow().store {
             crate::api::close(store.name());
         }
+        if let Some(id) = self.agent.get_mut().take() {
+            crate::api::remove_item(USAGE, &id);
+        }
     }
 }
 
 impl Recorded {
-    /// Published as resource `name` of the core API (`conversation/<agent>`).
-    pub fn publish(&self, name: &str) {
-        self.transcript.borrow_mut().publish_to(crate::api::hub().store(name));
+    /// Agent `id`'s: published in the core API, as `conversation/<id>` and in `usage`.
+    pub fn publish(&self, id: u32) {
+        self.transcript.borrow_mut().publish_to(crate::api::hub().store(&super::conversation(id)));
+        *self.agent.borrow_mut() = Some(id.to_string());
+        let usage = crate::api::hub().store(USAGE);
+        let account = account_limits();
+        if !account.is_null() && usage.get("account").is_none() {
+            usage.upsert(account_item(&account));
+        }
+    }
+
+    /// A usage report from the agent (ACP's `usage_update`): its item in `usage`.
+    pub fn usage_update(&self, update: &Value) {
+        let Some(id) = self.agent.borrow().clone() else { return };
+        let info = &update["_meta"]["_claude/rateLimit"];
+        let limit = if info["utilization"].is_number() {
+            json!({ "kind": info["rateLimitType"], "utilization": info["utilization"], "resets_at": info["resetsAt"].as_i64().map_or(Value::Null, crate::api::time) })
+        } else {
+            Value::Null
+        };
+        let cost = if update["cost"]["amount"].is_number() { json!({ "amount": update["cost"]["amount"], "currency": update["cost"]["currency"].as_str().unwrap_or("USD") }) } else { Value::Null };
+        crate::api::hub().store(USAGE).upsert(json!({ "id": id, "kind": "agent", "used": update["used"].as_u64().unwrap_or(0), "size": update["size"].as_u64().unwrap_or(0), "cost": cost, "limit": limit }));
     }
 
     /// A message is being sent from loom: pictures that follow belong to it, not to the last.
@@ -340,7 +389,7 @@ impl Recorded {
 
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})) }
+        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default() }
     }
 }
 
@@ -593,6 +642,9 @@ impl View for Recorded {
             *account = merge_limits(account, &limits, crate::state::now() as i64);
             account.clone()
         });
+        if !merged.is_null() {
+            crate::api::hub().store(USAGE).upsert(account_item(&merged));
+        }
         self.inner.set_limits(merged);
     }
     fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {
@@ -843,6 +895,19 @@ mod tests {
         sync(&store, &sub, &mut mirror);
         assert_eq!(brief(&mirror)[1..], ["e2 t1 question done", "e3 t1 question cancelled"]);
         assert_eq!((mirror.items[1]["answer"].as_str(), mirror.items[2]["answer"].as_str()), (Some("Allow"), Some("Cancelled")));
+    }
+
+    #[test]
+    fn usage_items_say_the_limits_in_api_times_and_words() {
+        let account = account_item(&json!({ "plan": "max", "windows": [{ "kind": "seven_day", "utilization": 0.06, "resetsAt": 1_800_000_000, "seenAt": 1_799_990_000 }] }));
+        assert_eq!(account["id"], "account");
+        assert_eq!(account["windows"][0]["resets_at"], "2027-01-15T08:00:00Z");
+        assert_eq!(crate::api::seconds(&account["windows"][0]["resets_at"]), Some(1_800_000_000));
+        let item = json!({ "id": "3", "kind": "agent", "used": 29_000, "size": 1_000_000, "cost": { "amount": 0.123, "currency": "USD" }, "limit": { "kind": "five_hour", "utilization": 0.38, "resets_at": null } });
+        let (cost, limit) = crate::agent::spend_words(&item);
+        assert_eq!(cost.as_deref(), Some("$0.12"));
+        assert_eq!(limit, Some(("5h 38%".to_owned(), "5-hour limit: 38% used".to_owned())));
+        assert_eq!(crate::agent::spend_words(&json!({ "cost": null, "limit": null })), (None, None));
     }
 
     #[test]

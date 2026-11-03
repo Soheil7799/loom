@@ -22,33 +22,28 @@ pub struct ChatView {
     tray: Weak<Tray>,
     /// The agent's conversation in the core, once followed: the chat's text comes from it.
     follow: RefCell<Option<Rc<Follow>>>,
+    /// The core's `usage`, once followed: the chat's usage bar, cost and limits come from it.
+    usage: RefCell<Option<Rc<Follow>>>,
 }
 
 impl ChatView {
     pub fn new(chat: Rc<Chat>, tray: &Rc<Tray>) -> Rc<ChatView> {
-        Rc::new(ChatView { chat, tray: Rc::downgrade(tray), follow: RefCell::default() })
+        Rc::new(ChatView { chat, tray: Rc::downgrade(tray), follow: RefCell::default(), usage: RefCell::default() })
     }
 
     /// The chat's text drawn from the core's resource `conversation` from now on (warp); not
     /// followed (no such resource), it is drawn by the View's calls as before.
-    pub fn follow(&self, conversation: &str) {
-        let client = loom_core::api::hub().connect(Principal::Window);
-        let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(conversation), chat: Rc::downgrade(&self.chat) });
-        let weak = Rc::downgrade(&follow);
-        let Ok(sub) = client.subscribe(conversation, move || {
-            if let Some(follow) = weak.upgrade() {
-                follow.update();
-            }
-        }) else {
-            return;
-        };
-        *follow.sub.borrow_mut() = Some(sub);
-        follow.update();
-        *self.follow.borrow_mut() = Some(follow);
+    pub fn follow(&self, agent: u32) {
+        *self.follow.borrow_mut() = Follow::start(&loom_core::agent::conversation(agent), Of::Conversation, &self.chat);
+        *self.usage.borrow_mut() = Follow::start("usage", Of::Usage(agent.to_string()), &self.chat);
     }
 
     fn following(&self) -> bool {
         self.follow.borrow().is_some()
+    }
+
+    fn following_usage(&self) -> bool {
+        self.usage.borrow().is_some()
     }
 
     /// What the core has for the chat, drawn now: before anything the View draws straight
@@ -61,14 +56,40 @@ impl ChatView {
     }
 }
 
-/// A chat following its agent's conversation in the core.
+/// What a chat follows in the core.
+enum Of {
+    /// Its agent's conversation: the text messages.
+    Conversation,
+    /// `usage`: its agent's item (by id) and the account's.
+    Usage(String),
+}
+
+/// A chat following one of the core's resources.
 struct Follow {
     sub: RefCell<Option<Subscription>>,
     store: Store,
     chat: Weak<Chat>,
+    of: Of,
 }
 
 impl Follow {
+    /// Follows `resource` for `chat` (None: no such resource).
+    fn start(resource: &str, of: Of, chat: &Rc<Chat>) -> Option<Rc<Follow>> {
+        let client = loom_core::api::hub().connect(Principal::Window);
+        let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(resource), chat: Rc::downgrade(chat), of });
+        let weak = Rc::downgrade(&follow);
+        let sub = client
+            .subscribe(resource, move || {
+                if let Some(follow) = weak.upgrade() {
+                    follow.update();
+                }
+            })
+            .ok()?;
+        *follow.sub.borrow_mut() = Some(sub);
+        follow.update();
+        Some(follow)
+    }
+
     fn update(&self) {
         let Some(chat) = self.chat.upgrade() else { return };
         let messages = match self.sub.borrow().as_ref() {
@@ -78,12 +99,12 @@ impl Follow {
         for message in messages {
             match message.body {
                 // A snapshot (the first, or after a resync): what isn't drawn yet is.
-                Body::Page { items } => items.iter().for_each(|item| chat.entry(item)),
+                Body::Page { items } => items.iter().for_each(|item| self.item(&chat, item)),
                 Body::Changes { ops } => {
                     for op in &ops {
                         match op {
-                            Op::Upsert { item } => chat.entry(item),
-                            Op::Append { id, field, text } => chat.entry_append(id, field, text),
+                            Op::Upsert { item } => self.item(&chat, item),
+                            Op::Append { id, field, text } if matches!(self.of, Of::Conversation) => chat.entry_append(id, field, text),
                             _ => {}
                         }
                     }
@@ -92,6 +113,33 @@ impl Follow {
             }
         }
     }
+
+    fn item(&self, chat: &Chat, item: &Value) {
+        match &self.of {
+            Of::Conversation => chat.entry(item),
+            Of::Usage(agent) => match item["kind"].as_str() {
+                Some("account") => chat.set_limits(limits_of(item)),
+                Some("agent") if item["id"].as_str() == Some(agent.as_str()) => {
+                    chat.set_usage(item["used"].as_u64().unwrap_or(0), item["size"].as_u64().unwrap_or(0));
+                    let (cost, limit) = loom_core::agent::spend_words(item);
+                    chat.set_spend(cost, limit);
+                }
+                _ => {}
+            },
+        }
+    }
+}
+
+/// The account item of `usage` as the chat's usage popover reads limits (times as Unix
+/// seconds).
+fn limits_of(item: &Value) -> Value {
+    let windows: Vec<Value> = item["windows"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|w| serde_json::json!({ "kind": w["kind"], "utilization": w["utilization"], "resetsAt": loom_core::api::seconds(&w["resets_at"]), "seenAt": loom_core::api::seconds(&w["seen_at"]) }))
+        .collect();
+    serde_json::json!({ "plan": item["plan"], "windows": windows })
 }
 
 /// The chat an agent is shown in.
@@ -121,7 +169,7 @@ fn command(agent: &Agent, method: &str, mut params: Value) {
 /// The chat's buttons and keys, to `agent`.
 pub fn wire(agent: &Rc<Agent>, chat: &Rc<Chat>) {
     if let Some(view) = agent.view.as_any().downcast_ref::<ChatView>() {
-        view.follow(&loom_core::agent::conversation(agent.id));
+        view.follow(agent.id);
     }
     let weak = Rc::downgrade(agent);
     *chat.on_crew_open.borrow_mut() = Some(Rc::new(move |key: String| {
@@ -410,13 +458,19 @@ impl View for ChatView {
         self.chat.set_workflow_note(note);
     }
     fn set_usage(&self, used: u64, size: u64) {
-        self.chat.set_usage(used, size);
+        if !self.following_usage() {
+            self.chat.set_usage(used, size);
+        }
     }
     fn set_spend(&self, cost: Option<String>, limit: Option<(String, String)>) {
-        self.chat.set_spend(cost, limit);
+        if !self.following_usage() {
+            self.chat.set_spend(cost, limit);
+        }
     }
     fn set_limits(&self, limits: Value) {
-        self.chat.set_limits(limits);
+        if !self.following_usage() {
+            self.chat.set_limits(limits);
+        }
     }
     fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {
         self.chat.set_context_parts(parts, compacts_at);
@@ -455,7 +509,7 @@ impl View for ChatView {
         self.chat.restore_unsent(messages.into_iter().map(|(text, images)| (text, bytes(images))).collect());
     }
     fn sub_view(&self) -> Rc<dyn View> {
-        Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone(), follow: RefCell::default() })
+        Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone(), follow: RefCell::default(), usage: RefCell::default() })
     }
     fn show_aside(&self, view: &Rc<dyn View>, title: &str) {
         if let Some(view) = view.as_any().downcast_ref::<ChatView>() {

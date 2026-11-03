@@ -307,7 +307,7 @@ impl Agent {
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
         let recorded = Rc::new(transcript::Recorded::new(view));
-        recorded.publish(&conversation(id));
+        recorded.publish(id);
         let agent = Rc::new(Agent {
             id,
             project,
@@ -2621,6 +2621,7 @@ impl Agent {
                 }
             }
             "usage_update" => {
+                self.recorded.usage_update(&update);
                 self.view.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
                 self.view.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
                 if !update["_meta"]["loom/limits"].is_null() {
@@ -2738,24 +2739,31 @@ fn cost(cost: &Value) -> Option<String> {
 
 /// ("5h 38%", "5-hour limit: 38% used, resets 14:00") from the account's rate limit.
 fn limit(info: &Value) -> Option<(String, String)> {
-    let used = info["utilization"].as_f64()?;
+    Some(limit_words(info["rateLimitType"].as_str().unwrap_or(""), info["utilization"].as_f64()?, info["resetsAt"].as_i64()))
+}
+
+/// The words for a usage item (the core API's `usage`): its cost ("$0.42") and its limit
+/// ("5h 38%", and the longer "5-hour limit: 38% used, resets 14:00").
+pub fn spend_words(item: &Value) -> (Option<String>, Option<(String, String)>) {
+    let limit = &item["limit"];
+    let words = limit["utilization"].as_f64().map(|used| limit_words(limit["kind"].as_str().unwrap_or(""), used, crate::api::seconds(&limit["resets_at"])));
+    (cost(&item["cost"]), words)
+}
+
+/// A limit window in words: `used` is a share (0.33 = 33%), `resets` Unix seconds.
+fn limit_words(kind: &str, used: f64, resets: Option<i64>) -> (String, String) {
     // Claude Code gives a share (0.33 = 33%), over 1 when a window is overrun.
     let percent = used * 100.0;
-    let (short, long) = match info["rateLimitType"].as_str() {
-        Some("five_hour") => ("5h", "5-hour limit"),
-        Some("seven_day") => ("week", "Weekly limit"),
-        Some("seven_day_opus") => ("week Opus", "Weekly Opus limit"),
-        Some("seven_day_sonnet") => ("week Sonnet", "Weekly Sonnet limit"),
-        Some("overage") | Some("seven_day_overage_included") => ("extra", "Extra usage"),
+    let (short, long) = match kind {
+        "five_hour" => ("5h", "5-hour limit"),
+        "seven_day" => ("week", "Weekly limit"),
+        "seven_day_opus" => ("week Opus", "Weekly Opus limit"),
+        "seven_day_sonnet" => ("week Sonnet", "Weekly Sonnet limit"),
+        "overage" | "seven_day_overage_included" => ("extra", "Extra usage"),
         _ => ("limit", "Limit"),
     };
-    let resets = info["resetsAt"]
-        .as_i64()
-        .map(|t| crate::schedule::local(t, "%a %H:%M"))
-        .filter(|t| !t.is_empty())
-        .map(|t| format!(", resets {t}"))
-        .unwrap_or_default();
-    Some((format!("{short} {percent:.0}%"), format!("{long}: {percent:.0}% used{resets}")))
+    let resets = resets.map(|t| crate::schedule::local(t, "%a %H:%M")).filter(|t| !t.is_empty()).map(|t| format!(", resets {t}")).unwrap_or_default();
+    (format!("{short} {percent:.0}%"), format!("{long}: {percent:.0}% used{resets}"))
 }
 
 /// This program's path, for agents to start `loom mcp`. Replaced on disk while running (a
