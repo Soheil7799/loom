@@ -1,6 +1,6 @@
 [package]
 name = "loom-link"
-version = "0.4.0"
+version = "0.5.0"
 edition = "2024"
 description = "A device's side of loom's remote bridge: pair with loom, then talk to its agents, over iroh"
 license = "MIT"
