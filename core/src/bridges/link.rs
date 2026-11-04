@@ -133,8 +133,12 @@ impl Link {
             self.chats.borrow_mut().remove(&id);
             let _ = self.api.call("unsubscribe", json!({ "sub": sub }));
         }
-        // A conversation just followed: its questions come with its snapshot, next time.
-        let waiting = self.chats.borrow().values().any(|(_, m)| !m.synced);
+        // A conversation just followed (or resyncing): its questions are known once its
+        // snapshot is in; the first picture waits for all of them.
+        let synced = |id: &str| self.chats.borrow().get(id).is_some_and(|(_, m)| m.synced);
+        if self.before.borrow().is_none() && !ids.iter().all(|id| synced(id)) {
+            return;
+        }
         let now: HashMap<String, Value> = items.iter().filter_map(|a| Some((a["id"].as_str()?.to_owned(), a.clone()))).collect();
         let Some(before) = self.before.replace(Some(now.clone())) else {
             // The first time: nothing happened, it just is (the agents and their open
@@ -162,15 +166,18 @@ impl Link {
             let view = self.view_of(item);
             let looking = item["looking"].as_bool().unwrap_or(false);
             let grew = |field: &str, count: &str| item[field][count].as_u64().unwrap_or(0) > old.map_or(0, |o| o[field][count].as_u64().unwrap_or(0));
-            let questions = self.questions_of(id);
-            let open: HashSet<(String, u64)> = questions.iter().map(|(s, _)| (id.to_owned(), *s)).collect();
-            let new = open.iter().any(|q| !self.asked.borrow().contains(q));
-            self.asked.borrow_mut().retain(|(agent, s)| agent != id || open.contains(&(agent.clone(), *s)));
-            self.asked.borrow_mut().extend(open);
+            // Its questions, once its conversation is in (until then, nothing is taken as told).
+            let mut new = false;
+            if synced(id) {
+                let open: HashSet<(String, u64)> = self.questions_of(id).iter().map(|(s, _)| (id.to_owned(), *s)).collect();
+                new = open.iter().any(|q| !self.asked.borrow().contains(q));
+                self.asked.borrow_mut().retain(|(agent, s)| agent != id || open.contains(&(agent.clone(), *s)));
+                self.asked.borrow_mut().extend(open);
+            }
             if self.told.borrow_mut().insert(id.to_owned(), unnumbered(&view)).as_deref() != Some(unnumbered(&view).as_str()) {
                 self.emit(json!({ "event": "agent", "agent": view, "looking": looking }));
             }
-            if new && !waiting {
+            if new {
                 self.emit(json!({ "event": "asked", "agent": view, "looking": looking }));
             }
             if grew("last_turn", "turns") {

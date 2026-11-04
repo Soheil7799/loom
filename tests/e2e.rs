@@ -31,7 +31,12 @@ impl Drop for Instance {
 }
 
 fn start() -> (Instance, Connection) {
-    start_as(APP_ID, |_| {}, &[])
+    // The notes vault is the window's to choose: set before loom starts.
+    let vault = |root: &Path| {
+        let file = json!({ "notesEnabled": true, "notesVault": root.join("vault") });
+        std::fs::write(root.join("config/loom/settings-LoomE2e.json"), file.to_string()).unwrap();
+    };
+    start_as(APP_ID, vault, &[])
 }
 
 /// A loom of app id `app_id`, its folders made and `prepare`d (a settings file, say) before it
@@ -199,7 +204,7 @@ fn settings_round_trip(c: &mut Connection) {
     let wrong = c.command(&new_id(), "set_settings", json!({ "changes": { "telegram_token_set": true } }));
     assert!(wrong.is_err(), "a made-up or read-only setting is refused");
     // What may send things off this machine is the window's to change.
-    for change in [json!({ "telegram_enabled": true }), json!({ "remote_enabled": true }), json!({ "default_mode": "bypassPermissions" })] {
+    for change in [json!({ "telegram_enabled": true }), json!({ "remote_enabled": true }), json!({ "default_mode": "bypassPermissions" }), json!({ "editor": "sh -c true" })] {
         let refused = c.command(&new_id(), "set_settings", json!({ "changes": change }));
         assert!(refused.as_ref().is_err_and(|e| e.message.contains("window")), "{change} from the CLI: {refused:?}");
     }
@@ -272,7 +277,9 @@ fn printed(f: &Followed) -> String {
 
 fn vault_follows_files(c: &mut Connection, vault: &Path) {
     std::fs::write(vault.join("first.md"), "One.\n").unwrap();
-    command(c, "set_settings", json!({ "changes": { "notes_enabled": true, "notes_vault": vault } }));
+    // Not from the CLI: the vault is chosen in the window (here, the settings file).
+    let refused = c.command(&new_id(), "set_settings", json!({ "changes": { "notes_vault": "/" } }));
+    assert!(refused.is_err(), "the CLI picks no vault");
     let mut top = follow(c, "vault/");
     until(c, &mut top, Duration::from_secs(10), "the vault's notes", |f| f.mirror.items.iter().any(|i| i["id"] == "first.md"));
     std::fs::write(vault.join("second.md"), "Two.\n").unwrap();
@@ -565,11 +572,12 @@ fn the_remote_bridge_through_the_api() {
             l["method"] == "bridge" && l["ok"] == true && l["peer"]["principal"] == json!({ "kind": "bridge", "name": "remote" }) && l["params"].as_str().is_some_and(|p| p.contains(&format!("\"method\":\"{method}\"")))
         })
     };
-    while !(asked("hello") && asked("state")) {
-        assert!(Instant::now() < deadline, "the remote bridge never said hello and its state through the API: {}", std::fs::read_to_string(&log).unwrap_or_default());
+    // `hello` only reads (not logged); `state` comes once it was answered.
+    while !asked("state") {
+        assert!(Instant::now() < deadline, "the remote bridge never said its state through the API: {}", std::fs::read_to_string(&log).unwrap_or_default());
         std::thread::sleep(Duration::from_millis(200));
     }
-    eprintln!("e2e remote: hello and state through the API, as the remote bridge");
+    eprintln!("e2e remote: its state through the API, as the remote bridge");
     assert!(!instance.root.join("loom-LoomE2eRemote-bridges.sock").exists());
     let old = loom_core::paths::runtime_dir().join("loom/loom-LoomE2eRemote-bridges.sock");
     assert!(!old.exists(), "no bridge socket any more");

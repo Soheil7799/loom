@@ -191,7 +191,7 @@ impl Session {
         client.command_later(command_id, method, params.clone(), move |result| {
             let Some(session) = me.upgrade() else { return };
             let peer = session.peer.borrow().clone();
-            if !peer.is_null() {
+            if !peer.is_null() && !super::reads_only(&method_name, &logged) {
                 crate::audit::record(&peer, &method_name, &logged, result.as_ref().map(|_| ()).map_err(ToString::to_string));
             }
             session.respond(&id, result.map_err(Failure::from));

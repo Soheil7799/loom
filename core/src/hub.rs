@@ -1098,10 +1098,13 @@ impl Hub {
     }
 }
 
-/// The Scribe and the item's own id a command is for, if `who` may write to the vault.
+/// The Scribe and the item's own id a command is for, if `who` may write to the vault: a
+/// person, in loom's window (the CLI too in a test instance: whatever loom can't place under
+/// an agent passes for the CLI, and Scribe's OKs and rules write the user's notes).
 fn scribe_target(scribe: &Weak<Hub>, who: &crate::api::Principal, params: &Value) -> Result<(Rc<Hub>, u64), crate::api::Error> {
-    if !matches!(who, crate::api::Principal::Window | crate::api::Principal::Cli) {
-        return Err(crate::api::Error::Forbidden("Scribe, but from loom's window or the CLI".into()));
+    let cli = *who == crate::api::Principal::Cli && crate::api::test_instance();
+    if *who != crate::api::Principal::Window && !cli {
+        return Err(crate::api::Error::Forbidden("Scribe, but in loom's window".into()));
     }
     let scribe = scribe.upgrade().ok_or_else(|| crate::api::Error::NotFound("Scribe".into()))?;
     let id = params["id"].as_str().and_then(|id| id.rsplit(':').next()).and_then(|id| id.parse().ok()).ok_or_else(|| crate::api::Error::Invalid("which item (its id)?".into()))?;

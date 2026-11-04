@@ -310,7 +310,7 @@ Who: window, cli. Result: `{}`.
 
 ### `set_settings`
 
-Changes settings. What may send things off this machine or decides what agents may do (bridges, pairing, speech to text, the agent program, the default mode) only from loom's window.
+Changes settings. What may send things off this machine, decides what agents may do or names a program loom runs (bridges, pairing, speech to text, the agent program, the default mode, the editor, the notes vault) only from loom's window.
 
 Who: window, cli. Result: `{}`.
 
@@ -343,7 +343,7 @@ Who: window, cli, bridge. Result: `{data}`.
 
 Answers Scribe's question.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
@@ -354,7 +354,7 @@ Who: window, cli. Result: `{}`.
 
 Decides on a change Scribe proposes.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
@@ -365,7 +365,7 @@ Who: window, cli. Result: `{}`.
 
 Undoes what Scribe wrote.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
@@ -375,7 +375,7 @@ Who: window, cli. Result: `{}`.
 
 Drops an item from Scribe's lists.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
@@ -385,7 +385,7 @@ Who: window, cli. Result: `{}`.
 
 Tells Scribe why it was wrong.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
@@ -396,7 +396,7 @@ Who: window, cli. Result: `{}`.
 
 Keeps a rule Scribe proposes.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
@@ -407,7 +407,7 @@ Who: window, cli. Result: `{}`.
 
 Forgets a rule Scribe learned.
 
-Who: window, cli. Result: `{}`.
+Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|

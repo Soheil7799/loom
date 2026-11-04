@@ -44,8 +44,10 @@ connects, so a process id reused afterwards can't be taken for it.
   run jobs, change most settings). It may **not**:
   - answer agents' questions, permission questions above all (only a person does that, in
     the window or through a paired bridge);
-  - change what may leave this machine or what agents may do: the bridges and pairing,
-    speech to text, the agent program, the default permission mode.
+  - change what may leave this machine, what agents may do or a program loom runs: the
+    bridges and pairing, speech to text, the agent program, the default permission mode,
+    the editor, the notes vault;
+  - decide for Scribe (its OKs, answers and rules write your notes).
 - **Agents:** the agent list and their own conversation; nothing else.
 
 ## What this does not stop

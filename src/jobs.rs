@@ -378,16 +378,21 @@ impl Job {
             self.chip.set_tooltip_text(Some(command));
         }
         let status = item["status"].as_str().unwrap_or("running").to_owned();
-        let before = self.state.replace(status.clone());
-        if before == status {
+        // A run's own: a rerun that started and ended between two looks is still a new one.
+        let state = format!("{status}:{}", item["runs"].as_u64().unwrap_or(0));
+        let before = self.state.replace(state.clone());
+        if before == state {
             return;
         }
         match status.as_str() {
             "exited" => {
                 let code = item["exit_code"].as_i64();
                 self.finish(code);
-                // Told only of an end seen happen (not of one that was over when it came).
-                if !before.is_empty()
+                // Told of an end seen happen, or of one just over when it came (a quick job's);
+                // not of one long over (a tray opened later).
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+                let just = loom_core::api::seconds(&item["ended"]).is_some_and(|at| now - at < 10);
+                if (!before.is_empty() || just)
                     && let Some(told) = self.tray.upgrade().and_then(|tray| tray.on_finish.borrow().clone())
                 {
                     told(&self.title.label(), code);

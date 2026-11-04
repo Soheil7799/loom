@@ -148,6 +148,16 @@ fn a_mirror_notices_a_gap() {
     assert_eq!(mirror.apply(&at(1)), Applied::Changed);
     assert_eq!(mirror.apply(&at(3)), Applied::Gap);
     assert!(!mirror.synced);
+    // Said once: what follows is dropped until the resync asked for, whose snapshot counts.
+    assert_eq!(mirror.apply(&at(4)), Applied::Nothing);
+    assert_eq!(mirror.apply(&at(9)), Applied::Nothing);
+    let resync = Message { sub: "s1".into(), seq: 10, body: Body::Resync { reason: "asked".into() } };
+    assert_eq!(mirror.apply(&resync), Applied::Nothing);
+    let page = Message { sub: "s1".into(), seq: 11, body: Body::Page { items: vec![json!({ "id": "a" })] } };
+    assert_eq!(mirror.apply(&page), Applied::Nothing);
+    assert_eq!(mirror.apply(&at(12)), Applied::Changed);
+    assert!(mirror.synced);
+    assert_eq!(mirror.items, vec![json!({ "id": "a" })]);
 }
 
 #[test]
@@ -178,4 +188,24 @@ fn a_command_sent_twice_is_done_once_and_the_first_answer_wins() {
     assert_eq!(window.command("c2", "fly", json!({})), Err(Error::NotFound("command fly".into())));
     assert_eq!(window.command("c3", "answer", json!([1])), Err(Error::Invalid("params must be an object".into())));
     assert!(window.command("", "answer", json!({})).is_err());
+}
+
+#[test]
+fn a_resource_made_when_asked_goes_once_nobody_follows_it() {
+    let hub = Hub::manual(Limits::default());
+    hub.provide("note/", |store, path| {
+        store.upsert(json!({ "id": "note", "path": path }));
+        true
+    });
+    let window = hub.connect(Principal::Window);
+    let first = window.subscribe("note/a.md", || {}).unwrap();
+    let kept = window.subscribe("note/b.md", || {}).unwrap();
+    drop(first);
+    // Another made: the one nobody follows goes, the followed one stays.
+    let _third = window.subscribe("note/c.md", || {}).unwrap();
+    assert!(hub.existing("note/a.md").is_none());
+    assert!(hub.existing("note/b.md").is_some());
+    // Asked for again: made again.
+    assert!(window.subscribe("note/a.md", || {}).is_ok());
+    drop(kept);
 }

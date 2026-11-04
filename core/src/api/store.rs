@@ -314,10 +314,30 @@ impl Store {
 }
 
 /// Fewer ops saying the same: text appended to an item added or appended to just before
-/// joins it (a streaming reply is then one op per flush, not one per chunk).
+/// joins it (a streaming reply is then one op per flush, not one per chunk); bytes that go
+/// on from the last ones join them (joined raw, encoded once at the end).
 fn coalesce(ops: &[Op]) -> Vec<Op> {
     let mut out: Vec<Op> = Vec::with_capacity(ops.len());
+    // The last op's bytes, raw, while more join them.
+    let mut raw: Option<Vec<u8>> = None;
+    let encode = |out: &mut Vec<Op>, raw: &mut Option<Vec<u8>>| {
+        if let (Some(bytes), Some(Op::Bytes { data, .. })) = (raw.take(), out.last_mut()) {
+            *data = wire::base64(&bytes);
+        }
+    };
     for op in ops {
+        // Bytes that go on from the last ones: one op.
+        if let Op::Bytes { id, offset, data } = op
+            && let Some(Op::Bytes { id: last, offset: at, data: had }) = out.last()
+            && last == id
+        {
+            let joined = raw.get_or_insert_with(|| wire::bytes_of(had));
+            if *at + joined.len() as u64 == *offset {
+                joined.extend(wire::bytes_of(data));
+                continue;
+            }
+        }
+        encode(&mut out, &mut raw);
         // A whole item replaces what was just sent of it (a tool's output, as it grows).
         if let Op::Upsert { item } = op
             && let Some(last) = out.last_mut()
@@ -329,18 +349,6 @@ fn coalesce(ops: &[Op]) -> Vec<Op> {
         {
             *last = op.clone();
             continue;
-        }
-        // Bytes that go on from the last ones: one op.
-        if let Op::Bytes { id, offset, data } = op
-            && let Some(Op::Bytes { id: last, offset: at, data: had }) = out.last_mut()
-            && last == id
-        {
-            let mut joined = wire::bytes_of(had);
-            if *at + joined.len() as u64 == *offset {
-                joined.extend(wire::bytes_of(data));
-                *had = wire::base64(&joined);
-                continue;
-            }
         }
         if let Op::Append { id, field, text } = op {
             match out.last_mut() {
@@ -357,6 +365,7 @@ fn coalesce(ops: &[Op]) -> Vec<Op> {
         }
         out.push(op.clone());
     }
+    encode(&mut out, &mut raw);
     out
 }
 

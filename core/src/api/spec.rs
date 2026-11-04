@@ -32,6 +32,8 @@ pub struct Resource {
 }
 
 const PEOPLE: &[&str] = &["window", "cli"];
+/// Loom's window (the CLI too in a test instance).
+const WINDOW: &[&str] = &["window"];
 const ALL_BUT_AGENTS: &[&str] = &["window", "cli", "bridge"];
 
 pub const COMMANDS: &[Command] = &[
@@ -76,7 +78,7 @@ pub const COMMANDS: &[Command] = &[
         params: &[("changes", "object", true, "settings by their names in `settings`, with new values")],
         result: "{}",
         later: false,
-        about: "Changes settings. What may send things off this machine or decides what agents may do (bridges, pairing, speech to text, the agent program, the default mode) only from loom's window.",
+        about: "Changes settings. What may send things off this machine, decides what agents may do or names a program loom runs (bridges, pairing, speech to text, the agent program, the default mode, the editor, the notes vault) only from loom's window.",
     },
     Command {
         name: "search_notes",
@@ -87,13 +89,13 @@ pub const COMMANDS: &[Command] = &[
         about: "Searches the notes vault.",
     },
     Command { name: "blob", who: ALL_BUT_AGENTS, params: &[("id", "string", true, "a blob id (an entry's `images`)")], result: "{data}", later: false, about: "Bytes kept by id (pictures), base64." },
-    Command { name: "scribe_answer", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item"), ("answer", "string", true, "the answer")], result: "{}", later: false, about: "Answers Scribe's question." },
-    Command { name: "scribe_decide", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item"), ("write", "boolean", true, "OK (true) or not")], result: "{}", later: false, about: "Decides on a change Scribe proposes." },
-    Command { name: "scribe_undo", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Undoes what Scribe wrote." },
-    Command { name: "scribe_drop", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Drops an item from Scribe's lists." },
-    Command { name: "scribe_teach", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item"), ("said", "string", true, "why not")], result: "{}", later: false, about: "Tells Scribe why it was wrong." },
-    Command { name: "scribe_keep_rule", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item"), ("rule", "string", true, "the rule")], result: "{}", later: false, about: "Keeps a rule Scribe proposes." },
-    Command { name: "scribe_forget", who: PEOPLE, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Forgets a rule Scribe learned." },
+    Command { name: "scribe_answer", who: WINDOW, params: &[("id", "string", true, "a `scribe` item"), ("answer", "string", true, "the answer")], result: "{}", later: false, about: "Answers Scribe's question." },
+    Command { name: "scribe_decide", who: WINDOW, params: &[("id", "string", true, "a `scribe` item"), ("write", "boolean", true, "OK (true) or not")], result: "{}", later: false, about: "Decides on a change Scribe proposes." },
+    Command { name: "scribe_undo", who: WINDOW, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Undoes what Scribe wrote." },
+    Command { name: "scribe_drop", who: WINDOW, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Drops an item from Scribe's lists." },
+    Command { name: "scribe_teach", who: WINDOW, params: &[("id", "string", true, "a `scribe` item"), ("said", "string", true, "why not")], result: "{}", later: false, about: "Tells Scribe why it was wrong." },
+    Command { name: "scribe_keep_rule", who: WINDOW, params: &[("id", "string", true, "a `scribe` item"), ("rule", "string", true, "the rule")], result: "{}", later: false, about: "Keeps a rule Scribe proposes." },
+    Command { name: "scribe_forget", who: WINDOW, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Forgets a rule Scribe learned." },
     Command {
         name: "save",
         who: &["bridge"],

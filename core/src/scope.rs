@@ -9,21 +9,32 @@
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Whether `systemd-run --user --scope` works here (tried once).
+static WORKS: OnceLock<bool> = OnceLock::new();
+
+/// Finds out, off the core's thread, whether scopes work here (call once, early: loom's
+/// start). Until it knows, nothing is wrapped (loom goes by the process tree).
+pub fn probe() {
+    std::thread::spawn(|| {
+        WORKS.get_or_init(works);
+    });
+}
+
+/// Whether `systemd-run --user --scope` works here, as far as known (never waits).
 pub fn available() -> bool {
-    static WORKS: OnceLock<bool> = OnceLock::new();
-    *WORKS.get_or_init(|| {
-        if std::env::var_os("LOOM_NO_SCOPES").is_some() {
-            return false;
-        }
-        std::process::Command::new("systemd-run")
-            .args(["--user", "--scope", "--quiet", "--collect", "--", "true"])
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success())
-    })
+    WORKS.get().copied().unwrap_or(false)
+}
+
+fn works() -> bool {
+    if std::env::var_os("LOOM_NO_SCOPES").is_some() {
+        return false;
+    }
+    std::process::Command::new("systemd-run")
+        .args(["--user", "--scope", "--quiet", "--collect", "--", "true"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success())
 }
 
 /// `program` run in a new scope of agent `agent`'s (as it is, when scopes aren't available).
@@ -73,7 +84,7 @@ mod tests {
     /// still that agent's once its parent has gone.
     #[test]
     fn a_process_left_running_stays_in_its_agents_scope() {
-        if !available() {
+        if !*WORKS.get_or_init(works) {
             eprintln!("no user systemd here: skipped");
             return;
         }

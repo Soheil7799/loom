@@ -1,7 +1,7 @@
 //! Jobs in the core API (warp).
 //!
 //! - `jobs`: every project's jobs, oldest first: `{id, project_id, name, command, status:
-//!   "running" | "restarting" | "exited", exit_code}`.
+//!   "running" | "restarting" | "exited", exit_code, runs, ended}`.
 //! - `job/<id>`: what job `id` shows, as raw terminal bytes (research/core-api §3): one item
 //!   `{id: "output", rows, cols, screen, offset}`, `screen` (base64) drawing the job's screen
 //!   as it was when `offset` bytes of this run's output had been printed; then `bytes` ops,
@@ -24,6 +24,8 @@ use crate::jobs::{Event, Id, Jobs};
 thread_local! {
     /// Every project's jobs, to find a job by id.
     static PROJECTS: RefCell<Vec<Jobs>> = RefCell::default();
+    /// Each job's runs started, and when its last one ended (Unix seconds).
+    static RUNS: RefCell<HashMap<Id, (u64, Option<i64>)>> = RefCell::default();
 }
 
 /// Publishes `jobs` in the core API from its `events`, which come out again (for a UI that
@@ -54,8 +56,16 @@ fn publish(jobs: &Jobs, event: &Event, told: &mut HashMap<Id, u64>) {
             output_store(jobs, *id);
             item(jobs, *id, false);
         }
-        Event::Restarting(id) | Event::Exited(id, _) => item(jobs, *id, matches!(event, Event::Restarting(_))),
+        Event::Restarting(id) => item(jobs, *id, true),
+        Event::Exited(id, _) => {
+            RUNS.with_borrow_mut(|runs| runs.entry(*id).or_default().1 = Some(jiff::Timestamp::now().as_second()));
+            item(jobs, *id, false);
+        }
         Event::Started(id) => {
+            RUNS.with_borrow_mut(|runs| {
+                let run = runs.entry(*id).or_default();
+                *run = (run.0 + 1, None);
+            });
             item(jobs, *id, false);
             told.insert(*id, 0);
             // A new run: followers start over from its screen.
@@ -96,6 +106,7 @@ fn item(jobs: &Jobs, id: Id, restarting: bool) {
     } else {
         "exited"
     };
+    let (runs, ended) = RUNS.with_borrow(|runs| runs.get(&id).copied().unwrap_or_default());
     crate::api::hub().store("jobs").upsert(json!({
         "id": id.to_string(),
         "project_id": jobs.cwd().to_string_lossy(),
@@ -103,6 +114,10 @@ fn item(jobs: &Jobs, id: Id, restarting: bool) {
         "command": info.command,
         "status": status,
         "exit_code": info.exit_code,
+        // Runs started (a new one: a new number, even when its start and end come together),
+        // and when the last one ended.
+        "runs": runs,
+        "ended": ended.map(crate::api::time),
     }));
 }
 

@@ -162,7 +162,8 @@ pub fn init(app_id: &str) {
 /// Settings written but never read through the core API (only whether they are set).
 const SECRETS: &[&str] = &["telegramToken", "remoteKey", "sttKey"];
 /// Settings only loom's window changes: the bridges and pairing (what may leave this
-/// machine), speech to text (audio sent to a service), and what agents run as and may do.
+/// machine), speech to text (audio sent to a service), what agents run as and may do, the
+/// editor loom runs, and the notes vault (what Scribe reads and sends).
 const WINDOW_ONLY: &[&str] = &[
     "telegramEnabled",
     "telegramToken",
@@ -175,6 +176,10 @@ const WINDOW_ONLY: &[&str] = &[
     "sttKey",
     "adapter",
     "defaultMode",
+    // A program loom runs; what Scribe reads and sends.
+    "editor",
+    "notesEnabled",
+    "notesVault",
 ];
 /// Settings the API never changes (made by loom itself).
 const MADE: &[&str] = &["remoteKey"];

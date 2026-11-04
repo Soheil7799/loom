@@ -47,13 +47,18 @@ impl Feed {
             if messages.is_empty() {
                 return;
             }
-            let mut mirror = self.mirror.borrow_mut();
-            for m in &messages {
-                if mirror.apply(m) == Applied::Gap {
-                    // What follows the gap is dropped: the snapshot asked for brings it.
-                    self.sub.resync();
-                    break;
+            // What follows a gap is dropped by the copy until the snapshot asked for comes.
+            let mut gap = false;
+            {
+                let mut mirror = self.mirror.borrow_mut();
+                // Every one applied (not `any`: the copy takes each message's number).
+                for m in &messages {
+                    gap |= mirror.apply(m) == Applied::Gap;
                 }
+            }
+            // Asked with the copy let go: asking may call back into `update`.
+            if gap {
+                self.sub.resync();
             }
         }
     }

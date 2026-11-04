@@ -22,7 +22,11 @@ pub fn init(app_id: &str) {
     FILE.with(|f| *f.borrow_mut() = Some(crate::state::dir().join(name)));
 }
 
+/// Past this, the log moves to `<name>.1` (one kept) and starts again.
+const ROTATE: u64 = 10 << 20;
+
 /// Writes one command: `peer` (who and which process), `method`, its `params`, its outcome.
+/// Written by a thread of its own (never on the core's), in order.
 pub fn record(peer: &Value, method: &str, params: &Value, outcome: Result<(), String>) {
     let Some(path) = FILE.with(|f| f.borrow().clone()) else { return };
     let mut params = params.to_string();
@@ -42,12 +46,36 @@ pub fn record(peer: &Value, method: &str, params: &Value, outcome: Result<(), St
         "ok": outcome.is_ok(),
         "error": outcome.err(),
     });
+    let _ = writer().send((path, line.to_string()));
+}
+
+fn writer() -> std::sync::mpsc::Sender<(PathBuf, String)> {
+    static WRITER: std::sync::OnceLock<std::sync::Mutex<std::sync::mpsc::Sender<(PathBuf, String)>>> = std::sync::OnceLock::new();
+    WRITER
+        .get_or_init(|| {
+            let (tx, rx) = std::sync::mpsc::channel::<(PathBuf, String)>();
+            std::thread::spawn(move || {
+                for (path, line) in rx {
+                    write(&path, &line);
+                }
+            });
+            std::sync::Mutex::new(tx)
+        })
+        .lock()
+        .unwrap()
+        .clone()
+}
+
+fn write(path: &std::path::Path, line: &str) {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
-    let file = std::fs::OpenOptions::new().create(true).append(true).open(&path);
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > ROTATE) {
+        let _ = std::fs::rename(path, path.with_extension("jsonl.1"));
+    }
+    let file = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path);
     if let Ok(mut file) = file {
-        use std::os::unix::fs::PermissionsExt;
         let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
         let _ = writeln!(file, "{line}");
     }

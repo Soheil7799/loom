@@ -107,6 +107,20 @@ pub fn test_instance() -> bool {
     *TEST.get_or_init(|| std::env::var("LOOM_TEST_INSTANCE").as_deref() == Ok("1"))
 }
 
+/// Whether command `method` only reads (asked again and again, as `loom_wait` does): such
+/// a command is neither kept for a replay nor written to the audit log.
+pub fn reads_only(method: &str, params: &Value) -> bool {
+    match method {
+        "blob" | "search_notes" => true,
+        "tool" => matches!(params["name"].as_str(), Some("job_output" | "list_jobs" | "list_agents" | "notes_info" | "edit_state")),
+        "bridge" => matches!(
+            params["method"].as_str(),
+            Some("hello" | "agents" | "history" | "files" | "file" | "usage" | "last_reply" | "notes" | "notes_list" | "note_read" | "notes_search")
+        ),
+        _ => false,
+    }
+}
+
 /// May `who` read `resource`?
 fn may_read(who: &Principal, resource: &str) -> bool {
     // The notes vault: the window, the CLI and the paired devices (not the Telegram bot).
@@ -136,6 +150,8 @@ struct HubInner {
     pending: RefCell<Vec<(String, String)>>,
     /// Resources made when first asked for, by the start of their name (`vault/`).
     providers: RefCell<Vec<(String, Provider)>>,
+    /// The names of those made so far (dropped once unfollowed, when another is made).
+    provided: RefCell<Vec<String>>,
     /// Commands done: (principal, id) and their result, newest last.
     done: RefCell<VecDeque<Done>>,
 }
@@ -152,7 +168,7 @@ impl Hub {
     }
 
     fn with(limits: Limits, auto: bool) -> Hub {
-        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), pending: RefCell::default(), providers: RefCell::default(), done: RefCell::default() }))
+        Hub(std::rc::Rc::new(HubInner { stores: RefCell::default(), limits, auto, handlers: RefCell::default(), pending: RefCell::default(), providers: RefCell::default(), provided: RefCell::default(), done: RefCell::default() }))
     }
 
     /// Resources named `prefix…` are made when a client first asks for one: `provide` sets
@@ -182,7 +198,13 @@ impl Hub {
         if !provide(&store, &name[at..]) {
             return None;
         }
-        self.0.stores.borrow_mut().insert(name.to_string(), store.clone());
+        // Made when asked for, they go once nobody follows them (a note read once, a
+        // folder looked into): they are made again when asked for again.
+        let mut provided = self.0.provided.borrow_mut();
+        let mut stores = self.0.stores.borrow_mut();
+        provided.retain(|made| stores.get(made).is_some_and(Store::followed) || stores.remove(made).is_none());
+        provided.push(name.to_string());
+        stores.insert(name.to_string(), store.clone());
         Some(store)
     }
 
@@ -340,18 +362,22 @@ impl Client {
             // Not borrowed while it runs: a command may lead to others.
             Some(Handling::Now(handler)) => {
                 let result = handler(&self.who, &params);
-                self.hub.remember(key, result.clone());
+                if !reads_only(method, &params) {
+                    self.hub.remember(key, result.clone());
+                }
                 reply(result);
             }
             Some(Handling::Later(handler)) => {
                 self.hub.0.pending.borrow_mut().push(key.clone());
-                let hub = self.hub.clone();
+                let (hub, kept) = (self.hub.clone(), !reads_only(method, &params));
                 handler(
                     &self.who,
                     &params,
                     Box::new(move |result| {
                         hub.0.pending.borrow_mut().retain(|k| *k != key);
-                        hub.remember(key, result.clone());
+                        if kept {
+                            hub.remember(key, result.clone());
+                        }
                         reply(result);
                     }),
                 );
@@ -372,6 +398,8 @@ pub struct Mirror {
     pub seq: u64,
     /// Pages of a snapshot under way (it replaces `items` once `synced`).
     incoming: Option<Vec<Value>>,
+    /// A gap was seen: what comes until the asked-for resync is dropped (its numbers taken).
+    stale: bool,
 }
 
 /// What applying a message did.
@@ -386,10 +414,21 @@ pub enum Applied {
 }
 
 impl Mirror {
+    /// Applies `m`. A gap is said once (`Gap`: ask for a resync, once no copy is borrowed);
+    /// what follows it is dropped until the resync comes.
     pub fn apply(&mut self, m: &Message) -> Applied {
+        if self.stale {
+            self.seq = m.seq;
+            if let Body::Resync { .. } = m.body {
+                self.stale = false;
+                self.incoming = Some(Vec::new());
+            }
+            return Applied::Nothing;
+        }
         if self.seq != 0 && m.seq != self.seq + 1 {
             self.seq = m.seq;
             self.synced = false;
+            self.stale = true;
             return Applied::Gap;
         }
         self.seq = m.seq;

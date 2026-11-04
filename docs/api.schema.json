@@ -1022,7 +1022,7 @@
       "result": "{}"
     },
     "set_settings": {
-      "description": "Changes settings. What may send things off this machine or decides what agents may do (bridges, pairing, speech to text, the agent program, the default mode) only from loom's window.",
+      "description": "Changes settings. What may send things off this machine, decides what agents may do or names a program loom runs (bridges, pairing, speech to text, the agent program, the default mode, the editor, the notes vault) only from loom's window.",
       "who": [
         "window",
         "cli"
@@ -1093,8 +1093,7 @@
     "scribe_answer": {
       "description": "Answers Scribe's question.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
@@ -1119,8 +1118,7 @@
     "scribe_decide": {
       "description": "Decides on a change Scribe proposes.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
@@ -1145,8 +1143,7 @@
     "scribe_undo": {
       "description": "Undoes what Scribe wrote.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
@@ -1166,8 +1163,7 @@
     "scribe_drop": {
       "description": "Drops an item from Scribe's lists.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
@@ -1187,8 +1183,7 @@
     "scribe_teach": {
       "description": "Tells Scribe why it was wrong.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
@@ -1213,8 +1208,7 @@
     "scribe_keep_rule": {
       "description": "Keeps a rule Scribe proposes.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
@@ -1239,8 +1233,7 @@
     "scribe_forget": {
       "description": "Forgets a rule Scribe learned.",
       "who": [
-        "window",
-        "cli"
+        "window"
       ],
       "later": false,
       "params": {
