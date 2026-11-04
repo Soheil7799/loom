@@ -3702,6 +3702,13 @@ impl Host for App {
         let chat = agent.chat();
         crate::chat_view::wire(agent, &chat);
         self.chat_stack.add_named(&chat.root, Some(&format!("agent-{}", agent.id)));
+        // Added by the API too (reopen, resume): in the sidebar, and saved, once it is placed.
+        if let Some(app) = self.me() {
+            glib::idle_add_local_once(move || {
+                app.refresh_sidebar();
+                app.save();
+            });
+        }
     }
 
     fn agent_event(&self, agent: &Rc<Agent>, event: Event) {

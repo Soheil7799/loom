@@ -461,20 +461,24 @@ impl Workspace {
             }
             let ws = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
             let session = params["session"].as_str().ok_or_else(|| Error::Invalid("which conversation (its session)?".into()))?;
+            // Open already (resumed meanwhile): that one, never a second agent on it.
+            if let Some(open) = ws.agent_with_session(session) {
+                ws.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session));
+                ws.publish_closed();
+                return Ok(json!({ "agent": open.id.to_string() }));
+            }
             let saved = ws.closed.borrow().iter().find(|c| c.session_id.as_deref() == Some(session)).cloned();
             let saved = saved.ok_or_else(|| Error::NotFound(format!("closed conversation {session}")))?;
             ws.closed.borrow_mut().retain(|c| *c != saved);
             let agent = ws.add_agent(saved);
-            ws.publish_closed();
-            ws.publish_agents();
             Ok(json!({ "agent": agent.id.to_string() }))
         });
         hub.handle_later("past_conversations", move |who, params, reply| {
             if !people(who) {
                 return reply(Err(Error::Forbidden("past conversations, but for people".into())));
             }
-            let folder = params["folder"].as_str().map(std::path::PathBuf::from);
-            let _ = crate::history::list(move |listed| {
+            let folder = params["folder"].as_str().map(|f| state::expand(Path::new(f)));
+            past(move |listed| {
                 reply(match listed {
                     Ok(all) => Ok(json!({
                         "conversations": all
@@ -496,15 +500,18 @@ impl Workspace {
             let ws = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
             let session = params["session"].as_str().ok_or_else(|| Error::Invalid("which conversation (its session)?".into()))?;
             let folder = params["folder"].as_str().map(|f| state::expand(Path::new(f))).ok_or_else(|| Error::Invalid("resume needs its folder".into()))?;
-            if !folder.is_dir() {
-                return Err(Error::Invalid(format!("{} is not a folder", folder.display())));
+            if !folder.is_absolute() {
+                return Err(Error::Invalid(format!("{} is not a full path", folder.display())));
             }
+            // Not closed any more (were it among them), and never a second agent on it.
+            ws.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session));
             if let Some(open) = ws.agent_with_session(session) {
+                ws.publish_closed();
                 return Ok(json!({ "agent": open.id.to_string() }));
             }
+            // A folder gone since: its project, else home (as the window resumes it).
             let saved = Saved { cwd: start_folder(&folder), session_id: Some(session.to_owned()), title: params["title"].as_str().unwrap_or("").to_owned(), named: false, draft: String::new(), dirs: Vec::new(), used: state::now(), awake: false };
             let agent = ws.add_agent(saved);
-            ws.publish_agents();
             Ok(json!({ "agent": agent.id.to_string() }))
         });
         let weak = Rc::downgrade(self);
@@ -517,8 +524,8 @@ impl Workspace {
             let agent = ws.agent(id).ok_or_else(|| Error::NotFound(format!("agent {id}")))?;
             let prompt = params["prompt"].as_str().filter(|p| !p.trim().is_empty()).ok_or_else(|| Error::Invalid("schedule_new needs a prompt".into()))?;
             let when = params["when"].as_str().ok_or_else(|| Error::Invalid("when? (09:00, weekdays 9:30, every 2h, in 20m…)".into()))?;
+            // Published by the host (`schedules_changed`).
             ws.schedule(&agent, prompt.to_owned(), when.to_owned(), params["same"].as_bool().unwrap_or(true)).map_err(Error::Invalid)?;
-            ws.publish_schedules();
             Ok(json!({}))
         });
     }
@@ -601,6 +608,41 @@ impl Workspace {
 }
 
 /// Where a folder's conversation can still start: the folder, its project, else home.
+/// Claude Code's past conversations, listed once for all who ask meanwhile, and kept a
+/// moment (each listing starts an adapter process).
+fn past(done: impl FnOnce(Result<Vec<crate::history::Past>, String>) + 'static) {
+    type Waiting = Vec<Box<dyn FnOnce(Result<Vec<crate::history::Past>, String>)>>;
+    thread_local! {
+        static KEPT: RefCell<Option<(std::time::Instant, Vec<crate::history::Past>)>> = const { RefCell::new(None) };
+        static WAITING: RefCell<Option<Waiting>> = const { RefCell::new(None) };
+    }
+    let fresh = KEPT.with_borrow(|k| k.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(30)).map(|(_, all)| all.clone()));
+    if let Some(all) = fresh {
+        return done(Ok(all));
+    }
+    let listing = WAITING.with_borrow_mut(|w| match w {
+        Some(waiting) => {
+            waiting.push(Box::new(done));
+            true
+        }
+        None => {
+            *w = Some(vec![Box::new(done)]);
+            false
+        }
+    });
+    if listing {
+        return;
+    }
+    let _ = crate::history::list(|listed| {
+        if let Ok(all) = &listed {
+            KEPT.with_borrow_mut(|k| *k = Some((std::time::Instant::now(), all.clone())));
+        }
+        for done in WAITING.with_borrow_mut(Option::take).unwrap_or_default() {
+            done(listed.clone());
+        }
+    });
+}
+
 pub fn start_folder(cwd: &Path) -> PathBuf {
     [cwd.to_owned(), crate::repos::project_of(cwd), crate::paths::home()].into_iter().find(|d| d.is_dir()).unwrap_or_else(|| cwd.to_owned())
 }

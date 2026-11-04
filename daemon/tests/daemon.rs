@@ -345,6 +345,9 @@ fn agents_under_loomd() {
     assert!(past["conversations"].as_array().unwrap().iter().any(|p| p["session"] == session.as_str()), "{past}");
     let resumed = command(&mut c, "resume", json!({ "session": session, "folder": project }))["agent"].as_str().unwrap().to_owned();
     assert_eq!(resumed, reopened, "the one open already");
+    assert!(!c.get("closed").unwrap().iter().any(|c| c["id"] == session.as_str()), "open: not among the closed");
+    let again = command(&mut c, "reopen", json!({ "session": session }));
+    assert!(again.is_null() || again["agent"] == reopened.as_str(), "reopened twice: still one agent ({again})");
 
     // A schedule fires (checked every 20 s).
     command(&mut c, "schedule_new", json!({ "agent": reopened, "prompt": "Reply with exactly: scheduled ok", "when": "in 1m" }));

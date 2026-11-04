@@ -707,12 +707,7 @@ fn remote(s: &Settings) -> gtk::Box {
     accept.connect_clicked(move |_| {
         let (id, name) = chosen.borrow().clone();
         if !id.is_empty() {
-            update(|s| {
-                if !s.remote_devices.iter().any(|(d, _)| *d == id) {
-                    s.remote_devices.push((id, name));
-                }
-            });
-            crate::bridges::pair(false);
+            crate::bridges::accept_device(&id, &name);
         }
     });
     refuse.connect_clicked(|_| crate::bridges::pair(false));

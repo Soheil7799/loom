@@ -89,20 +89,16 @@ pub fn serve() {
         if *who != Principal::Window {
             return Err(Error::Forbidden("pairing, but from loom's window".into()));
         }
+        // The one the user saw: a device that took its place meanwhile isn't let in.
+        let asked = params["id"].as_str().ok_or_else(|| Error::Invalid("which device (the candidate's id)?".into()))?;
         let candidate = super::host::state_of("remote")["candidate"].clone();
         let (Some(id), Some(name)) = (candidate["id"].as_str(), candidate["name"].as_str()) else {
             return Err(Error::Conflict("no device is asking to pair".into()));
         };
-        if params["id"].as_str().is_some_and(|asked| asked != id) {
+        if asked != id {
             return Err(Error::Conflict("another device is asking to pair now".into()));
         }
-        let (id, name) = (id.to_owned(), name.to_owned());
-        crate::settings::update(|s| {
-            if !s.remote_devices.iter().any(|(d, _)| *d == id) {
-                s.remote_devices.push((id.clone(), name.clone()));
-            }
-        });
-        super::host::pair(false);
+        super::host::accept_device(id, name);
         Ok(json!({}))
     });
     hub.handle("bridge_state", |who, params| {

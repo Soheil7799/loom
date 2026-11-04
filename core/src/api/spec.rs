@@ -97,7 +97,7 @@ pub const COMMANDS: &[Command] = &[
         about: "Schedules a prompt for an agent.",
     },
     Command { name: "pairing", who: WINDOW, params: &[("open", "boolean", false, "open (true) or close pairing")], result: "{}", later: false, about: "The remote bridge's pairing: its ticket is in `bridges`." },
-    Command { name: "pair_confirm", who: WINDOW, params: &[("id", "string", false, "the device expected (`bridges`' candidate)")], result: "{}", later: false, about: "Lets in the device asking to pair, and closes pairing." },
+    Command { name: "pair_confirm", who: WINDOW, params: &[("id", "string", true, "the device shown to the user (`bridges`' candidate)")], result: "{}", later: false, about: "Lets in the device asking to pair, and closes pairing." },
     Command {
         name: "schedule_act",
         who: PEOPLE,

@@ -138,6 +138,16 @@ pub fn remote_program() -> Option<PathBuf> {
     program.is_file().then_some(program)
 }
 
+/// Device `id` (`name`) let in, and pairing closed (Settings' Accept, the API's pair_confirm).
+pub fn accept_device(id: &str, name: &str) {
+    crate::settings::update(|s| {
+        if !s.remote_devices.iter().any(|(d, _)| d == id) {
+            s.remote_devices.push((id.to_owned(), name.to_owned()));
+        }
+    });
+    pair(false);
+}
+
 /// Opens pairing (a new code for Settings to show) or closes it.
 pub fn pair(open: bool) {
     let Some(host) = HOST.with(|h| h.borrow().upgrade()) else { return };

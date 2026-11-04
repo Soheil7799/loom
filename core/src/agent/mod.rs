@@ -218,6 +218,9 @@ pub struct Agent {
     ready: Cell<bool>,
     turn: Cell<bool>,
     replaying: Cell<bool>,
+    /// Counts starts and read-backs: a read-back whose number moved on (it started, or was
+    /// read back again, meanwhile) drops what it read.
+    readings: Cell<u64>,
     /// What Claude has said this turn (for the journal, written when the turn ends).
     reply: RefCell<String>,
     /// Messages waiting to be sent: text and attached images (PNG).
@@ -333,6 +336,7 @@ impl Agent {
             ready: Cell::new(false),
             turn: Cell::new(false),
             replaying: Cell::new(false),
+            readings: Cell::new(0),
             workflows: RefCell::default(),
             reply: RefCell::default(),
             queue: RefCell::default(),
@@ -694,6 +698,8 @@ impl Agent {
             return;
         }
         crate::log::debug!(format!("agent {}", self.id), "start in {} (session {:?})", self.cwd.display(), self.session_id());
+        // A read-back under way is not this start's.
+        self.readings.set(self.readings.get() + 1);
         let weak = Rc::downgrade(self);
         let conn = match Conn::spawn(&self.cwd, Some(self.id), move |incoming| {
             if let Some(agent) = weak.upgrade() {
@@ -864,13 +870,15 @@ impl Agent {
         }
         let Some(session) = self.session_id() else { return };
         self.replaying.set(true);
+        let reading = self.readings.get() + 1;
+        self.readings.set(reading);
         let (weak, cwd) = (Rc::downgrade(self), self.cwd.clone());
         crate::rt::spawn_local(async move {
             let read = session.clone();
             let back = crate::rt::spawn_blocking(move || (crate::compacted::earlier(&read, EARLIER), provider::read_back(&read, &cwd))).await;
             let Some(agent) = weak.upgrade() else { return };
-            // Started meanwhile: its own replay (it owns `replaying` now).
-            if agent.conn.borrow().is_some() {
+            // Started meanwhile (even if stopped since), or read back again: not this one's.
+            if agent.readings.get() != reading || agent.conn.borrow().is_some() {
                 return;
             }
             let Ok((earlier, Some(updates))) = back else {

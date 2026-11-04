@@ -397,7 +397,7 @@ Who: window. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
-| `id` | string? | the device expected (`bridges`' candidate) |
+| `id` | string | the device shown to the user (`bridges`' candidate) |
 
 ### `schedule_act`
 

@@ -1262,10 +1262,12 @@
         "properties": {
           "id": {
             "type": "string",
-            "description": "the device expected (`bridges`' candidate)"
+            "description": "the device shown to the user (`bridges`' candidate)"
           }
         },
-        "required": []
+        "required": [
+          "id"
+        ]
       },
       "result": "{}"
     },

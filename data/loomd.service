@@ -4,7 +4,6 @@
 # while it runs (one core per app id): `systemctl --user stop loomd` first.
 [Unit]
 Description=loom's core, with no window (agents, jobs, bridges, the API)
-After=default.target
 
 [Service]
 ExecStart=%h/.local/bin/loomd
