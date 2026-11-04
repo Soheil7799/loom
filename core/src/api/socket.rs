@@ -113,7 +113,11 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
 
 /// What hosts the core whose API answers at `path` (`window`, `daemon`), if one does.
 pub fn running(path: &Path) -> Option<String> {
-    let connection = super::cli::Connection::open(path).ok()?;
+    // A core that doesn't answer in time is taken as running (its socket answers).
+    let stream = UnixStream::connect(path).ok()?;
+    let _ = stream.set_read_timeout(Some(std::time::Duration::from_secs(3)));
+    let _ = stream.set_write_timeout(Some(std::time::Duration::from_secs(3)));
+    let Ok(connection) = super::cli::Connection::over(stream, "loom (starting)") else { return Some("unknown".to_owned()) };
     Some(connection.hello["server"]["host"].as_str().unwrap_or("window").to_owned())
 }
 

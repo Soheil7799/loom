@@ -270,10 +270,11 @@ pub const RESOURCES: &[Resource] = &[
 /// The protocol's own methods.
 /// How a web page reaches the API (`web_open`'s link).
 const WEB: &str = "A web page (a UI in a browser or a webview) reaches the API through `web_open`'s link: \
-http://127.0.0.1:<port>/?t=<token>. The token is traded once for an `HttpOnly; SameSite=Strict` cookie and taken out \
-of the address; then `ws://<host>/api` is a WebSocket carrying the same messages, one per text frame. `Host` must be \
+http://127.0.0.1:<port>/?t=<token>. The token is traded once for a session, given in the address's fragment \
+(`/#<session>`: sent to no server; the page keeps it for its tab and takes it out of the address); then \
+`ws://<host>/api?s=<session>` is a WebSocket carrying the same messages, one per text frame. `Host` must be \
 127.0.0.1 or localhost at that port and the WebSocket's `Origin` that page; there are no CORS headers and the page \
-can't be framed. The page's files: `LOOM_WEB_UI`, else `<data dir>/loom/web` (its index.html), else a small page built in.";
+can't be framed. `web_close` lets every page go, connected ones too. The page's files: `LOOM_WEB_UI`, else `<data dir>/loom/web` (its index.html), else a small page built in.";
 
 const PROTOCOL_METHODS: &[(&str, &str, &str)] = &[
     ("initialize", "{protocol: {min, max}, client: {name, version}, capabilities}", "{protocol, server, principal, capabilities: {subscriptions: {page, queue}, commands}} — first, once"),

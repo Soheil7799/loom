@@ -176,7 +176,7 @@ unsafe extern "C" {
     fn libc_kill(pid: i32, signal: i32) -> i32;
 }
 
-/// Opens `link` as a browser would (the token for a cookie, then the WebSocket): who the page is.
+/// Opens `link` as a browser would (the token for a session, then the WebSocket): who the page is.
 fn page_principal(link: &str) -> String {
     use std::io::{Read, Write};
     use tungstenite::client::IntoClientRequest;
@@ -186,9 +186,8 @@ fn page_principal(link: &str) -> String {
     write!(stream, "GET /{path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").unwrap();
     let mut answer = String::new();
     stream.read_to_string(&mut answer).unwrap();
-    let cookie = answer.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).and_then(|c| c.split(';').next()).expect("a cookie").to_owned();
-    let mut request = format!("ws://{host}/api").into_client_request().unwrap();
-    request.headers_mut().insert("Cookie", cookie.parse().unwrap());
+    let session = answer.lines().find_map(|l| l.strip_prefix("Location: /#")).expect("a session").trim().to_owned();
+    let mut request = format!("ws://{host}/api?s={session}").into_client_request().unwrap();
     request.headers_mut().insert("Origin", format!("http://{host}").parse().unwrap());
     let (mut ws, _) = tungstenite::client::client(request, std::net::TcpStream::connect(host).unwrap()).map_err(|e| e.to_string()).unwrap();
     ws.send(tungstenite::Message::text(json!({ "jsonrpc": "2.0", "id": "1", "method": "initialize", "params": {} }).to_string())).unwrap();

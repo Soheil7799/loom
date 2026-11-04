@@ -963,6 +963,8 @@ impl Agent {
                 Ok(_) => {
                     *agent.mode.borrow_mut() = next.clone();
                     agent.refresh_header();
+                    // In `agents` too.
+                    agent.emit(Event::Changed);
                 }
                 Err(err) => agent.view.notice(&format!("Could not change mode: {}", message(&err)), "error"),
             }
@@ -1708,6 +1710,9 @@ impl Agent {
 
     /// Mode `mode` asked for (one it can take).
     pub fn choose_mode(self: &Rc<Self>, mode: &str) -> Result<(), String> {
+        if self.conn.borrow().is_none() || self.session_id.borrow().is_none() {
+            return Err("it isn't running: send it something first".to_owned());
+        }
         if !self.modes.borrow().iter().any(|m| m == mode) {
             return Err(format!("no mode {mode} (it takes: {})", self.modes.borrow().join(", ")));
         }

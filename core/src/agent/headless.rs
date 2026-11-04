@@ -28,6 +28,17 @@ impl Headless {
     pub fn new() -> Rc<Headless> {
         Rc::new(Headless::default())
     }
+
+    /// Messages taken back: before what is in the draft, a blank line between each (as the
+    /// window's input has them).
+    fn put_back(&self, texts: &[String]) {
+        let mut parts: Vec<String> = texts.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+        let draft = self.draft.borrow().clone();
+        if !draft.trim().is_empty() {
+            parts.push(draft);
+        }
+        *self.draft.borrow_mut() = parts.join("\n\n");
+    }
 }
 
 /// A question's card, nowhere to be seen (the API's entry says how it went).
@@ -208,12 +219,11 @@ impl View for Headless {
     fn focus_input(&self) {}
     fn show_queued(&self, _messages: &[String]) {}
     fn unqueue(&self, text: &str, _images: Vec<Png>) {
-        self.draft.borrow_mut().push_str(text);
+        self.put_back(&[text.to_owned()]);
     }
     fn restore_unsent(&self, messages: Vec<(String, Vec<Png>)>) {
-        for (text, _) in messages {
-            self.draft.borrow_mut().push_str(&text);
-        }
+        let texts: Vec<String> = messages.into_iter().map(|(text, _)| text).collect();
+        self.put_back(&texts);
     }
 
     fn sub_view(&self) -> Rc<dyn View> {
@@ -223,4 +233,17 @@ impl View for Headless {
     fn show_main(&self) {}
     fn open_uri(&self, _uri: &str) {}
     fn show_job(&self, _id: Id) {}
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn messages_taken_back_go_before_the_draft_a_blank_line_apart() {
+        let view = Headless::new();
+        view.set_draft("and then this");
+        view.restore_unsent(vec![("fix tests".into(), Vec::new()), ("then commit".into(), Vec::new())]);
+        assert_eq!(view.draft(), "fix tests\n\nthen commit\n\nand then this");
+    }
 }

@@ -51,13 +51,13 @@ fn add(agent: &Agent, kind: &str, path: Option<&Path>, message: &str) -> u64 {
         "state": "waiting",
         "at": crate::api::time(jiff::Timestamp::now().as_second()),
     }));
+    // Too many: the oldest go, but an edit an agent still waits for.
     let items = store.items();
-    if items.len() > KEPT {
-        for old in items.iter().take(items.len() - KEPT) {
-            if let Some(old) = old["id"].as_str() {
-                store.remove(old);
-                PATHS.with_borrow_mut(|p| p.remove(old));
-            }
+    let over = items.len().saturating_sub(KEPT);
+    for old in items.iter().filter(|i| i["kind"] != "edit").take(over) {
+        if let Some(old) = old["id"].as_str() {
+            store.remove(old);
+            PATHS.with_borrow_mut(|p| p.remove(old));
         }
     }
     n
@@ -177,5 +177,8 @@ fn open_in_editor(path: &Path) -> Result<(), String> {
         None => std::process::Command::new("xdg-open"),
     };
     command.arg(path).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
-    command.spawn().map(drop).map_err(|e| format!("could not open {}: {e}", path.display()))
+    let mut child = command.spawn().map_err(|e| format!("could not open {}: {e}", path.display()))?;
+    // Waited for, off this thread (no zombie left).
+    std::thread::spawn(move || child.wait());
+    Ok(())
 }

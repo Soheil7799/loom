@@ -43,12 +43,28 @@ struct Daemon {
     size: (i32, i32, bool),
     /// A save is due shortly (several changes, one save).
     saving: std::cell::Cell<bool>,
+    /// `agents` is due to be published again, once the core's thread is idle.
+    publishing: std::cell::Cell<bool>,
     me: Weak<Daemon>,
 }
 
 impl Daemon {
     fn save(&self) {
         state::save(&self.app_id, &self.ws.layout(None, None, self.size));
+    }
+
+    /// `agents` made what the agents are now (statuses change by `Changed` events alone).
+    fn publish_soon(&self) {
+        if self.publishing.replace(true) {
+            return;
+        }
+        let me = self.me.clone();
+        loom_core::rt::idle_once(move || {
+            if let Some(daemon) = me.upgrade() {
+                daemon.publishing.set(false);
+                daemon.ws.publish_agents();
+            }
+        });
     }
 
     fn save_soon(&self) {
@@ -143,8 +159,8 @@ impl Host for Daemon {
         if matches!(event, Event::Done) && loom_core::settings::get().notify_done {
             desktop(&agent.title(), "Finished");
         }
+        self.publish_soon();
         if !matches!(event, Event::Changed) {
-            self.ws.publish_agents();
             self.save_soon();
         }
     }
@@ -168,12 +184,16 @@ fn desktop(title: &str, body: &str) {
     if std::env::var_os("LOOM_TEST_INSTANCE").is_some() {
         return;
     }
-    let _ = std::process::Command::new("notify-send")
+    let spawned = std::process::Command::new("notify-send")
         .args(["--app-name=loom", title, body])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn();
+    // Waited for, off this thread (no zombie left).
+    if let Ok(mut child) = spawned {
+        std::thread::spawn(move || child.wait());
+    }
 }
 
 /// Pictures sent in, any of the formats phones send (PNG, JPEG, WebP, GIF), as PNG.
@@ -250,6 +270,9 @@ async fn run() -> u8 {
         loom_core::log::write("notes", &format!("vault {}: {err}", vault.display()));
     }
     loom_core::asks::serve();
+    if loom_core::paths::loom_program().is_none() {
+        eprintln!("loomd: no `loom` program beside loomd: agents will have no loom tools, and the bridges won't start");
+    }
     loom_core::notes_api::serve();
     loom_core::api::blobs::serve();
     loom_core::agent::commands::serve();
@@ -280,6 +303,7 @@ async fn run() -> u8 {
         jobs: RefCell::default(),
         size,
         saving: std::cell::Cell::new(false),
+        publishing: std::cell::Cell::new(false),
         me: me.clone(),
     });
     let host: Rc<dyn Host> = daemon.clone();

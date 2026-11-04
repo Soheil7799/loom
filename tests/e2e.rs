@@ -612,29 +612,28 @@ fn the_web_page_through_the_api() {
         (port.parse::<u16>().unwrap(), query.strip_prefix("?t=").unwrap().to_owned())
     };
     let host = format!("127.0.0.1:{port}");
-    // The link: traded once for a cookie, out of the address.
+    // The link: traded once for a session, in the fragment (no server sees it).
     let (status, head, _) = http_get(port, &format!("/?t={token}"), &host, None);
     assert_eq!(status, 303, "{head}");
-    assert!(head.contains("HttpOnly") && head.contains("SameSite=Strict") && head.contains("Location: /"), "{head}");
+    assert!(!head.to_ascii_lowercase().contains("set-cookie"), "no cookie: every local port would see it: {head}");
     assert!(head.contains("frame-ancestors 'none'"), "{head}");
-    let cookie = head.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).and_then(|c| c.split(';').next()).unwrap().to_owned();
+    let session = head.lines().find_map(|l| l.strip_prefix("Location: /#")).expect("the session in the fragment").trim().to_owned();
     assert_eq!(http_get(port, &format!("/?t={token}"), &host, None).0, 403, "a link works once");
-    assert_eq!(http_get(port, "/", &host, None).0, 403, "no cookie, no page");
-    let (status, _, body) = http_get(port, "/", &host, Some(&cookie));
-    assert_eq!(status, 200);
+    let (status, _, body) = http_get(port, "/", &host, None);
+    assert_eq!(status, 200, "the page's files are no secret");
     assert!(body.contains("<title>loom</title>"));
-    assert_eq!(http_get(port, "/", &format!("evil.example:{port}"), Some(&cookie)).0, 421, "another name for this computer");
-    assert_eq!(http_get(port, "/../../etc/passwd", &host, Some(&cookie)).0, 404);
-    eprintln!("e2e web: the link, the cookie, the host check");
-    // The WebSocket: from this page only; then the API as the one who opened the link.
-    let socket = |origin: &str| {
-        let mut request = format!("ws://{host}/api").into_client_request().unwrap();
-        request.headers_mut().insert("Cookie", cookie.parse().unwrap());
+    assert_eq!(http_get(port, "/", &format!("evil.example:{port}"), None).0, 421, "another name for this computer");
+    assert_eq!(http_get(port, "/../../etc/passwd", &host, None).0, 404);
+    eprintln!("e2e web: the link, the session, the host check");
+    // The WebSocket: with the session, from this page only; then the API as the link's opener.
+    let socket = |origin: &str, session: &str| {
+        let mut request = format!("ws://{host}/api?s={session}").into_client_request().unwrap();
         request.headers_mut().insert("Origin", origin.parse().unwrap());
         tungstenite::client::client(request, std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
     };
-    assert!(socket("http://evil.example").is_err(), "another site's page can't open it");
-    let (mut ws, _) = socket(&format!("http://{host}")).expect("this page opens it");
+    assert!(socket("http://evil.example", &session).is_err(), "another site's page can't open it");
+    assert!(socket(&format!("http://{host}"), "made-up").is_err(), "no session, no API");
+    let (mut ws, _) = socket(&format!("http://{host}"), &session).expect("this page opens it");
     let mut call = |id: &str, method: &str, params: Value| -> Value {
         ws.send(tungstenite::Message::text(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string())).unwrap();
         loop {
@@ -650,8 +649,14 @@ fn the_web_page_through_the_api() {
     let refused = call("c-1", "set_settings", json!({ "changes": { "telegram_enabled": true } }));
     assert_eq!(refused["error"]["data"]["kind"], "forbidden");
     eprintln!("e2e web: the WebSocket speaks the API");
-    // Closed: every page let in is let go.
+    // Closed: every page let in is let go, the one connected too.
     command(&mut c, "web_close", json!({}));
-    std::thread::sleep(Duration::from_millis(200));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match ws.read() {
+            Ok(tungstenite::Message::Close(_)) | Err(_) => break,
+            Ok(_) => assert!(Instant::now() < deadline, "the connected page was never let go"),
+        }
+    }
     assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "nothing listens");
 }
