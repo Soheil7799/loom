@@ -6,6 +6,7 @@ description = "loom's core as its own program: agents, jobs, bridges and the API
 license = "MIT"
 
 [dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 loom-core = { path = "../core" }
 serde_json = { version = "1", features = ["preserve_order"] }
 tokio = { version = "1", features = ["rt", "macros", "signal", "time"] }

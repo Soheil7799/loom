@@ -16,9 +16,17 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
   would fight over them. Stop one to use the other; both read and save the same workspace.
 - **Stopping** (SIGTERM, Ctrl+C) saves the workspace and stops the agents and their jobs, as
   closing the window does.
-- **What needs a window isn't there:** an agent's `loom_open` and `loom_edit` answer that
-  nothing can be shown; the Notes chat and Scribe run only in the window, for now. Pictures
-  sent from a bridge are taken as PNG only (the window reads any format).
+- **What the window would show, a UI shows** (`docs/api.md`):
+  - files an agent wants you to see or fill in (`loom_open`, `loom_edit`) and its
+    `loom_notify` are the `asks` resource: `ask_done` (filled in, or seen), `ask_open` (opens
+    the file in your editor here); each also comes as a desktop notification (`notify-send`);
+  - the Notes chat: `notes_open` (a new chat, or a past one from `notes_chats`) gives the
+    chat's agent, whose conversation is `conversation/<agent>`; `notes_close`;
+  - Scribe works as in the window: it reads conversations after their turns, and its
+    questions and proposals are the `scribe` resource;
+  - schedules: `schedules`, `schedule_act`; an agent's mode: `set_mode`; its title: `rename`.
+- Pictures sent from a bridge: PNG, JPEG, WebP or GIF (made PNG).
+- Agents' loom tools and the bridges run as the `loom` program installed beside loomd.
 - **Who may do what** is as with the window (`docs/trust.md`). With no window, the window's
   rights (answering agents' questions above all) come only through `loomd --web`: it prints
   one link, on its own stderr, to whoever started it; that page is then as the window.

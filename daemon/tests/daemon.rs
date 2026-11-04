@@ -74,9 +74,12 @@ fn until(c: &mut Connection, resource: &str, within: Duration, what: &str, done:
 fn loomd_hosts_the_core_with_no_window() {
     let root = std::env::temp_dir().join(format!("loomd-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    for dir in ["config/loom", "data", "state", "project"] {
+    for dir in ["config/loom", "data", "state", "project", "vault"] {
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }
+    std::fs::write(root.join("vault/first.md"), "A note.\n").unwrap();
+    let settings = json!({ "notesEnabled": true, "notesVault": root.join("vault") });
+    std::fs::write(root.join("config/loom/settings-LoomE2eDaemon.json"), settings.to_string()).unwrap();
     let mut child = spawn_with(&root, &["--web"]);
     // Its stderr: the window's link, then read on so loomd never waits on it.
     let (link, said) = std::sync::mpsc::channel::<String>();
@@ -92,6 +95,14 @@ fn loomd_hosts_the_core_with_no_window() {
     });
     let mut daemon = Daemon { child, root: root.clone() };
     let mut c = connect();
+    // The spec lists what loomd has, and loomd what the spec lists.
+    let commands: Vec<&str> = c.hello["capabilities"]["commands"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    for name in commands.iter().filter(|n| !n.starts_with('_')) {
+        assert!(loom_core::api::spec::COMMANDS.iter().any(|c| c.name == *name), "{name} is not in spec.rs");
+    }
+    for listed in loom_core::api::spec::COMMANDS {
+        assert!(commands.contains(&listed.name), "spec.rs lists {}, which loomd doesn't have", listed.name);
+    }
     let link = said.recv_timeout(Duration::from_secs(10)).expect("loomd --web says a link");
     assert_eq!(page_principal(&link), "window", "--web's page is as the window");
     assert_eq!(c.hello["server"]["host"], "daemon");
@@ -113,12 +124,41 @@ fn loomd_hosts_the_core_with_no_window() {
     let url = command(&mut c, "web_open", json!({}))["url"].as_str().unwrap().to_owned();
     assert!(url.starts_with("http://127.0.0.1:"));
 
+    // The Notes chat, with no window: a chat opened, an agent working in the vault.
+    let chat = command(&mut c, "notes_open", json!({}))["agent"].as_str().unwrap().to_owned();
+    assert!(chat.parse::<u32>().unwrap() > 1_000_000);
+    assert!(c.get(&format!("conversation/{chat}")).is_ok());
+    assert!(c.get("notes_chats").is_ok());
+    assert!(c.get("scribe").is_ok(), "Scribe runs");
+    assert!(c.get("asks").unwrap().is_empty());
+    assert!(c.get("schedules").unwrap().is_empty());
+    // Renamed; bypassing permissions isn't for the CLI.
+    command(&mut c, "rename", json!({ "agent": agent, "title": "Loomd ok" }));
+    let renamed = until(&mut c, "agents", Duration::from_secs(5), "the new title", |a| a.iter().any(|a| a["title"] == "Loomd ok"));
+    assert!(renamed.iter().any(|a| a["id"] == agent.as_str()));
+    let bypass = c.command(&new_id(), "set_mode", json!({ "agent": agent, "mode": "bypassPermissions" }));
+    assert!(bypass.is_err_and(|e| e.message.contains("window")));
+
     if std::env::var_os("LOOM_E2E_AGENT").is_some() {
         command(&mut c, "send", json!({ "agent": agent, "text": "Reply with exactly: loomd ok" }));
         until(&mut c, &format!("conversation/{agent}"), Duration::from_secs(120), "the reply", |entries| {
             entries.iter().any(|e| e["kind"] == "agent" && e["text"].as_str().is_some_and(|t| t.contains("loomd ok"))) && entries.last().is_some_and(|e| e["kind"] == "turn")
         });
         eprintln!("loomd test: a turn with no window");
+        // A file to fill in: an ask, done from here, and the agent goes on.
+        let prompt = "Use the loom_edit tool to have me fill in the file secret.env with the message 'type anything'. When it returns, reply with exactly: edit ok";
+        command(&mut c, "send", json!({ "agent": agent, "text": prompt }));
+        let asks = until(&mut c, "asks", Duration::from_secs(120), "the ask", |asks| asks.iter().any(|a| a["kind"] == "edit"));
+        let ask = asks.iter().find(|a| a["kind"] == "edit").unwrap();
+        assert_eq!(ask["agent"], agent.as_str());
+        assert!(ask["path"].as_str().unwrap().ends_with("secret.env"));
+        std::fs::write(project.join("secret.env"), "KEY=value\n").unwrap();
+        command(&mut c, "ask_done", json!({ "id": ask["id"] }));
+        until(&mut c, &format!("conversation/{agent}"), Duration::from_secs(120), "the reply after the edit", |entries| {
+            entries.iter().any(|e| e["kind"] == "agent" && e["text"].as_str().is_some_and(|t| t.contains("edit ok"))) && entries.last().is_some_and(|e| e["kind"] == "turn")
+        });
+        assert!(c.get("asks").unwrap().is_empty(), "done: gone");
+        eprintln!("loomd test: a file filled in through an ask");
     }
 
     // Stopped: the workspace saved, the socket gone.

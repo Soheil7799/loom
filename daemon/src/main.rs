@@ -9,14 +9,17 @@
 //! doesn't while loomd does. It ends on SIGTERM or Ctrl+C, saving the workspace and stopping
 //! the agents and their jobs, as the window does when it closes.
 //!
-//! What only a window does is not here: opening files for the user (`loom_open`,
-//! `loom_edit` answer that loomd has no window), the Notes chat and Scribe (yet).
+//! What a window shows the user, a UI shows instead: the files agents want seen or filled in
+//! are the API's `asks` (`ask_done`, `ask_open`); the Notes chat's chats are opened with
+//! `notes_open`; Scribe works as in the window (its lists: the `scribe` resource).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::rc::{Rc, Weak};
 use std::time::Duration;
+
+mod notes;
 
 use loom_core::agent::{Agent, Event};
 use loom_core::api::{Error, Principal};
@@ -32,6 +35,8 @@ struct Daemon {
     app_id: String,
     ws: Rc<Workspace>,
     bridges: Rc<loom_core::bridges::Host>,
+    scribe: Rc<loom_core::hub::Hub>,
+    notes: Rc<notes::Notes>,
     /// Each project's jobs.
     jobs: RefCell<HashMap<PathBuf, Jobs>>,
     /// The window's size as loom last saved it (kept for when the window comes back).
@@ -61,6 +66,10 @@ impl Daemon {
 
     /// Closes `agent`, as the window does: it stops, and its conversation can be reopened.
     fn close(&self, agent: &Rc<Agent>) {
+        // Its last words into the notes too.
+        if let Some(session) = agent.session_id() {
+            self.scribe.check_now(&session, true);
+        }
         self.bridges.closed(agent.id);
         agent.stop();
         let saved = agent.saved();
@@ -79,13 +88,19 @@ impl Daemon {
         if let Some(answer) = self.ws.answer(agent, name, params) {
             return answer;
         }
-        match name {
-            "notify" => {
-                eprintln!("loomd: agent {agent}: {}", params["message"].as_str().or(params["text"].as_str()).unwrap_or(""));
-                Ok(json!({}))
-            }
-            _ => Err(format!("loom runs without a window here (loomd): nothing can be shown to the user ({name})")),
+        // What the window would show: an ask, for a UI to show (and a word on the desktop).
+        let found = self.ws.agent(agent).or_else(|| self.notes.agents().into_iter().find(|a| a.id == agent));
+        let found = found.ok_or("this agent is no longer open in loom")?;
+        let asked = loom_core::asks::tool(&found, name, params).ok_or_else(|| format!("unknown request {name}"))?;
+        if asked.is_ok() && matches!(name, "request_edit" | "notify" | "open_file") {
+            let what = match name {
+                "request_edit" => "waits for you to fill in a file",
+                "open_file" => "wants you to see a file",
+                _ => params["message"].as_str().unwrap_or("needs you"),
+            };
+            desktop(&found.title(), what);
         }
+        asked
     }
 }
 
@@ -112,6 +127,22 @@ impl Host for Daemon {
     fn agent_event(&self, agent: &Rc<Agent>, event: Event) {
         // Nobody looks at it in a window: the bridges always may tell.
         self.bridges.agent_event(agent, &event, false);
+        // Scribe reads conversations as in the window: quiet after a turn, before compacting.
+        if let Some(session) = agent.session_id() {
+            match event {
+                Event::Done => self.scribe.turn_done(&session),
+                Event::Compacting => self.scribe.check_now(&session, false),
+                _ => {}
+            }
+        }
+        if let Event::Asked(title) = &event
+            && loom_core::settings::get().notify_questions
+        {
+            desktop(&agent.title(), &format!("Wants to: {title}"));
+        }
+        if matches!(event, Event::Done) && loom_core::settings::get().notify_done {
+            desktop(&agent.title(), "Finished");
+        }
         if !matches!(event, Event::Changed) {
             self.ws.publish_agents();
             self.save_soon();
@@ -120,14 +151,56 @@ impl Host for Daemon {
 
     fn notify(&self, agent: Option<&Rc<Agent>>, title: &str, body: &str) {
         match agent {
-            Some(agent) => eprintln!("loomd: {}: {body}", agent.title()),
-            None => eprintln!("loomd: {title}: {body}"),
+            Some(agent) => desktop(&agent.title(), body),
+            None => desktop(title, body),
         }
     }
 
     fn schedules_changed(&self) {
+        self.ws.publish_schedules();
         self.save_soon();
     }
+}
+
+/// A word on the desktop (`notify-send`, where there is one), and in loomd's output.
+fn desktop(title: &str, body: &str) {
+    eprintln!("loomd: {title}: {body}");
+    if std::env::var_os("LOOM_TEST_INSTANCE").is_some() {
+        return;
+    }
+    let _ = std::process::Command::new("notify-send")
+        .args(["--app-name=loom", title, body])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+}
+
+/// Pictures sent in, any of the formats phones send (PNG, JPEG, WebP, GIF), as PNG.
+fn to_png(bytes: Vec<u8>) -> Result<Vec<u8>, String> {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Ok(bytes);
+    }
+    let picture = image::load_from_memory(&bytes).map_err(|e| format!("not a picture loomd reads: {e}"))?;
+    let mut png = std::io::Cursor::new(Vec::new());
+    picture.write_to(&mut png, image::ImageFormat::Png).map_err(|e| e.to_string())?;
+    Ok(png.into_inner())
+}
+
+/// Scribe with no panel: what it does is in the `scribe` resource.
+struct Unseen;
+
+impl loom_core::hub::HubView for Unseen {
+    fn refresh(&self) {}
+    fn refresh_head(&self) {}
+    fn status(&self, _text: &str) {}
+    fn say(&self, text: &str, error: bool) {
+        if error {
+            eprintln!("loomd: Scribe: {text}");
+        }
+    }
+    fn attention(&self) {}
+    fn history_changed(&self) {}
 }
 
 fn main() -> std::process::ExitCode {
@@ -164,6 +237,19 @@ async fn run() -> u8 {
     }
     loom_core::settings::init(&app_id);
     loom_core::audit::init(&app_id);
+    // As the window starts its core: the log, loom's plugin for the agents (its skills and
+    // tools), the journal, the vault.
+    loom_core::log::name_for(&app_id);
+    loom_core::log::install();
+    loom_core::log::set(loom_core::settings::get().debug_log);
+    loom_core::plugin::init(&app_id);
+    loom_core::journal::init(&app_id);
+    if let Some(vault) = loom_core::vault::current()
+        && let Err(err) = loom_core::vault::prepare(&vault)
+    {
+        loom_core::log::write("notes", &format!("vault {}: {err}", vault.display()));
+    }
+    loom_core::asks::serve();
     loom_core::notes_api::serve();
     loom_core::api::blobs::serve();
     loom_core::agent::commands::serve();
@@ -177,10 +263,20 @@ async fn run() -> u8 {
         let layout = state::load(&app_id);
         (layout.width, layout.height, layout.maximized)
     };
+    let bridges = loom_core::bridges::Host::new(&app_id);
+    let scribe = loom_core::hub::Hub::new();
+    let scribe_view: Rc<dyn loom_core::hub::HubView> = Rc::new(Unseen);
+    scribe.set_view(Rc::downgrade(&scribe_view));
+    scribe.serve();
+    let notes = notes::Notes::new(scribe.clone(), bridges.clone());
+    notes::commands(&notes);
+    bridges.set_notes(Rc::new(notes::Remote(Rc::downgrade(&notes))));
     let daemon = Rc::new_cyclic(|me| Daemon {
         app_id: app_id.clone(),
         ws: ws.clone(),
-        bridges: loom_core::bridges::Host::new(&app_id),
+        bridges,
+        scribe,
+        notes: notes.clone(),
         jobs: RefCell::default(),
         size,
         saving: std::cell::Cell::new(false),
@@ -191,9 +287,13 @@ async fn run() -> u8 {
     commands(&daemon);
 
     // The API first: the agents are told where it is, the bridges are handed connections.
+    // The agent a process is under: the workspace's, or a Notes chat's.
     let owner = {
-        let ws = Rc::downgrade(&ws);
-        move |pid| ws.upgrade()?.agent_of_process(pid).map(|id| Principal::Agent(id.to_string()))
+        let (ws, notes) = (Rc::downgrade(&ws), Rc::downgrade(&notes));
+        move |pid| {
+            let id = ws.upgrade()?.agent_of_process(pid).or_else(|| notes.upgrade()?.agents().iter().find(|a| a.adapter_pid() == Some(pid)).map(|a| a.id))?;
+            Some(Principal::Agent(id.to_string()))
+        }
     };
     if let Err(err) = loom_core::api::socket::serve(&socket, owner) {
         eprintln!("loomd: no API socket at {}: {err}", socket.display());
@@ -202,11 +302,10 @@ async fn run() -> u8 {
     loom_core::control::set_current(socket.clone());
     ws.restore();
     ws.publish_agents();
-    // Pictures sent in: PNG as it is (other formats need a toolkit to read them: the window).
-    daemon.bridges.attach(
-        &ws,
-        std::sync::Arc::new(|bytes: Vec<u8>| if bytes.starts_with(b"\x89PNG\r\n\x1a\n") { Ok(bytes) } else { Err("loomd takes pictures as PNG only".to_owned()) }),
-    );
+    ws.serve_schedules();
+    // Pictures sent in: any format phones send, as PNG.
+    daemon.bridges.attach(&ws, std::sync::Arc::new(to_png));
+    notes.refresh();
     let bridges = daemon.bridges.clone();
     loom_core::settings::on_change(move |s| bridges.apply(s));
     eprintln!("loomd: {} agents, API at {}", ws.agents.borrow().len(), socket.display());
@@ -237,6 +336,8 @@ async fn run() -> u8 {
     for agent in ws.agents.borrow().iter() {
         agent.stop();
     }
+    notes.stop_all();
+    drop(scribe_view);
     for jobs in daemon.jobs.borrow().values() {
         jobs.stop_all();
     }
@@ -282,4 +383,16 @@ fn commands(daemon: &Rc<Daemon>) {
         let name = params["name"].as_str().ok_or_else(|| Error::Invalid("which tool?".into()))?;
         daemon.tool(id, name, &params["params"]).map_err(Error::Failed)
     });
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_jpeg_from_a_phone_becomes_a_png() {
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 3, image::Rgb([200, 30, 30])).write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let png = super::to_png(jpeg.into_inner()).unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(super::to_png(b"not a picture".to_vec()).is_err());
+    }
 }

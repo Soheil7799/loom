@@ -36,6 +36,9 @@ const PEOPLE: &[&str] = &["window", "cli"];
 const WINDOW: &[&str] = &["window"];
 const ALL_BUT_AGENTS: &[&str] = &["window", "cli", "bridge"];
 
+/// Commands only loomd has (the window does these its own way: its Notes view).
+pub const DAEMON_ONLY: &[&str] = &["notes_open", "notes_close"];
+
 pub const COMMANDS: &[Command] = &[
     Command {
         name: "send",
@@ -58,6 +61,23 @@ pub const COMMANDS: &[Command] = &[
         result: "{}",
         later: false,
         about: "Answers a question waiting in a conversation; the first answer wins (later ones: conflict). Bridges never answer \"Always allow\"; the CLI answers nothing (but in a test instance, LOOM_TEST_INSTANCE=1).",
+    },
+    Command {
+        name: "set_mode",
+        who: &["window", "cli", "bridge"],
+        params: &[("agent", "string", true, "the agent's id"), ("mode", "string", true, "one of the agent's `modes`")],
+        result: "{}",
+        later: false,
+        about: "An agent's permission mode. `bypassPermissions` from loom's window only.",
+    },
+    Command { name: "rename", who: &["window", "cli", "bridge"], params: &[("agent", "string", true, "the agent's id"), ("title", "string", true, "its new title")], result: "{}", later: false, about: "Renames an agent (its own titles don't replace it then)." },
+    Command {
+        name: "schedule_act",
+        who: PEOPLE,
+        params: &[("id", "string", true, "a `schedules` item"), ("act", "string", true, "run_now, pause (pauses or goes on), remove")],
+        result: "{}",
+        later: false,
+        about: "Acts on a scheduled prompt.",
     },
     Command { name: "stop", who: &["window", "cli", "bridge"], params: &[("agent", "string", true, "the agent's id")], result: "{}", later: false, about: "Stops the agent's turn." },
     Command { name: "new_agent", who: PEOPLE, params: &[("folder", "string", true, "an absolute folder: its project")], result: "{agent}", later: false, about: "Starts an agent in a folder." },
@@ -130,6 +150,10 @@ pub const COMMANDS: &[Command] = &[
         about: "Starts the web page's server (this computer only) if it isn't, and a link to it with a one-time token (two minutes). The page is who opened the link: the window's rights, or the CLI's.",
     },
     Command { name: "web_close", who: PEOPLE, params: &[], result: "{}", later: false, about: "Stops the web page's server; every page let in is let go." },
+    Command { name: "ask_done", who: PEOPLE, params: &[("id", "string", true, "an `asks` item")], result: "{}", later: false, about: "An ask answered: a file filled in (the agent goes on), or one seen (it goes)." },
+    Command { name: "ask_open", who: PEOPLE, params: &[("id", "string", true, "an `asks` item with a file")], result: "{}", later: false, about: "Opens an ask's file in the user's editor (the setting, else the desktop's), on this computer." },
+    Command { name: "notes_open", who: &["window", "cli", "bridge:remote"], params: &[("session", "string", false, "a past chat (`notes_chats`); none: a new one")], result: "{agent}", later: false, about: "loomd: a Notes chat open (an agent working in the vault): its conversation is `conversation/<agent>`." },
+    Command { name: "notes_close", who: &["window", "cli", "bridge:remote"], params: &[("agent", "string", true, "the chat's agent")], result: "{}", later: false, about: "loomd: a Notes chat closed (it stays among the past ones)." },
     Command {
         name: "tool",
         who: &["agent"],
@@ -158,6 +182,8 @@ pub const RESOURCES: &[Resource] = &[
             ("edited", "integer", true, "files it changed"),
             ("awake", "boolean", true, "kept from resting"),
             ("looking", "boolean", false, "the user has it in front of them in loom"),
+            ("mode", "string", false, "its permission mode"),
+            ("modes", "array", false, "the modes it can take (`set_mode`)"),
             ("last_turn", "object", false, "{turns, seconds, error, cancelled}: `turns` grows as each ends"),
             ("failed", "object", false, "{times, why}: its process failing"),
             ("unsent", "object", false, "{times, count}: queued messages that never went out"),
@@ -226,6 +252,18 @@ pub const RESOURCES: &[Resource] = &[
     },
     Resource { name: "notes_chats", who: &["window", "cli", "bridge:remote"], item: &[("id", "string", true, "its session"), ("title", "string", true, ""), ("updated", "string", false, ""), ("mark", "string", false, ""), ("current", "boolean", false, "the one open")], about: "loom's Notes chats." },
     Resource { name: "scribe", who: PEOPLE, item: &[("id", "string", true, "`status`, or `<list>:<n>`"), ("list", "string", false, "questions, proposals, recent, teach"), ("doing", "string", false, "status: what it is doing"), ("running", "boolean", false, ""), ("calls_left", "integer", false, "")], about: "Scribe: what it does, asks, proposes and wrote." },
+    Resource {
+        name: "schedules",
+        who: ALL_BUT_AGENTS,
+        item: &[("id", "string", true, ""), ("title", "string", true, "the agent's, when it was made"), ("prompt", "string", true, ""), ("when", "string", true, "as typed: 09:00, weekdays 9:30, every 2h…"), ("next", "string", false, "the next run"), ("paused", "boolean", true, ""), ("last_run", "string", false, ""), ("folder", "string", true, ""), ("session", "string", false, "the conversation it goes on (none: a new one each time)")],
+        about: "Scheduled prompts (made by agents' tools or in the window).",
+    },
+    Resource {
+        name: "asks",
+        who: ALL_BUT_AGENTS,
+        item: &[("id", "string", true, ""), ("agent", "string", true, "who asks"), ("title", "string", true, "its title"), ("kind", "string", true, "open (a file to see), edit (a file to fill in), notify"), ("path", "string", false, "the file"), ("message", "string", true, ""), ("state", "string", true, "waiting"), ("at", "string", true, "when")],
+        about: "What agents ask of the user beyond their conversation, where no window of loom's shows it (loomd): a UI shows them; `ask_done`, `ask_open`.",
+    },
     Resource { name: "bridge/<name>", who: &["bridge (that one)"], item: &[("id", "string", true, ""), ("event", "object", true, "a bridge-protocol event")], about: "A bridge's events: each an item added and taken away at once (a snapshot is empty)." },
 ];
 

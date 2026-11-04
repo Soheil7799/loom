@@ -44,6 +44,8 @@ Who: window, cli, bridge, agent.
 | `edited` | integer | files it changed |
 | `awake` | boolean | kept from resting |
 | `looking` | boolean? | the user has it in front of them in loom |
+| `mode` | string? | its permission mode |
+| `modes` | array? | the modes it can take (`set_mode`) |
 | `last_turn` | object? | {turns, seconds, error, cancelled}: `turns` grows as each ends |
 | `failed` | object? | {times, why}: its process failing |
 | `unsent` | object? | {times, count}: queued messages that never went out |
@@ -209,6 +211,41 @@ Who: window, cli.
 | `running` | boolean? |  |
 | `calls_left` | integer? |  |
 
+### `schedules`
+
+Scheduled prompts (made by agents' tools or in the window).
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string |  |
+| `title` | string | the agent's, when it was made |
+| `prompt` | string |  |
+| `when` | string | as typed: 09:00, weekdays 9:30, every 2h… |
+| `next` | string? | the next run |
+| `paused` | boolean |  |
+| `last_run` | string? |  |
+| `folder` | string |  |
+| `session` | string? | the conversation it goes on (none: a new one each time) |
+
+### `asks`
+
+What agents ask of the user beyond their conversation, where no window of loom's shows it (loomd): a UI shows them; `ask_done`, `ask_open`.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string |  |
+| `agent` | string | who asks |
+| `title` | string | its title |
+| `kind` | string | open (a file to see), edit (a file to fill in), notify |
+| `path` | string? | the file |
+| `message` | string |  |
+| `state` | string | waiting |
+| `at` | string | when |
+
 ### `bridge/<name>`
 
 A bridge's events: each an item added and taken away at once (a snapshot is empty).
@@ -247,6 +284,39 @@ Who: window, bridge. Result: `{}`.
 | `option` | string? | a permission question: the chosen option's id |
 | `content` | object? | a form: what was filled in |
 | `skip` | boolean? | a form: skipped |
+
+### `set_mode`
+
+An agent's permission mode. `bypassPermissions` from loom's window only.
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `mode` | string | one of the agent's `modes` |
+
+### `rename`
+
+Renames an agent (its own titles don't replace it then).
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `title` | string | its new title |
+
+### `schedule_act`
+
+Acts on a scheduled prompt.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string | a `schedules` item |
+| `act` | string | run_now, pause (pauses or goes on), remove |
 
 ### `stop`
 
@@ -471,6 +541,46 @@ Who: window, cli. Result: `{url}`.
 Stops the web page's server; every page let in is let go.
 
 Who: window, cli. Result: `{}`.
+
+### `ask_done`
+
+An ask answered: a file filled in (the agent goes on), or one seen (it goes).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string | an `asks` item |
+
+### `ask_open`
+
+Opens an ask's file in the user's editor (the setting, else the desktop's), on this computer.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string | an `asks` item with a file |
+
+### `notes_open`
+
+loomd: a Notes chat open (an agent working in the vault): its conversation is `conversation/<agent>`.
+
+Who: window, cli, bridge:remote. Result: `{agent}`.
+
+| Param | Type | |
+|---|---|---|
+| `session` | string? | a past chat (`notes_chats`); none: a new one |
+
+### `notes_close`
+
+loomd: a Notes chat closed (it stays among the past ones).
+
+Who: window, cli, bridge:remote. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the chat's agent |
 
 ### `tool`
 

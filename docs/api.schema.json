@@ -302,6 +302,14 @@
             "type": "boolean",
             "description": "the user has it in front of them in loom"
           },
+          "mode": {
+            "type": "string",
+            "description": "its permission mode"
+          },
+          "modes": {
+            "type": "array",
+            "description": "the modes it can take (`set_mode`)"
+          },
           "last_turn": {
             "type": "object",
             "description": "{turns, seconds, error, cancelled}: `turns` grows as each ends"
@@ -792,6 +800,117 @@
         ]
       }
     },
+    "schedules": {
+      "description": "Scheduled prompts (made by agents' tools or in the window).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "description": "the agent's, when it was made"
+          },
+          "prompt": {
+            "type": "string",
+            "description": ""
+          },
+          "when": {
+            "type": "string",
+            "description": "as typed: 09:00, weekdays 9:30, every 2h…"
+          },
+          "next": {
+            "type": "string",
+            "description": "the next run"
+          },
+          "paused": {
+            "type": "boolean",
+            "description": ""
+          },
+          "last_run": {
+            "type": "string",
+            "description": ""
+          },
+          "folder": {
+            "type": "string",
+            "description": ""
+          },
+          "session": {
+            "type": "string",
+            "description": "the conversation it goes on (none: a new one each time)"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "prompt",
+          "when",
+          "paused",
+          "folder"
+        ]
+      }
+    },
+    "asks": {
+      "description": "What agents ask of the user beyond their conversation, where no window of loom's shows it (loomd): a UI shows them; `ask_done`, `ask_open`.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": ""
+          },
+          "agent": {
+            "type": "string",
+            "description": "who asks"
+          },
+          "title": {
+            "type": "string",
+            "description": "its title"
+          },
+          "kind": {
+            "type": "string",
+            "description": "open (a file to see), edit (a file to fill in), notify"
+          },
+          "path": {
+            "type": "string",
+            "description": "the file"
+          },
+          "message": {
+            "type": "string",
+            "description": ""
+          },
+          "state": {
+            "type": "string",
+            "description": "waiting"
+          },
+          "at": {
+            "type": "string",
+            "description": "when"
+          }
+        },
+        "required": [
+          "id",
+          "agent",
+          "title",
+          "kind",
+          "message",
+          "state",
+          "at"
+        ]
+      }
+    },
     "bridge/<name>": {
       "description": "A bridge's events: each an item added and taken away at once (a snapshot is empty).",
       "who": [
@@ -881,6 +1000,86 @@
         "required": [
           "agent",
           "entry"
+        ]
+      },
+      "result": "{}"
+    },
+    "set_mode": {
+      "description": "An agent's permission mode. `bypassPermissions` from loom's window only.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "mode": {
+            "type": "string",
+            "description": "one of the agent's `modes`"
+          }
+        },
+        "required": [
+          "agent",
+          "mode"
+        ]
+      },
+      "result": "{}"
+    },
+    "rename": {
+      "description": "Renames an agent (its own titles don't replace it then).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "title": {
+            "type": "string",
+            "description": "its new title"
+          }
+        },
+        "required": [
+          "agent",
+          "title"
+        ]
+      },
+      "result": "{}"
+    },
+    "schedule_act": {
+      "description": "Acts on a scheduled prompt.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `schedules` item"
+          },
+          "act": {
+            "type": "string",
+            "description": "run_now, pause (pauses or goes on), remove"
+          }
+        },
+        "required": [
+          "id",
+          "act"
         ]
       },
       "result": "{}"
@@ -1377,6 +1576,90 @@
         "type": "object",
         "properties": {},
         "required": []
+      },
+      "result": "{}"
+    },
+    "ask_done": {
+      "description": "An ask answered: a file filled in (the agent goes on), or one seen (it goes).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an `asks` item"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{}"
+    },
+    "ask_open": {
+      "description": "Opens an ask's file in the user's editor (the setting, else the desktop's), on this computer.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an `asks` item with a file"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{}"
+    },
+    "notes_open": {
+      "description": "loomd: a Notes chat open (an agent working in the vault): its conversation is `conversation/<agent>`.",
+      "who": [
+        "window",
+        "cli",
+        "bridge:remote"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "description": "a past chat (`notes_chats`); none: a new one"
+          }
+        },
+        "required": []
+      },
+      "result": "{agent}"
+    },
+    "notes_close": {
+      "description": "loomd: a Notes chat closed (it stays among the past ones).",
+      "who": [
+        "window",
+        "cli",
+        "bridge:remote"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the chat's agent"
+          }
+        },
+        "required": [
+          "agent"
+        ]
       },
       "result": "{}"
     },

@@ -557,6 +557,7 @@ impl App {
         *this.me.borrow_mut() = host.clone();
         this.ws.set_host(host);
         this.restore();
+        this.ws.serve_schedules();
         this
     }
 
@@ -3724,6 +3725,7 @@ impl Host for App {
 
     fn schedules_changed(&self) {
         if let Some(app) = self.me() {
+            app.ws.publish_schedules();
             app.refresh_sidebar();
             app.save();
             if app.showing_overview() {

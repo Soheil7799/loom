@@ -183,7 +183,7 @@ fn handshake(c: &Connection) {
     for name in commands.iter().filter(|n| !n.starts_with('_')) {
         assert!(spec.iter().any(|c| c.name == *name), "{name} is not in core/src/api/spec.rs");
     }
-    for listed in spec {
+    for listed in spec.iter().filter(|c| !loom_core::api::spec::DAEMON_ONLY.contains(&c.name)) {
         assert!(commands.contains(&listed.name), "spec.rs lists {}, which loom doesn't have", listed.name);
     }
     for resource in ["agents", "projects", "conversation/1", "usage", "jobs", "job/1", "settings", "vault/", "note/a.md", "notes_chats", "scribe", "bridge/remote"] {

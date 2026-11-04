@@ -53,3 +53,19 @@ pub fn elapsed(seconds: u64) -> String {
 pub fn local_now(format: &str) -> String {
     jiff::Zoned::now().strftime(format).to_string()
 }
+
+/// The `loom` program: this one, or (in loomd) the one installed beside it. Agents' MCP servers
+/// (`loom mcp`) and the bridges (`loom bridge …`) run as it.
+pub fn loom_program() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    // Replaced while running (an update): the path it had.
+    let exe = match exe.to_string_lossy().strip_suffix(" (deleted)") {
+        Some(path) => PathBuf::from(path),
+        None => exe.clone(),
+    };
+    if exe.file_name().is_some_and(|n| n == "loomd") {
+        let beside = exe.with_file_name("loom");
+        return beside.is_file().then_some(beside);
+    }
+    Some(exe)
+}

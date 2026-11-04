@@ -251,7 +251,8 @@ impl Host {
     fn start(self: &Rc<Self>, name: &'static str) {
         let Some(settings) = self.settings_for(name, &crate::settings::get()) else { return };
         let secret = random(32);
-        let Ok(exe) = std::env::current_exe() else { return };
+        // `loom bridge <name>` (from loomd too: the loom installed beside it).
+        let Some(exe) = crate::paths::loom_program() else { return };
         // Its connection to the core API, made here: the bridge gets the other end as fd 3.
         let Ok((ours, theirs)) = UnixStream::pair() else { return };
         let mut command = Command::new(exe);

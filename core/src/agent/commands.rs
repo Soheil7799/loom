@@ -134,6 +134,22 @@ fn handle() {
         agent.choose_serial(serial, option);
         Ok(json!({}))
     });
+    // A permission mode: "bypassPermissions" from loom's window only (as "Always allow").
+    hub.handle("set_mode", |who, params| {
+        let agent = target(who, params, "change modes")?;
+        let mode = params["mode"].as_str().ok_or_else(|| Error::Invalid("which mode?".into()))?;
+        if mode == "bypassPermissions" && *who != Principal::Window {
+            return Err(Error::Forbidden("bypassing permissions, but from loom's window".into()));
+        }
+        agent.choose_mode(mode).map_err(Error::Invalid)?;
+        Ok(json!({}))
+    });
+    hub.handle("rename", |who, params| {
+        let agent = target(who, params, "rename agents")?;
+        let title = params["title"].as_str().map(str::trim).filter(|t| !t.is_empty()).ok_or_else(|| Error::Invalid("rename needs a title".into()))?;
+        agent.rename(title);
+        Ok(json!({}))
+    });
     hub.handle("stop", |who, params| {
         let agent = target(who, params, "stop agents")?;
         agent.cancel();

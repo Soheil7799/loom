@@ -206,6 +206,8 @@ impl Workspace {
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),
                     "looking": self.looking.borrow().as_ref().is_some_and(|f| f(agent)),
+                    "mode": agent.modes().0,
+                    "modes": agent.modes().1,
                     // How the last turn ended: `turns` grows with each one.
                     "last_turn": {
                         "turns": agent.turns_ended.get(),
@@ -220,6 +222,30 @@ impl Workspace {
             })
             .collect();
         crate::api::hub().store("agents").set(items);
+    }
+
+    /// The API's `schedules`: `{id, title, prompt, when, next, paused, last_run, folder,
+    /// session}` (times RFC 3339).
+    pub fn publish_schedules(&self) {
+        let items = self
+            .schedules
+            .borrow()
+            .iter()
+            .map(|s| {
+                json!({
+                    "id": s.id.to_string(),
+                    "title": s.title,
+                    "prompt": s.prompt,
+                    "when": s.when,
+                    "next": s.next.map(crate::api::time),
+                    "paused": s.paused,
+                    "last_run": s.last_run.map(crate::api::time),
+                    "folder": s.cwd.to_string_lossy(),
+                    "session": s.session_id,
+                })
+            })
+            .collect();
+        crate::api::hub().store("schedules").set(items);
     }
 
     pub fn agent(&self, id: u32) -> Option<Rc<Agent>> {
@@ -377,6 +403,33 @@ impl Workspace {
     }
 
     /// A schedule's button pressed.
+    /// `schedules` in the API, and `schedule_act {id, act: run_now | pause | remove}` (pause
+    /// toggles), for people.
+    pub fn serve_schedules(self: &Rc<Self>) {
+        self.publish_schedules();
+        let weak = Rc::downgrade(self);
+        crate::api::hub().handle("schedule_act", move |who, params| {
+            use crate::api::{Error, Principal};
+            if !matches!(who, Principal::Window | Principal::Cli) {
+                return Err(Error::Forbidden("schedules, but for people".into()));
+            }
+            let ws = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let id: u64 = params["id"].as_str().and_then(|i| i.parse().ok()).ok_or_else(|| Error::Invalid("which schedule?".into()))?;
+            if !ws.schedules.borrow().iter().any(|s| s.id == id) {
+                return Err(Error::NotFound(format!("schedule {id}")));
+            }
+            let act = match params["act"].as_str() {
+                Some("run_now") => Act::RunNow,
+                Some("pause") => Act::Pause,
+                Some("remove") => Act::Remove,
+                _ => return Err(Error::Invalid("act: run_now, pause or remove".into())),
+            };
+            ws.act(id, act);
+            ws.publish_schedules();
+            Ok(serde_json::json!({}))
+        });
+    }
+
     pub fn act(&self, id: u64, act: Act) {
         match act {
             // It says so itself.

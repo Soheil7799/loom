@@ -1701,6 +1701,20 @@ impl Agent {
         self.refresh_status();
     }
 
+    /// Its permission mode now, and the ones it can take.
+    pub fn modes(&self) -> (String, Vec<String>) {
+        (self.mode.borrow().clone(), self.modes.borrow().clone())
+    }
+
+    /// Mode `mode` asked for (one it can take).
+    pub fn choose_mode(self: &Rc<Self>, mode: &str) -> Result<(), String> {
+        if !self.modes.borrow().iter().any(|m| m == mode) {
+            return Err(format!("no mode {mode} (it takes: {})", self.modes.borrow().join(", ")));
+        }
+        self.set_mode(mode);
+        Ok(())
+    }
+
     pub fn cycle_mode(self: &Rc<Self>) {
         let modes = self.modes.borrow().clone();
         // Bypass is never one key press away.
@@ -2788,12 +2802,7 @@ fn limit_words(kind: &str, used: f64, resets: Option<i64>) -> (String, String) {
 /// This program's path, for agents to start `loom mcp`. Replaced on disk while running (a
 /// reinstall), /proc reports it with " (deleted)": the new file at that path is the one.
 fn own_program() -> Option<PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let text = exe.to_string_lossy();
-    Some(match text.strip_suffix(" (deleted)") {
-        Some(path) => PathBuf::from(path),
-        None => exe,
-    })
+    crate::paths::loom_program()
 }
 
 fn message(error: &Value) -> String {

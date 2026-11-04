@@ -147,6 +147,7 @@ fn main() -> glib::ExitCode {
     loom_core::jobs_api::serve();
     loom_core::bridges::api::serve();
     loom_core::api::web::serve();
+    loom_core::asks::serve();
     // Whether agents get scopes of their own, found out off this thread.
     loom_core::scope::probe();
     feed::watch_copies();
