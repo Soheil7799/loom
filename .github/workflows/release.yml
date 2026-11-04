@@ -31,15 +31,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends libgtk-4-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev
 
-      - uses: actions/setup-node@v5
-        with:
-          node-version: 22
+      - uses: oven-sh/setup-bun@v2
 
       - name: Build the web page (compiled into loom and loomd)
         working-directory: web
         run: |
-          npm ci
-          npm run build
+          bun install --frozen-lockfile
+          bun run build
 
       - name: Test and build
         run: |

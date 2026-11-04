@@ -5,8 +5,8 @@
   "description": "loom's web page: a client of loom's core API (built to dist/, served by loom)",
   "type": "module",
   "scripts": {
-    "build": "vite build",
-    "check": "vite build --mode development"
+    "build": "bun --bun vite build",
+    "check": "bun --bun vite build --mode development"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6",

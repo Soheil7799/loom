@@ -4,11 +4,11 @@ loom's web page: a plain client of loom's core API (`docs/api.md`), in Svelte, c
 static files that loom serves on 127.0.0.1 (`docs/trust.md`, "The web page").
 
 ```sh
-npm install
-npm run build          # → dist/, which the next cargo build compiles into loom and loomd
+bun install
+bun run build          # → dist/, which the next cargo build compiles into loom and loomd
 ```
 
-A loom built after `npm run build` has the page in its binary (the release does); one built
+A loom built after `bun run build` has the page in its binary (the release does); one built
 without it serves `$XDG_DATA_HOME/loom/web`, else a small built-in page. `LOOM_WEB_UI=<folder>`
 serves that folder instead, whichever was built in (`LOOM_WEB_UI=web/dist` while working on it).
 Open it with `loom api web --open` (the CLI's rights) or from `loomd --web`

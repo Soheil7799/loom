@@ -1,4 +1,4 @@
-//! The web page's built files (`../web/dist`, from `npm run build` in `web/`) compiled into
+//! The web page's built files (`../web/dist`, from `bun run build` in `web/`) compiled into
 //! the binary, so one package has them (`api/web.rs` serves them). Without a build there, none:
 //! loom then serves `LOOM_WEB_UI`, `<data dir>/loom/web` or its small page built in.
 
