@@ -48,7 +48,9 @@ impl Notes {
             return;
         };
         let me = self.me.clone();
-        let _ = loom_core::history::list(move |result| {
+        // Shared with whoever lists them meanwhile, and kept a moment (each listing starts an
+        // adapter process).
+        loom_core::workspace::past(move |result| {
             let Some(notes) = me.upgrade() else { return };
             if let Ok(all) = result {
                 let ours = chats(&vault);
@@ -159,9 +161,13 @@ impl Notes {
         true
     }
 
+    /// Its chats' agents stopped, and the jobs run in the vault.
     pub fn stop_all(&self) {
         for open in self.open.borrow().iter() {
             open.agent.stop();
+        }
+        if let Some(jobs) = self.jobs.borrow().as_ref() {
+            jobs.stop_all();
         }
     }
 }

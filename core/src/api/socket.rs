@@ -149,24 +149,33 @@ fn open(stream: UnixStream, tx: &async_channel::Sender<Event>, pid: u32, pidfd: 
 }
 
 /// A connection over another transport (a WebSocket): the protocol as on the socket, as
-/// `who`. The transport hands each line it reads to `line`, sends what `outgoing` gives, says
-/// `sent` after each, and `closed` at the end.
+/// `who`. The transport hands each message it reads to `line`, sends what the receiver `open`
+/// gives (it ends once the connection is closed), says `sent` after each, and `close` at the
+/// end (dropping the last handle does too).
 pub(crate) struct External {
     conn: u64,
     events: async_channel::Sender<Event>,
     waiting: Arc<AtomicUsize>,
-    pub outgoing: mpsc::Receiver<String>,
+    closed: std::sync::atomic::AtomicBool,
 }
 
 impl External {
-    /// `peer`: what the audit log says of the other end.
-    pub fn open(who: Principal, peer: serde_json::Value) -> Result<External, String> {
+    /// `peer`: what the audit log says of the other end. The handle (for the reading and the
+    /// writing side), and what to send.
+    pub fn open(who: Principal, peer: serde_json::Value) -> Result<(Arc<External>, mpsc::Receiver<String>), String> {
         let events = SENDER.get().ok_or("the API isn't served")?.clone();
         let conn = NEXT.fetch_add(1, Ordering::Relaxed);
         let (lines, outgoing) = mpsc::channel::<String>();
         let waiting = Arc::new(AtomicUsize::new(0));
         events.send_blocking(Event::Open { conn, pid: 0, pidfd: None, who: Some(who), peer: Some(peer), lines, waiting: waiting.clone() }).map_err(|_| "loom is closing".to_owned())?;
-        Ok(External { conn, events, waiting, outgoing })
+        Ok((Arc::new(External { conn, events, waiting, closed: std::sync::atomic::AtomicBool::new(false) }), outgoing))
+    }
+
+    /// The connection ended: its session goes (and with it what the writer waits on).
+    pub fn close(&self) {
+        if !self.closed.swap(true, Ordering::Relaxed) {
+            let _ = self.events.send_blocking(Event::Closed { conn: self.conn });
+        }
     }
 
     /// A message from the client; false: loom has gone.
@@ -184,7 +193,7 @@ impl External {
 
 impl Drop for External {
     fn drop(&mut self) {
-        let _ = self.events.send_blocking(Event::Closed { conn: self.conn });
+        self.close();
     }
 }
 

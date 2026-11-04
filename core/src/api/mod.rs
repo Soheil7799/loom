@@ -142,9 +142,13 @@ fn may_read(who: &Principal, resource: &str) -> bool {
     if let Some(name) = resource.strip_prefix("bridge/") {
         return *who == Principal::Bridge(name.to_owned());
     }
-    // The bridges' states (a pairing ticket among them), conversations closed: people's.
+    // The bridges' states and the conversations closed: people's; the pairing ticket: the
+    // window's (the CLI is whatever loom can't place under an agent).
     if resource == "bridges" || resource == "closed" {
         return matches!(who, Principal::Window | Principal::Cli);
+    }
+    if resource == "pairing" {
+        return *who == Principal::Window;
     }
     match who {
         Principal::Window | Principal::Cli => true,

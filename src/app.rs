@@ -2230,17 +2230,8 @@ impl App {
             self.hide_toast();
         }
         self.bridges.closed(agent.id);
-        agent.stop();
-        // Remembered to reopen (a conversation that never started has nothing to reopen).
-        let saved = agent.saved();
-        if saved.session_id.is_some() {
-            let mut closed = self.ws.closed.borrow_mut();
-            closed.retain(|c| c.session_id != saved.session_id);
-            closed.insert(0, saved);
-            closed.truncate(state::CLOSED_KEPT);
-        }
         self.chat_stack.remove(&agent.chat().root);
-        self.ws.remove_agent(agent);
+        self.ws.close_agent(agent);
         if focused_left {
             *self.focused.borrow_mut() = None;
         }
@@ -2717,25 +2708,11 @@ impl App {
             // An agent waits for the user to fill a file in (secrets kept out of the chat).
             "request_edit" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;
-                let path = Path::new(params["path"].as_str().ok_or("a path is needed")?);
-                let path = &crate::state::expand(path);
-                let path = if path.is_absolute() { path.to_owned() } else { agent.cwd.join(path) };
-                if path.is_dir() {
-                    return Err(format!("{} is a folder", path.display()));
-                }
                 if self.files.requesting() {
                     return Err("the user is filling in another file for an agent; ask again when that is done".into());
                 }
-                // A file to fill in may not exist yet (.env): made empty, in a folder that is,
-                // readable by the user only (it is for secrets).
-                let made = !path.exists();
-                if made {
-                    if !path.parent().is_some_and(Path::is_dir) {
-                        return Err(format!("the folder of {} does not exist", path.display()));
-                    }
-                    use std::os::unix::fs::OpenOptionsExt;
-                    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-                }
+                // A file to fill in may not exist yet (.env): made empty, readable by the user only.
+                let (path, made) = loom_core::asks::file_to_fill(&agent, &params["path"])?;
                 let id = self.next_edit.get();
                 self.next_edit.set(id + 1);
                 let asked = params["message"].as_str().filter(|m| !m.trim().is_empty()).unwrap_or("Fill this file in, save it, then press Done.");
@@ -3702,9 +3679,16 @@ impl Host for App {
         let chat = agent.chat();
         crate::chat_view::wire(agent, &chat);
         self.chat_stack.add_named(&chat.root, Some(&format!("agent-{}", agent.id)));
-        // Added by the API too (reopen, resume): in the sidebar, and saved, once it is placed.
-        if let Some(app) = self.me() {
+        // Added by the API too (reopen, resume): in the sidebar, and saved, once placed (one
+        // refresh and save for all added together: the restored ones at start).
+        thread_local! {
+            static PLACING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+        }
+        if let Some(app) = self.me()
+            && !PLACING.with(|p| p.replace(true))
+        {
             glib::idle_add_local_once(move || {
+                PLACING.with(|p| p.set(false));
                 app.refresh_sidebar();
                 app.save();
             });

@@ -226,7 +226,7 @@ Who: window, cli.
 
 ### `bridges`
 
-The bridges as they say they are (Settings shows the same).
+The bridges as they say they are (Settings shows the same), the pairing ticket aside (`pairing`).
 
 Who: window, cli.
 
@@ -234,9 +234,19 @@ Who: window, cli.
 |---|---|---|
 | `id` | string | telegram, remote |
 | `state` | string | off, connecting, online, failed… |
-| `ticket` | string? | the remote bridge's pairing ticket, while pairing |
 | `candidate` | object? | a device asking to pair: {id, name} |
 | `why` | string? |  |
+
+### `pairing`
+
+The remote bridge's pairing ticket, while pairing is open (`pairing {open}`): whoever has it can ask to pair, so the window's alone.
+
+Who: window.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | `remote` |
+| `ticket` | string | for the device to scan (`loom:`…) |
 
 ### `schedules`
 

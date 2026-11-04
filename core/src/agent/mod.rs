@@ -221,6 +221,11 @@ pub struct Agent {
     /// Counts starts and read-backs: a read-back whose number moved on (it started, or was
     /// read back again, meanwhile) drops what it read.
     readings: Cell<u64>,
+    /// `replaying` is a read-back's (not a start's).
+    reading_back: Cell<bool>,
+    /// The view holds the whole conversation (replayed, read back, or new): only then may a
+    /// start resume it without replaying (the view may hold just what was sent since).
+    whole: Cell<bool>,
     /// What Claude has said this turn (for the journal, written when the turn ends).
     reply: RefCell<String>,
     /// Messages waiting to be sent: text and attached images (PNG).
@@ -316,6 +321,8 @@ impl Agent {
         let draft = saved.draft.clone();
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
+        // A conversation to come: its view will hold it whole.
+        let new_conversation = saved.session_id.is_none();
         let recorded = Rc::new(transcript::Recorded::new(view));
         recorded.publish(id);
         let agent = Rc::new(Agent {
@@ -337,6 +344,8 @@ impl Agent {
             turn: Cell::new(false),
             replaying: Cell::new(false),
             readings: Cell::new(0),
+            reading_back: Cell::new(false),
+            whole: Cell::new(new_conversation),
             workflows: RefCell::default(),
             reply: RefCell::default(),
             queue: RefCell::default(),
@@ -463,6 +472,8 @@ impl Agent {
                 *failures = (failures.0 + 1, why.clone());
             }
             Event::Unsent(count) => self.unsent.set((self.unsent.get().0 + 1, *count as u64)),
+            // A new conversation (or a new title for one): the past ones are listed again.
+            Event::Session => crate::workspace::forget_past(),
             _ => {}
         }
         let f = self.on_event.borrow().clone();
@@ -698,7 +709,11 @@ impl Agent {
             return;
         }
         crate::log::debug!(format!("agent {}", self.id), "start in {} (session {:?})", self.cwd.display(), self.session_id());
-        // A read-back under way is not this start's.
+        // A read-back under way is not this start's: its replay mark goes with it (the start
+        // sets its own when it replays; one that fails here leaves none behind).
+        if self.reading_back.replace(false) {
+            self.replaying.set(false);
+        }
         self.readings.set(self.readings.get() + 1);
         let weak = Rc::downgrade(self);
         let conn = match Conn::spawn(&self.cwd, Some(self.id), move |incoming| {
@@ -791,7 +806,7 @@ impl Agent {
         let weak = Rc::downgrade(self);
         // Woken from an idle suspend, the view still holds the conversation: resume it as it
         // is (no replay, nothing cleared).
-        if let Some(session) = session.clone().filter(|_| self.can_resume.get() && self.view.has_messages()) {
+        if let Some(session) = session.clone().filter(|_| self.can_resume.get() && self.view.has_messages() && self.whole.get()) {
             let mut params = self.session_params();
             params["sessionId"] = session.into();
             conn.request("session/resume", params, move |result| {
@@ -832,6 +847,7 @@ impl Agent {
             match result {
                 Ok(result) => {
                     agent.fresh.set(true);
+                    agent.whole.set(true);
                     *agent.session_id.borrow_mut() = result["sessionId"].as_str().map(str::to_owned);
                     agent.emit(Event::Session);
                     agent.session_ready(&result);
@@ -870,6 +886,7 @@ impl Agent {
         }
         let Some(session) = self.session_id() else { return };
         self.replaying.set(true);
+        self.reading_back.set(true);
         let reading = self.readings.get() + 1;
         self.readings.set(reading);
         let (weak, cwd) = (Rc::downgrade(self), self.cwd.clone());
@@ -881,6 +898,7 @@ impl Agent {
             if agent.readings.get() != reading || agent.conn.borrow().is_some() {
                 return;
             }
+            agent.reading_back.set(false);
             let Ok((earlier, Some(updates))) = back else {
                 agent.replaying.set(false);
                 return;
@@ -891,6 +909,7 @@ impl Agent {
                 agent.route(&json!({ "sessionId": session, "update": update }));
             }
             agent.replaying.set(false);
+            agent.whole.set(true);
             // What was streaming when it was said is whole now.
             agent.recorded.transcript.borrow_mut().settle();
             agent.emit(Event::Files);
@@ -930,6 +949,7 @@ impl Agent {
                     other => other,
                 };
                 agent.replaying.set(false);
+                agent.whole.set(true);
                 agent.emit(Event::Files);
                 // The view was cleared for the replay: what was typed meanwhile goes back.
                 for (text, images) in agent.queue.borrow().iter() {
@@ -950,7 +970,7 @@ impl Agent {
     /// loom's own MCP server (`loom mcp`), told how to reach this app and which agent it
     /// serves: its tools run jobs in the tray, open files for the user, notify.
     fn mcp_servers(&self) -> Value {
-        let (Some(socket), Some(exe)) = (crate::control::current(), own_program()) else { return json!([]) };
+        let (Some(socket), Some(exe)) = (crate::control::current(), crate::paths::loom_program()) else { return json!([]) };
         json!([{
             "name": "loom",
             "command": exe.to_string_lossy(),
@@ -1045,6 +1065,7 @@ impl Agent {
     /// workflows and files neither).
     fn empty_view(&self) {
         self.view.clear();
+        self.whole.set(false);
         self.forget_subs();
         self.workflows.borrow_mut().clear();
         self.view.set_workflow_note(None);
@@ -2859,10 +2880,6 @@ fn limit_words(kind: &str, used: f64, resets: Option<i64>) -> (String, String) {
 
 /// This program's path, for agents to start `loom mcp`. Replaced on disk while running (a
 /// reinstall), /proc reports it with " (deleted)": the new file at that path is the one.
-fn own_program() -> Option<PathBuf> {
-    crate::paths::loom_program()
-}
-
 fn message(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
 }

@@ -108,14 +108,25 @@ pub fn serve() {
     });
 }
 
-/// The API's `bridges`: `{id: "telegram" | "remote", state, …}` as each says it (or loom knows).
+/// The API's `bridges`: `{id: "telegram" | "remote", state, …}` as each says it (or loom
+/// knows), but the pairing ticket: that is `pairing`'s, the window's alone (whoever has it can
+/// ask to pair first).
 pub fn publish_states() {
+    let hub = crate::api::hub();
+    let mut ticket = None;
     let items = ["telegram", "remote"].iter().map(|name| {
         let mut state = super::host::state_of(name);
+        if let Some(fields) = state.as_object_mut()
+            && let Some(taken) = fields.remove("ticket")
+        {
+            ticket = Some(taken);
+        }
         state["id"] = json!(name);
         state
     });
-    crate::api::hub().store("bridges").set(items.collect());
+    hub.store("bridges").set(items.collect());
+    let pairing = ticket.filter(|t| !t.is_null()).map(|t| json!({ "id": "remote", "ticket": t }));
+    hub.store("pairing").set(pairing.into_iter().collect());
 }
 
 #[cfg(test)]

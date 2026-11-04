@@ -4,11 +4,16 @@
 # while it runs (one core per app id): `systemctl --user stop loomd` first.
 [Unit]
 Description=loom's core, with no window (agents, jobs, bridges, the API)
+# Failing over and over (a broken install): given up after 5 tries in 2 minutes.
+StartLimitIntervalSec=120
+StartLimitBurst=5
 
 [Service]
 ExecStart=%h/.local/bin/loomd
 Restart=on-failure
 RestartSec=5
+# 3: loom's window (or another loomd) runs for these agents: not restarted for that.
+RestartPreventExitStatus=3
 
 [Install]
 WantedBy=default.target

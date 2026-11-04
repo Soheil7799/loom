@@ -169,6 +169,20 @@ impl Workspace {
 
     /// Takes `agent` out of the workspace (the UI has closed it): its conversation's
     /// subscribers are told it is gone.
+    /// Closes `agent`: it stops, its conversation is remembered to reopen (one that never
+    /// started has nothing to reopen), and it goes (`remove_agent`).
+    pub fn close_agent(&self, agent: &Rc<Agent>) {
+        agent.stop();
+        let saved = agent.saved();
+        if saved.session_id.is_some() {
+            let mut closed = self.closed.borrow_mut();
+            closed.retain(|c| c.session_id != saved.session_id);
+            closed.insert(0, saved);
+            closed.truncate(state::CLOSED_KEPT);
+        }
+        self.remove_agent(agent);
+    }
+
     pub fn remove_agent(&self, agent: &Rc<Agent>) {
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         crate::api::close(&crate::agent::conversation(agent.id));
@@ -405,7 +419,6 @@ impl Workspace {
         Ok(())
     }
 
-    /// A schedule's button pressed.
     /// `schedules` in the API, and `schedule_act {id, act: run_now | pause | remove}` (pause
     /// toggles), for people.
     pub fn serve_schedules(self: &Rc<Self>) {
@@ -427,8 +440,8 @@ impl Workspace {
                 Some("remove") => Act::Remove,
                 _ => return Err(Error::Invalid("act: run_now, pause or remove".into())),
             };
+            // Published by the host (`schedules_changed`).
             ws.act(id, act);
-            ws.publish_schedules();
             Ok(serde_json::json!({}))
         });
     }
@@ -530,6 +543,7 @@ impl Workspace {
         });
     }
 
+    /// A schedule's button pressed.
     pub fn act(&self, id: u64, act: Act) {
         match act {
             // It says so itself.
@@ -607,42 +621,69 @@ impl Workspace {
     }
 }
 
-/// Where a folder's conversation can still start: the folder, its project, else home.
 /// Claude Code's past conversations, listed once for all who ask meanwhile, and kept a
 /// moment (each listing starts an adapter process).
-fn past(done: impl FnOnce(Result<Vec<crate::history::Past>, String>) + 'static) {
-    type Waiting = Vec<Box<dyn FnOnce(Result<Vec<crate::history::Past>, String>)>>;
-    thread_local! {
-        static KEPT: RefCell<Option<(std::time::Instant, Vec<crate::history::Past>)>> = const { RefCell::new(None) };
-        static WAITING: RefCell<Option<Waiting>> = const { RefCell::new(None) };
-    }
+pub fn past(done: impl FnOnce(Result<Vec<crate::history::Past>, String>) + 'static) {
     let fresh = KEPT.with_borrow(|k| k.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(30)).map(|(_, all)| all.clone()));
     if let Some(all) = fresh {
         return done(Ok(all));
     }
-    let listing = WAITING.with_borrow_mut(|w| match w {
-        Some(waiting) => {
+    let now = LISTINGS.get();
+    // A listing under way since the last change: waited for. One begun before it (stale): its
+    // waiters move to a new one.
+    let joined = WAITING.with_borrow_mut(|w| match w {
+        Some((of, waiting)) if *of == now => {
             waiting.push(Box::new(done));
-            true
+            None
         }
-        None => {
-            *w = Some(vec![Box::new(done)]);
-            false
+        stale => {
+            let mut waiting = stale.take().map(|(_, w)| w).unwrap_or_default();
+            waiting.push(Box::new(done));
+            *stale = Some((now, waiting));
+            Some(now)
         }
     });
-    if listing {
-        return;
-    }
-    let _ = crate::history::list(|listed| {
+    let Some(of) = joined else { return };
+    let _ = crate::history::list(move |listed| {
+        // Overtaken (a conversation began meanwhile): not kept; its waiters (if no newer
+        // listing took them) ask again, which lists anew.
+        if LISTINGS.get() != of {
+            let mine = WAITING.with_borrow(|w| w.as_ref().is_some_and(|(at, _)| *at == of));
+            if mine {
+                for done in WAITING.with_borrow_mut(Option::take).map(|(_, w)| w).unwrap_or_default() {
+                    past(done);
+                }
+            }
+            return;
+        }
         if let Ok(all) = &listed {
             KEPT.with_borrow_mut(|k| *k = Some((std::time::Instant::now(), all.clone())));
         }
-        for done in WAITING.with_borrow_mut(Option::take).unwrap_or_default() {
+        for done in WAITING.with_borrow_mut(Option::take).map(|(_, w)| w).unwrap_or_default() {
             done(listed.clone());
         }
     });
 }
 
+type Waiting = Vec<Box<dyn FnOnce(Result<Vec<crate::history::Past>, String>)>>;
+
+thread_local! {
+    /// The last listing of past conversations, and when it was made.
+    static KEPT: RefCell<Option<(std::time::Instant, Vec<crate::history::Past>)>> = const { RefCell::new(None) };
+    /// The listing under way (begun at which change), and who waits for it.
+    static WAITING: RefCell<Option<(u64, Waiting)>> = const { RefCell::new(None) };
+    /// Changes so far (a conversation began): a listing begun before the last is stale.
+    static LISTINGS: Cell<u64> = const { Cell::new(0) };
+}
+
+/// The listing kept is stale (a conversation began): the next `past` lists again, and one
+/// under way isn't kept.
+pub fn forget_past() {
+    KEPT.with_borrow_mut(|k| *k = None);
+    LISTINGS.set(LISTINGS.get() + 1);
+}
+
+/// Where a folder's conversation can still start: the folder, its project, else home.
 pub fn start_folder(cwd: &Path) -> PathBuf {
     [cwd.to_owned(), crate::repos::project_of(cwd), crate::paths::home()].into_iter().find(|d| d.is_dir()).unwrap_or_else(|| cwd.to_owned())
 }

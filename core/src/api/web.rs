@@ -22,7 +22,7 @@
 //! and what it loads), else a small one built in that lists the agents (to see it work).
 
 use std::collections::HashMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -51,8 +51,10 @@ struct Server {
 struct Keys {
     /// Tokens not traded yet: (token, who it lets in, until).
     tokens: Mutex<Vec<(String, Principal, Instant)>>,
-    /// Cookies given: their value, and who the page is.
+    /// Sessions given: their value, and who the page is.
     sessions: Mutex<HashMap<String, Principal>>,
+    /// Pages connected: their number, session and socket (shut by `web_close`).
+    live: Mutex<Vec<(u64, String, TcpStream)>>,
 }
 
 static SERVER: Mutex<Option<Server>> = Mutex::new(None);
@@ -113,6 +115,10 @@ pub fn close() {
         server.stop.store(true, Ordering::Relaxed);
         server.keys.tokens.lock().unwrap().clear();
         server.keys.sessions.lock().unwrap().clear();
+        // Connected pages too: their sockets shut, their connections end.
+        for (_, _, live) in server.keys.live.lock().unwrap().drain(..) {
+            let _ = live.shutdown(std::net::Shutdown::Both);
+        }
         // The listener wakes for the stop with one more connection.
         let _ = TcpStream::connect(SocketAddr::from(([127, 0, 0, 1], server.port)));
     }
@@ -281,9 +287,10 @@ const SECURITY: &[&str] = &[
 ];
 
 /// The WebSocket: the handshake, then each text frame a message both ways.
-/// `(keys, session)`: while the session is let in (until `web_close`).
+/// The WebSocket: the handshake, then each text message a message of the API, both ways. A
+/// reader (this thread) and a writer (one of its own) block on their side, nothing polls;
+/// `web_close` ends the connection by shutting its socket (`live`).
 fn websocket(mut stream: TcpStream, reader: BufReader<TcpStream>, request: &Request, who: Principal, address: SocketAddr, (keys, session): (&Keys, &str)) -> std::io::Result<()> {
-    use tungstenite::protocol::{Role, WebSocketConfig};
     let key = request.header("sec-websocket-key");
     if !request.header("upgrade").eq_ignore_ascii_case("websocket") || key.is_empty() {
         return answer(&mut stream, 400, "text/plain", b"A WebSocket only.\n", &[]);
@@ -291,41 +298,120 @@ fn websocket(mut stream: TcpStream, reader: BufReader<TcpStream>, request: &Requ
     let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
     let head = format!("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n");
     stream.write_all(head.as_bytes())?;
-    // What the reader already took past the head (a client may write at once).
+    stream.set_read_timeout(None)?;
+    // What the reader took past the head (a client may write at once), then the socket.
     let early = reader.buffer().to_vec();
-    let external = External::open(who, json!({ "transport": "web", "address": address.to_string() })).map_err(std::io::Error::other)?;
-    let config = WebSocketConfig::default().max_message_size(Some(MESSAGE)).max_frame_size(Some(MESSAGE));
-    let mut socket = tungstenite::WebSocket::from_partially_read(stream, early, Role::Server, Some(config));
-    // One thread does both ways: it reads a moment, then sends what waits.
-    socket.get_ref().set_read_timeout(Some(Duration::from_millis(25)))?;
-    loop {
-        // Let go (web_close): the page is told, and its connection ends.
-        if !keys.sessions.lock().unwrap().contains_key(session) {
-            let _ = socket.close(None);
-            let _ = socket.flush();
-            return Ok(());
-        }
-        while let Ok(line) = external.outgoing.try_recv() {
-            if socket.write(tungstenite::Message::text(line)).is_err() {
-                return Ok(());
+    let (external, outgoing) = External::open(who, json!({ "transport": "web", "address": address.to_string() })).map_err(std::io::Error::other)?;
+    let writer = Arc::new(Mutex::new(stream.try_clone()?));
+    static PAGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+    let page = PAGES.fetch_add(1, Ordering::Relaxed);
+    keys.live.lock().unwrap().push((page, session.to_owned(), stream.try_clone()?));
+    // Let go meanwhile (web_close between the check and now): not let in.
+    if !keys.sessions.lock().unwrap().contains_key(session) {
+        let _ = stream.shutdown(std::net::Shutdown::Both);
+        return Ok(());
+    }
+    let (sending, sender) = (writer.clone(), external.clone());
+    std::thread::spawn(move || {
+        for line in outgoing {
+            if write_frame(&mut *sending.lock().unwrap(), TEXT, line.as_bytes()).is_err() {
+                break;
             }
-            external.sent();
+            sender.sent();
         }
-        if socket.flush().is_err() {
-            return Ok(());
-        }
-        match socket.read() {
-            Ok(tungstenite::Message::Text(text)) => {
-                if !external.line(text.to_string()) {
-                    return Ok(());
+    });
+    let mut input = std::io::Read::chain(std::io::Cursor::new(early), stream.try_clone()?);
+    let mut message: Vec<u8> = Vec::new();
+    while let Ok((fin, op, data)) = read_frame(&mut input) {
+        match op {
+            TEXT | CONTINUATION => {
+                if message.len() + data.len() > MESSAGE {
+                    break;
+                }
+                message.extend(data);
+                if fin {
+                    let Ok(text) = String::from_utf8(std::mem::take(&mut message)) else { break };
+                    if !external.line(text) {
+                        break;
+                    }
                 }
             }
-            Ok(tungstenite::Message::Close(_)) => return Ok(()),
-            Ok(_) => {}
-            Err(tungstenite::Error::Io(e)) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut) => {}
-            Err(_) => return Ok(()),
+            PING => {
+                if write_frame(&mut *writer.lock().unwrap(), PONG, &data).is_err() {
+                    break;
+                }
+            }
+            CLOSE => {
+                let _ = write_frame(&mut *writer.lock().unwrap(), CLOSE, &data[..data.len().min(2)]);
+                break;
+            }
+            _ => {}
         }
     }
+    let _ = stream.shutdown(std::net::Shutdown::Both);
+    keys.live.lock().unwrap().retain(|(n, _, _)| *n != page);
+    external.close();
+    Ok(())
+}
+
+const CONTINUATION: u8 = 0x0;
+const TEXT: u8 = 0x1;
+const CLOSE: u8 = 0x8;
+const PING: u8 = 0x9;
+const PONG: u8 = 0xA;
+
+/// One frame from the page (RFC 6455: a client's are masked): (final, opcode, payload).
+fn read_frame(input: &mut impl Read) -> std::io::Result<(bool, u8, Vec<u8>)> {
+    let bad = |why: &str| std::io::Error::new(std::io::ErrorKind::InvalidData, why.to_owned());
+    let mut head = [0u8; 2];
+    input.read_exact(&mut head)?;
+    let (fin, op, masked) = (head[0] & 0x80 != 0, head[0] & 0x0f, head[1] & 0x80 != 0);
+    let len = match head[1] & 0x7f {
+        126 => {
+            let mut b = [0u8; 2];
+            input.read_exact(&mut b)?;
+            u64::from(u16::from_be_bytes(b))
+        }
+        127 => {
+            let mut b = [0u8; 8];
+            input.read_exact(&mut b)?;
+            u64::from_be_bytes(b)
+        }
+        n => u64::from(n),
+    };
+    if !masked {
+        return Err(bad("a page's frame is masked"));
+    }
+    if len > MESSAGE as u64 {
+        return Err(bad("too long"));
+    }
+    let mut key = [0u8; 4];
+    input.read_exact(&mut key)?;
+    let mut data = vec![0u8; len as usize];
+    input.read_exact(&mut data)?;
+    for (i, byte) in data.iter_mut().enumerate() {
+        *byte ^= key[i % 4];
+    }
+    Ok((fin, op, data))
+}
+
+/// One whole frame to the page (a server's aren't masked).
+fn write_frame(out: &mut impl Write, op: u8, data: &[u8]) -> std::io::Result<()> {
+    let mut head = vec![0x80 | op];
+    match data.len() {
+        n if n < 126 => head.push(n as u8),
+        n if n <= u16::MAX as usize => {
+            head.push(126);
+            head.extend((n as u16).to_be_bytes());
+        }
+        n => {
+            head.push(127);
+            head.extend((n as u64).to_be_bytes());
+        }
+    }
+    out.write_all(&head)?;
+    out.write_all(data)?;
+    out.flush()
 }
 
 const BUILT_IN_PAGE: &str = r#"<!doctype html>

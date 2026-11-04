@@ -29,6 +29,8 @@ use loom_core::workspace::{Host, Workspace};
 use serde_json::json;
 
 const APP_ID: &str = "dev.shirvani.Loom";
+/// The exit code when another core of the app id runs (the service isn't restarted for it).
+const ANOTHER_CORE: u8 = 3;
 
 /// What hosts the core here: the agents' parts, and what happens to them.
 struct Daemon {
@@ -87,15 +89,7 @@ impl Daemon {
             self.scribe.check_now(&session, true);
         }
         self.bridges.closed(agent.id);
-        agent.stop();
-        let saved = agent.saved();
-        if saved.session_id.is_some() {
-            let mut closed = self.ws.closed.borrow_mut();
-            closed.retain(|c| c.session_id != saved.session_id);
-            closed.insert(0, saved);
-            closed.truncate(state::CLOSED_KEPT);
-        }
-        self.ws.remove_agent(agent);
+        self.ws.close_agent(agent);
         self.save_soon();
     }
 
@@ -255,7 +249,7 @@ async fn run() -> u8 {
     let socket = loom_core::api::socket::socket_path(&app_id);
     if let Some(host) = loom_core::api::socket::running(&socket) {
         eprintln!("loomd: a loom ({host}) is running for {app_id} already: one core at a time");
-        return 1;
+        return ANOTHER_CORE;
     }
     loom_core::settings::init(&app_id);
     loom_core::audit::init(&app_id);
@@ -359,11 +353,13 @@ async fn run() -> u8 {
         _ = tokio::signal::ctrl_c() => {}
     }
     eprintln!("loomd: stopping");
-    daemon.save();
+    // Stopped first, saved after: what waited to be sent goes back into each agent's draft,
+    // and is saved with it (as the window does).
     for agent in ws.agents.borrow().iter() {
         agent.stop();
     }
     notes.stop_all();
+    daemon.save();
     drop(scribe_view);
     for jobs in daemon.jobs.borrow().values() {
         jobs.stop_all();

@@ -25,8 +25,8 @@ const KEPT: usize = 50;
 
 thread_local! {
     static NEXT: Cell<u64> = const { Cell::new(1) };
-    /// Edits by id: waiting, done, cancelled (what the agent's tool polls).
-    static EDITS: RefCell<HashMap<u64, &'static str>> = RefCell::default();
+    /// Edits by id: whose (the agent's id), and waiting or done (what its tool polls).
+    static EDITS: RefCell<HashMap<u64, (u32, &'static str)>> = RefCell::default();
     static PATHS: RefCell<HashMap<String, PathBuf>> = RefCell::default();
 }
 
@@ -35,6 +35,10 @@ fn store() -> crate::api::Store {
 }
 
 fn add(agent: &Agent, kind: &str, path: Option<&Path>, message: &str) -> u64 {
+    add_for(agent.id, &agent.title(), kind, path, message)
+}
+
+fn add_for(agent: u32, title: &str, kind: &str, path: Option<&Path>, message: &str) -> u64 {
     let n = NEXT.with(|n| n.replace(n.get() + 1));
     let id = format!("a{n}");
     if let Some(path) = path {
@@ -43,8 +47,8 @@ fn add(agent: &Agent, kind: &str, path: Option<&Path>, message: &str) -> u64 {
     let store = store();
     store.upsert(json!({
         "id": id,
-        "agent": agent.id.to_string(),
-        "title": agent.title(),
+        "agent": agent.to_string(),
+        "title": title,
         "kind": kind,
         "path": path.map(|p| p.to_string_lossy().into_owned()),
         "message": message,
@@ -81,35 +85,49 @@ pub fn open_file(agent: &Agent, params: &Value) -> Result<Value, String> {
 
 /// `loom_edit`: a file for the user to fill in (made empty, readable by them only, if it isn't
 /// there); its id, polled with `edit_state`.
-pub fn request_edit(agent: &Agent, params: &Value) -> Result<Value, String> {
-    let path = resolve(agent, &params["path"])?;
+/// The file `path` an agent asks the user to fill in: where it is, and whether it was made
+/// now (empty, readable by the user only: it is for secrets), so a request that fails after
+/// can take it away again. loom's window and `request_edit` both.
+pub fn file_to_fill(agent: &Agent, path: &Value) -> Result<(PathBuf, bool), String> {
+    let path = resolve(agent, path)?;
     if path.is_dir() {
         return Err(format!("{} is a folder", path.display()));
     }
-    if !path.exists() {
-        if !path.parent().is_some_and(Path::is_dir) {
-            return Err(format!("the folder of {} does not exist", path.display()));
-        }
-        use std::os::unix::fs::OpenOptionsExt;
-        std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    if path.exists() {
+        return Ok((path, false));
     }
+    if !path.parent().is_some_and(Path::is_dir) {
+        return Err(format!("the folder of {} does not exist", path.display()));
+    }
+    use std::os::unix::fs::OpenOptionsExt;
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+    Ok((path, true))
+}
+
+pub fn request_edit(agent: &Agent, params: &Value) -> Result<Value, String> {
+    let (path, _) = file_to_fill(agent, &params["path"])?;
     let message = params["message"].as_str().filter(|m| !m.trim().is_empty()).unwrap_or("Fill this file in, save it, then press Done.");
     let id = add(agent, "edit", Some(&path), message);
-    EDITS.with_borrow_mut(|e| e.insert(id, "waiting"));
+    EDITS.with_borrow_mut(|e| e.insert(id, (agent.id, "waiting")));
     Ok(json!({ "id": id, "path": path.to_string_lossy() }))
 }
 
-/// How edit `id` stands: waiting, done, or gone.
-pub fn edit_state(params: &Value) -> Result<Value, String> {
+/// How agent `agent`'s edit `id` stands: waiting, done, or gone (another's is none of its).
+fn edit_state(agent: u32, params: &Value) -> Result<Value, String> {
     let id = params["id"].as_u64().ok_or("an id is needed")?;
-    Ok(json!({ "state": EDITS.with_borrow(|e| e.get(&id).copied()).unwrap_or("gone") }))
+    let state = EDITS.with_borrow(|e| e.get(&id).filter(|(whose, _)| *whose == agent).map(|(_, s)| *s));
+    Ok(json!({ "state": state.unwrap_or("gone") }))
 }
 
-/// The agent gave up waiting for edit `id`.
-pub fn edit_cancel(params: &Value) -> Result<Value, String> {
+/// Agent `agent` gave up waiting for its edit `id` (another's it can't touch).
+fn edit_cancel(agent: u32, params: &Value) -> Result<Value, String> {
     let id = params["id"].as_u64().ok_or("an id is needed")?;
-    EDITS.with_borrow_mut(|e| e.remove(&id));
-    store().remove(&format!("a{id}"));
+    if EDITS.with_borrow(|e| e.get(&id).is_some_and(|(whose, _)| *whose == agent)) {
+        EDITS.with_borrow_mut(|e| e.remove(&id));
+        let ask = format!("a{id}");
+        store().remove(&ask);
+        PATHS.with_borrow_mut(|p| p.remove(&ask));
+    }
     Ok(json!({}))
 }
 
@@ -124,8 +142,8 @@ pub fn tool(agent: &Agent, name: &str, params: &Value) -> Option<Result<Value, S
     Some(match name {
         "open_file" => open_file(agent, params),
         "request_edit" => request_edit(agent, params),
-        "edit_state" => edit_state(params),
-        "edit_cancel" => edit_cancel(params),
+        "edit_state" => edit_state(agent.id, params),
+        "edit_cancel" => edit_cancel(agent.id, params),
         "notify" => notify(agent, params),
         _ => return None,
     })
@@ -147,7 +165,11 @@ pub fn serve() {
         if item["kind"] == "edit"
             && let Some(n) = id.strip_prefix('a').and_then(|n| n.parse::<u64>().ok())
         {
-            EDITS.with_borrow_mut(|e| e.insert(n, "done"));
+            EDITS.with_borrow_mut(|e| {
+                if let Some(edit) = e.get_mut(&n) {
+                    edit.1 = "done";
+                }
+            });
         }
         store.remove(id);
         PATHS.with_borrow_mut(|p| p.remove(id));
@@ -181,4 +203,33 @@ fn open_in_editor(path: &Path) -> Result<(), String> {
     // Waited for, off this thread (no zombie left).
     std::thread::spawn(move || child.wait());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_agent_waits_on_and_cancels_only_its_own_edit() {
+        crate::rt::set_host(|_| {}, |_, _| {});
+        serve();
+        let id = add_for(1, "one", "edit", Some(Path::new("/tmp/x.env")), "fill it");
+        EDITS.with_borrow_mut(|e| e.insert(id, (1, "waiting")));
+        let asked = json!({ "id": id });
+        assert_eq!(edit_state(1, &asked).unwrap()["state"], "waiting");
+        assert_eq!(edit_state(2, &asked).unwrap()["state"], "gone", "another agent's is none of its");
+        edit_cancel(2, &asked).unwrap();
+        assert_eq!(edit_state(1, &asked).unwrap()["state"], "waiting", "nor can it cancel it");
+        // Done by a person: the agent hears so.
+        let window = crate::api::hub().connect(Principal::Window);
+        window.command("d1", "ask_done", json!({ "id": format!("a{id}") })).unwrap();
+        assert_eq!(edit_state(1, &asked).unwrap()["state"], "done");
+        // Cancelled by its own agent: gone, path and all.
+        let other = add_for(1, "one", "edit", Some(Path::new("/tmp/y.env")), "fill it");
+        EDITS.with_borrow_mut(|e| e.insert(other, (1, "waiting")));
+        edit_cancel(1, &json!({ "id": other })).unwrap();
+        assert_eq!(edit_state(1, &json!({ "id": other })).unwrap()["state"], "gone");
+        assert!(PATHS.with_borrow(|p| !p.contains_key(&format!("a{other}"))));
+        assert!(store().get(&format!("a{other}")).is_none());
+    }
 }

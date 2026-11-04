@@ -12,8 +12,9 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
 ```
 
 - **One core per app id.** loomd doesn't start while a loom of its app id runs (window or
-  loomd), and loom's window doesn't start while loomd does: two cores on the same agents
-  would fight over them. Stop one to use the other; both read and save the same workspace.
+  loomd; it exits with 3, which its service isn't restarted for), and loom's window doesn't
+  start while loomd does: two cores on the same agents would fight over them. Stop one to
+  use the other; both read and save the same workspace.
 - **Stopping** (SIGTERM, Ctrl+C) saves the workspace and stops the agents and their jobs, as
   closing the window does.
 - **What the window would show, a UI shows** (`docs/api.md`):

@@ -130,7 +130,7 @@ fn loomd_hosts_the_core_with_no_window() {
     assert_eq!(page_principal(&link), "window", "--web's page is as the window");
     // One core per app id.
     let second = spawn(&d.app_id, &d.root, &[], &[]).wait_with_output().unwrap();
-    assert_eq!(second.status.code(), Some(1), "a second loomd starts no second core");
+    assert_eq!(second.status.code(), Some(3), "a second loomd starts no second core (and says so with 3)");
 
     let project = d.root.join("project");
     let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
@@ -155,6 +155,19 @@ fn loomd_hosts_the_core_with_no_window() {
     until(&mut c, "agents", Duration::from_secs(5), "the new title", |a| a.iter().any(|a| a["id"] == agent.as_str() && a["title"] == "Renamed"));
     assert!(c.command(&new_id(), "set_mode", json!({ "agent": agent, "mode": "bypassPermissions" })).is_err_and(|e| e.message.contains("window")));
     command(&mut c, "close_agent", json!({ "agent": agent }));
+    // Jobs left running, in a project and in the Notes vault: stopped with loomd.
+    let mut pids = Vec::new();
+    for (folder, name) in [(project.clone(), "p"), (d.root.join("vault"), "v")] {
+        let file = d.root.join(format!("{name}.pid"));
+        let line = format!("echo $$ > {}; exec sleep 300", file.display());
+        command(&mut c, "run_job", json!({ "project": folder, "command": line, "name": name }));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !file.exists() || std::fs::read_to_string(&file).unwrap().trim().is_empty() {
+            assert!(Instant::now() < deadline, "the job never started");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        pids.push(std::fs::read_to_string(&file).unwrap().trim().parse::<u32>().unwrap());
+    }
 
     // Stopped: the workspace saved, the socket gone.
     // SAFETY: a plain signal to the child started above.
@@ -163,6 +176,11 @@ fn loomd_hosts_the_core_with_no_window() {
     let saved = std::fs::read_to_string(d.root.join("state/loom/state-LoomDCore.json")).expect("the workspace saved");
     assert!(saved.contains("\"projects\""), "{saved}");
     assert!(!loom_core::api::socket::socket_path(&d.app_id).exists(), "its socket removed");
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while pids.iter().any(|pid| Path::new(&format!("/proc/{pid}")).exists()) {
+        assert!(Instant::now() < deadline, "a job outlived loomd: {pids:?}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// The Telegram bot run by loomd, against a stand-in for Telegram (nothing goes out).
@@ -229,8 +247,10 @@ fn a_phone_pairs_and_works_under_loomd() {
     let mut window = Page::open(&link);
     until(&mut c, "bridges", Duration::from_secs(30), "the bridge online", |b| b.iter().any(|b| b["id"] == "remote" && b["state"] == "online"));
     assert!(window.call("pairing", json!({ "open": true }))["error"].is_null());
-    let bridges = until(&mut c, "bridges", Duration::from_secs(20), "a pairing ticket", |b| b.iter().any(|b| b["id"] == "remote" && b["ticket"].is_string()));
-    let ticket = bridges.iter().find(|b| b["id"] == "remote").unwrap()["ticket"].as_str().unwrap().to_owned();
+    // The ticket: the window's to see, not the CLI's.
+    assert!(c.get("pairing").is_err(), "the CLI doesn't see the pairing ticket");
+    assert!(c.get("bridges").unwrap().iter().all(|b| b.get("ticket").is_none()));
+    let ticket = window.until("pairing", Duration::from_secs(20), "a pairing ticket", |p| p.first().is_some_and(|t| t["ticket"].is_string()))[0]["ticket"].as_str().unwrap().to_owned();
     let phone = d.root.join("phone");
     let remote = PathBuf::from(env!("CARGO_BIN_EXE_loomd")).with_file_name("loom-remote");
     let peer = |args: &[&str]| Command::new(&remote).args(args).env("XDG_CONFIG_HOME", &phone).stderr(Stdio::inherit()).output().unwrap();
@@ -288,6 +308,28 @@ impl Page {
         page
     }
 
+    /// Follows `resource` until `done` holds for its items (a snapshot, then its changes).
+    fn until(&mut self, resource: &str, within: Duration, what: &str, done: impl Fn(&[Value]) -> bool) -> Vec<Value> {
+        let sub = self.call("subscribe", json!({ "resource": resource }))["result"]["sub"].as_str().expect("subscribed").to_owned();
+        let mut mirror = loom_core::api::Mirror::default();
+        let _ = self.ws.get_ref().set_read_timeout(Some(Duration::from_millis(200)));
+        let deadline = Instant::now() + within;
+        loop {
+            if mirror.synced && done(&mirror.items) {
+                let _ = self.ws.get_ref().set_read_timeout(None);
+                return mirror.items;
+            }
+            assert!(Instant::now() < deadline, "never {what}: {:#?}", mirror.items);
+            let Ok(message) = self.ws.read() else { continue };
+            let Ok(message) = serde_json::from_str::<Value>(message.to_text().unwrap_or("")) else { continue };
+            if message["method"] == "subscription" && message["params"]["sub"] == sub.as_str()
+                && let Ok(m) = serde_json::from_value::<loom_core::api::Message>(message["params"].clone())
+            {
+                mirror.apply(&m);
+            }
+        }
+    }
+
     fn call(&mut self, method: &str, params: Value) -> Value {
         self.next += 1;
         let id = format!("page-{}-{}", std::process::id(), self.next);
@@ -308,7 +350,7 @@ fn agents_under_loomd() {
         eprintln!("LOOM_E2E_AGENT not set: skipped");
         return;
     }
-    let (d, mut c) = start("Agents", json!({}), &[], &[]);
+    let (mut d, mut c) = start("Agents", json!({}), &[], &[]);
     let project = d.root.join("project");
     let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
     let calls_before = c.get("scribe").unwrap().iter().find(|i| i["id"] == "status").and_then(|s| s["calls_left"].as_u64()).unwrap_or(0);
@@ -361,6 +403,32 @@ fn agents_under_loomd() {
     until(&mut c, &format!("conversation/{chat}"), Duration::from_secs(120), "the Notes chat's reply", |e| replied(e, "notes ok"));
     until(&mut c, "notes_chats", Duration::from_secs(30), "the chat among the past ones", |chats| chats.iter().any(|c| c["agent"] == chat.as_str()));
     eprintln!("loomd test: a Notes chat turn");
+
+    // A start that fails (its folder gone) leaves its conversation readable all the same.
+    command(&mut c, "close_agent", json!({ "agent": reopened }));
+    let again = command(&mut c, "reopen", json!({ "session": session }))["agent"].as_str().unwrap().to_owned();
+    let away = d.root.join("project-away");
+    std::fs::rename(&project, &away).unwrap();
+    // Its start fails (the send itself may say so, or the agent's status does).
+    let _ = c.command(&new_id(), "send", json!({ "agent": again, "text": "this start fails" }));
+    until(&mut c, "agents", Duration::from_secs(20), "the start failing", |a| a.iter().any(|a| a["id"] == again.as_str() && a["status"] == "failed"));
+    std::fs::rename(&away, &project).unwrap();
+    // Nothing left stuck: it starts again, replays the whole conversation and answers.
+    command(&mut c, "send", json!({ "agent": again, "text": "Reply with exactly: back ok" }));
+    let entries = until(&mut c, &format!("conversation/{again}"), Duration::from_secs(120), "the agent back after a failed start", |e| replied(e, "back ok"));
+    assert!(entries.iter().any(|e| e["kind"] == "user" && e["text"].as_str().is_some_and(|t| t.contains("dentist"))), "its whole conversation again");
+    eprintln!("loomd test: back after a failed start");
+
+    // Stopped mid-turn: a message waiting to be sent is in the draft saved.
+    command(&mut c, "send", json!({ "agent": again, "text": "Count slowly from 1 to 40, one number per line." }));
+    until(&mut c, "agents", Duration::from_secs(60), "the agent at work", |a| a.iter().any(|a| a["id"] == again.as_str() && a["busy"] == true));
+    command(&mut c, "send", json!({ "agent": again, "text": "a message queued behind the turn" }));
+    // SAFETY: a plain signal to the child started above.
+    unsafe { kill(d.child.id() as i32, 15) };
+    let _ = d.child.wait();
+    let saved = std::fs::read_to_string(d.root.join("state/loom/state-LoomDAgents.json")).unwrap();
+    assert!(saved.contains("a message queued behind the turn"), "the queued message saved as the draft: {saved}");
+    eprintln!("loomd test: a queued message kept on stop");
 }
 
 /// Who a page opened from `link` is.

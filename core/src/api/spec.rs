@@ -283,9 +283,10 @@ pub const RESOURCES: &[Resource] = &[
     Resource {
         name: "bridges",
         who: PEOPLE,
-        item: &[("id", "string", true, "telegram, remote"), ("state", "string", true, "off, connecting, online, failed…"), ("ticket", "string", false, "the remote bridge's pairing ticket, while pairing"), ("candidate", "object", false, "a device asking to pair: {id, name}"), ("why", "string", false, "")],
-        about: "The bridges as they say they are (Settings shows the same).",
+        item: &[("id", "string", true, "telegram, remote"), ("state", "string", true, "off, connecting, online, failed…"), ("candidate", "object", false, "a device asking to pair: {id, name}"), ("why", "string", false, "")],
+        about: "The bridges as they say they are (Settings shows the same), the pairing ticket aside (`pairing`).",
     },
+    Resource { name: "pairing", who: WINDOW, item: &[("id", "string", true, "`remote`"), ("ticket", "string", true, "for the device to scan (`loom:`…)")], about: "The remote bridge's pairing ticket, while pairing is open (`pairing {open}`): whoever has it can ask to pair, so the window's alone." },
     Resource {
         name: "schedules",
         who: ALL_BUT_AGENTS,

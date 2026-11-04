@@ -835,7 +835,7 @@
       }
     },
     "bridges": {
-      "description": "The bridges as they say they are (Settings shows the same).",
+      "description": "The bridges as they say they are (Settings shows the same), the pairing ticket aside (`pairing`).",
       "who": [
         "window",
         "cli"
@@ -851,10 +851,6 @@
             "type": "string",
             "description": "off, connecting, online, failed…"
           },
-          "ticket": {
-            "type": "string",
-            "description": "the remote bridge's pairing ticket, while pairing"
-          },
           "candidate": {
             "type": "object",
             "description": "a device asking to pair: {id, name}"
@@ -867,6 +863,29 @@
         "required": [
           "id",
           "state"
+        ]
+      }
+    },
+    "pairing": {
+      "description": "The remote bridge's pairing ticket, while pairing is open (`pairing {open}`): whoever has it can ask to pair, so the window's alone.",
+      "who": [
+        "window"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`remote`"
+          },
+          "ticket": {
+            "type": "string",
+            "description": "for the device to scan (`loom:`…)"
+          }
+        },
+        "required": [
+          "id",
+          "ticket"
         ]
       }
     },
