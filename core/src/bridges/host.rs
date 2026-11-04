@@ -737,6 +737,7 @@ pub(crate) fn set_state(name: &str, state: Value) {
         return;
     }
     STATES.with(|s| s.borrow_mut().insert(name.to_owned(), state.clone()));
+    super::api::publish_states();
     let watchers = WATCHERS.with(|w| std::mem::take(&mut *w.borrow_mut()));
     let kept: Vec<_> = watchers.into_iter().filter(|(of, f)| of != name || f(&state)).collect();
     WATCHERS.with(|w| {

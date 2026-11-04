@@ -35,6 +35,16 @@ pub struct Conn {
 }
 
 /// What runs an agent, as a command line (for an error that names it).
+/// Conversation `session` read back from Claude Code's own file as session updates (what
+/// `session/load` replays), with no process started. None: no such conversation, or an
+/// adapter that keeps its own (ACP's).
+pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
+    if acp::chosen().is_some() {
+        return None;
+    }
+    claude::read_back(session, cwd)
+}
+
 pub fn program() -> String {
     match acp::chosen() {
         Some(command) => command.join(" "),

@@ -67,6 +67,14 @@ pub async fn pair(ticket: &str, name: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Any request of the bridge protocol, its answer printed (as the phone app would get it).
+pub async fn call(method: &str, params: &str) -> Result<(), String> {
+    let params: Value = if params.trim().is_empty() { json!({}) } else { serde_json::from_str(params).map_err(|e| format!("params: {e}"))? };
+    let answer = desktop().await?.request(method, params).await?;
+    println!("{answer}");
+    Ok(())
+}
+
 pub async fn agents() -> Result<(), String> {
     let desktop = desktop().await?;
     for agent in desktop.agents().await?.as_array().into_iter().flatten() {

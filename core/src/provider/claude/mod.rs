@@ -7,6 +7,11 @@
 mod tools;
 mod transcripts;
 
+/// See `provider::read_back`.
+pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
+    transcripts::replay(session, cwd)
+}
+
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};

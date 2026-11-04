@@ -136,7 +136,9 @@ impl Host for Daemon {
         (jobs, loom_core::agent::headless::Headless::new())
     }
 
-    fn agent_added(&self, _agent: &Rc<Agent>) {
+    fn agent_added(&self, agent: &Rc<Agent>) {
+        // Its conversation readable while it rests (the window replays when it starts).
+        agent.read_back_when_followed();
         self.save_soon();
     }
 
@@ -327,6 +329,7 @@ async fn run() -> u8 {
     ws.restore();
     ws.publish_agents();
     ws.serve_schedules();
+    ws.serve_conversations();
     // Pictures sent in: any format phones send, as PNG.
     daemon.bridges.attach(&ws, std::sync::Arc::new(to_png));
     notes.refresh();

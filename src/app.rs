@@ -558,6 +558,7 @@ impl App {
         this.ws.set_host(host);
         this.restore();
         this.ws.serve_schedules();
+        this.ws.serve_conversations();
         this
     }
 

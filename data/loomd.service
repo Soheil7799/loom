@@ -1,0 +1,15 @@
+# loomd as a systemd user service: loom's core with no window, from login on.
+#   cp data/loomd.service ~/.config/systemd/user/ && systemctl --user enable --now loomd
+# Its output goes to the journal (journalctl --user -u loomd). loom's window doesn't start
+# while it runs (one core per app id): `systemctl --user stop loomd` first.
+[Unit]
+Description=loom's core, with no window (agents, jobs, bridges, the API)
+After=default.target
+
+[Service]
+ExecStart=%h/.local/bin/loomd
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

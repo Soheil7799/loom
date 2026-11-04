@@ -854,6 +854,51 @@ impl Agent {
         self.view.notice("Compacted: Claude carries on with a summary of the above (it does not see the above itself).", "dim");
     }
 
+    /// Its conversation read back into its view (and so into the API) without starting it: a
+    /// client following a resting agent sees what was said (loomd; the window replays when an
+    /// agent starts). Nothing if it runs, has no conversation, or shows it already. Started
+    /// later, it resumes over what was read back.
+    pub fn read_back(self: &Rc<Self>) {
+        if self.conn.borrow().is_some() || self.replaying.get() || self.view.has_messages() {
+            return;
+        }
+        let Some(session) = self.session_id() else { return };
+        self.replaying.set(true);
+        let (weak, cwd) = (Rc::downgrade(self), self.cwd.clone());
+        crate::rt::spawn_local(async move {
+            let read = session.clone();
+            let back = crate::rt::spawn_blocking(move || (crate::compacted::earlier(&read, EARLIER), provider::read_back(&read, &cwd))).await;
+            let Some(agent) = weak.upgrade() else { return };
+            // Started meanwhile: its own replay (it owns `replaying` now).
+            if agent.conn.borrow().is_some() {
+                return;
+            }
+            let Ok((earlier, Some(updates))) = back else {
+                agent.replaying.set(false);
+                return;
+            };
+            // Fed in as a replay (nothing in it is news: no unseen mark, no notification).
+            agent.show_earlier(earlier);
+            for update in updates {
+                agent.route(&json!({ "sessionId": session, "update": update }));
+            }
+            agent.replaying.set(false);
+            // What was streaming when it was said is whole now.
+            agent.recorded.transcript.borrow_mut().settle();
+            agent.emit(Event::Files);
+        });
+    }
+
+    /// Reads its conversation back whenever a client follows it while it rests (`read_back`).
+    pub fn read_back_when_followed(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        crate::api::hub().store(&conversation(self.id)).on_subscribe(move |_| {
+            if let Some(agent) = weak.upgrade() {
+                crate::rt::idle_once(move || agent.read_back());
+            }
+        });
+    }
+
     fn load_session(self: &Rc<Self>, session: String) {
         let Some(conn) = self.conn.borrow().clone() else { return };
         let (weak, asked) = (Rc::downgrade(self), Rc::downgrade(&conn));

@@ -800,6 +800,76 @@
         ]
       }
     },
+    "closed": {
+      "description": "Conversations closed lately, newest first (`reopen`).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "its session"
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          },
+          "folder": {
+            "type": "string",
+            "description": ""
+          },
+          "used": {
+            "type": "string",
+            "description": ""
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "folder",
+          "used"
+        ]
+      }
+    },
+    "bridges": {
+      "description": "The bridges as they say they are (Settings shows the same).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "telegram, remote"
+          },
+          "state": {
+            "type": "string",
+            "description": "off, connecting, online, failed…"
+          },
+          "ticket": {
+            "type": "string",
+            "description": "the remote bridge's pairing ticket, while pairing"
+          },
+          "candidate": {
+            "type": "object",
+            "description": "a device asking to pair: {id, name}"
+          },
+          "why": {
+            "type": "string",
+            "description": ""
+          }
+        },
+        "required": [
+          "id",
+          "state"
+        ]
+      }
+    },
     "schedules": {
       "description": "Scheduled prompts (made by agents' tools or in the window).",
       "who": [
@@ -1055,6 +1125,147 @@
           "agent",
           "title"
         ]
+      },
+      "result": "{}"
+    },
+    "reopen": {
+      "description": "Reopens a conversation closed lately, as an agent.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "description": "a `closed` item's id"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "result": "{agent}"
+    },
+    "past_conversations": {
+      "description": "Claude Code's past conversations, newest first (200 at most).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "only those in it (else all)"
+          }
+        },
+        "required": []
+      },
+      "result": "{conversations: [{session, title, folder, updated}]}"
+    },
+    "resume": {
+      "description": "A past conversation picked up as an agent (the one open, if it is).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "description": "a past conversation"
+          },
+          "folder": {
+            "type": "string",
+            "description": "its folder"
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          }
+        },
+        "required": [
+          "session",
+          "folder"
+        ]
+      },
+      "result": "{agent}"
+    },
+    "schedule_new": {
+      "description": "Schedules a prompt for an agent.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "whose prompt"
+          },
+          "prompt": {
+            "type": "string",
+            "description": ""
+          },
+          "when": {
+            "type": "string",
+            "description": "09:00, weekdays 9:30, every 2h, in 20m…"
+          },
+          "same": {
+            "type": "boolean",
+            "description": "in its conversation (true), or a new one each time"
+          }
+        },
+        "required": [
+          "agent",
+          "prompt",
+          "when"
+        ]
+      },
+      "result": "{}"
+    },
+    "pairing": {
+      "description": "The remote bridge's pairing: its ticket is in `bridges`.",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "open": {
+            "type": "boolean",
+            "description": "open (true) or close pairing"
+          }
+        },
+        "required": []
+      },
+      "result": "{}"
+    },
+    "pair_confirm": {
+      "description": "Lets in the device asking to pair, and closes pairing.",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "the device expected (`bridges`' candidate)"
+          }
+        },
+        "required": []
       },
       "result": "{}"
     },

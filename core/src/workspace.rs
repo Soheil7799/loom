@@ -161,6 +161,8 @@ impl Workspace {
         });
         self.agents.borrow_mut().push(agent.clone());
         self.publish_agents();
+        // Reopened from `closed` (by the window, or `reopen`): not closed any more.
+        self.publish_closed();
         host.agent_added(&agent);
         agent
     }
@@ -171,6 +173,7 @@ impl Workspace {
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         crate::api::close(&crate::agent::conversation(agent.id));
         self.publish_agents();
+        self.publish_closed();
     }
 
     /// The core API's `agents` and `projects` resources made what the workspace has now, in
@@ -427,6 +430,96 @@ impl Workspace {
             ws.act(id, act);
             ws.publish_schedules();
             Ok(serde_json::json!({}))
+        });
+    }
+
+    /// The API's `closed`: conversations closed lately, newest first, `{id: its session, title,
+    /// folder, used}`.
+    pub fn publish_closed(&self) {
+        let items = self
+            .closed
+            .borrow()
+            .iter()
+            .filter_map(|c| Some(json!({ "id": c.session_id.clone()?, "title": c.title, "folder": c.cwd.to_string_lossy(), "used": crate::api::time(c.used as i64) })))
+            .collect();
+        crate::api::hub().store("closed").set(items);
+    }
+
+    /// Conversations in the API, for people: `closed` and `reopen {session}` (one closed
+    /// lately), `past_conversations {folder?}` (Claude Code's, newest first) and
+    /// `resume {session, folder}` (one of those, as an agent); and `schedule_new {agent,
+    /// prompt, when, same?}`.
+    pub fn serve_conversations(self: &Rc<Self>) {
+        use crate::api::{Error, Principal};
+        let people = |who: &Principal| matches!(who, Principal::Window | Principal::Cli);
+        self.publish_closed();
+        let hub = crate::api::hub();
+        let weak = Rc::downgrade(self);
+        hub.handle("reopen", move |who, params| {
+            if !people(who) {
+                return Err(Error::Forbidden("reopening, but for people".into()));
+            }
+            let ws = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let session = params["session"].as_str().ok_or_else(|| Error::Invalid("which conversation (its session)?".into()))?;
+            let saved = ws.closed.borrow().iter().find(|c| c.session_id.as_deref() == Some(session)).cloned();
+            let saved = saved.ok_or_else(|| Error::NotFound(format!("closed conversation {session}")))?;
+            ws.closed.borrow_mut().retain(|c| *c != saved);
+            let agent = ws.add_agent(saved);
+            ws.publish_closed();
+            ws.publish_agents();
+            Ok(json!({ "agent": agent.id.to_string() }))
+        });
+        hub.handle_later("past_conversations", move |who, params, reply| {
+            if !people(who) {
+                return reply(Err(Error::Forbidden("past conversations, but for people".into())));
+            }
+            let folder = params["folder"].as_str().map(std::path::PathBuf::from);
+            let _ = crate::history::list(move |listed| {
+                reply(match listed {
+                    Ok(all) => Ok(json!({
+                        "conversations": all
+                            .iter()
+                            .filter(|p| folder.as_ref().is_none_or(|f| p.cwd.starts_with(f)))
+                            .take(200)
+                            .map(|p| json!({ "session": p.session_id, "title": p.title, "folder": p.cwd.to_string_lossy(), "updated": p.updated }))
+                            .collect::<Vec<_>>(),
+                    })),
+                    Err(why) => Err(Error::Failed(why)),
+                });
+            });
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("resume", move |who, params| {
+            if !people(who) {
+                return Err(Error::Forbidden("resuming, but for people".into()));
+            }
+            let ws = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let session = params["session"].as_str().ok_or_else(|| Error::Invalid("which conversation (its session)?".into()))?;
+            let folder = params["folder"].as_str().map(|f| state::expand(Path::new(f))).ok_or_else(|| Error::Invalid("resume needs its folder".into()))?;
+            if !folder.is_dir() {
+                return Err(Error::Invalid(format!("{} is not a folder", folder.display())));
+            }
+            if let Some(open) = ws.agent_with_session(session) {
+                return Ok(json!({ "agent": open.id.to_string() }));
+            }
+            let saved = Saved { cwd: start_folder(&folder), session_id: Some(session.to_owned()), title: params["title"].as_str().unwrap_or("").to_owned(), named: false, draft: String::new(), dirs: Vec::new(), used: state::now(), awake: false };
+            let agent = ws.add_agent(saved);
+            ws.publish_agents();
+            Ok(json!({ "agent": agent.id.to_string() }))
+        });
+        let weak = Rc::downgrade(self);
+        hub.handle("schedule_new", move |who, params| {
+            if !people(who) {
+                return Err(Error::Forbidden("schedules, but for people".into()));
+            }
+            let ws = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let id = params["agent"].as_str().and_then(|a| a.parse().ok()).ok_or_else(|| Error::Invalid("which agent?".into()))?;
+            let agent = ws.agent(id).ok_or_else(|| Error::NotFound(format!("agent {id}")))?;
+            let prompt = params["prompt"].as_str().filter(|p| !p.trim().is_empty()).ok_or_else(|| Error::Invalid("schedule_new needs a prompt".into()))?;
+            let when = params["when"].as_str().ok_or_else(|| Error::Invalid("when? (09:00, weekdays 9:30, every 2h, in 20m…)".into()))?;
+            ws.schedule(&agent, prompt.to_owned(), when.to_owned(), params["same"].as_bool().unwrap_or(true)).map_err(Error::Invalid)?;
+            ws.publish_schedules();
+            Ok(json!({}))
         });
     }
 

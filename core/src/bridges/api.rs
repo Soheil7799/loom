@@ -75,11 +75,51 @@ pub fn serve() {
     });
     // Its events: `bridge/<name>`, for that bridge alone (may_read).
     hub.provide("bridge/", |_, name| matches!(name, "remote" | "telegram"));
+    // Each bridge's state, for people (the pairing ticket, a device waiting to be confirmed).
+    publish_states();
+    hub.handle("pairing", |who, params| {
+        if *who != Principal::Window {
+            return Err(Error::Forbidden("pairing, but from loom's window".into()));
+        }
+        super::host::pair(params["open"].as_bool().unwrap_or(true));
+        Ok(json!({}))
+    });
+    // The device asking to pair (the remote bridge's `candidate`), let in.
+    hub.handle("pair_confirm", |who, params| {
+        if *who != Principal::Window {
+            return Err(Error::Forbidden("pairing, but from loom's window".into()));
+        }
+        let candidate = super::host::state_of("remote")["candidate"].clone();
+        let (Some(id), Some(name)) = (candidate["id"].as_str(), candidate["name"].as_str()) else {
+            return Err(Error::Conflict("no device is asking to pair".into()));
+        };
+        if params["id"].as_str().is_some_and(|asked| asked != id) {
+            return Err(Error::Conflict("another device is asking to pair now".into()));
+        }
+        let (id, name) = (id.to_owned(), name.to_owned());
+        crate::settings::update(|s| {
+            if !s.remote_devices.iter().any(|(d, _)| *d == id) {
+                s.remote_devices.push((id.clone(), name.clone()));
+            }
+        });
+        super::host::pair(false);
+        Ok(json!({}))
+    });
     hub.handle("bridge_state", |who, params| {
         let Principal::Bridge(bridge) = who else { return Err(Error::Forbidden("a bridge's state, but from that bridge".into())) };
         super::host::set_state(bridge, params.clone());
         Ok(json!({}))
     });
+}
+
+/// The API's `bridges`: `{id: "telegram" | "remote", state, …}` as each says it (or loom knows).
+pub fn publish_states() {
+    let items = ["telegram", "remote"].iter().map(|name| {
+        let mut state = super::host::state_of(name);
+        state["id"] = json!(name);
+        state
+    });
+    crate::api::hub().store("bridges").set(items.collect());
 }
 
 #[cfg(test)]

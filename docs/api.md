@@ -211,6 +211,33 @@ Who: window, cli.
 | `running` | boolean? |  |
 | `calls_left` | integer? |  |
 
+### `closed`
+
+Conversations closed lately, newest first (`reopen`).
+
+Who: window, cli.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | its session |
+| `title` | string |  |
+| `folder` | string |  |
+| `used` | string |  |
+
+### `bridges`
+
+The bridges as they say they are (Settings shows the same).
+
+Who: window, cli.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | telegram, remote |
+| `state` | string | off, connecting, online, failed… |
+| `ticket` | string? | the remote bridge's pairing ticket, while pairing |
+| `candidate` | object? | a device asking to pair: {id, name} |
+| `why` | string? |  |
+
 ### `schedules`
 
 Scheduled prompts (made by agents' tools or in the window).
@@ -306,6 +333,71 @@ Who: window, cli, bridge. Result: `{}`.
 |---|---|---|
 | `agent` | string | the agent's id |
 | `title` | string | its new title |
+
+### `reopen`
+
+Reopens a conversation closed lately, as an agent.
+
+Who: window, cli. Result: `{agent}`.
+
+| Param | Type | |
+|---|---|---|
+| `session` | string | a `closed` item's id |
+
+### `past_conversations`
+
+Claude Code's past conversations, newest first (200 at most).
+
+Who: window, cli. Result: `{conversations: [{session, title, folder, updated}]}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `folder` | string? | only those in it (else all) |
+
+### `resume`
+
+A past conversation picked up as an agent (the one open, if it is).
+
+Who: window, cli. Result: `{agent}`.
+
+| Param | Type | |
+|---|---|---|
+| `session` | string | a past conversation |
+| `folder` | string | its folder |
+| `title` | string? |  |
+
+### `schedule_new`
+
+Schedules a prompt for an agent.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | whose prompt |
+| `prompt` | string |  |
+| `when` | string | 09:00, weekdays 9:30, every 2h, in 20m… |
+| `same` | boolean? | in its conversation (true), or a new one each time |
+
+### `pairing`
+
+The remote bridge's pairing: its ticket is in `bridges`.
+
+Who: window. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `open` | boolean? | open (true) or close pairing |
+
+### `pair_confirm`
+
+Lets in the device asking to pair, and closes pairing.
+
+Who: window. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string? | the device expected (`bridges`' candidate) |
 
 ### `schedule_act`
 

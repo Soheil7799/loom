@@ -142,6 +142,10 @@ fn may_read(who: &Principal, resource: &str) -> bool {
     if let Some(name) = resource.strip_prefix("bridge/") {
         return *who == Principal::Bridge(name.to_owned());
     }
+    // The bridges' states (a pairing ticket among them): people's.
+    if resource == "bridges" {
+        return matches!(who, Principal::Window | Principal::Cli);
+    }
     match who {
         Principal::Window | Principal::Cli => true,
         Principal::Bridge(name) => !vault || name == "remote",

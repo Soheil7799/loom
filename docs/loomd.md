@@ -24,7 +24,12 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
     chat's agent, whose conversation is `conversation/<agent>`; `notes_close`;
   - Scribe works as in the window: it reads conversations after their turns, and its
     questions and proposals are the `scribe` resource;
-  - schedules: `schedules`, `schedule_act`; an agent's mode: `set_mode`; its title: `rename`.
+  - schedules: `schedules`, `schedule_new`, `schedule_act`; an agent's mode: `set_mode`;
+    its title: `rename`;
+  - conversations: an agent's history is readable while it rests; closed ones (`closed`,
+    `reopen`), Claude Code's past ones (`past_conversations`, `resume`);
+  - the bridges' states (`bridges`), pairing a device (`pairing`, `pair_confirm`: the
+    window's rights, so from `loomd --web`'s page).
 - Pictures sent from a bridge: PNG, JPEG, WebP or GIF (made PNG).
 - Agents' loom tools and the bridges run as the `loom` program installed beside loomd.
 - **Who may do what** is as with the window (`docs/trust.md`). With no window, the window's
@@ -36,5 +41,12 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
 
 The web page's UI is in `web/` (Svelte; `web/README.md` builds and installs it).
 
-It is not started by itself (no service file is installed): run it when you want agents to
-keep going with no window open, for instance from a systemd user unit of your own.
+It isn't started by itself. To have it from login on, as a systemd user service:
+
+```sh
+cp data/loomd.service ~/.config/systemd/user/
+systemctl --user enable --now loomd       # its output: journalctl --user -u loomd
+```
+
+(`--web` doesn't belong there: the journal is readable by your agents too. Run
+`loom api web --open` for a page, with the CLI's rights.)
