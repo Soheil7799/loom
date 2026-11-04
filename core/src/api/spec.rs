@@ -309,7 +309,7 @@ http://127.0.0.1:<port>/?t=<token>. The token is traded once for a session, give
 (`/#<session>`: sent to no server; the page keeps it for its tab and takes it out of the address); then \
 `ws://<host>/api?s=<session>` is a WebSocket carrying the same messages, one per text frame. `Host` must be \
 127.0.0.1 or localhost at that port and the WebSocket's `Origin` that page; there are no CORS headers and the page \
-can't be framed. `web_close` lets every page go, connected ones too. The page's files: `LOOM_WEB_UI`, else `<data dir>/loom/web` (its index.html), else a small page built in.";
+can't be framed. `web_close` lets every page go, connected ones too. The page's files: `LOOM_WEB_UI`, else the UI built into loom, else `<data dir>/loom/web` (its index.html), else a small page built in.";
 
 const PROTOCOL_METHODS: &[(&str, &str, &str)] = &[
     ("initialize", "{protocol: {min, max}, client: {name, version}, capabilities}", "{protocol, server, principal, capabilities: {subscriptions: {page, queue}, commands}} — first, once"),

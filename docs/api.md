@@ -15,7 +15,7 @@ A subscription answers its snapshot in pages, then `synced`, then numbered `chan
 | `unsubscribe` | `{sub}` | {} |
 | `resync` | `{sub}` | {} — a fresh snapshot follows (after a gap) |
 
-A web page (a UI in a browser or a webview) reaches the API through `web_open`'s link: http://127.0.0.1:<port>/?t=<token>. The token is traded once for a session, given in the address's fragment (`/#<session>`: sent to no server; the page keeps it for its tab and takes it out of the address); then `ws://<host>/api?s=<session>` is a WebSocket carrying the same messages, one per text frame. `Host` must be 127.0.0.1 or localhost at that port and the WebSocket's `Origin` that page; there are no CORS headers and the page can't be framed. `web_close` lets every page go, connected ones too. The page's files: `LOOM_WEB_UI`, else `<data dir>/loom/web` (its index.html), else a small page built in.
+A web page (a UI in a browser or a webview) reaches the API through `web_open`'s link: http://127.0.0.1:<port>/?t=<token>. The token is traded once for a session, given in the address's fragment (`/#<session>`: sent to no server; the page keeps it for its tab and takes it out of the address); then `ws://<host>/api?s=<session>` is a WebSocket carrying the same messages, one per text frame. `Host` must be 127.0.0.1 or localhost at that port and the WebSocket's `Origin` that page; there are no CORS headers and the page can't be framed. `web_close` lets every page go, connected ones too. The page's files: `LOOM_WEB_UI`, else the UI built into loom, else `<data dir>/loom/web` (its index.html), else a small page built in.
 
 Server notification: `subscription`, params a message (`{sub, seq, kind, …}`, see `docs/api.schema.json`).
 

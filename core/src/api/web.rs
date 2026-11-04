@@ -18,8 +18,9 @@
 //! - **A page is who opened its link**: the window's link, the window's rights; the CLI's, the
 //!   CLI's (so whatever passes for the CLI gains nothing by opening one).
 //!
-//! The page itself: the files in `LOOM_WEB_UI`, else `<data dir>/loom/web` (a built UI: index.html
-//! and what it loads), else a small one built in that lists the agents (to see it work).
+//! The page itself: the files in `LOOM_WEB_UI` (a built UI: index.html and what it loads), else
+//! the UI compiled into the binary (`build.rs`, from `web/dist`), else `<data dir>/loom/web`,
+//! else a small page built in that lists the agents (to see it work).
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
@@ -226,6 +227,12 @@ fn page(stream: &mut TcpStream, path: &str) -> std::io::Result<()> {
             Err(_) => answer(stream, 404, "text/plain", b"Not found.\n", &[]),
         };
     }
+    if !embedded::EMBEDDED.is_empty() {
+        return match embedded::EMBEDDED.iter().find(|(p, _)| *p == path) {
+            Some((_, bytes)) => answer(stream, 200, mime(path), bytes, &[]),
+            None => answer(stream, 404, "text/plain", b"Not found.\n", &[]),
+        };
+    }
     match path {
         "/index.html" => answer(stream, 200, "text/html; charset=utf-8", BUILT_IN_PAGE.as_bytes(), &[]),
         "/loom.js" => answer(stream, 200, "text/javascript; charset=utf-8", BUILT_IN_SCRIPT.as_bytes(), &[]),
@@ -234,9 +241,19 @@ fn page(stream: &mut TcpStream, path: &str) -> std::io::Result<()> {
     }
 }
 
-/// Where a built UI is, if there is one.
+/// The web page built into this binary (`build.rs`): empty when it was built without one.
+mod embedded {
+    include!(concat!(env!("OUT_DIR"), "/web_ui.rs"));
+}
+
+/// A built UI's folder to serve instead of the one built in: `LOOM_WEB_UI` (working on the UI),
+/// else, with none built in, `<data dir>/loom/web`.
 fn ui_dir() -> Option<PathBuf> {
-    let dir = std::env::var_os("LOOM_WEB_UI").map(PathBuf::from).unwrap_or_else(|| crate::paths::data_dir().join("loom/web"));
+    let dir = match std::env::var_os("LOOM_WEB_UI") {
+        Some(dir) => PathBuf::from(dir),
+        None if embedded::EMBEDDED.is_empty() => crate::paths::data_dir().join("loom/web"),
+        None => return None,
+    };
     dir.join("index.html").is_file().then_some(dir)
 }
 
