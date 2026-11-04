@@ -15,6 +15,8 @@ A subscription answers its snapshot in pages, then `synced`, then numbered `chan
 | `unsubscribe` | `{sub}` | {} |
 | `resync` | `{sub}` | {} — a fresh snapshot follows (after a gap) |
 
+A web page (a UI in a browser or a webview) reaches the API through `web_open`'s link: http://127.0.0.1:<port>/?t=<token>. The token is traded once for an `HttpOnly; SameSite=Strict` cookie and taken out of the address; then `ws://<host>/api` is a WebSocket carrying the same messages, one per text frame. `Host` must be 127.0.0.1 or localhost at that port and the WebSocket's `Origin` that page; there are no CORS headers and the page can't be framed. The page's files: `LOOM_WEB_UI`, else `<data dir>/loom/web` (its index.html), else a small page built in.
+
 Server notification: `subscription`, params a message (`{sub, seq, kind, …}`, see `docs/api.schema.json`).
 
 Errors: -32700 not JSON, -32600 not a request, -32601 no such method, -32602 invalid params, -32002 initialize first, -32003 no protocol in common, -32010 not found, -32011 forbidden, -32012 conflict (answered elsewhere first), -32013 failed; `data.kind` names it.
@@ -453,6 +455,22 @@ Who: bridge. Result: `{ok} or {error}`, once done.
 |---|---|---|
 | `method` | string | a request of docs/bridges.md |
 | `params` | object? | its parameters |
+
+### `web_open`
+
+Starts the web page's server (this computer only) if it isn't, and a link to it with a one-time token (two minutes). The page is who opened the link: the window's rights, or the CLI's.
+
+Who: window, cli. Result: `{url}`.
+
+| Param | Type | |
+|---|---|---|
+| `port` | integer? | where to listen on 127.0.0.1 (else any free port), the first time |
+
+### `web_close`
+
+Stops the web page's server; every page let in is let go.
+
+Who: window, cli. Result: `{}`.
 
 ### `tool`
 

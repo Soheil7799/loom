@@ -122,6 +122,15 @@ pub const COMMANDS: &[Command] = &[
         about: "The bridge protocol, for bridges that still speak it (the remote one, for the phone app already shipped); its events: `bridge/<name>`.",
     },
     Command {
+        name: "web_open",
+        who: PEOPLE,
+        params: &[("port", "integer", false, "where to listen on 127.0.0.1 (else any free port), the first time")],
+        result: "{url}",
+        later: false,
+        about: "Starts the web page's server (this computer only) if it isn't, and a link to it with a one-time token (two minutes). The page is who opened the link: the window's rights, or the CLI's.",
+    },
+    Command { name: "web_close", who: PEOPLE, params: &[], result: "{}", later: false, about: "Stops the web page's server; every page let in is let go." },
+    Command {
         name: "tool",
         who: &["agent"],
         params: &[("name", "string", true, "a loom tool's request (run_job, job_output, open_file, …)"), ("params", "object", false, "its parameters")],
@@ -221,6 +230,13 @@ pub const RESOURCES: &[Resource] = &[
 ];
 
 /// The protocol's own methods.
+/// How a web page reaches the API (`web_open`'s link).
+const WEB: &str = "A web page (a UI in a browser or a webview) reaches the API through `web_open`'s link: \
+http://127.0.0.1:<port>/?t=<token>. The token is traded once for an `HttpOnly; SameSite=Strict` cookie and taken out \
+of the address; then `ws://<host>/api` is a WebSocket carrying the same messages, one per text frame. `Host` must be \
+127.0.0.1 or localhost at that port and the WebSocket's `Origin` that page; there are no CORS headers and the page \
+can't be framed. The page's files: `LOOM_WEB_UI`, else `<data dir>/loom/web` (its index.html), else a small page built in.";
+
 const PROTOCOL_METHODS: &[(&str, &str, &str)] = &[
     ("initialize", "{protocol: {min, max}, client: {name, version}, capabilities}", "{protocol, server, principal, capabilities: {subscriptions: {page, queue}, commands}} — first, once"),
     ("subscribe", "{resource}", "{sub, resource}; its messages follow as `subscription` notifications"),
@@ -242,6 +258,7 @@ pub fn markdown() -> String {
     for (name, params, result) in PROTOCOL_METHODS {
         out.push_str(&format!("| `{name}` | `{params}` | {result} |\n"));
     }
+    out.push_str(&format!("\n{WEB}\n"));
     out.push_str("\nServer notification: `subscription`, params a message (`{sub, seq, kind, …}`, see `docs/api.schema.json`).\n\n");
     out.push_str("Errors: -32700 not JSON, -32600 not a request, -32601 no such method, -32602 invalid params, -32002 initialize first, -32003 no protocol in common, -32010 not found, -32011 forbidden, -32012 conflict (answered elsewhere first), -32013 failed; `data.kind` names it.\n\n## Resources\n");
     for r in RESOURCES {
@@ -320,6 +337,7 @@ mod tests {
         crate::jobs_api::serve();
         crate::bridges::api::serve();
         crate::api::blobs::serve();
+        crate::api::web::serve();
         for name in crate::api::hub().commands() {
             assert!(COMMANDS.iter().any(|c| c.name == name), "{name} is not in spec.rs");
         }

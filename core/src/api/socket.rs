@@ -31,7 +31,8 @@ const HIGH: usize = 256;
 
 enum Event {
     /// `who`: fixed by loom (a connection it handed down); None: worked out from the peer.
-    Open { conn: u64, pid: u32, pidfd: Option<OwnedFd>, who: Option<Principal>, lines: mpsc::Sender<String>, waiting: Arc<AtomicUsize> },
+    /// `peer`: what the audit log says of the other end, if not a process (a web page).
+    Open { conn: u64, pid: u32, pidfd: Option<OwnedFd>, who: Option<Principal>, peer: Option<serde_json::Value>, lines: mpsc::Sender<String>, waiting: Arc<AtomicUsize> },
     Line { conn: u64, line: String },
     /// The writer caught up: what waits can go.
     Writable { conn: u64 },
@@ -64,7 +65,7 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
         let mut sessions: HashMap<u64, Rc<Session>> = HashMap::new();
         while let Ok(event) = rx.recv().await {
             match event {
-                Event::Open { conn, pid, pidfd, who: given, lines, waiting } => {
+                Event::Open { conn, pid, pidfd, who: given, peer: described, lines, waiting } => {
                     let mut who = given.clone().unwrap_or_else(|| principal_of(pid, &owner));
                     // The process ended (its id may be another's by now): what was read of
                     // it can't be trusted, and it is placed nowhere.
@@ -72,7 +73,8 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
                         who = Principal::Agent("unplaced".into());
                     }
                     crate::log::debug!("api".to_string(), "connection {conn} from process {pid}: {who:?}");
-                    let peer = serde_json::json!({ "principal": super::rpc::principal_json(&who), "pid": pid, "command": command_line(pid) });
+                    let mut peer = described.unwrap_or_else(|| serde_json::json!({ "pid": pid, "command": command_line(pid) }));
+                    peer["principal"] = super::rpc::principal_json(&who);
                     let counted = waiting.clone();
                     let out = Out {
                         send: Box::new(move |line| {
@@ -124,12 +126,52 @@ fn open(stream: UnixStream, tx: &async_channel::Sender<Event>, pid: u32, pidfd: 
     let writer = stream.try_clone().map_err(|e| e.to_string())?;
     let (lines, out) = mpsc::channel::<String>();
     let waiting = Arc::new(AtomicUsize::new(0));
-    tx.send_blocking(Event::Open { conn, pid, pidfd, who, lines, waiting: waiting.clone() }).map_err(|_| "loom is closing".to_owned())?;
+    tx.send_blocking(Event::Open { conn, pid, pidfd, who, peer: None, lines, waiting: waiting.clone() }).map_err(|_| "loom is closing".to_owned())?;
     let events = tx.clone();
     std::thread::spawn(move || write(writer, out, waiting, conn, events));
     let events = tx.clone();
     std::thread::spawn(move || read(stream, conn, events));
     Ok(())
+}
+
+/// A connection over another transport (a WebSocket): the protocol as on the socket, as
+/// `who`. The transport hands each line it reads to `line`, sends what `outgoing` gives, says
+/// `sent` after each, and `closed` at the end.
+pub(crate) struct External {
+    conn: u64,
+    events: async_channel::Sender<Event>,
+    waiting: Arc<AtomicUsize>,
+    pub outgoing: mpsc::Receiver<String>,
+}
+
+impl External {
+    /// `peer`: what the audit log says of the other end.
+    pub fn open(who: Principal, peer: serde_json::Value) -> Result<External, String> {
+        let events = SENDER.get().ok_or("the API isn't served")?.clone();
+        let conn = NEXT.fetch_add(1, Ordering::Relaxed);
+        let (lines, outgoing) = mpsc::channel::<String>();
+        let waiting = Arc::new(AtomicUsize::new(0));
+        events.send_blocking(Event::Open { conn, pid: 0, pidfd: None, who: Some(who), peer: Some(peer), lines, waiting: waiting.clone() }).map_err(|_| "loom is closing".to_owned())?;
+        Ok(External { conn, events, waiting, outgoing })
+    }
+
+    /// A message from the client; false: loom has gone.
+    pub fn line(&self, line: String) -> bool {
+        self.events.send_blocking(Event::Line { conn: self.conn, line }).is_ok()
+    }
+
+    /// One outgoing line sent (what waited for room goes once half are).
+    pub fn sent(&self) {
+        if self.waiting.fetch_sub(1, Ordering::Relaxed) == HIGH / 2 + 1 {
+            let _ = self.events.send_blocking(Event::Writable { conn: self.conn });
+        }
+    }
+}
+
+impl Drop for External {
+    fn drop(&mut self) {
+        let _ = self.events.send_blocking(Event::Closed { conn: self.conn });
+    }
 }
 
 fn accept(listener: UnixListener, tx: async_channel::Sender<Event>) {

@@ -19,6 +19,7 @@ portable-pty = "0.9"
 vt100 = "0.16"
 notify = "8.2"
 schemars = "1"
+tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

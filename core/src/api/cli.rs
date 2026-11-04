@@ -7,6 +7,7 @@
 //! loom api watch <resource>…         its messages as they come, one JSON object per line
 //! loom api do <command> [params]     a command (params: a JSON object); prints its result
 //! loom api raw                       JSON-RPC lines from stdin to loom, loom's to stdout
+//! loom api web [--open]              a link to loom's web page (one use), in the browser
 //! ```
 //!
 //! The socket: `--socket <path>`, else `LOOM_API`, else the one of `LOOM_APP_ID`'s loom.
@@ -19,7 +20,7 @@ use serde_json::{Value, json};
 
 use super::{Applied, Message, Mirror};
 
-const USAGE: &str = "usage: loom api [--socket <path>] info | get <resource> | watch <resource>… | do <command> [<params JSON>] [--id <id>] | raw";
+const USAGE: &str = "usage: loom api [--socket <path>] info | get <resource> | watch <resource>… | do <command> [<params JSON>] [--id <id>] | raw | web [--open]";
 
 /// A connection to a running loom, initialized.
 pub struct Connection {
@@ -195,6 +196,14 @@ pub fn run(args: &[String]) -> i32 {
         Err(err) => return fail(&err),
     };
     let result = match (verb.as_str(), &args[1..]) {
+        // The web page: its link (one use, two minutes), opened in the browser with --open.
+        ("web", rest) if rest.iter().all(|a| a == "--open") => connection.command(&new_id(), "web_open", json!({})).map(|answer| {
+            let url = answer["url"].as_str().unwrap_or_default();
+            println!("{url}");
+            if !rest.is_empty() {
+                let _ = std::process::Command::new("xdg-open").arg(url).spawn();
+            }
+        }),
         ("info", []) => {
             print(&connection.hello);
             Ok(())

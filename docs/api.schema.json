@@ -1347,6 +1347,39 @@
       },
       "result": "{ok} or {error}"
     },
+    "web_open": {
+      "description": "Starts the web page's server (this computer only) if it isn't, and a link to it with a one-time token (two minutes). The page is who opened the link: the window's rights, or the CLI's.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "port": {
+            "type": "integer",
+            "description": "where to listen on 127.0.0.1 (else any free port), the first time"
+          }
+        },
+        "required": []
+      },
+      "result": "{url}"
+    },
+    "web_close": {
+      "description": "Stops the web page's server; every page let in is let go.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "result": "{}"
+    },
     "tool": {
       "description": "An agent's loom tools (its MCP server), as the agent loom found the caller to be.",
       "who": [

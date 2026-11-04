@@ -22,6 +22,7 @@ loom decides, when a connection is made; a client never says who it is.
 | agent | an agent's tools, its commands, the jobs it ran in the tray | the connecting process is in that agent's systemd scope, or descends from its process or job |
 | bridge | Telegram, a paired phone | started by loom, on a connection loom made and handed to it |
 | CLI | anything else of yours (`loom api` in a terminal, a script) | none of the above |
+| web page | a UI in a browser or webview, on this computer | the cookie its one-time link was traded for; it is whoever opened the link (the window, or the CLI) |
 
 Each agent's process, and each job an agent runs in the tray, starts in a systemd scope of
 its own (`loom-<pid>-a<agent>-<n>.scope`, through `systemd-run --user --scope`). A process
@@ -58,6 +59,16 @@ The CLI is "whatever loom can't place under an agent". With scopes, `setsid`, `n
 process an agent leaves running on its own escapes too. Such a process is taken for the
 CLI. That is why the CLI answers no questions and can't open a way off the
 machine: whatever it can do, the agent could already do by editing your files.
+
+## The web page
+
+Off until asked for (`web_open`: loom's window, or `loom api web`), and on 127.0.0.1 only. The
+link's token works once, within two minutes, and is traded for an `HttpOnly; SameSite=Strict`
+cookie; the address loses it. Requests must name this computer (`127.0.0.1` or `localhost`
+at that port: a site whose name points here is turned away), and the WebSocket must come from
+the page itself (`Origin`). Nothing may frame the page, and no other site is answered. Another
+user of this computer can reach the port, but has no cookie. `web_close` stops it and lets
+every page go.
 
 ## The audit log
 

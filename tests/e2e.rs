@@ -582,3 +582,76 @@ fn the_remote_bridge_through_the_api() {
     let old = loom_core::paths::runtime_dir().join("loom/loom-LoomE2eRemote-bridges.sock");
     assert!(!old.exists(), "no bridge socket any more");
 }
+
+// ---- the web page --------------------------------------------------------------------------
+
+/// One plain HTTP GET to the web server (`host`: the Host header, `cookie` if any): the
+/// status, the headers, the body.
+fn http_get(port: u16, path: &str, host: &str, cookie: Option<&str>) -> (u16, String, String) {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).expect("the web server listens");
+    let cookie = cookie.map(|c| format!("Cookie: {c}\r\n")).unwrap_or_default();
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\n{cookie}Connection: close\r\n\r\n").unwrap();
+    let mut answer = String::new();
+    stream.read_to_string(&mut answer).unwrap();
+    let (head, body) = answer.split_once("\r\n\r\n").unwrap_or((&answer, ""));
+    let status = head.split_whitespace().nth(1).and_then(|s| s.parse().ok()).unwrap_or(0);
+    (status, head.to_owned(), body.to_owned())
+}
+
+#[test]
+#[ignore = "opens a window: cargo test --test e2e -- --ignored"]
+#[allow(clippy::result_large_err)]
+fn the_web_page_through_the_api() {
+    use tungstenite::client::IntoClientRequest;
+    let (_instance, mut c) = start_as("dev.shirvani.LoomE2eWeb", |_| {}, &[]);
+    let url = command(&mut c, "web_open", json!({}))["url"].as_str().unwrap().to_owned();
+    let (port, token) = {
+        let rest = url.strip_prefix("http://127.0.0.1:").expect("loopback only");
+        let (port, query) = rest.split_once('/').unwrap();
+        (port.parse::<u16>().unwrap(), query.strip_prefix("?t=").unwrap().to_owned())
+    };
+    let host = format!("127.0.0.1:{port}");
+    // The link: traded once for a cookie, out of the address.
+    let (status, head, _) = http_get(port, &format!("/?t={token}"), &host, None);
+    assert_eq!(status, 303, "{head}");
+    assert!(head.contains("HttpOnly") && head.contains("SameSite=Strict") && head.contains("Location: /"), "{head}");
+    assert!(head.contains("frame-ancestors 'none'"), "{head}");
+    let cookie = head.lines().find_map(|l| l.strip_prefix("Set-Cookie: ")).and_then(|c| c.split(';').next()).unwrap().to_owned();
+    assert_eq!(http_get(port, &format!("/?t={token}"), &host, None).0, 403, "a link works once");
+    assert_eq!(http_get(port, "/", &host, None).0, 403, "no cookie, no page");
+    let (status, _, body) = http_get(port, "/", &host, Some(&cookie));
+    assert_eq!(status, 200);
+    assert!(body.contains("<title>loom</title>"));
+    assert_eq!(http_get(port, "/", &format!("evil.example:{port}"), Some(&cookie)).0, 421, "another name for this computer");
+    assert_eq!(http_get(port, "/../../etc/passwd", &host, Some(&cookie)).0, 404);
+    eprintln!("e2e web: the link, the cookie, the host check");
+    // The WebSocket: from this page only; then the API as the one who opened the link.
+    let socket = |origin: &str| {
+        let mut request = format!("ws://{host}/api").into_client_request().unwrap();
+        request.headers_mut().insert("Cookie", cookie.parse().unwrap());
+        request.headers_mut().insert("Origin", origin.parse().unwrap());
+        tungstenite::client::client(request, std::net::TcpStream::connect(("127.0.0.1", port)).unwrap())
+    };
+    assert!(socket("http://evil.example").is_err(), "another site's page can't open it");
+    let (mut ws, _) = socket(&format!("http://{host}")).expect("this page opens it");
+    let mut call = |id: &str, method: &str, params: Value| -> Value {
+        ws.send(tungstenite::Message::text(json!({ "jsonrpc": "2.0", "id": id, "method": method, "params": params }).to_string())).unwrap();
+        loop {
+            let message: Value = serde_json::from_str(ws.read().unwrap().to_text().unwrap()).unwrap();
+            if message["id"] == id {
+                return message;
+            }
+        }
+    };
+    let hello = call("1", "initialize", json!({ "protocol": { "min": 1, "max": 1 } }));
+    assert_eq!(hello["result"]["principal"]["kind"], "cli", "the CLI opened the link: the CLI's rights");
+    assert!(call("2", "subscribe", json!({ "resource": "agents" }))["result"]["sub"].is_string());
+    let refused = call("c-1", "set_settings", json!({ "changes": { "telegram_enabled": true } }));
+    assert_eq!(refused["error"]["data"]["kind"], "forbidden");
+    eprintln!("e2e web: the WebSocket speaks the API");
+    // Closed: every page let in is let go.
+    command(&mut c, "web_close", json!({}));
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(std::net::TcpStream::connect(("127.0.0.1", port)).is_err(), "nothing listens");
+}

@@ -17,6 +17,7 @@ pub mod cli;
 pub mod rpc;
 pub mod shared;
 pub mod spec;
+pub mod web;
 pub mod socket;
 mod store;
 pub mod wire;
