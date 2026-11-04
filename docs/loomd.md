@@ -34,5 +34,7 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
   systemd unit, loomd's stderr goes to the journal, which your agents can read too: use
   `--web` from a terminal.
 
+The web page's UI is in `web/` (Svelte; `web/README.md` builds and installs it).
+
 It is not started by itself (no service file is installed): run it when you want agents to
 keep going with no window open, for instance from a systemd user unit of your own.

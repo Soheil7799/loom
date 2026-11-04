@@ -1,0 +1,16 @@
+{
+  "name": "loom-web",
+  "private": true,
+  "version": "0.0.0",
+  "description": "loom's web page: a client of loom's core API (built to dist/, served by loom)",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "check": "vite build --mode development"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^6",
+    "svelte": "^5",
+    "vite": "^7"
+  }
+}

@@ -1,0 +1,207 @@
+// loom's core API from the page: one WebSocket, JSON-RPC 2.0 (docs/api.md). Requests answer
+// promises; subscriptions keep a copy of their resource (snapshot pages, `synced`, then
+// changes; a gap asks for a resync) and call back whenever it changes.
+
+const PROTOCOL = { min: 1, max: 1 };
+
+// The session: in the address's fragment once (sent to no server), then this tab's.
+if (location.hash.length > 1) {
+  sessionStorage.setItem("loom", location.hash.slice(1));
+  history.replaceState(null, "", "/");
+}
+
+let socket = null;
+let next = 0;
+const waiting = new Map(); // id -> { resolve, reject }
+const followed = new Map(); // resource -> Follow
+const bySub = new Map(); // sub id -> Follow
+let hello = null;
+const listeners = new Set();
+let state = "connecting";
+
+/** The connection's state: connecting, open (with `hello`), closed, refused. */
+export function onState(f) {
+  listeners.add(f);
+  f(state, hello);
+  return () => listeners.delete(f);
+}
+
+function setState(s) {
+  state = s;
+  for (const f of listeners) f(state, hello);
+}
+
+function call(method, params = {}, id = String(++next)) {
+  return new Promise((resolve, reject) => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return reject(new Error("not connected to loom"));
+    waiting.set(id, { resolve, reject });
+    socket.send(JSON.stringify({ jsonrpc: "2.0", id, method, params }));
+  });
+}
+
+/** A command (its id unique to this page, so a retry isn't done twice). */
+export function command(method, params = {}) {
+  return call(method, params, `web-${crypto.randomUUID()}`);
+}
+
+/** Whether loom has command `name` (loomd has some the window doesn't). */
+export function has(name) {
+  return !!hello?.capabilities?.commands?.includes(name);
+}
+
+class Follow {
+  constructor(resource) {
+    this.resource = resource;
+    this.items = [];
+    this.synced = false;
+    this.gone = false;
+    this.seq = 0;
+    this.incoming = null;
+    this.stale = false;
+    this.sub = null;
+    this.watchers = new Set();
+  }
+
+  async start() {
+    try {
+      const answer = await call("subscribe", { resource: this.resource });
+      this.sub = answer.sub;
+      bySub.set(this.sub, this);
+    } catch (e) {
+      this.error = e.message;
+      this.tell();
+    }
+  }
+
+  apply(m) {
+    if (this.stale) {
+      this.seq = m.seq;
+      if (m.kind === "resync") { this.stale = false; this.incoming = []; }
+      return;
+    }
+    if (this.seq !== 0 && m.seq !== this.seq + 1) {
+      this.seq = m.seq;
+      this.stale = true;
+      this.synced = false;
+      call("resync", { sub: this.sub }).catch(() => {});
+      return;
+    }
+    this.seq = m.seq;
+    switch (m.kind) {
+      case "page": (this.incoming ??= []).push(...m.items); return;
+      case "synced": this.items = this.incoming ?? []; this.incoming = null; this.synced = true; break;
+      case "resync": this.synced = false; this.incoming = []; return;
+      case "gone": this.gone = true; this.items = []; break;
+      case "changes": for (const op of m.ops) applyOp(this.items, op); break;
+      default: return;
+    }
+    this.tell();
+  }
+
+  tell() {
+    for (const f of this.watchers) f(this);
+  }
+}
+
+function at(items, id) {
+  return items.findIndex((i) => i.id === id);
+}
+
+function applyOp(items, op) {
+  const i = op.id !== undefined ? at(items, op.id) : op.item ? at(items, op.item.id) : -1;
+  switch (op.op) {
+    case "upsert": if (i < 0) items.push(op.item); else items[i] = op.item; break;
+    case "remove": if (i >= 0) items.splice(i, 1); break;
+    case "append": if (i >= 0) items[i] = { ...items[i], [op.field]: (typeof items[i][op.field] === "string" ? items[i][op.field] : "") + op.text }; break;
+    case "order": {
+      const first = op.ids.map((id) => items.find((x) => x.id === id)).filter(Boolean);
+      const rest = items.filter((x) => !op.ids.includes(x.id));
+      items.splice(0, items.length, ...first, ...rest);
+      break;
+    }
+    case "bytes": {
+      // A job's output: kept as raw bytes after its screen, what the screen holds dropped.
+      if (i < 0) break;
+      const item = items[i];
+      const have = item.offset ?? 0;
+      if (op.offset > have) break; // missed some: the copy goes on (a resync would fix it)
+      const bytes = fromBase64(op.data).slice(have - op.offset);
+      items[i] = { ...item, offset: have + bytes.length, tail: concat(item.tail ?? new Uint8Array(), bytes) };
+      break;
+    }
+  }
+}
+
+export function fromBase64(text) {
+  const raw = atob(text || "");
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
+function concat(a, b) {
+  const out = new Uint8Array(a.length + b.length);
+  out.set(a);
+  out.set(b, a.length);
+  return out;
+}
+
+/** Follows `resource`; `watch(follow)` on every change. Returns the stop. */
+export function follow(resource, watch) {
+  let f = followed.get(resource);
+  if (!f) {
+    f = new Follow(resource);
+    followed.set(resource, f);
+    if (state === "open") f.start();
+  }
+  f.watchers.add(watch);
+  if (f.synced || f.error) watch(f);
+  return () => {
+    f.watchers.delete(watch);
+    if (f.watchers.size === 0) {
+      followed.delete(resource);
+      if (f.sub) {
+        bySub.delete(f.sub);
+        call("unsubscribe", { sub: f.sub }).catch(() => {});
+      }
+    }
+  };
+}
+
+function connect() {
+  const session = sessionStorage.getItem("loom");
+  if (!session) return setState("refused");
+  setState("connecting");
+  socket = new WebSocket(`ws://${location.host}/api?s=${encodeURIComponent(session)}`);
+  socket.onopen = async () => {
+    try {
+      hello = await call("initialize", { protocol: PROTOCOL, client: { name: "loom web", version: "0" }, capabilities: {} });
+    } catch (e) {
+      return setState("refused");
+    }
+    setState("open");
+    for (const f of followed.values()) {
+      Object.assign(f, { items: [], synced: false, seq: 0, incoming: null, stale: false, sub: null });
+      f.start();
+    }
+  };
+  socket.onmessage = ({ data }) => {
+    const m = JSON.parse(data);
+    if (m.method === "subscription") return bySub.get(m.params.sub)?.apply(m.params);
+    const w = waiting.get(m.id);
+    if (!w) return;
+    waiting.delete(m.id);
+    if (m.error) w.reject(new Error(m.error.message)); else w.resolve(m.result);
+  };
+  socket.onclose = (e) => {
+    for (const w of waiting.values()) w.reject(new Error("loom closed the connection"));
+    waiting.clear();
+    bySub.clear();
+    // Turned away before it opened (no session, or let go): a new link is needed.
+    if (state !== "open") return setState("refused");
+    setState("closed");
+    setTimeout(connect, 2000);
+  };
+}
+
+connect();
