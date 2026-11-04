@@ -41,7 +41,7 @@ jobs:
         run: |
           name="loom-${GITHUB_REF_NAME#v}-x86_64-linux"
           mkdir -p "$name/bin"
-          cp target/release/loom target/release/loom-remote "$name/bin/"
+          cp target/release/loom target/release/loom-remote target/release/loomd "$name/bin/"
           cp -r data "$name/"
           cp install.sh README.md LICENSE "$name/"
           tar -czf "$name.tar.gz" "$name"
