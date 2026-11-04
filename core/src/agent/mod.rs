@@ -20,6 +20,7 @@ use crate::rt::Timer;
 use crate::state::Saved;
 
 pub mod commands;
+pub mod headless;
 pub mod form;
 pub mod transcript;
 pub mod view;

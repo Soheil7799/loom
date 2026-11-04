@@ -70,6 +70,12 @@ the page itself (`Origin`). Nothing may frame the page, and no other site is ans
 user of this computer can reach the port, but has no cookie. `web_close` stops it and lets
 every page go.
 
+## loomd
+
+The core with no window (`docs/loomd.md`). One core per app id: loomd and loom's window
+never run together for the same agents. With no window, its rights come only through
+`loomd --web`'s link, printed on loomd's own stderr to whoever started it.
+
 ## The audit log
 
 Every command that comes through the socket is written to the state folder

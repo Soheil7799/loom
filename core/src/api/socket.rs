@@ -54,7 +54,11 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
         std::fs::create_dir_all(dir)?;
         std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))?;
     }
-    // A socket left by a crash; this app is the only instance of its id (GApplication).
+    // Another core of this app id (loomd, or a window) answers there: one core at a time.
+    if UnixStream::connect(path).is_ok() {
+        return Err(std::io::Error::new(std::io::ErrorKind::AddrInUse, "another loom of this app id is running (its API answers)"));
+    }
+    // A socket left by a crash.
     let _ = std::fs::remove_file(path);
     let listener = UnixListener::bind(path)?;
     std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))?;
@@ -105,6 +109,12 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
         }
     });
     Ok(())
+}
+
+/// What hosts the core whose API answers at `path` (`window`, `daemon`), if one does.
+pub fn running(path: &Path) -> Option<String> {
+    let connection = super::cli::Connection::open(path).ok()?;
+    Some(connection.hello["server"]["host"].as_str().unwrap_or("window").to_owned())
 }
 
 /// Where connections go once `serve` runs (`hand` puts its own there too).

@@ -213,7 +213,7 @@ impl Session {
         let limits = self.hub.limits();
         Ok(json!({
             "protocol": PROTOCOL,
-            "server": { "name": "loom", "version": env!("CARGO_PKG_VERSION") },
+            "server": { "name": "loom", "version": env!("CARGO_PKG_VERSION"), "host": super::host_kind() },
             "principal": principal_json(&self.who),
             "capabilities": {
                 "subscriptions": { "page": limits.page, "queue": limits.queue },

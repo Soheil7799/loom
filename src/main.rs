@@ -132,6 +132,12 @@ fn main() -> glib::ExitCode {
     }
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
+    // loomd hosts this app id's core already: a window would be a second core on the same
+    // agents. (Another window is GApplication's to raise.)
+    if loom_core::api::socket::running(&loom_core::api::socket::socket_path(&app_id)).as_deref() == Some("daemon") {
+        eprintln!("loom: loomd is running for {app_id}; open its web page (loom api web --open), or stop it first");
+        return glib::ExitCode::from(1);
+    }
     settings::init(&app_id);
     loom_core::audit::init(&app_id);
     // The notes vault in the core API (warp).

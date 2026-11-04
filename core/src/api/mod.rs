@@ -99,6 +99,18 @@ const REMEMBERED: usize = 512;
 
 impl std::error::Error for Error {}
 
+/// What hosts the core in this process: `window` (loom's GTK app) or `daemon` (loomd).
+static HOST_KIND: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Says what hosts the core here (once, at start; `window` if never said).
+pub fn set_host_kind(kind: &'static str) {
+    let _ = HOST_KIND.set(kind);
+}
+
+pub fn host_kind() -> &'static str {
+    HOST_KIND.get().copied().unwrap_or("window")
+}
+
 /// Whether this loom is a test instance (started with `LOOM_TEST_INSTANCE=1`, read once):
 /// there the CLI may do what only people in loom's window and its bridges may otherwise
 /// (answer agents' questions), so end-to-end tests can drive it. Set when loom starts,

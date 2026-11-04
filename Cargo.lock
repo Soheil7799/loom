@@ -2017,6 +2017,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "loomd"
+version = "0.5.0"
+dependencies = [
+ "loom-core",
+ "serde_json",
+ "tokio",
+ "tungstenite",
+]
+
+[[package]]
 name = "lru"
 version = "0.18.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

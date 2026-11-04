@@ -25,7 +25,7 @@ codegen-units = 1
 strip = true
 
 [workspace]
-members = ["core", "link", "remote"]
+members = ["core", "link", "remote", "daemon"]
 
 [dev-dependencies]
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }
