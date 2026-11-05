@@ -5,6 +5,8 @@ import { svelte } from "@sveltejs/vite-plugin-svelte";
 // scripts and styles from the page's own origin only: nothing inline, nothing from elsewhere.
 export default defineConfig({
   plugins: [svelte()],
+  // the logo files live in ../data/logo, one copy for every face of loom
+  server: { fs: { allow: [".."] } },
   base: "/",
   build: { outDir: "dist", emptyOutDir: true, assetsInlineLimit: 0, modulePreload: { polyfill: false } },
 });

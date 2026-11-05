@@ -1,93 +1,149 @@
-<script>
-  import { follow, command } from "./lib/api";
-  import Question from "./Question.svelte";
+<script lang="ts">
+  // An agent's conversation as Turns: your message opens each turn, pinned while you read it;
+  // finished turns fold to your message and how they ended; the tube down the left marks turn
+  // starts, questions and failures, and moves while the agent works. Alt+Up/Down: the previous
+  // or next question or failure.
+  import { follow, command, type Item } from "./lib/api";
+  import type { AgentsItem, UsageItem } from "./lib/api-types";
+  import { turns, type Entry } from "./lib/turns";
+  import { stateOf } from "./lib/state";
+  import Entry_ from "./Entry.svelte";
+  import Tube from "./Tube.svelte";
+  import Icon from "./Icon.svelte";
 
-  let { agent } = $props();
-  let entries = $state.raw([]);
+  let { agent }: { agent: AgentsItem } = $props();
+  let entries = $state.raw<Entry[]>([]);
+  let usage = $state.raw<UsageItem | null>(null);
   let gone = $state(false);
   let text = $state("");
   let problem = $state("");
-  let list;
+  let expanded = $state(new Set<string>());
+  let box: HTMLElement | undefined = $state();
+  let column: HTMLElement | undefined = $state();
 
+  $effect(() => follow(`conversation/${agent.id}`, (f) => {
+    entries = [...f.items] as Entry[];
+    gone = f.gone;
+    if (f.error) problem = f.error;
+  }));
+  $effect(() => follow("usage", (f) => (usage = (f.items.find((u: Item) => u.id === agent.id) as UsageItem) ?? null)));
+
+  const all = $derived(turns(entries));
+  const st = $derived(stateOf(agent));
+  const context = $derived(usage?.used && usage?.size ? Math.round((usage.used / usage.size) * 100) : null);
+  const cost = $derived(usage?.cost as { amount?: number; currency?: string } | undefined);
+
+  // "Since you last looked": the newest entry seen here before, kept per agent in this browser.
+  const seenKey = $derived(`loom-seen:${agent.id}`);
+  const seen = $derived(Number(localStorage.getItem(seenKey)?.slice(1) ?? "0"));
+  const num = (id: string) => Number(id.slice(1)) || 0;
+  const sinceAt = $derived(seen ? all.findIndex((t) => [t.user, ...t.rows.flatMap((r) => (r.kind === "run" ? r.tools : [r.entry]))].some((e) => e && num(e.id) > seen)) : -1);
   $effect(() => {
-    return follow(`conversation/${agent.id}`, (f) => {
-      entries = [...f.items];
-      gone = f.gone;
-      if (f.error) problem = f.error;
-    });
+    const last = entries.at(-1);
+    if (last && document.visibilityState === "visible") localStorage.setItem(seenKey, last.id);
   });
 
-  // Kept at the end as it grows, unless the user scrolled up.
+  // Kept at the end as it grows, unless you scrolled up.
   $effect(() => {
     entries;
-    if (list && list.scrollHeight - list.scrollTop - list.clientHeight < 120) queueMicrotask(() => (list.scrollTop = list.scrollHeight));
+    if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 160) queueMicrotask(() => box && (box.scrollTop = box.scrollHeight));
   });
 
-  async function run(promise) {
-    problem = "";
-    try {
-      await promise;
-      return true;
-    } catch (e) {
-      problem = e.message;
-      return false;
-    }
+  // the result line is one line of plain words: markdown's marks taken out
+  const plain = (md: string) => md.replace(/[`*_#>]+/g, "").replace(/\s+/g, " ").trim();
+
+  const folded = (i: number) => {
+    const t = all[i];
+    return i < all.length - 1 && !t.live && !t.waits && !t.failed && !expanded.has(t.id);
+  };
+  function toggle(id: string) {
+    const next = new Set(expanded);
+    if (!next.delete(id)) next.add(id);
+    expanded = next;
   }
 
+  async function run(p: Promise<unknown>) {
+    problem = "";
+    try { await p; return true; } catch (e) { problem = (e as Error).message; return false; }
+  }
   async function send() {
     if (!text.trim()) return;
     if (await run(command("send", { agent: agent.id, text }))) text = "";
   }
-
-  function keys(e) {
-    if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
-      send();
-    }
+  function keys(e: KeyboardEvent) {
+    if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
-
-  const label = (e) => ({ user: "You", agent: "Agent", thought: "Thinking", notice: "" })[e.kind] ?? e.kind;
+  function jump(e: KeyboardEvent) {
+    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || !box) return;
+    const top = box.getBoundingClientRect().top, at = box.scrollTop + 120;
+    const marks = [...box.querySelectorAll<HTMLElement>('[data-bead="wait"], [data-bead="fail"]')].map((m) => m.getBoundingClientRect().top - top + box!.scrollTop);
+    const to = e.key === "ArrowDown" ? marks.find((y) => y > at + 4) : marks.reverse().find((y) => y < at - 4);
+    if (to !== undefined) { box.scrollTo({ top: to - 120, behavior: "smooth" }); e.preventDefault(); }
+  }
 </script>
 
-<div class="conversation">
-  <header>
-    <h1>{agent.title || "New agent"}</h1>
-    <span class="dim">{agent.status}{agent.place ? ` · ${agent.place}` : ""}</span>
+<svelte:window onkeydown={jump} />
+
+<section class="centre" aria-label={agent.title || "Conversation"}>
+  <header class="header">
+    <i class="st {st.shape}" role="img" aria-label={st.word}></i>
+    <span class="headline">
+      <span class="title">{agent.title || "New agent"}</span>
+      <span class="place">· {agent.project}</span>
+      {#if st.shape === "wait"}<span class="needs">waits for you</span>{/if}
+    </span>
     <span class="grow"></span>
-    {#if agent.modes?.length}
-      <select value={agent.mode} onchange={(e) => run(command("set_mode", { agent: agent.id, mode: e.currentTarget.value }))}>
-        {#each agent.modes as mode}<option value={mode}>{mode}</option>{/each}
-      </select>
-    {/if}
-    {#if agent.busy}<button onclick={() => run(command("stop", { agent: agent.id }))}>Stop</button>{/if}
+    {#if context !== null}<span class="ctx"><span class="bar"><i style:width="{Math.min(context, 100)}%"></i></span>{context}%</span>{/if}
+    {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
   </header>
 
-  <div class="entries" bind:this={list}>
-    {#if gone}<p class="dim">This agent was closed.</p>{/if}
-    {#each entries as e (e.id)}
-      {#if e.kind === "tool"}
-        <details class="tool {e.status}">
-          <summary><span class="dot {e.status}"></span>{e.title || e.tool || "Tool"}{#if e.exit !== undefined && e.exit !== null} <span class="dim">exit {e.exit}</span>{/if}</summary>
-          {#if e.input}<pre>{JSON.stringify(e.input, null, 2)}</pre>{/if}
-          {#if e.output}<pre>{e.output}</pre>{/if}
-        </details>
-      {:else if e.kind === "question"}
-        <Question entry={e} agent={agent.id} />
-      {:else if e.kind === "turn"}
-        <p class="turn dim">— {e.seconds ?? 0}s —</p>
-      {:else if e.text || e.images?.length}
-        <div class="entry {e.kind}">
-          {#if label(e)}<span class="who">{label(e)}</span>{/if}
-          <div class="text">{e.text}</div>
-          {#if e.images?.length}<span class="dim">({e.images.length} picture{e.images.length === 1 ? "" : "s"})</span>{/if}
-        </div>
-      {/if}
-    {/each}
+  <div class="messages" bind:this={box} role="log" aria-label="Conversation">
+    <div class="column" bind:this={column}>
+      <Tube {column} live={agent.busy && st.shape !== "wait"} />
+      {#if gone}<p class="notice">This agent was closed.</p>{/if}
+      {#each all as t, i (t.id)}
+        {#if i === sinceAt}<div class="since">Since you last looked</div>{/if}
+        <section class="turn" class:current={i === all.length - 1}>
+          {#if t.user}
+            <div class="msg-user" data-bead="turn" data-bead-y="26">
+              <span class="bub"><span class="text">{t.user.text}</span><span class="when"><b>You</b>{#if t.seconds !== undefined} · {t.seconds}s{/if}</span></span>
+            </div>
+          {/if}
+          {#if folded(i)}
+            <button class="result" aria-expanded="false" onclick={() => toggle(t.id)}>
+              <span class="ok"><Icon name="check" size={13} /></span><span class="what">{plain(t.result ?? "Done")}</span>
+              <span class="n">{t.steps} steps</span><Icon name="chev-r" size={13} />
+            </button>
+          {:else}
+            {#if expanded.has(t.id)}<button class="result" aria-expanded="true" onclick={() => toggle(t.id)}><span class="what quiet">Fold this turn</span><Icon name="chev-d" size={13} /></button>{/if}
+            {#each t.rows as row, k (row.kind === "run" ? row.id : row.entry.id)}
+              <div class="row" data-latest={i === all.length - 1 && k === t.rows.length - 1 ? "" : undefined}><Entry_ {row} agent={agent.id} /></div>
+            {/each}
+          {/if}
+        </section>
+      {/each}
+      {#if !all.length && !gone}<p class="empty">Nothing said yet. Tell this agent what to do.</p>{/if}
+    </div>
   </div>
 
-  {#if problem}<p class="error">{problem}</p>{/if}
-  <form class="input" onsubmit={(e) => { e.preventDefault(); send(); }}>
-    <textarea rows="3" placeholder="Message (Enter sends, Shift+Enter: a new line)" bind:value={text} onkeydown={keys} disabled={gone}></textarea>
-    <button disabled={!text.trim() || gone}>Send</button>
-  </form>
-</div>
+  <div class="input-box">
+    {#if problem}<p class="error">{problem}</p>{/if}
+    <div class="composer">
+      <textarea aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder="Ask Claude…  Enter sends, Shift+Enter: a new line" bind:value={text} onkeydown={keys} disabled={gone}></textarea>
+      <div class="cbar">
+        {#if agent.modes?.length}
+          <select class="chip" aria-label="Permission mode" value={agent.mode} onchange={(e) => run(command("set_mode", { agent: agent.id, mode: e.currentTarget.value }))}>
+            {#each agent.modes as mode}<option value={mode}>Mode · {mode}</option>{/each}
+          </select>
+        {/if}
+        <span class="grow"></span>
+        {#if st.shape === "wait"}<span class="status waiting">Waits for you</span>{:else if agent.busy}<span class="status">Working</span>{/if}
+        {#if agent.busy && !text.trim()}
+          <button class="send stop" aria-label="Stop" title="Stop (Esc)" onclick={() => run(command("stop", { agent: agent.id }))}><Icon name="stop" /></button>
+        {:else}
+          <button class="send" aria-label="Send" disabled={!text.trim() || gone} onclick={send}><Icon name="send" /></button>
+        {/if}
+      </div>
+    </div>
+  </div>
+</section>

@@ -5,7 +5,7 @@ export type Shape = "wait" | "work" | "done" | "fail" | "rest" | "idle";
 
 export function stateOf(a: AgentsItem): { shape: Shape; word: string } {
   if (a.questions > 0) return { shape: "wait", word: a.questions > 1 ? `waits · ${a.questions} questions` : "waits" };
-  if (a.failed) return { shape: "fail", word: "failed" };
+  if (((a.failed as { times?: number } | undefined)?.times ?? 0) > 0) return { shape: "fail", word: "failed" };
   if (a.busy) return { shape: "work", word: "working" };
   if (a.status === "suspended") return { shape: "rest", word: `resting since ${clock(a.used)}` };
   if (a.unseen) return { shape: "done", word: `done ${ago(a.used)}` };
