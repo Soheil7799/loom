@@ -6,6 +6,7 @@
   import Conversation from "./Conversation.svelte";
   import Jobs from "./Jobs.svelte";
   import Asks from "./Asks.svelte";
+  import Notes from "./Notes.svelte";
 
   let conn = $state<{ state: State; hello: any }>({ state: "connecting", hello: null });
   let agents = $state.raw<AgentsItem[]>([]);
@@ -13,6 +14,7 @@
   let asks = $state.raw<AsksItem[]>([]);
   let jobs = $state.raw<JobsItem[]>([]);
   let job = $state<string | null>(null);
+  let chat = $state<{ agent: string; title: string } | null>(null);
   let selected = $state<string | null>(null);
   let view = $state("chat");
   let problem = $state("");
@@ -62,7 +64,9 @@
     <main class="main">
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
-      {#if view === "asks"}
+      {#if view === "notes"}
+        <Notes bind:chat />
+      {:else if view === "asks"}
         <Asks {asks} {agents} pick={(id) => { selected = id; view = "chat"; }} />
       {:else if view === "jobs"}
         <Jobs {jobs} {projects} bind:open={job} />

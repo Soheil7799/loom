@@ -30,7 +30,9 @@
   $effect(() => follow("usage", (f) => (usage = (f.items.find((u: Item) => u.id === agent.id) as UsageItem) ?? null)));
 
   const all = $derived(turns(entries));
-  const st = $derived(stateOf(agent));
+  // a Notes chat isn't among the agents: it works while an entry is still coming
+  const busy = $derived(agent.busy || (agent.status === "notes" && entries.some((e) => e.status === "pending" || e.status === "streaming")));
+  const st = $derived(stateOf({ ...agent, busy }));
   const context = $derived(usage?.used && usage?.size ? Math.round((usage.used / usage.size) * 100) : null);
   const cost = $derived(usage?.cost as { amount?: number; currency?: string } | undefined);
 
@@ -81,7 +83,7 @@
     if (title && title !== agent.title) await run(command("rename", { agent: agent.id, title }));
   }
   function jump(e: KeyboardEvent) {
-    if (e.key === "F2" && naming === null) { e.preventDefault(); naming = agent.title; return; }
+    if (e.key === "F2" && naming === null && agent.status !== "notes") { e.preventDefault(); naming = agent.title; return; }
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || !box) return;
     const top = box.getBoundingClientRect().top, at = box.scrollTop + 120;
     const marks = [...box.querySelectorAll<HTMLElement>('[data-bead="wait"], [data-bead="fail"]')].map((m) => m.getBoundingClientRect().top - top + box!.scrollTop);
@@ -104,7 +106,7 @@
       {:else}
         <!-- svelte-ignore a11y_no_static_element_interactions -->
         <span class="title" ondblclick={() => (naming = agent.title)}>{agent.title || "New agent"}</span>
-        <button class="tiny" aria-label="Rename (F2)" title="Rename (F2)" onclick={() => (naming = agent.title)}><Icon name="pencil" size={13} /></button>
+        {#if agent.status !== "notes"}<button class="tiny" aria-label="Rename (F2)" title="Rename (F2)" onclick={() => (naming = agent.title)}><Icon name="pencil" size={13} /></button>{/if}
       {/if}
       <span class="place">· {agent.project}</span>
       {#if st.shape === "wait"}<span class="needs">waits for you</span>{/if}
@@ -124,7 +126,7 @@
 
   <div class="messages" bind:this={box} role="log" aria-label="Conversation">
     <div class="column" bind:this={column}>
-      <Tube {column} live={agent.busy && st.shape !== "wait"} />
+      <Tube {column} live={busy && st.shape !== "wait"} />
       {#if gone}<p class="notice">This agent was closed.</p>{/if}
       {#each all as t, i (t.id)}
         {#if i === sinceAt}<div class="since">Since you last looked</div>{/if}
@@ -162,8 +164,8 @@
           </select>
         {/if}
         <span class="grow"></span>
-        {#if st.shape === "wait"}<span class="status waiting">Waits for you</span>{:else if agent.busy}<span class="status">Working</span>{/if}
-        {#if agent.busy && !text.trim()}
+        {#if st.shape === "wait"}<span class="status waiting">Waits for you</span>{:else if busy}<span class="status">Working</span>{/if}
+        {#if busy && !text.trim()}
           <button class="send stop" aria-label="Stop" title="Stop (Esc)" onclick={() => run(command("stop", { agent: agent.id }))}><Icon name="stop" /></button>
         {:else}
           <button class="send" aria-label="Send" disabled={!text.trim() || gone} onclick={send}><Icon name="send" /></button>

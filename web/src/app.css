@@ -215,3 +215,26 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .asks-list { flex: 1; overflow: auto; padding: 8px 20px 20px; max-width: 760px; width: 100%; margin: 0 auto; }
 .asks-list .permission-card { margin-top: 12px; }
 .asks-list .qh .quiet { margin-left: 8px; font-size: 13px; }
+
+/* ---- notes: the chat, Scribe beside it ---- */
+.notes { display: grid; grid-template-columns: 1fr 340px; height: 100%; min-height: 0; }
+.notes-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.notes-chat .centre { flex: 1; min-height: 0; height: auto; }
+.notes-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--line); }
+.notes-bar .inbox-wrap { margin: 0; }
+.notes-bar .menu { right: auto; min-width: 280px; }
+.notes-bar .btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; }
+.scribe { overflow: auto; padding: 12px 14px 20px; border-left: 1px solid var(--line); background: var(--sidebar); }
+.scribe-head { display: flex; flex-direction: column; gap: 2px; padding: 0 2px 4px; }
+.scribe-head .quiet { font-size: 12.5px; }
+.scribe h3 { margin: 16px 2px 6px; font-size: 12px; font-weight: 400; letter-spacing: 0.07em; color: var(--quiet); }
+.scribe .permission-card { margin-bottom: 10px; padding: 12px; }
+.scribe .adding { padding: 0; }
+.scribe blockquote { margin: 0; padding-left: 10px; border-left: 2px solid var(--line); color: var(--quiet); font-size: 13.5px; }
+.scribe .btn.small { padding: 3px 10px; font-size: 13px; }
+.scribe .quiet.small { font-size: 12.5px; }
+.scribe pre { white-space: pre-wrap; font-size: 12.5px; }
+.change-row { display: flex; align-items: center; gap: 8px; padding: 6px 2px; border-bottom: 1px solid var(--line); }
+.change-row > span { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.change-row small { font-size: 12.5px; }
+@media (max-width: 1000px) { .notes { grid-template-columns: 1fr; } .scribe { border-left: 0; border-top: 1px solid var(--line); } }
