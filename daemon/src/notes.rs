@@ -157,6 +157,7 @@ impl Notes {
         self.bridges.notes_closed(id);
         open.agent.stop();
         loom_core::api::close(&loom_core::agent::conversation(id));
+        loom_core::api::close(&format!("crew/{id}"));
         self.publish();
         true
     }

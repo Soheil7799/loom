@@ -6,7 +6,7 @@
   import { unified } from "./lib/diff";
   import Icon from "./Icon.svelte";
 
-  let { agent, edited, close }: { agent: string; edited: number; close: () => void } = $props();
+  let { agent, edited, turns, close }: { agent: string; edited: number; turns: number; close: () => void } = $props();
   type File = { path: string; mark: string; repo: string | null; status: string | null; diff: string | null };
   let files = $state.raw<File[] | null>(null);
   let problem = $state("");
@@ -14,14 +14,14 @@
   async function load() {
     try { files = (await command("changes", { agent })).files; problem = ""; } catch (e) { problem = (e as Error).message; }
   }
-  // again whenever its count of files changes (and when it opens)
-  $effect(() => { edited; load(); });
+  // again when it opens, when its count of files changes and after each turn
+  $effect(() => { edited; turns; load(); });
 
   const name = (f: File) => (f.repo ? f.path.slice(f.repo.length + 1) : f.path);
-  async function revert(f: File, hunk?: number) {
+  async function revert(f: File, hunk?: { n: number; text: string }) {
     const what = hunk === undefined ? `every change to ${name(f)}` : `this change to ${name(f)}`;
     if (!confirm(`Throw away ${what}? It goes back to how it was at the last commit. This can't be undone.`)) return;
-    try { await command("revert", { agent, path: f.path, ...(hunk === undefined ? {} : { hunk }) }); } catch (e) { problem = (e as Error).message; }
+    try { await command("revert", { agent, path: f.path, ...(hunk ? { hunk: hunk.n, hunk_text: hunk.text } : {}) }); } catch (e) { problem = (e as Error).message; }
     load();
   }
 </script>
@@ -42,7 +42,7 @@
         {#if f.diff}
           {#each unified(f.diff) as h, i (i)}
             <div class="diff">
-              <div class="f"><span>{h.head}</span>{#if f.status !== "??"}<button class="btn small" title="Undo only this change" onclick={() => revert(f, i)}>Undo</button>{/if}</div>
+              <div class="f"><span>{h.head}</span>{#if f.status !== "??"}<button class="btn small" title="Undo only this change" onclick={() => revert(f, { n: i, text: [h.head, ...h.lines.map((l) => l.t + l.text)].join("\n") })}>Undo</button>{/if}</div>
               <pre>{#each h.lines as l, k (k)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t}{l.text}
 </span>{/each}</pre>
             </div>

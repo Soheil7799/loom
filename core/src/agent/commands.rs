@@ -178,8 +178,11 @@ fn handle() {
         if !agent.files().iter().any(|(p, _)| p == path) {
             return Err(Error::Forbidden("only a file this agent created or changed".into()));
         }
-        let hunk = params["hunk"].as_u64().map(|n| n as usize);
-        crate::changes::revert(path, hunk).map_err(Error::Failed)?;
+        let hunk = match params["hunk"].as_u64() {
+            None => None,
+            Some(n) => Some((n as usize, params["hunk_text"].as_str().ok_or_else(|| Error::Invalid("a hunk is undone with its text as shown (hunk_text)".into()))?)),
+        };
+        crate::changes::revert(path, hunk).map_err(|why| if why.contains("changed since") { Error::Conflict(why) } else { Error::Failed(why) })?;
         Ok(json!({}))
     });
     hub.handle("press", |who, params| {

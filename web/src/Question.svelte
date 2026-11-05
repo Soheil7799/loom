@@ -9,6 +9,7 @@
   type Field = { title?: string; description?: string; type?: string; oneOf?: { const: string; title?: string }[]; items?: { anyOf?: { const: string; title?: string }[] } };
   let content = $state<Record<string, unknown>>({});
   let problem = $state("");
+  let card: HTMLElement | undefined = $state();
 
   const options = $derived((entry.options ?? []) as Option[]);
   const fields = $derived(Object.entries(((entry.form as { properties?: Record<string, Field> } | undefined)?.properties ?? {})));
@@ -24,8 +25,10 @@
     content = { ...content, [name]: [...now] };
   }
   function keys(e: KeyboardEvent) {
-    if (!waiting || entry.form || e.ctrlKey || e.metaKey) return;
-    if ((e.target as HTMLElement)?.closest("textarea, input")) return;
+    if (!waiting || entry.form || e.ctrlKey || e.metaKey || e.altKey) return;
+    if ((e.target as HTMLElement)?.closest("textarea, input, select, [contenteditable]")) return;
+    // the keys answer the first question waiting on the page, never several at once
+    if (document.querySelector("[data-question]:not(.answered)") !== card) return;
     const n = Number(e.key);
     if (n >= 1 && n <= options.length) { e.preventDefault(); answer({ option: options[n - 1].id }); }
   }
@@ -33,7 +36,7 @@
 
 <svelte:window onkeydown={keys} />
 
-<div class="permission-card" class:answered={!waiting}>
+<div class="permission-card" class:answered={!waiting} data-question bind:this={card}>
   <div class="qh">{#if waiting}<span class="needs">waits for you</span>{/if}<b>{entry.text}</b></div>
   {#if entry.detail}<pre class="code-block">{entry.detail}</pre>{/if}
   {#if !waiting}

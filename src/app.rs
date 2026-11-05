@@ -755,8 +755,11 @@ impl App {
                 return Err(Error::Forbidden("changing projects".into()));
             }
             let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            if params["name"].as_str().is_none() {
+                return Err(Error::Invalid("rename_project needs a name (empty: the folder's)".into()));
+            }
             app.ws.change_project(params)?;
-            // the history's label too
+            // the history's label, the sidebar, saved
             let path = std::path::PathBuf::from(params["project"].as_str().unwrap_or_default());
             app.rename_project(&path, params["name"].as_str().unwrap_or_default().trim());
             Ok(serde_json::json!({}))
@@ -766,6 +769,9 @@ impl App {
             use loom_core::api::Error;
             if !human(who) {
                 return Err(Error::Forbidden("changing projects".into()));
+            }
+            if params["collapsed"].as_bool().is_none() {
+                return Err(Error::Invalid("set_collapsed needs collapsed".into()));
             }
             let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
             app.ws.change_project(params)?;

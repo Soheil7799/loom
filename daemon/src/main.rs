@@ -411,11 +411,14 @@ fn commands(daemon: &Rc<Daemon>) {
         daemon.close(&agent);
         Ok(json!({}))
     });
-    for name in ["rename_project", "set_collapsed"] {
+    for (name, needs) in [("rename_project", "name"), ("set_collapsed", "collapsed")] {
         let weak = Rc::downgrade(daemon);
         hub.handle(name, move |who, params| {
             if !human(who) {
                 return Err(Error::Forbidden("changing projects".into()));
+            }
+            if params.get(needs).is_none() {
+                return Err(Error::Invalid(format!("{name} needs {needs}")));
             }
             let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
             daemon.ws.change_project(params)?;

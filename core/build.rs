@@ -13,6 +13,7 @@ fn main() {
         println!("cargo::rerun-if-changed={}", dist.display());
         collect(&dist, &dist, &mut files);
     } else if dist.parent().is_some_and(Path::is_dir) {
+        // shortcut: this scans web/node_modules too (a few ms a build); only without a build, which a release never is
         println!("cargo::rerun-if-changed={}", dist.parent().unwrap().display());
     } else {
         println!("cargo::rerun-if-changed=build.rs");

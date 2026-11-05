@@ -399,6 +399,8 @@ impl Recorded {
     pub fn publish(&self, id: u32) {
         self.transcript.borrow_mut().publish_to(crate::api::hub().store(&super::conversation(id)));
         *self.agent.borrow_mut() = Some(id.to_string());
+        // its subagents' list there from the start (empty), to follow before any comes
+        crate::api::hub().store(&format!("crew/{id}"));
         let usage = crate::api::hub().store(USAGE);
         let account = account_limits();
         if !account.is_null() && usage.get("account").is_none() {
@@ -563,6 +565,8 @@ impl View for Recorded {
 
     fn clear(&self) {
         self.transcript.borrow_mut().clear();
+        // the notices are gone, their buttons with them
+        self.actions.borrow_mut().clear();
         self.inner.clear();
     }
     fn has_messages(&self) -> bool {

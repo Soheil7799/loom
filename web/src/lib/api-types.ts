@@ -27,12 +27,8 @@ export type AgentsItem = {
   edited: number;
   /** kept from resting */
   awake: boolean;
-  /** what waits in its input (a rewind's message), as last published */
-  draft?: string;
   /** the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` */
   options?: unknown[];
-  /** messages waiting for the turn to end, in order (`unqueue`) */
-  queued?: unknown[];
   /** a turn quiet for 3 minutes, no tool running */
   stalled?: boolean;
   /** the user has it in front of them in loom */
@@ -226,6 +222,16 @@ export type CrewItem = {
   guessed: boolean;
 };
 
+/** What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read). */
+export type InputsItem = {
+  /** an agent's id */
+  id: string;
+  /** what waits in its input (a rewind's message, one taken back) */
+  draft: string;
+  /** its messages waiting for the turn to end, in order (`unqueue`) */
+  queued: unknown[];
+};
+
 /** Conversations closed lately, newest first (`reopen`). */
 export type ClosedItem = {
   /** its session */
@@ -353,6 +359,7 @@ export interface Resources {
   "notes_chats": NotesChatsItem;
   "scribe": ScribeItem;
   "crew/<agent>": CrewItem;
+  "inputs": InputsItem;
   "closed": ClosedItem;
   "bridges": BridgesItem;
   "pairing": PairingItem;
@@ -421,6 +428,8 @@ export type RevertParams = {
   path: string;
   /** one hunk of that file's diff (from 0); none: the whole file */
   hunk?: number;
+  /** with `hunk`: that hunk as shown, from its @@ line (a conflict if the file's diff has changed there) */
+  hunk_text?: string;
 };
 
 /** Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed. Result: {} */
@@ -451,7 +460,7 @@ export type SetOptionParams = {
   value: string;
 };
 
-/** Sets what waits in the agent's input (`draft`), as a client took or sent it. Result: {} */
+/** Sets what waits in the agent's input (`inputs`), as a client took or sent it. Result: {} */
 export type SetDraftParams = {
   /** the agent's id */
   agent: string;
@@ -459,11 +468,11 @@ export type SetDraftParams = {
   text: string;
 };
 
-/** Takes a queued message back into the agent's input (its `draft`). Result: {} */
+/** Takes a queued message back into the agent's input (`inputs`). Result: {} */
 export type UnqueueParams = {
   /** the agent's id */
   agent: string;
-  /** which of its `queued` messages */
+  /** which of its queued messages (`inputs`) */
   index: number;
 };
 

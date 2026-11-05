@@ -78,7 +78,7 @@
       {:else if view === "jobs"}
         <Jobs {jobs} {projects} bind:open={job} />
       {:else if current}
-        {#key current.id}<Conversation agent={current} jobs={jobs.filter((j) => j.project_id === current.project_id)} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={() => (copyAfter = Date.now())} />{/key}
+        {#key current.id}<Conversation agent={current} jobs={jobs.filter((j) => j.project_id === current.project_id)} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
       {:else}
         <p class="empty centre-note">No agents yet. Start one with the + at the bottom left.</p>
       {/if}

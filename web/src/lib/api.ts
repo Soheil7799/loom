@@ -76,6 +76,8 @@ export class Follow {
     try {
       const answer = await call("subscribe", { resource: this.resource });
       const sub: string = answer.sub;
+      // stopped while asking: nobody wants it any more
+      if (followed.get(this.resource) !== this) { call("unsubscribe", { sub }).catch(() => {}); return; }
       this.sub = sub;
       bySub.set(sub, this);
     } catch (e) {

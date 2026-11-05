@@ -305,7 +305,6 @@ const SECURITY: &[&str] = &[
     "Cross-Origin-Resource-Policy: same-origin",
 ];
 
-/// The WebSocket: the handshake, then each text frame a message both ways.
 /// The WebSocket: the handshake, then each text message a message of the API, both ways. A
 /// reader (this thread) and a writer (one of its own) block on their side, nothing polls;
 /// `web_close` ends the connection by shutting its socket (`live`).

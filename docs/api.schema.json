@@ -298,17 +298,9 @@
             "type": "boolean",
             "description": "kept from resting"
           },
-          "draft": {
-            "type": "string",
-            "description": "what waits in its input (a rewind's message), as last published"
-          },
           "options": {
             "type": "array",
             "description": "the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option`"
-          },
-          "queued": {
-            "type": "array",
-            "description": "messages waiting for the turn to end, in order (`unqueue`)"
           },
           "stalled": {
             "type": "boolean",
@@ -873,6 +865,35 @@
         ]
       }
     },
+    "inputs": {
+      "description": "What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an agent's id"
+          },
+          "draft": {
+            "type": "string",
+            "description": "what waits in its input (a rewind's message, one taken back)"
+          },
+          "queued": {
+            "type": "array",
+            "description": "its messages waiting for the turn to end, in order (`unqueue`)"
+          }
+        },
+        "required": [
+          "id",
+          "draft",
+          "queued"
+        ]
+      }
+    },
     "closed": {
       "description": "Conversations closed lately, newest first (`reopen`).",
       "who": [
@@ -1282,6 +1303,10 @@
           "hunk": {
             "type": "integer",
             "description": "one hunk of that file's diff (from 0); none: the whole file"
+          },
+          "hunk_text": {
+            "type": "string",
+            "description": "with `hunk`: that hunk as shown, from its @@ line (a conflict if the file's diff has changed there)"
           }
         },
         "required": [
@@ -1380,7 +1405,7 @@
       "result": "{}"
     },
     "set_draft": {
-      "description": "Sets what waits in the agent's input (`draft`), as a client took or sent it.",
+      "description": "Sets what waits in the agent's input (`inputs`), as a client took or sent it.",
       "who": [
         "window",
         "cli",
@@ -1407,7 +1432,7 @@
       "result": "{}"
     },
     "unqueue": {
-      "description": "Takes a queued message back into the agent's input (its `draft`).",
+      "description": "Takes a queued message back into the agent's input (`inputs`).",
       "who": [
         "window",
         "cli",
@@ -1423,7 +1448,7 @@
           },
           "index": {
             "type": "integer",
-            "description": "which of its `queued` messages"
+            "description": "which of its queued messages (`inputs`)"
           }
         },
         "required": [

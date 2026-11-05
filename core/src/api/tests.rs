@@ -13,6 +13,11 @@ fn principals_read_what_they_may() {
     assert!(agent.subscribe("agents", || {}).is_ok());
     assert!(agent.subscribe("conversation/a1", || {}).is_ok());
     assert_eq!(agent.subscribe("conversation/a2", || {}).err(), Some(Error::NotFound("conversation/a2".into())));
+    // what the user types or queues for agents is theirs: no agent or bridge reads it
+    hub.store("inputs");
+    assert!(agent.subscribe("inputs", || {}).is_err());
+    assert!(hub.connect(Principal::Bridge("telegram".into())).subscribe("inputs", || {}).is_err());
+    assert!(hub.connect(Principal::Window).subscribe("inputs", || {}).is_ok());
     let window = hub.connect(Principal::Window);
     assert!(window.subscribe("conversation/a2", || {}).is_ok());
     assert_eq!(window.subscribe("weather", || {}).err(), Some(Error::NotFound("weather".into())));

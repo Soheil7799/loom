@@ -55,9 +55,11 @@ fn hunk_patch(diff: &str, n: usize) -> Option<String> {
     Some(lines[..first].concat() + &lines[start..end].concat())
 }
 
-/// Goes back on `path`'s changes since the last commit: all of them, or hunk `hunk` of its
-/// diff (as `describe` gave it). A file git doesn't know (new) is not reverted here.
-pub fn revert(path: &Path, hunk: Option<usize>) -> Result<(), String> {
+/// Goes back on `path`'s changes since the last commit: all of them, or hunk `(n, shown)` of
+/// its diff: the `n`th (from 0), only if it still reads `shown` (from its `@@` line, as
+/// `describe` gave it: the file may have changed since). A file git doesn't know (new) is not
+/// reverted here.
+pub fn revert(path: &Path, hunk: Option<(usize, &str)>) -> Result<(), String> {
     let repo = crate::repos::repo_of(path).ok_or("it isn't in a git repository")?;
     let file = path.strip_prefix(&repo).unwrap_or(path).to_string_lossy().into_owned();
     if git(&repo, &["ls-files", "--error-unmatch", "--", &file], None).is_err() {
@@ -65,11 +67,21 @@ pub fn revert(path: &Path, hunk: Option<usize>) -> Result<(), String> {
     }
     match hunk {
         None => git(&repo, &["restore", "--staged", "--worktree", "--source=HEAD", "--", &file], None).map(drop),
-        Some(n) => {
+        Some((n, shown)) => {
             // HEAD to the work tree, as `describe` showed it: undone in the work tree only
             let diff = git(&repo, &["diff", "HEAD", "--", &file], None)?;
             let patch = hunk_patch(&diff, n).ok_or("no such change (the file changed since?)")?;
-            git(&repo, &["apply", "-R", "-"], Some(&patch)).map(drop)
+            let now = &patch[patch.find("\n@@").map_or(0, |i| i + 1)..];
+            // "\ No newline at end of file" is git's remark, not a line: a page may leave it out
+            let lines = |t: &str| t.lines().filter(|l| !l.starts_with('\\')).map(str::to_owned).collect::<Vec<_>>();
+            if lines(now) != lines(shown) {
+                return Err("the file changed since it was shown: refresh, then undo again".into());
+            }
+            git(&repo, &["apply", "-R", "-"], Some(&patch))?;
+            // staged too: out of the index as well, or the next commit would still have it
+            // (not staged: the index never had it, and this does nothing)
+            let _ = git(&repo, &["apply", "-R", "--cached", "-"], Some(&patch));
+            Ok(())
         }
     }
 }
@@ -95,12 +107,23 @@ mod tests {
         let described = describe(&file, Mark::Changed);
         assert_eq!(described["status"], " M");
         assert_eq!(described["diff"].as_str().unwrap().matches("\n@@").count(), 2);
-        revert(&file, Some(1)).unwrap();
+        let second = &described["diff"].as_str().unwrap()[described["diff"].as_str().unwrap().rfind("\n@@").unwrap() + 1..];
+        assert!(revert(&file, Some((0, second))).is_err(), "not the hunk shown there");
+        revert(&file, Some((1, second))).unwrap();
         let now = std::fs::read_to_string(&file).unwrap();
         assert!(now.contains("two\n") && now.contains("line 28\n"), "{now}");
+        // a staged change undone goes from the index too
+        run(&["add", "a.txt"]);
+        let staged = describe(&file, Mark::Changed);
+        let first = &staged["diff"].as_str().unwrap()[staged["diff"].as_str().unwrap().find("\n@@").unwrap() + 1..];
+        revert(&file, Some((0, first))).unwrap();
+        let index = Command::new("git").arg("-C").arg(&dir).args(["show", ":a.txt"]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&index.stdout), before, "nothing of it left staged");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
+        std::fs::write(&file, before.replace("line 2\n", "two\n")).unwrap();
         revert(&file, None).unwrap();
         assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
-        assert!(revert(&file, Some(0)).is_err(), "nothing left to revert");
+        assert!(revert(&file, Some((0, second))).is_err(), "nothing left to revert");
         std::fs::write(dir.join("new.txt"), "x").unwrap();
         assert!(revert(&dir.join("new.txt"), None).is_err(), "a new file isn't reverted");
         let _ = std::fs::remove_dir_all(&dir);

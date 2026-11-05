@@ -729,6 +729,8 @@ impl Agent {
         if self.conn.borrow().is_some() {
             return;
         }
+        // quiet from now, not since it last spoke before resting (stalled)
+        self.last_heard.set(Instant::now());
         crate::log::debug!(format!("agent {}", self.id), "start in {} (session {:?})", self.cwd.display(), self.session_id());
         // A read-back under way is not this start's: its replay mark goes with it (the start
         // sets its own when it replays; one that fails here leaves none behind).
@@ -1691,6 +1693,7 @@ impl Agent {
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
+        self.last_heard.set(Instant::now());
         crate::log::debug!(format!("agent {}", self.id), "turn starts: {} chars, {} images, {} command outputs", text.len(), images.len(), self.context.borrow().len());
         let started = Instant::now();
         self.view.set_working(Some(started));
@@ -2917,8 +2920,7 @@ fn limit_words(kind: &str, used: f64, resets: Option<i64>) -> (String, String) {
     (format!("{short} {percent:.0}%"), format!("{long}: {percent:.0}% used{resets}"))
 }
 
-/// This program's path, for agents to start `loom mcp`. Replaced on disk while running (a
-/// reinstall), /proc reports it with " (deleted)": the new file at that path is the one.
+/// What an error from the agent's process says: its message, else the whole of it.
 fn message(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
 }

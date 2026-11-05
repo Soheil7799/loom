@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Install loom for the current user: ~/.local/bin/loom and loom-remote (its remote bridge;
+# Install loom for the current user: ~/.local/bin/loom, loomd (loom with no window, its user
+# service installed, not enabled) and loom-remote (its remote bridge;
 # from a release, its bin/; from a checkout, built first), its desktop entry and icon. loom drives Claude Code itself and
 # keeps its own skills in ~/.config/loom/claude.
 set -euo pipefail
@@ -18,6 +19,8 @@ else
 fi
 install -Dm755 "$built/loom" "$bindir/loom"
 install -Dm755 "$built/loom-remote" "$bindir/loom-remote"
+install -Dm755 "$built/loomd" "$bindir/loomd"
+install -Dm644 data/loomd.service "$HOME/.config/systemd/user/loomd.service"
 install -Dm644 data/dev.shirvani.Loom.svg "$icons/dev.shirvani.Loom.svg"
 mkdir -p "$apps"
 sed "s|@BINDIR@|$bindir|" data/dev.shirvani.Loom.desktop.in > "$apps/dev.shirvani.Loom.desktop"

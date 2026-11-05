@@ -43,9 +43,7 @@ Who: window, cli, bridge, agent.
 | `place` | string | where in the project it works (a repo, a folder) |
 | `edited` | integer | files it changed |
 | `awake` | boolean | kept from resting |
-| `draft` | string? | what waits in its input (a rewind's message), as last published |
 | `options` | array? | the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` |
-| `queued` | array? | messages waiting for the turn to end, in order (`unqueue`) |
 | `stalled` | boolean? | a turn quiet for 3 minutes, no tool running |
 | `looking` | boolean? | the user has it in front of them in loom |
 | `mode` | string? | its permission mode |
@@ -233,6 +231,18 @@ Who: window, cli, bridge.
 | `ended` | string? |  |
 | `guessed` | boolean | no session of its own: its state is a guess from its steps |
 
+### `inputs`
+
+What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read).
+
+Who: window, cli.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | an agent's id |
+| `draft` | string | what waits in its input (a rewind's message, one taken back) |
+| `queued` | array | its messages waiting for the turn to end, in order (`unqueue`) |
+
 ### `closed`
 
 Conversations closed lately, newest first (`reopen`).
@@ -397,6 +407,7 @@ Who: window, cli. Result: `{}`.
 | `agent` | string | the agent's id |
 | `path` | string | one of its `changes`' files |
 | `hunk` | integer? | one hunk of that file's diff (from 0); none: the whole file |
+| `hunk_text` | string? | with `hunk`: that hunk as shown, from its @@ line (a conflict if the file's diff has changed there) |
 
 ### `press`
 
@@ -435,7 +446,7 @@ Who: window, cli, bridge. Result: `{}`.
 
 ### `set_draft`
 
-Sets what waits in the agent's input (`draft`), as a client took or sent it.
+Sets what waits in the agent's input (`inputs`), as a client took or sent it.
 
 Who: window, cli, bridge. Result: `{}`.
 
@@ -446,14 +457,14 @@ Who: window, cli, bridge. Result: `{}`.
 
 ### `unqueue`
 
-Takes a queued message back into the agent's input (its `draft`).
+Takes a queued message back into the agent's input (`inputs`).
 
 Who: window, cli, bridge. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
 | `agent` | string | the agent's id |
-| `index` | integer | which of its `queued` messages |
+| `index` | integer | which of its queued messages (`inputs`) |
 
 ### `rename`
 

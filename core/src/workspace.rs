@@ -128,7 +128,6 @@ impl Workspace {
         }
     }
 
-    /// A project's name: the one given, else its folder's.
     /// `rename_project`, `set_collapsed`: the project's change, if there is that project
     /// (`project`: its folder). The host saves and redraws after.
     pub fn change_project(&self, params: &Value) -> Result<(), crate::api::Error> {
@@ -163,6 +162,7 @@ impl Workspace {
         Ok((path, agents))
     }
 
+    /// A project's name: the one given, else its folder's.
     pub fn project_label(&self, path: &Path) -> String {
         let projects = self.projects.borrow();
         let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());
@@ -204,8 +204,6 @@ impl Workspace {
         agent
     }
 
-    /// Takes `agent` out of the workspace (the UI has closed it): its conversation's
-    /// subscribers are told it is gone.
     /// Closes `agent`: it stops, its conversation is remembered to reopen (one that never
     /// started has nothing to reopen), and it goes (`remove_agent`).
     pub fn close_agent(&self, agent: &Rc<Agent>) {
@@ -220,9 +218,12 @@ impl Workspace {
         self.remove_agent(agent);
     }
 
+    /// Takes `agent` out of the workspace (the UI has closed it): its conversation's
+    /// subscribers are told it is gone.
     pub fn remove_agent(&self, agent: &Rc<Agent>) {
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         crate::api::close(&crate::agent::conversation(agent.id));
+        crate::api::close(&format!("crew/{}", agent.id));
         self.publish_agents();
         self.publish_closed();
     }
@@ -259,9 +260,7 @@ impl Workspace {
                     "place": agent.place(),
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),
-                    "draft": agent.view.draft(),
                     "options": agent.options(),
-                    "queued": agent.queued(),
                     "stalled": agent.stalled(STALLED),
                     "looking": self.looking.borrow().as_ref().is_some_and(|f| f(agent)),
                     "mode": agent.modes().0,
@@ -280,6 +279,10 @@ impl Workspace {
             })
             .collect();
         crate::api::hub().store("agents").set(items);
+        // What waits in each one's input: the user's words, so people's alone (not `agents`,
+        // which agents and bridges read).
+        let inputs = self.agents_in_order().iter().map(|a| json!({ "id": a.id.to_string(), "draft": a.view.draft(), "queued": a.queued() })).collect();
+        crate::api::hub().store("inputs").set(inputs);
     }
 
     /// The API's `schedules`: `{id, title, prompt, when, next, paused, last_run, folder,

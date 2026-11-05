@@ -3,7 +3,6 @@
   // finished turns fold to your message and how they ended; the tube down the left marks turn
   // starts, questions and failures, and moves while the agent works. Alt+Up/Down: the previous
   // or next question or failure.
-  import { untrack } from "svelte";
   import { follow, command, type Item } from "./lib/api";
   import type { AgentsItem, JobsItem, UsageItem } from "./lib/api-types";
   import { turns, type Entry } from "./lib/turns";
@@ -13,12 +12,12 @@
   import Changes from "./Changes.svelte";
   import Icon from "./Icon.svelte";
 
-  let { agent, jobs = [], showJob, expectCopy }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: () => void } = $props();
+  let { agent, jobs = [], showJob, expectCopy }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void } = $props();
   let entries = $state.raw<Entry[]>([]);
   let usage = $state.raw<UsageItem | null>(null);
   let gone = $state(false);
   // what waits in its input (a rewind's message), taken once when it opens
-  let text = $state(untrack(() => agent.draft) ?? "");
+  let text = $state("");
   let problem = $state("");
   let expanded = $state(new Set<string>());
   let box: HTMLElement | undefined = $state();
@@ -33,12 +32,17 @@
   }));
   let crew = $state.raw<Item[]>([]);
   $effect(() => follow(`crew/${agent.id}`, (f) => (crew = f.items)));
-  // what waits in its input, when it changes there (a message taken back from the queue)
-  let lastDraft = untrack(() => agent.draft ?? "");
-  $effect(() => {
-    const d = agent.draft ?? "";
-    if (d !== lastDraft) { lastDraft = d; if (d && !text.trim()) text = d; }
-  });
+  // What waits in its input (`inputs`, people's alone): its draft (a rewind's message, one
+  // taken back from the queue) comes into the composer when it opens or changes, if empty.
+  let queued = $state.raw<string[]>([]);
+  let draft = "";
+  let lastDraft: string | null = null;
+  $effect(() => follow("inputs", (f) => {
+    const mine = f.items.find((i: Item) => i.id === agent.id);
+    queued = mine?.queued ?? [];
+    draft = mine?.draft ?? "";
+    if (draft !== lastDraft) { lastDraft = draft; if (draft && !text.trim()) text = draft; }
+  }));
   type Opt = { id: string; name?: string; category?: string; currentValue?: string; options?: unknown[] };
   // an option's values, groups flattened
   const flat = (os: unknown[] = []): { value: string; name: string }[] =>
@@ -95,15 +99,16 @@
     if (await run(command("send", { agent: agent.id, text }))) {
       text = "";
       // what loom kept in its input went with it
-      if (agent.draft) { lastDraft = ""; run(command("set_draft", { agent: agent.id, text: "" })); }
+      if (draft) { lastDraft = ""; run(command("set_draft", { agent: agent.id, text: "" })); }
     }
   }
   function keys(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
   async function rewind(entry: string, files: boolean) {
-    expectCopy?.();
-    await run(command("rewind", { agent: agent.id, entry, files }));
+    expectCopy?.(true);
+    // no copy is coming: the next new agent is not one
+    if (!(await run(command("rewind", { agent: agent.id, entry, files })))) expectCopy?.(false);
   }
   async function rename(e?: SubmitEvent) {
     e?.preventDefault();
@@ -207,9 +212,9 @@
 
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
-    {#if agent.queued?.length}
+    {#if queued.length}
       <ul class="queued" aria-label="Waiting for the turn to end">
-        {#each agent.queued as q, i (i)}
+        {#each queued as q, i (i)}
           <li><span class="qt">{q || "(pictures)"}</span><button class="btn small" onclick={() => run(command("unqueue", { agent: agent.id, index: i }))}>Take back</button></li>
         {/each}
       </ul>
@@ -238,5 +243,5 @@
     </div>
   </div>
 </section>
-{#if showChanges}<Changes agent={agent.id} edited={agent.edited} close={() => (showChanges = false)} />{/if}
+{#if showChanges}<Changes agent={agent.id} edited={agent.edited} turns={(agent.last_turn as { turns?: number } | undefined)?.turns ?? 0} close={() => (showChanges = false)} />{/if}
 </div>

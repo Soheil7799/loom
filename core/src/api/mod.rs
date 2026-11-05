@@ -144,7 +144,7 @@ fn may_read(who: &Principal, resource: &str) -> bool {
     }
     // The bridges' states and the conversations closed: people's; the pairing ticket: the
     // window's (the CLI is whatever loom can't place under an agent).
-    if resource == "bridges" || resource == "closed" {
+    if resource == "bridges" || resource == "closed" || resource == "inputs" {
         return matches!(who, Principal::Window | Principal::Cli);
     }
     if resource == "pairing" {
