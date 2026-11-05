@@ -667,6 +667,8 @@ impl App {
         glib::timeout_add_seconds_local(60, move || {
             let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
             app.suspend_idle();
+            // `stalled` brought up to date
+            app.ws.publish_agents();
             glib::ControlFlow::Continue
         });
 

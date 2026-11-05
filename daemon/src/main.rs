@@ -344,6 +344,14 @@ async fn run() -> u8 {
         }
     }
 
+    // Each minute: idle agents suspended (as Settings says; nobody looks at one here), and
+    // `stalled` brought up to date.
+    let ticking = ws.clone();
+    let _tick = loom_core::rt::every(Duration::from_secs(60), move || {
+        ticking.suspend_idle(|_| false);
+        ticking.publish_agents();
+        true
+    });
     // Until told to stop.
     let mut term = match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
         Ok(term) => term,

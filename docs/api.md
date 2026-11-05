@@ -44,6 +44,9 @@ Who: window, cli, bridge, agent.
 | `edited` | integer | files it changed |
 | `awake` | boolean | kept from resting |
 | `draft` | string? | what waits in its input (a rewind's message), as last published |
+| `options` | array? | the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` |
+| `queued` | array? | messages waiting for the turn to end, in order (`unqueue`) |
+| `stalled` | boolean? | a turn quiet for 3 minutes, no tool running |
 | `looking` | boolean? | the user has it in front of them in loom |
 | `mode` | string? | its permission mode |
 | `modes` | array? | the modes it can take (`set_mode`) |
@@ -212,6 +215,23 @@ Who: window, cli.
 | `running` | boolean? |  |
 | `calls_left` | integer? |  |
 
+### `crew/<agent>`
+
+An agent's subagents (tasks it runs), while its turn goes on.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | the subagent's session, or its task's tool call |
+| `name` | string |  |
+| `step` | string | what it did last |
+| `state` | string? | running, requires_action, idle |
+| `started` | string |  |
+| `at` | string | when it last did something |
+| `ended` | string? |  |
+| `guessed` | boolean | no session of its own: its state is a guess from its steps |
+
 ### `closed`
 
 Conversations closed lately, newest first (`reopen`).
@@ -366,6 +386,40 @@ Who: window, cli. Result: `{}`.
 | `agent` | string | the agent's id |
 | `entry` | string | a message of yours (a `user` entry) |
 | `files` | boolean? | the files Claude changed from there on too |
+
+### `set_option`
+
+Changes a session setting of the agent's (the model, the effort…); its `options` say the new one.
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `option` | string | one of its `options`' id (model, effort…) |
+| `value` | string | one of that option's values |
+
+### `set_draft`
+
+Sets what waits in the agent's input (`draft`), as a client took or sent it.
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `text` | string | what its input holds (empty: nothing) |
+
+### `unqueue`
+
+Takes a queued message back into the agent's input (its `draft`).
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `index` | integer | which of its `queued` messages |
 
 ### `rename`
 

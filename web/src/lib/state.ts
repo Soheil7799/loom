@@ -1,11 +1,12 @@
 // An agent's state as the UI shows it: a shape (st-*) and a word, the same everywhere.
 import type { AgentsItem } from "./api-types";
 
-export type Shape = "wait" | "work" | "done" | "fail" | "rest" | "idle";
+export type Shape = "wait" | "work" | "stall" | "done" | "fail" | "rest" | "idle";
 
 export function stateOf(a: AgentsItem): { shape: Shape; word: string } {
   if (a.questions > 0) return { shape: "wait", word: a.questions > 1 ? `waits · ${a.questions} questions` : "waits" };
   if (((a.failed as { times?: number } | undefined)?.times ?? 0) > 0) return { shape: "fail", word: "failed" };
+  if (a.busy && a.stalled) return { shape: "stall", word: "quiet for minutes: stuck?" };
   if (a.busy) return { shape: "work", word: "working" };
   if (a.status === "suspended") return { shape: "rest", word: `resting since ${clock(a.used)}` };
   if (a.unseen) return { shape: "done", word: `done ${ago(a.used)}` };

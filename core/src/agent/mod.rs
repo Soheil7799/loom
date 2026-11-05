@@ -286,6 +286,8 @@ pub struct Agent {
     /// A turn ended while someone looked elsewhere.
     pub unseen: Cell<bool>,
     pub last_active: Cell<Instant>,
+    /// When the agent last said anything (any session update): how long a turn has been quiet.
+    pub last_heard: Cell<Instant>,
     /// When a turn last ended (or the agent was opened): how long it has been quiet.
     pub last_turn: Cell<Instant>,
     /// How long the last turn took (seconds).
@@ -378,6 +380,7 @@ impl Agent {
             planned: RefCell::default(),
             unseen: Cell::new(false),
             last_active: Cell::new(Instant::now()),
+            last_heard: Cell::new(Instant::now()),
             last_turn: Cell::new(Instant::now()),
             last_took: Cell::new(0),
             turns_ended: Cell::new(0),
@@ -557,6 +560,12 @@ impl Agent {
         self.named.set(!title.trim().is_empty());
         self.refresh_header();
         self.emit(Event::Session);
+        self.emit(Event::Changed);
+    }
+
+    /// What waits in its input, said from elsewhere (a page that sent it, or took it).
+    pub fn set_draft(self: &Rc<Self>, text: &str) {
+        self.view.set_draft(text);
         self.emit(Event::Changed);
     }
 
@@ -990,12 +999,28 @@ impl Agent {
     }
 
     /// Shows the session's settings (model, effort…) as pickers in the header.
-    fn set_config(&self, options: &Value) {
+    fn set_config(self: &Rc<Self>, options: &Value) {
         if !options.is_array() {
             return;
         }
         *self.config.borrow_mut() = options.clone();
         self.view.set_options(options);
+        self.emit(Event::Changed);
+    }
+
+    /// The session's settings (ACP's configOptions: model, effort…), as the agent gave them.
+    pub fn options(&self) -> Value {
+        self.config.borrow().clone()
+    }
+
+    /// The messages waiting for the turn's end (`unqueue` takes one back).
+    pub fn queued(&self) -> Vec<String> {
+        self.waiting.borrow().iter().map(|(t, _)| t.clone()).collect()
+    }
+
+    /// A turn under way that has said nothing for `quiet` (a tool running is not quiet).
+    pub fn stalled(&self, quiet: Duration) -> bool {
+        self.is_busy() && self.last_heard.get().elapsed() >= quiet && !crate::api::hub().store(&conversation(self.id)).items().iter().any(|e| e["kind"] == "tool" && matches!(e["status"].as_str(), Some("pending" | "streaming")))
     }
 
     pub fn set_option(self: &Rc<Self>, id: &str, value: &str) {
@@ -1602,6 +1627,7 @@ impl Agent {
     fn show_waiting(self: &Rc<Self>) {
         let texts: Vec<String> = self.waiting.borrow().iter().map(|(t, _)| t.clone()).collect();
         self.view.show_queued(&texts);
+        self.emit(Event::Changed);
     }
 
     /// A message waits for the turn to end.
@@ -2612,6 +2638,7 @@ impl Agent {
     }
 
     fn update(self: &Rc<Self>, update: &Value) {
+        self.last_heard.set(Instant::now());
         let text = || update["content"]["text"].as_str().unwrap_or("");
         match update["sessionUpdate"].as_str().unwrap_or("") {
             "agent_message_chunk" => {

@@ -29,6 +29,19 @@
     gone = f.gone;
     if (f.error) problem = f.error;
   }));
+  let crew = $state.raw<Item[]>([]);
+  $effect(() => follow(`crew/${agent.id}`, (f) => (crew = f.items)));
+  // what waits in its input, when it changes there (a message taken back from the queue)
+  let lastDraft = untrack(() => agent.draft ?? "");
+  $effect(() => {
+    const d = agent.draft ?? "";
+    if (d !== lastDraft) { lastDraft = d; if (d && !text.trim()) text = d; }
+  });
+  type Opt = { id: string; name?: string; category?: string; currentValue?: string; options?: unknown[] };
+  // an option's values, groups flattened
+  const flat = (os: unknown[] = []): { value: string; name: string }[] =>
+    os.flatMap((o) => { const x = o as { value?: string; name?: string; options?: unknown[] }; return x.options ? flat(x.options) : x.value ? [{ value: x.value, name: x.name ?? x.value }] : []; });
+  const options = $derived(((agent.options ?? []) as Opt[]).filter((o) => o.id !== "mode" && flat(o.options).length));
   let compactAt = $state<number | null>(null);
   $effect(() => follow("settings", (f) => (compactAt = f.items[0]?.compact_alert ? (f.items[0]?.compact_at ?? 80) : null)));
   $effect(() => follow("usage", (f) => (usage = (f.items.find((u: Item) => u.id === agent.id) as UsageItem) ?? null)));
@@ -50,10 +63,12 @@
     if (last && document.visibilityState === "visible") localStorage.setItem(seenKey, last.id);
   });
 
-  // Kept at the end as it grows, unless you scrolled up.
+  // Opened at its end, then kept there as it grows, unless you scrolled up.
+  let opened = false;
   $effect(() => {
-    entries;
-    if (box && box.scrollHeight - box.scrollTop - box.clientHeight < 160) queueMicrotask(() => box && (box.scrollTop = box.scrollHeight));
+    if (!entries.length || !box) return;
+    if (!opened || box.scrollHeight - box.scrollTop - box.clientHeight < 160) queueMicrotask(() => box && (box.scrollTop = box.scrollHeight));
+    opened = true;
   });
 
   // the result line is one line of plain words: markdown's marks taken out
@@ -75,7 +90,11 @@
   }
   async function send() {
     if (!text.trim()) return;
-    if (await run(command("send", { agent: agent.id, text }))) text = "";
+    if (await run(command("send", { agent: agent.id, text }))) {
+      text = "";
+      // what loom kept in its input went with it
+      if (agent.draft) { lastDraft = ""; run(command("set_draft", { agent: agent.id, text: "" })); }
+    }
   }
   function keys(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
@@ -130,6 +149,14 @@
       <button class="tiny" aria-label="Suspend" title={busy ? "Suspend: stop it first" : "Suspend (free its memory; a message resumes it)"} disabled={busy || agent.status === "suspended"} onclick={() => run(command("suspend", { agent: agent.id }))}><Icon name="moon" size={15} /></button>
     {/if}
   </header>
+  {#if crew.length}
+    <nav class="jobstrip crew" aria-label="Its subagents">
+      {#each crew as c (c.id)}
+        {@const shape = c.ended ? "done" : c.state === "requires_action" ? "wait" : c.state === "idle" ? "idle" : "work"}
+        <span class="jchip" title={c.step}><i class="st {shape}" role="img" aria-label={c.state ?? (c.ended ? "ended" : "running")}></i>{c.name}{#if c.step}<small>{c.step}</small>{/if}</span>
+      {/each}
+    </nav>
+  {/if}
   {#if jobs.length && showJob}
     <nav class="jobstrip" aria-label="This project's jobs">
       {#each jobs.slice(-6) as j (j.id)}
@@ -176,6 +203,13 @@
 
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
+    {#if agent.queued?.length}
+      <ul class="queued" aria-label="Waiting for the turn to end">
+        {#each agent.queued as q, i (i)}
+          <li><span class="qt">{q || "(pictures)"}</span><button class="btn small" onclick={() => run(command("unqueue", { agent: agent.id, index: i }))}>Take back</button></li>
+        {/each}
+      </ul>
+    {/if}
     <div class="composer">
       <textarea aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder="Ask Claude…  Enter sends, Shift+Enter: a new line" bind:value={text} onkeydown={keys} disabled={gone}></textarea>
       <div class="cbar">
@@ -184,6 +218,11 @@
             {#each agent.modes as mode}<option value={mode}>Mode · {mode}</option>{/each}
           </select>
         {/if}
+        {#each options as o (o.id)}
+          <select class="chip" aria-label={o.name ?? o.id} title={o.name ?? o.id} value={o.currentValue} onchange={(e) => run(command("set_option", { agent: agent.id, option: o.id, value: e.currentTarget.value }))}>
+            {#each flat(o.options) as v (v.value)}<option value={v.value}>{(o.name ?? o.id).replace(/ mode$/, "")} · {v.name}</option>{/each}
+          </select>
+        {/each}
         <span class="grow"></span>
         {#if st.shape === "wait"}<span class="status waiting">Waits for you</span>{:else if busy}<span class="status">Working</span>{/if}
         {#if busy && !text.trim()}

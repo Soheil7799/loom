@@ -302,6 +302,18 @@
             "type": "string",
             "description": "what waits in its input (a rewind's message), as last published"
           },
+          "options": {
+            "type": "array",
+            "description": "the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option`"
+          },
+          "queued": {
+            "type": "array",
+            "description": "messages waiting for the turn to end, in order (`unqueue`)"
+          },
+          "stalled": {
+            "type": "boolean",
+            "description": "a turn quiet for 3 minutes, no tool running"
+          },
           "looking": {
             "type": "boolean",
             "description": "the user has it in front of them in loom"
@@ -804,6 +816,59 @@
         ]
       }
     },
+    "crew/<agent>": {
+      "description": "An agent's subagents (tasks it runs), while its turn goes on.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "the subagent's session, or its task's tool call"
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "step": {
+            "type": "string",
+            "description": "what it did last"
+          },
+          "state": {
+            "type": "string",
+            "description": "running, requires_action, idle"
+          },
+          "started": {
+            "type": "string",
+            "description": ""
+          },
+          "at": {
+            "type": "string",
+            "description": "when it last did something"
+          },
+          "ended": {
+            "type": "string",
+            "description": ""
+          },
+          "guessed": {
+            "type": "boolean",
+            "description": "no session of its own: its state is a guess from its steps"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "step",
+          "started",
+          "at",
+          "guessed"
+        ]
+      }
+    },
     "closed": {
       "description": "Conversations closed lately, newest first (`reopen`).",
       "who": [
@@ -1197,6 +1262,92 @@
         "required": [
           "agent",
           "entry"
+        ]
+      },
+      "result": "{}"
+    },
+    "set_option": {
+      "description": "Changes a session setting of the agent's (the model, the effort…); its `options` say the new one.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "option": {
+            "type": "string",
+            "description": "one of its `options`' id (model, effort…)"
+          },
+          "value": {
+            "type": "string",
+            "description": "one of that option's values"
+          }
+        },
+        "required": [
+          "agent",
+          "option",
+          "value"
+        ]
+      },
+      "result": "{}"
+    },
+    "set_draft": {
+      "description": "Sets what waits in the agent's input (`draft`), as a client took or sent it.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "text": {
+            "type": "string",
+            "description": "what its input holds (empty: nothing)"
+          }
+        },
+        "required": [
+          "agent",
+          "text"
+        ]
+      },
+      "result": "{}"
+    },
+    "unqueue": {
+      "description": "Takes a queued message back into the agent's input (its `draft`).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "index": {
+            "type": "integer",
+            "description": "which of its `queued` messages"
+          }
+        },
+        "required": [
+          "agent",
+          "index"
         ]
       },
       "result": "{}"

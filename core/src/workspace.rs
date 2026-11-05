@@ -37,6 +37,9 @@ pub enum Act {
     Remove,
 }
 
+/// A turn quiet this long, no tool running, is stalled (the UI says so).
+pub const STALLED: Duration = Duration::from_secs(180);
+
 /// Whether the user has an agent in front of them (the UI's answer).
 pub type Looking = Rc<dyn Fn(&Agent) -> bool>;
 
@@ -257,6 +260,9 @@ impl Workspace {
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),
                     "draft": agent.view.draft(),
+                    "options": agent.options(),
+                    "queued": agent.queued(),
+                    "stalled": agent.stalled(STALLED),
                     "looking": self.looking.borrow().as_ref().is_some_and(|f| f(agent)),
                     "mode": agent.modes().0,
                     "modes": agent.modes().1,

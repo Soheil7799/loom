@@ -184,11 +184,46 @@ fn handle() {
         }
         Ok(json!({}))
     });
+    // A session setting (model, effort…): one of the agent's `options`, to one of its values.
+    hub.handle("set_option", |who, params| {
+        let agent = target(who, params, "change agents' settings")?;
+        let (Some(id), Some(value)) = (params["option"].as_str(), params["value"].as_str()) else { return Err(Error::Invalid("set_option needs an option and a value".into())) };
+        let options = agent.options();
+        let option = options.as_array().into_iter().flatten().find(|o| o["id"] == id).ok_or_else(|| Error::Invalid(format!("no option {id} (it isn't running, or has none such)")))?;
+        if !values(&option["options"]).iter().any(|v| v == value) {
+            return Err(Error::Invalid(format!("{id} has no value {value}")));
+        }
+        agent.set_option(id, value);
+        Ok(json!({}))
+    });
+    hub.handle("set_draft", |who, params| {
+        let agent = target(who, params, "change what agents have in their input")?;
+        let text = params["text"].as_str().ok_or_else(|| Error::Invalid("set_draft needs text (empty clears it)".into()))?;
+        agent.set_draft(text);
+        Ok(json!({}))
+    });
+    hub.handle("unqueue", |who, params| {
+        let agent = target(who, params, "take messages back")?;
+        let index = params["index"].as_u64().ok_or_else(|| Error::Invalid("which queued message (index)?".into()))? as usize;
+        if index >= agent.queued().len() {
+            return Err(Error::Conflict("not waiting any more (sent already?)".into()));
+        }
+        agent.unqueue(index);
+        Ok(json!({}))
+    });
     hub.handle("stop", |who, params| {
         let agent = target(who, params, "stop agents")?;
         agent.cancel();
         Ok(json!({}))
     });
+}
+
+/// An option's values (ACP: a list of {value, name}, or of groups with their own `options`).
+fn values(options: &Value) -> Vec<String> {
+    options.as_array().into_iter().flatten().flat_map(|o| match o["options"].as_array() {
+        Some(_) => values(&o["options"]),
+        None => o["value"].as_str().map(|v| vec![v.to_owned()]).unwrap_or_default(),
+    }).collect()
 }
 
 /// The agent a command is for, if `who` is a person at this computer (loom's window, the CLI).
@@ -234,5 +269,11 @@ mod tests {
         assert_eq!(rewind_point(&entries, "e1"), Some((None, false, "first".into())));
         assert_eq!(rewind_point(&entries, "e2"), None, "only a message of yours");
         assert_eq!(rewind_point(&entries, "e9"), None);
+    }
+
+    #[test]
+    fn an_options_values_are_found_in_its_groups_too() {
+        let options = json!([{ "value": "default", "name": "Default" }, { "group": "More", "options": [{ "value": "opus" }, { "value": "haiku" }] }]);
+        assert_eq!(values(&options), ["default", "opus", "haiku"]);
     }
 }

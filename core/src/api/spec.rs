@@ -73,6 +73,9 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "suspend", who: PEOPLE, params: &[("agent", "string", true, "the agent's id")], result: "{}", later: false, about: "Suspends an agent (frees its memory; opening it or a message resumes it). A conflict while it works." },
     Command { name: "set_awake", who: PEOPLE, params: &[("agent", "string", true, "the agent's id"), ("awake", "boolean", true, "never suspended for being idle (true), or allowed")], result: "{}", later: false, about: "Keeps an agent awake, or lets it be suspended when idle." },
     Command { name: "rewind", who: PEOPLE, params: &[("agent", "string", true, "the agent's id"), ("entry", "string", true, "a message of yours (a `user` entry)"), ("files", "boolean", false, "the files Claude changed from there on too")], result: "{}", later: false, about: "A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too." },
+    Command { name: "set_option", who: ALL_BUT_AGENTS, params: &[("agent", "string", true, "the agent's id"), ("option", "string", true, "one of its `options`' id (model, effort…)"), ("value", "string", true, "one of that option's values")], result: "{}", later: false, about: "Changes a session setting of the agent's (the model, the effort…); its `options` say the new one." },
+    Command { name: "set_draft", who: ALL_BUT_AGENTS, params: &[("agent", "string", true, "the agent's id"), ("text", "string", true, "what its input holds (empty: nothing)")], result: "{}", later: false, about: "Sets what waits in the agent's input (`draft`), as a client took or sent it." },
+    Command { name: "unqueue", who: ALL_BUT_AGENTS, params: &[("agent", "string", true, "the agent's id"), ("index", "integer", true, "which of its `queued` messages")], result: "{}", later: false, about: "Takes a queued message back into the agent's input (its `draft`)." },
     Command { name: "rename", who: &["window", "cli", "bridge"], params: &[("agent", "string", true, "the agent's id"), ("title", "string", true, "its new title")], result: "{}", later: false, about: "Renames an agent (its own titles don't replace it then)." },
     Command { name: "reopen", who: PEOPLE, params: &[("session", "string", true, "a `closed` item's id")], result: "{agent}", later: false, about: "Reopens a conversation closed lately, as an agent." },
     Command {
@@ -217,6 +220,9 @@ pub const RESOURCES: &[Resource] = &[
             ("edited", "integer", true, "files it changed"),
             ("awake", "boolean", true, "kept from resting"),
             ("draft", "string", false, "what waits in its input (a rewind's message), as last published"),
+            ("options", "array", false, "the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option`"),
+            ("queued", "array", false, "messages waiting for the turn to end, in order (`unqueue`)"),
+            ("stalled", "boolean", false, "a turn quiet for 3 minutes, no tool running"),
             ("looking", "boolean", false, "the user has it in front of them in loom"),
             ("mode", "string", false, "its permission mode"),
             ("modes", "array", false, "the modes it can take (`set_mode`)"),
@@ -288,6 +294,7 @@ pub const RESOURCES: &[Resource] = &[
     },
     Resource { name: "notes_chats", who: &["window", "cli", "bridge:remote"], item: &[("id", "string", true, "its session"), ("title", "string", true, ""), ("updated", "string", false, ""), ("mark", "string", false, ""), ("current", "boolean", false, "the one open")], about: "loom's Notes chats." },
     Resource { name: "scribe", who: PEOPLE, item: &[("id", "string", true, "`status`, or `<list>:<n>`"), ("list", "string", false, "questions, proposals, recent, teach"), ("doing", "string", false, "status: what it is doing"), ("running", "boolean", false, ""), ("calls_left", "integer", false, "")], about: "Scribe: what it does, asks, proposes and wrote." },
+    Resource { name: "crew/<agent>", who: ALL_BUT_AGENTS, item: &[("id", "string", true, "the subagent's session, or its task's tool call"), ("name", "string", true, ""), ("step", "string", true, "what it did last"), ("state", "string", false, "running, requires_action, idle"), ("started", "string", true, ""), ("at", "string", true, "when it last did something"), ("ended", "string", false, ""), ("guessed", "boolean", true, "no session of its own: its state is a guess from its steps")], about: "An agent's subagents (tasks it runs), while its turn goes on." },
     Resource { name: "closed", who: PEOPLE, item: &[("id", "string", true, "its session"), ("title", "string", true, ""), ("folder", "string", true, ""), ("used", "string", true, "")], about: "Conversations closed lately, newest first (`reopen`)." },
     Resource {
         name: "bridges",

@@ -29,6 +29,12 @@ export type AgentsItem = {
   awake: boolean;
   /** what waits in its input (a rewind's message), as last published */
   draft?: string;
+  /** the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` */
+  options?: unknown[];
+  /** messages waiting for the turn to end, in order (`unqueue`) */
+  queued?: unknown[];
+  /** a turn quiet for 3 minutes, no tool running */
+  stalled?: boolean;
   /** the user has it in front of them in loom */
   looking?: boolean;
   /** its permission mode */
@@ -201,6 +207,23 @@ export type ScribeItem = {
   calls_left?: number;
 };
 
+/** An agent's subagents (tasks it runs), while its turn goes on. */
+export type CrewItem = {
+  /** the subagent's session, or its task's tool call */
+  id: string;
+  name: string;
+  /** what it did last */
+  step: string;
+  /** running, requires_action, idle */
+  state?: string;
+  started: string;
+  /** when it last did something */
+  at: string;
+  ended?: string;
+  /** no session of its own: its state is a guess from its steps */
+  guessed: boolean;
+};
+
 /** Conversations closed lately, newest first (`reopen`). */
 export type ClosedItem = {
   /** its session */
@@ -327,6 +350,7 @@ export interface Resources {
   "note/<path>": NoteItem;
   "notes_chats": NotesChatsItem;
   "scribe": ScribeItem;
+  "crew/<agent>": CrewItem;
   "closed": ClosedItem;
   "bridges": BridgesItem;
   "pairing": PairingItem;
@@ -389,6 +413,32 @@ export type RewindParams = {
   entry: string;
   /** the files Claude changed from there on too */
   files?: boolean;
+};
+
+/** Changes a session setting of the agent's (the model, the effort…); its `options` say the new one. Result: {} */
+export type SetOptionParams = {
+  /** the agent's id */
+  agent: string;
+  /** one of its `options`' id (model, effort…) */
+  option: string;
+  /** one of that option's values */
+  value: string;
+};
+
+/** Sets what waits in the agent's input (`draft`), as a client took or sent it. Result: {} */
+export type SetDraftParams = {
+  /** the agent's id */
+  agent: string;
+  /** what its input holds (empty: nothing) */
+  text: string;
+};
+
+/** Takes a queued message back into the agent's input (its `draft`). Result: {} */
+export type UnqueueParams = {
+  /** the agent's id */
+  agent: string;
+  /** which of its `queued` messages */
+  index: number;
 };
 
 /** Renames an agent (its own titles don't replace it then). Result: {} */
@@ -683,6 +733,9 @@ export interface Commands {
   "suspend": SuspendParams;
   "set_awake": SetAwakeParams;
   "rewind": RewindParams;
+  "set_option": SetOptionParams;
+  "set_draft": SetDraftParams;
+  "unqueue": UnqueueParams;
   "rename": RenameParams;
   "reopen": ReopenParams;
   "past_conversations": PastConversationsParams;

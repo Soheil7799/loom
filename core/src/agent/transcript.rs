@@ -404,6 +404,11 @@ impl Recorded {
         }
     }
 
+    /// Its subagents in the core API (`crew/<agent>`), once it is published.
+    fn crew(&self) -> Option<Store> {
+        self.agent.borrow().as_ref().map(|id| crate::api::hub().store(&format!("crew/{id}")))
+    }
+
     /// A usage report from the agent (ACP's `usage_update`): its item in `usage`.
     pub fn usage_update(&self, update: &Value) {
         let Some(id) = self.agent.borrow().clone() else { return };
@@ -692,12 +697,21 @@ impl View for Recorded {
         self.inner.context_used()
     }
     fn crew_set(&self, entry: Crew) {
+        if let Some(store) = self.crew() {
+            store.upsert(crew_item(&entry));
+        }
         self.inner.crew_set(entry);
     }
     fn crew_remove(&self, key: &str) {
+        if let Some(store) = self.crew() {
+            store.remove(key);
+        }
         self.inner.crew_remove(key);
     }
     fn crew_clear(&self) {
+        if let Some(store) = self.crew() {
+            store.set(Vec::new());
+        }
         self.inner.crew_clear();
     }
     fn show_mcp(&self, servers: Option<Vec<(String, String, Option<String>)>>) {
@@ -972,4 +986,10 @@ mod tests {
         assert_eq!(t.since("another", 2)["reset"], true);
         assert_eq!(t.since("", 999)["reset"], true);
     }
+}
+
+/// A subagent as the API's `crew/<agent>` has it: times as RFC 3339.
+fn crew_item(c: &Crew) -> Value {
+    let when = |at: Instant| crate::api::time(crate::state::now() as i64 - at.elapsed().as_secs() as i64);
+    json!({ "id": c.key, "name": c.name, "step": c.step, "state": c.state, "started": when(c.started), "at": when(c.at), "ended": c.ended.map(when), "guessed": c.guessed })
 }
