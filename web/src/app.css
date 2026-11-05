@@ -291,3 +291,21 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .btn.small { padding: 3px 10px; font-size: 13px; }
 .crew .jchip { max-width: 320px; }
 .crew .jchip small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--quiet); font-size: 12px; }
+
+/* ---- an agent's changes, beside its conversation ---- */
+.convo { display: grid; grid-template-columns: 1fr; height: 100%; min-height: 0; }
+.convo.aside { grid-template-columns: 1fr minmax(320px, 40%); }
+.convo > .centre { min-width: 0; }
+.changes { overflow: auto; padding: 12px 14px 20px; border-left: 1px solid var(--line); background: var(--sidebar); }
+.changes-head { display: flex; align-items: center; gap: 4px; margin-bottom: 8px; }
+.cfile { margin-bottom: 18px; }
+.cfile-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.cfile-head .cname { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+.cfile-head .badge { flex: none; min-width: 26px; text-align: center; padding: 1px 6px; border-radius: 6px; font-family: var(--mono); font-size: 12px; background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.changes .diff { margin-bottom: 8px; }
+.changes .diff .f { display: flex; align-items: center; gap: 8px; justify-content: space-between; }
+.changes .diff .f span { font-family: var(--mono); font-size: 12px; color: var(--quiet); }
+.changes .quiet.small { font-size: 12.5px; }
+.chip.on { border-color: var(--accent); color: var(--accent); }
+.header .chip { display: inline-flex; align-items: center; gap: 4px; }
+@media (max-width: 1000px) { .convo.aside { grid-template-columns: 1fr; grid-template-rows: 1fr 45%; } .changes { border-left: 0; border-top: 1px solid var(--line); } }

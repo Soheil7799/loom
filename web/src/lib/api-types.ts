@@ -405,6 +405,22 @@ export type SetAwakeParams = {
   awake: boolean;
 };
 
+/** The files an agent created or changed, with their diffs. Result: {files: [{path, mark: created|changed, repo, status: git's two letters, diff: against the last commit}]} */
+export type ChangesParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Throws away changes to a file the agent touched, back to the last commit: all of them, or one hunk. It can't be undone. A file git doesn't know (new) is not reverted. Result: {} */
+export type RevertParams = {
+  /** the agent's id */
+  agent: string;
+  /** one of its `changes`' files */
+  path: string;
+  /** one hunk of that file's diff (from 0); none: the whole file */
+  hunk?: number;
+};
+
 /** A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too. Result: {} */
 export type RewindParams = {
   /** the agent's id */
@@ -732,6 +748,8 @@ export interface Commands {
   "set_mode": SetModeParams;
   "suspend": SuspendParams;
   "set_awake": SetAwakeParams;
+  "changes": ChangesParams;
+  "revert": RevertParams;
   "rewind": RewindParams;
   "set_option": SetOptionParams;
   "set_draft": SetDraftParams;

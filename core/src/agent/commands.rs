@@ -164,6 +164,24 @@ fn handle() {
         agent.set_awake(on);
         Ok(json!({}))
     });
+    // What it changed, and going back on it: only files it touched.
+    hub.handle("changes", |who, params| {
+        let agent = person(who, params, "read agents' changes")?;
+        // shortcut: git runs on the main loop (a diff per file, fast for an agent's handful); off it once that is slow
+        let files: Vec<Value> = agent.files().iter().map(|(path, mark)| crate::changes::describe(path, *mark)).collect();
+        Ok(json!({ "files": files }))
+    });
+    hub.handle("revert", |who, params| {
+        let agent = person(who, params, "revert agents' changes")?;
+        let path = params["path"].as_str().ok_or_else(|| Error::Invalid("which file (path)?".into()))?;
+        let path = std::path::Path::new(path);
+        if !agent.files().iter().any(|(p, _)| p == path) {
+            return Err(Error::Forbidden("only a file this agent created or changed".into()));
+        }
+        let hunk = params["hunk"].as_u64().map(|n| n as usize);
+        crate::changes::revert(path, hunk).map_err(Error::Failed)?;
+        Ok(json!({}))
+    });
     hub.handle("rewind", |who, params| {
         let agent = person(who, params, "rewind agents")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("rewind needs a message of yours (its entry)".into()))?;

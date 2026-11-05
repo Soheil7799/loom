@@ -21,3 +21,13 @@ export function hunks(all: Line[], context = 2): Line[] {
   const near = all.map((_, k) => all.slice(Math.max(0, k - context), k + context + 1).some((l) => l.t !== " "));
   return all.filter((_, k) => near[k]);
 }
+
+/** A unified diff (git's) as its hunks: each its `@@` line and its lines, marked +, - or " ". */
+export function unified(diff: string): { head: string; lines: Line[] }[] {
+  const hunks: { head: string; lines: Line[] }[] = [];
+  for (const raw of diff.split("\n")) {
+    if (raw.startsWith("@@")) hunks.push({ head: raw, lines: [] });
+    else if (hunks.length && /^[ +-]/.test(raw)) hunks.at(-1)!.lines.push({ t: raw[0] as Line["t"], text: raw.slice(1) });
+  }
+  return hunks;
+}

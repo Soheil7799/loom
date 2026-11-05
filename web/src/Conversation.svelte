@@ -10,6 +10,7 @@
   import { stateOf } from "./lib/state";
   import Entry_ from "./Entry.svelte";
   import Tube from "./Tube.svelte";
+  import Changes from "./Changes.svelte";
   import Icon from "./Icon.svelte";
 
   let { agent, jobs = [], showJob, expectCopy }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: () => void } = $props();
@@ -23,6 +24,7 @@
   let box: HTMLElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
   let naming = $state<string | null>(null);
+  let showChanges = $state(false);
 
   $effect(() => follow(`conversation/${agent.id}`, (f) => {
     entries = [...f.items] as Entry[];
@@ -121,6 +123,7 @@
 
 <svelte:window onkeydown={jump} />
 
+<div class="convo" class:aside={showChanges}>
 <section class="centre" aria-label={agent.title || "Conversation"}>
   <header class="header">
     <i class="st {st.shape}" role="img" aria-label={st.word}></i>
@@ -144,6 +147,7 @@
       <button class="chip warn" title="The context is {context}% full: summarise the conversation so far to make room (/compact)" disabled={busy} onclick={() => run(command("send", { agent: agent.id, text: "/compact" }))}>Compact</button>
     {/if}
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
+    {#if agent.edited}<button class="chip" class:on={showChanges} aria-pressed={showChanges} title="The files it changed" onclick={() => (showChanges = !showChanges)}><Icon name="diff" size={13} /> {agent.edited}</button>{/if}
     {#if agent.status !== "notes"}
       <button class="tiny" class:on={agent.awake} aria-pressed={agent.awake} aria-label="Keep awake" title={agent.awake ? "Kept awake: never suspended while idle (click to allow it)" : "Keep awake: never suspended while idle"} onclick={() => run(command("set_awake", { agent: agent.id, awake: !agent.awake }))}><Icon name="coffee" size={15} /></button>
       <button class="tiny" aria-label="Suspend" title={busy ? "Suspend: stop it first" : "Suspend (free its memory; a message resumes it)"} disabled={busy || agent.status === "suspended"} onclick={() => run(command("suspend", { agent: agent.id }))}><Icon name="moon" size={15} /></button>
@@ -234,3 +238,5 @@
     </div>
   </div>
 </section>
+{#if showChanges}<Changes agent={agent.id} edited={agent.edited} close={() => (showChanges = false)} />{/if}
+</div>

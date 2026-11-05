@@ -375,6 +375,28 @@ Who: window, cli. Result: `{}`.
 | `agent` | string | the agent's id |
 | `awake` | boolean | never suspended for being idle (true), or allowed |
 
+### `changes`
+
+The files an agent created or changed, with their diffs.
+
+Who: window, cli. Result: `{files: [{path, mark: created|changed, repo, status: git's two letters, diff: against the last commit}]}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `revert`
+
+Throws away changes to a file the agent touched, back to the last commit: all of them, or one hunk. It can't be undone. A file git doesn't know (new) is not reverted.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `path` | string | one of its `changes`' files |
+| `hunk` | integer? | one hunk of that file's diff (from 0); none: the whole file |
+
 ### `rewind`
 
 A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too.
