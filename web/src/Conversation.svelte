@@ -183,7 +183,7 @@
                 {#if agent.status !== "notes" && !busy}
                   <span class="rewind">
                     <button title="A copy of the conversation from just before this message, with it in the input to change (this one is kept)" onclick={() => rewind(t.user!.id, false)}><Icon name="undo" size={12} /> Rewind to here</button>
-                    <button title="The same, and the files Claude changed from here on go back too" onclick={() => rewind(t.user!.id, true)}>files too</button>
+                    <button title="The same, and the files Claude changed from here on go back too" onclick={() => rewind(t.user!.id, true)}><Icon name="undo" size={12} /> Rewind, files too</button>
                   </span>
                 {/if}<span class="when"><b>You</b>{#if t.seconds !== undefined} · {t.seconds}s{/if}</span></span>
             </div>
