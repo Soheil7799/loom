@@ -4,14 +4,14 @@
   // starts, questions and failures, and moves while the agent works. Alt+Up/Down: the previous
   // or next question or failure.
   import { follow, command, type Item } from "./lib/api";
-  import type { AgentsItem, UsageItem } from "./lib/api-types";
+  import type { AgentsItem, JobsItem, UsageItem } from "./lib/api-types";
   import { turns, type Entry } from "./lib/turns";
   import { stateOf } from "./lib/state";
   import Entry_ from "./Entry.svelte";
   import Tube from "./Tube.svelte";
   import Icon from "./Icon.svelte";
 
-  let { agent }: { agent: AgentsItem } = $props();
+  let { agent, jobs = [], showJob }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void } = $props();
   let entries = $state.raw<Entry[]>([]);
   let usage = $state.raw<UsageItem | null>(null);
   let gone = $state(false);
@@ -113,6 +113,14 @@
     {#if context !== null}<span class="ctx"><span class="bar"><i style:width="{Math.min(context, 100)}%"></i></span>{context}%</span>{/if}
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
   </header>
+  {#if jobs.length && showJob}
+    <nav class="jobstrip" aria-label="This project's jobs">
+      {#each jobs.slice(-6) as j (j.id)}
+        {@const shape = j.status !== "exited" ? "work" : j.exit_code === 0 ? "done" : "fail"}
+        <button class="jchip" title={j.command} onclick={() => showJob(j.id)}><i class="st {shape}" role="img" aria-label={j.status}></i><Icon name="terminal" size={12} />{j.name}</button>
+      {/each}
+    </nav>
+  {/if}
 
   <div class="messages" bind:this={box} role="log" aria-label="Conversation">
     <div class="column" bind:this={column}>

@@ -22,21 +22,3 @@ code { font-size: 0.92em; }
 .grow { flex: 1; }
 
 /* Jobs and Asks: the scratch UI's pages, until their own steps. */
-.page { overflow: auto; height: 100%; }
-.page .dot { width: 0.55rem; height: 0.55rem; border-radius: 50%; background: var(--dim); flex: none; display: inline-block; }
-.page .dot.working, .page .dot.starting { background: var(--accent); }
-.page .dot.failed { background: var(--err); }
-.page .dot.done, .page .dot.idle { background: var(--ok); }
-.page header { display: flex; align-items: center; gap: 0.75rem; padding: 0.6rem 1rem; border-bottom: 1px solid var(--line); }
-.page button.on { background: var(--soft); outline: 1px solid var(--line); }
-.page .jobs { display: flex; flex-direction: column; height: 100%; }
-.page .jobs .run { display: flex; gap: 0.5rem; padding: 0.6rem 1rem; }
-.page .jobs .run input { flex: 1; }
-.page .jobs .split { display: grid; grid-template-columns: 16rem 1fr; min-height: 0; flex: 1; }
-.page .jobs ul { list-style: none; margin: 0; padding: 0.5rem; overflow-y: auto; border-right: 1px solid var(--line); }
-.page .jobs li button { width: 100%; text-align: left; background: none; border: none; display: flex; align-items: center; gap: 0.4rem; }
-.page .jobs section { padding: 0.5rem 1rem; overflow: auto; }
-.page .terminal { max-height: none; min-height: 20rem; }
-.page .asks { padding-bottom: 1rem; }
-.page .ask { margin: 0.75rem 1rem 0; border: 1px solid var(--line); border-radius: 8px; padding: 0.4rem 0.8rem; }
-.page .ask.edit { border-color: var(--wait); }

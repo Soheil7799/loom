@@ -293,8 +293,10 @@ fn answer(stream: &mut TcpStream, status: u16, kind: &str, body: &[u8], extra: &
 }
 
 /// On every answer: nothing from elsewhere, never in a frame, nothing told to other sites.
+/// Inline styles are allowed (xterm.js draws its terminal with `<style>` elements); scripts
+/// stay the page's own.
 const SECURITY: &[&str] = &[
-    "Content-Security-Policy: default-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
+    "Content-Security-Policy: default-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' ws://127.0.0.1:* ws://localhost:*; img-src 'self' data: blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'",
     "X-Frame-Options: DENY",
     "X-Content-Type-Options: nosniff",
     "Referrer-Policy: no-referrer",

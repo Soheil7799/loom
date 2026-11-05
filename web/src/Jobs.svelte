@@ -1,94 +1,66 @@
-<script>
-  import { follow, command, fromBase64 } from "./lib/api";
+<script lang="ts">
+  // The jobs: every project's, newest first, one open in its terminal; a command to run in a
+  // project's tray; Stop and Run again.
+  import { command } from "./lib/api";
+  import type { JobsItem, ProjectsItem } from "./lib/api-types";
+  import Icon from "./Icon.svelte";
+  import Terminal from "./Terminal.svelte";
 
-  let { projects } = $props();
-  let jobs = $state.raw([]);
-  let open = $state(null);
-  let output = $state("");
+  let { jobs, projects, open = $bindable(null) }: { jobs: JobsItem[]; projects: ProjectsItem[]; open: string | null } = $props();
   let project = $state("");
   let line = $state("");
   let problem = $state("");
 
-  $effect(() => follow("jobs", (f) => (jobs = [...f.items].reverse())));
+  $effect(() => { if (!project && projects.length) project = projects[0].id; });
+  const newest = $derived([...jobs].reverse());
+  const job = $derived(jobs.find((j) => j.id === open) ?? newest[0]);
+  const name = (id: string) => projects.find((p) => p.id === id)?.name ?? id;
 
-  // A job's terminal as text: its screen, then the bytes after it, escapes taken out.
-  $effect(() => {
-    if (!open) return;
-    return follow(`job/${open}`, (f) => {
-      const item = f.items[0];
-      if (!item) return (output = "");
-      const screen = fromBase64(item.screen);
-      const tail = item.tail ?? new Uint8Array();
-      const all = new Uint8Array(screen.length + tail.length);
-      all.set(screen);
-      all.set(tail, screen.length);
-      output = plain(new TextDecoder().decode(all));
-    });
-  });
-
-  function plain(text) {
-    return text
-      .replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, "")
-      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, "")
-      .replace(/\x1b[()][0-9A-Za-z]/g, "")
-      .replace(/\x1b./g, "")
-      .replace(/\r\n/g, "\n")
-      .replace(/\r/g, "");
-  }
-
-  async function run(promise) {
+  async function run<T>(p: Promise<T>) {
     problem = "";
-    try {
-      return await promise;
-    } catch (e) {
-      problem = e.message;
-    }
+    try { return await p; } catch (e) { problem = (e as Error).message; }
   }
-
-  async function start() {
-    const answer = await run(command("run_job", { project: project || projects[0]?.id, command: line }));
-    if (answer) {
-      line = "";
-      open = answer.job;
-    }
+  async function start(e: SubmitEvent) {
+    e.preventDefault();
+    const answer = await run(command("run_job", { project, command: line.trim() }));
+    if (answer) { line = ""; open = answer.job; }
   }
-
-  const name = (id) => projects.find((p) => p.id === id)?.name ?? id;
 </script>
 
-<div class="jobs">
-  <header><h1>Jobs</h1></header>
-  <form class="run" onsubmit={(e) => { e.preventDefault(); start(); }}>
-    <select bind:value={project}>
+<section class="jobs-page" aria-label="Jobs">
+  <header class="header"><span class="headline"><span class="title">Jobs</span></span></header>
+  <form class="runbar" onsubmit={start}>
+    <select class="chip" aria-label="Project" bind:value={project}>
       {#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
     </select>
-    <input placeholder="a command to run in the project's tray" bind:value={line} />
-    <button disabled={!line.trim()}>Run</button>
+    <input aria-label="Command" placeholder="A command to run in the project's tray" bind:value={line} />
+    <button class="go" disabled={!line.trim() || !projects.length}>Run</button>
   </form>
   {#if problem}<p class="error">{problem}</p>{/if}
-  <div class="split">
-    <ul>
-      {#each jobs as job (job.id)}
+  <div class="jobs-split">
+    <ul class="jobs-list">
+      {#each newest as j (j.id)}
+        {@const shape = j.status !== "exited" ? "work" : j.exit_code === 0 ? "done" : "fail"}
         <li>
-          <button class:on={open === job.id} onclick={() => (open = job.id)}>
-            <span class="dot {job.status === 'exited' ? (job.exit_code === 0 ? 'done' : 'failed') : 'working'}"></span>
-            {job.name} <span class="dim">{name(job.project_id)} · {job.status}{job.exit_code !== null && job.exit_code !== undefined ? ` ${job.exit_code}` : ""}</span>
+          <button class="arow" class:sel={j.id === job?.id} aria-current={j.id === job?.id ? "true" : undefined} onclick={() => (open = j.id)}>
+            <i class="st {shape}" role="img" aria-label={j.status}></i>
+            <span class="t">{j.name}</span>
+            <span class="s">{name(j.project_id)} · {j.status}{j.exit_code != null && j.status === "exited" ? ` ${j.exit_code}` : ""}</span>
           </button>
         </li>
+      {:else}
+        <li class="empty">No jobs yet.</li>
       {/each}
     </ul>
-    {#if open}
-      {@const job = jobs.find((j) => j.id === open)}
-      <section>
-        {#if job}
-          <p>
-            <code>{job.command}</code>
-            {#if job.status === "running"}<button onclick={() => run(command("stop_job", { job: job.id }))}>Stop</button>{/if}
-            <button onclick={() => run(command("restart_job", { job: job.id }))}>Run again</button>
-          </p>
-        {/if}
-        <pre class="terminal">{output}</pre>
-      </section>
+    {#if job}
+      <div class="job">
+        <div class="job-bar">
+          <code>{job.command}</code><span class="grow"></span>
+          {#if job.status === "running"}<button class="btn" onclick={() => run(command("stop_job", { job: job.id }))}><Icon name="stop" size={13} /> Stop</button>{/if}
+          <button class="btn" onclick={() => run(command("restart_job", { job: job.id }))}><Icon name="undo" size={13} /> Run again</button>
+        </div>
+        {#key job.id}<Terminal job={job.id} />{/key}
+      </div>
     {/if}
   </div>
-</div>
+</section>

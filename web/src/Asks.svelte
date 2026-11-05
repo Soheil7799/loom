@@ -1,34 +1,42 @@
-<script>
+<script lang="ts">
+  // What agents ask beyond their conversation, where no window of loom's shows it: a file
+  // to see, one to fill in (the agent waits), a word. Newest first.
   import { command } from "./lib/api";
+  import type { AsksItem } from "./lib/api-types";
+  import { ago } from "./lib/state";
 
-  // What agents ask beyond their conversation: a file to see, one to fill in, a word.
-  let { asks } = $props();
+  let { asks, agents, pick }: { asks: AsksItem[]; agents: { id: string; title: string }[]; pick: (id: string) => void } = $props();
   let problem = $state("");
 
-  async function run(promise) {
+  async function run(p: Promise<unknown>) {
     problem = "";
-    try {
-      await promise;
-    } catch (e) {
-      problem = e.message;
-    }
+    try { await p; } catch (e) { problem = (e as Error).message; }
   }
-
-  const what = { open: "wants you to see", edit: "waits for you to fill in", notify: "needs you" };
+  const what: Record<string, string> = { open: "wants you to see a file", edit: "waits for you to fill in a file", notify: "needs you" };
+  const who = (id: string) => agents.find((a) => a.id === id);
 </script>
 
-<div class="asks">
-  <header><h1>Asks</h1></header>
-  {#if problem}<p class="error">{problem}</p>{/if}
-  {#if asks.length === 0}<p class="dim">Nothing asked.</p>{/if}
-  {#each [...asks].reverse() as ask (ask.id)}
-    <div class="ask {ask.kind}">
-      <p><strong>{ask.title}</strong> {what[ask.kind] ?? ask.kind}{#if ask.path}: <code>{ask.path}</code>{/if}</p>
-      {#if ask.message}<p>{ask.message}</p>{/if}
-      <p>
-        {#if ask.path}<button onclick={() => run(command("ask_open", { id: ask.id }))}>Open in my editor</button>{/if}
-        <button onclick={() => run(command("ask_done", { id: ask.id }))}>{ask.kind === "edit" ? "Done" : "Dismiss"}</button>
-      </p>
-    </div>
-  {/each}
-</div>
+<section class="asks-page" aria-label="Asks">
+  <header class="header"><span class="headline"><span class="title">Asks</span></span></header>
+  <div class="asks-list">
+    {#if problem}<p class="error">{problem}</p>{/if}
+    {#each [...asks].reverse() as ask (ask.id)}
+      {@const a = who(ask.agent)}
+      <div class="permission-card" class:answered={ask.kind !== "edit"}>
+        <div class="qh">
+          {#if ask.kind === "edit"}<span class="needs">waits for you</span>{/if}
+          <b>{ask.title}</b><span class="quiet">{what[ask.kind] ?? ask.kind} · {ago(ask.at)}</span>
+        </div>
+        {#if ask.message}<p>{ask.message}</p>{/if}
+        {#if ask.path}<pre class="code-block">{ask.path}</pre>{/if}
+        <div class="controls">
+          {#if ask.path}<button class="btn" onclick={() => run(command("ask_open", { id: ask.id }))}>Open in my editor</button>{/if}
+          <button class="btn" class:suggested={ask.kind === "edit"} onclick={() => run(command("ask_done", { id: ask.id }))}>{ask.kind === "edit" ? "Done: the agent goes on" : "Dismiss"}</button>
+          {#if a}<button class="btn" onclick={() => pick(a.id)}>Go to {a.title || "the agent"}</button>{/if}
+        </div>
+      </div>
+    {:else}
+      <p class="empty">Nothing asked.</p>
+    {/each}
+  </div>
+</section>

@@ -1,7 +1,7 @@
 <script lang="ts">
   // loom's web page: the sidebar and the open agent's conversation, as the window has them.
   import { onState, follow, type State } from "./lib/api";
-  import type { AgentsItem, ProjectsItem, AsksItem } from "./lib/api-types";
+  import type { AgentsItem, ProjectsItem, AsksItem, JobsItem } from "./lib/api-types";
   import Sidebar from "./Sidebar.svelte";
   import Conversation from "./Conversation.svelte";
   import Jobs from "./Jobs.svelte";
@@ -11,6 +11,8 @@
   let agents = $state.raw<AgentsItem[]>([]);
   let projects = $state.raw<ProjectsItem[]>([]);
   let asks = $state.raw<AsksItem[]>([]);
+  let jobs = $state.raw<JobsItem[]>([]);
+  let job = $state<string | null>(null);
   let selected = $state<string | null>(null);
   let view = $state("chat");
   let problem = $state("");
@@ -23,6 +25,7 @@
       follow("agents", (f) => (agents = [...f.items] as AgentsItem[])),
       follow("projects", (f) => (projects = [...f.items] as ProjectsItem[])),
       follow("asks", (f) => (asks = [...f.items] as AsksItem[])),
+      follow("jobs", (f) => (jobs = [...f.items] as JobsItem[])),
     ];
     return () => stops.forEach((s) => s());
   });
@@ -60,11 +63,11 @@
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
       {#if view === "asks"}
-        <div class="page"><Asks {asks} /></div>
+        <Asks {asks} {agents} pick={(id) => { selected = id; view = "chat"; }} />
       {:else if view === "jobs"}
-        <div class="page"><Jobs {projects} /></div>
+        <Jobs {jobs} {projects} bind:open={job} />
       {:else if current}
-        {#key current.id}<Conversation agent={current} />{/key}
+        {#key current.id}<Conversation agent={current} jobs={jobs.filter((j) => j.project_id === current.project_id)} showJob={(id) => { job = id; view = "jobs"; }} />{/key}
       {:else}
         <p class="empty centre-note">No agents yet. Start one with the + at the bottom left.</p>
       {/if}
