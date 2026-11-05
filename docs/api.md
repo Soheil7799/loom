@@ -809,6 +809,83 @@ Stops the web page's server; every page let in is let go.
 
 Who: window, cli. Result: `{}`.
 
+### `topics`
+
+The notes vault's topics (Notes on, with a vault).
+
+Who: window, cli. Result: `{vault, topics: [{name, path, folder, listens_for, apply: ask|auto, sync, enabled}]}`.
+
+### `topic_set`
+
+Switches a topic on or off.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `name` | string | a topic's name |
+| `enabled` | boolean |  |
+
+### `topic_new`
+
+A new topic, its file from loom's template or drafted from `about`.
+
+Who: window, cli. Result: `{path}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `name` | string | its name |
+| `about` | string? | what it keeps, in a sentence: Claude drafts its file from it |
+
+### `claude_items`
+
+The skills, agents and commands only loom's agents load (its Claude folder).
+
+Who: window, cli. Result: `{folder, items: [{kind: skill|agent|command, name, description, enabled, shipped, path}]}`.
+
+### `claude_set`
+
+Switches one on or off (agents started or woken from now on).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `kind` | string | skill, agent or command |
+| `name` | string |  |
+| `enabled` | boolean |  |
+
+### `claude_new`
+
+A new one, from loom's template.
+
+Who: window, cli. Result: `{path}`.
+
+| Param | Type | |
+|---|---|---|
+| `kind` | string | skill, agent or command |
+| `name` | string |  |
+
+### `claude_restore`
+
+Puts back loom's own version of one it ships.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `name` | string | one loom ships |
+
+### `edit_file`
+
+Opens the file in the user's editor (the setting, else the desktop's), on this computer.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `path` | string | a topic's file, or one of `claude_items`' |
+
 ### `ask_done`
 
 An ask answered: a file filled in (the agent goes on), or one seen (it goes).

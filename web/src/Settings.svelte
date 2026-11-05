@@ -48,6 +48,7 @@
       { key: "text_scale", title: "Conversation text size", detail: "loom's window; this page follows your browser's zoom.", kind: "select", options: SCALES },
       { key: "terminal_font", title: "Terminal font", detail: "The scratchpad and the tray's terminals, in loom's window.", kind: "text" },
     ] }] },
+    { name: "Claude", sections: [] },
     { name: "Advanced", sections: [
       { title: "Other editor", rows: [{ key: "editor", title: "Command", detail: "Opens files there (code, gnome-text-editor…); empty uses the app your system opens them with.", kind: "text" }] },
       { title: "Agent program", rows: [{ key: "adapter", title: "ACP adapter", detail: "Empty: agents run Claude Code itself. An ACP adapter's command here runs them through it instead. For agents started from now on.", kind: "text" }] },
@@ -84,6 +85,42 @@
   let page = $state(PAGES[0].name);
   let secrets = $state<Record<string, string>>({});
   let problem = $state("");
+  type Topic = { name: string; path: string; folder: string; listens_for: string[]; apply: string; sync: boolean; enabled: boolean };
+  type ClaudeItem = { kind: string; name: string; description: string; enabled: boolean; shipped: boolean; path: string };
+  let topics = $state.raw<Topic[] | null>(null);
+  let claude = $state.raw<{ folder: string; items: ClaudeItem[] } | null>(null);
+  let newTopic = $state({ name: "", about: "" });
+  let drafting = $state(false);
+  let newItem = $state<Record<string, string>>({});
+
+  async function loadTopics() { try { topics = (await command("topics", {})).topics; } catch (e) { topics = []; problem = (e as Error).message; } }
+  async function loadClaude() { try { claude = await command("claude_items", {}); } catch (e) { problem = (e as Error).message; } }
+  $effect(() => { if (page === "Notes" && s?.notes_enabled) loadTopics(); });
+  $effect(() => { if (page === "Claude") loadClaude(); });
+  const edit = (path: string) => run(command("edit_file", { path }));
+  async function makeTopic(e: SubmitEvent) {
+    e.preventDefault();
+    drafting = true;
+    try {
+      const made = await command("topic_new", { name: newTopic.name.trim(), ...(newTopic.about.trim() ? { about: newTopic.about.trim() } : {}) });
+      newTopic = { name: "", about: "" };
+      problem = "";
+      await loadTopics();
+      edit(made.path);
+    } catch (err) { problem = (err as Error).message; }
+    drafting = false;
+  }
+  async function makeItem(kind: string) {
+    const name = (newItem[kind] ?? "").trim();
+    if (!name) return;
+    try {
+      const made = await command("claude_new", { kind, name });
+      newItem = { ...newItem, [kind]: "" };
+      await loadClaude();
+      edit(made.path);
+    } catch (err) { problem = (err as Error).message; }
+  }
+  const KINDS: [string, string][] = [["skill", "Skills"], ["agent", "Agents"], ["command", "Commands"]];
 
   $effect(() => follow("settings", (f) => (s = f.items[0] ?? null)));
   $effect(() => follow("bridges", (f) => (bridges = f.items)));
@@ -151,6 +188,68 @@
             {/each}
           </section>
         {/each}
+
+        {#if page === "Telegram" && telegram?.state === "connected"}
+          <section class="settings-section">
+            <h3>Your account</h3>
+            {#if telegram.bot}<p>Connected as <b>@{telegram.bot}</b>.{#if telegram.user}{" "}Linked to account {telegram.user}.{/if}</p>{/if}
+            {#if telegram.code}
+              <p>Send the bot this code: <code>{telegram.code}</code>{#if telegram.bot}{" · "}<a href="https://t.me/{telegram.bot}?start={telegram.code}" target="_blank" rel="noreferrer">Open in Telegram</a>{/if}</p>
+            {/if}
+            {#if telegram.candidate}
+              <div class="permission-card">
+                <div class="qh"><span class="needs">sent the code</span><b>{telegram.candidate[1]} ({telegram.candidate[0]})</b></div>
+                <p>Link it only if this is you: the bot obeys this one account.</p>
+                <div class="controls"><button class="btn suggested" onclick={() => set("telegram_user", telegram.candidate[0])}>Link this account</button></div>
+              </div>
+            {/if}
+          </section>
+        {/if}
+
+        {#if page === "Notes" && s.notes_enabled}
+          <section class="settings-section">
+            <h3>Topics</h3>
+            {#each topics ?? [] as t (t.name)}
+              <div class="setting">
+                <div class="what"><span>{t.name}</span><p>{t.folder}/ · {t.listens_for.length ? `listens for ${t.listens_for.slice(0, 4).join(", ")}${t.listens_for.length > 4 ? "…" : ""}` : "listens for nothing yet"} · {t.apply === "auto" ? "changes directly" : "asks before changing"}{t.sync ? "" : " · stays on this computer"}</p></div>
+                <div class="control row"><button class="btn small" onclick={() => edit(t.path)}>Edit</button><input type="checkbox" role="switch" class="switch" aria-label="Use {t.name}" checked={t.enabled} onchange={async (e) => { await run(command("topic_set", { name: t.name, enabled: e.currentTarget.checked })); loadTopics(); }} /></div>
+              </div>
+            {/each}
+            <form class="new-topic" onsubmit={makeTopic}>
+              <input aria-label="New topic's name" placeholder="Surfing, Garden…" bind:value={newTopic.name} />
+              <input aria-label="What it keeps (optional)" placeholder="Optional: what it keeps, in a sentence (I surf; track sessions, spots and boards)" bind:value={newTopic.about} />
+              <button class="go" disabled={!newTopic.name.trim() || drafting}>{drafting ? "Drafting…" : "Create"}</button>
+            </form>
+            <p class="quiet">Its file opens in your editor, on this computer.</p>
+          </section>
+        {/if}
+
+        {#if page === "Claude" && claude}
+          <section class="settings-section">
+            <h3>Folder</h3>
+            <p class="mono small-path">{claude.folder}</p>
+            <p class="quiet">Skills, agents and commands only loom's agents use; claude in a terminal doesn't load them. Changes reach agents started or woken from now on.</p>
+          </section>
+          {#each KINDS as [kind, title] (kind)}
+            <section class="settings-section">
+              <h3>{title}</h3>
+              {#each claude.items.filter((i) => i.kind === kind) as i (i.name)}
+                <div class="setting">
+                  <div class="what"><span class="mono">{i.name}</span>{#if i.description}<p>{i.description.length > 140 ? i.description.slice(0, 140) + "…" : i.description}</p>{/if}</div>
+                  <div class="control row">
+                    {#if i.shipped}<button class="btn small" title="Put back loom's own version" onclick={async () => { if (confirm(`Put back loom's own ${i.name}? Your changes to it go.`)) { await run(command("claude_restore", { name: i.name })); loadClaude(); } }}>Restore</button>{/if}
+                    <button class="btn small" disabled={!i.enabled} onclick={() => edit(i.path)}>Edit</button>
+                    <input type="checkbox" role="switch" class="switch" aria-label="Use {i.name}" checked={i.enabled} onchange={async (e) => { await run(command("claude_set", { kind, name: i.name, enabled: e.currentTarget.checked })); loadClaude(); }} />
+                  </div>
+                </div>
+              {/each}
+              <form class="adding" onsubmit={(e) => { e.preventDefault(); makeItem(kind); }}>
+                <input class="mono" aria-label="New {kind}'s name" placeholder="name" bind:value={newItem[kind]} />
+                <button class="go" disabled={!newItem[kind]?.trim()}>Create</button>
+              </form>
+            </section>
+          {/each}
+        {/if}
 
         {#if page === "Remote"}
           <section class="settings-section">

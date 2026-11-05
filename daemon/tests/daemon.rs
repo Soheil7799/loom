@@ -145,6 +145,15 @@ fn loomd_hosts_the_core_with_no_window() {
     let chat = command(&mut c, "notes_open", json!({}))["agent"].as_str().unwrap().to_owned();
     assert!(chat.parse::<u32>().unwrap() > 1_000_000);
     assert!(c.get(&format!("conversation/{chat}")).is_ok());
+    // Settings' lists: topics and the Claude folder; only their files open.
+    let made = command(&mut c, "topic_new", json!({ "name": "Garden" }));
+    let garden = made["path"].as_str().unwrap().to_owned();
+    command(&mut c, "topic_set", json!({ "name": "Garden", "enabled": false }));
+    let topics = command(&mut c, "topics", json!({}));
+    assert!(topics["topics"].as_array().unwrap().iter().any(|t| t["name"] == "Garden" && t["enabled"] == false && t["path"] == garden.as_str()), "{topics}");
+    let items = command(&mut c, "claude_items", json!({}));
+    assert!(!items["items"].as_array().unwrap().is_empty(), "loom ships some: {items}");
+    assert!(c.command(&new_id(), "edit_file", json!({ "path": "/etc/hostname" })).is_err_and(|e| e.message.contains("only")));
     for resource in ["notes_chats", "scribe", "asks", "schedules", "closed"] {
         assert!(c.get(resource).is_ok(), "{resource}");
     }

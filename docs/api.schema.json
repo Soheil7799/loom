@@ -2224,6 +2224,184 @@
       },
       "result": "{}"
     },
+    "topics": {
+      "description": "The notes vault's topics (Notes on, with a vault).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "result": "{vault, topics: [{name, path, folder, listens_for, apply: ask|auto, sync, enabled}]}"
+    },
+    "topic_set": {
+      "description": "Switches a topic on or off.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "a topic's name"
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": ""
+          }
+        },
+        "required": [
+          "name",
+          "enabled"
+        ]
+      },
+      "result": "{}"
+    },
+    "topic_new": {
+      "description": "A new topic, its file from loom's template or drafted from `about`.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "its name"
+          },
+          "about": {
+            "type": "string",
+            "description": "what it keeps, in a sentence: Claude drafts its file from it"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": "{path}"
+    },
+    "claude_items": {
+      "description": "The skills, agents and commands only loom's agents load (its Claude folder).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "result": "{folder, items: [{kind: skill|agent|command, name, description, enabled, shipped, path}]}"
+    },
+    "claude_set": {
+      "description": "Switches one on or off (agents started or woken from now on).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "skill, agent or command"
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": ""
+          }
+        },
+        "required": [
+          "kind",
+          "name",
+          "enabled"
+        ]
+      },
+      "result": "{}"
+    },
+    "claude_new": {
+      "description": "A new one, from loom's template.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "kind": {
+            "type": "string",
+            "description": "skill, agent or command"
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          }
+        },
+        "required": [
+          "kind",
+          "name"
+        ]
+      },
+      "result": "{path}"
+    },
+    "claude_restore": {
+      "description": "Puts back loom's own version of one it ships.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "one loom ships"
+          }
+        },
+        "required": [
+          "name"
+        ]
+      },
+      "result": "{}"
+    },
+    "edit_file": {
+      "description": "Opens the file in the user's editor (the setting, else the desktop's), on this computer.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "a topic's file, or one of `claude_items`'"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "result": "{}"
+    },
     "ask_done": {
       "description": "An ask answered: a file filled in (the agent goes on), or one seen (it goes).",
       "who": [

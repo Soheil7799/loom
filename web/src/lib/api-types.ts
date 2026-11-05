@@ -709,6 +709,58 @@ export type WebCloseParams = {
 
 };
 
+/** The notes vault's topics (Notes on, with a vault). Result: {vault, topics: [{name, path, folder, listens_for, apply: ask|auto, sync, enabled}]} */
+export type TopicsParams = {
+
+};
+
+/** Switches a topic on or off. Result: {} */
+export type TopicSetParams = {
+  /** a topic's name */
+  name: string;
+  enabled: boolean;
+};
+
+/** A new topic, its file from loom's template or drafted from `about`. Result: {path} */
+export type TopicNewParams = {
+  /** its name */
+  name: string;
+  /** what it keeps, in a sentence: Claude drafts its file from it */
+  about?: string;
+};
+
+/** The skills, agents and commands only loom's agents load (its Claude folder). Result: {folder, items: [{kind: skill|agent|command, name, description, enabled, shipped, path}]} */
+export type ClaudeItemsParams = {
+
+};
+
+/** Switches one on or off (agents started or woken from now on). Result: {} */
+export type ClaudeSetParams = {
+  /** skill, agent or command */
+  kind: string;
+  name: string;
+  enabled: boolean;
+};
+
+/** A new one, from loom's template. Result: {path} */
+export type ClaudeNewParams = {
+  /** skill, agent or command */
+  kind: string;
+  name: string;
+};
+
+/** Puts back loom's own version of one it ships. Result: {} */
+export type ClaudeRestoreParams = {
+  /** one loom ships */
+  name: string;
+};
+
+/** Opens the file in the user's editor (the setting, else the desktop's), on this computer. Result: {} */
+export type EditFileParams = {
+  /** a topic's file, or one of `claude_items`' */
+  path: string;
+};
+
 /** An ask answered: a file filled in (the agent goes on), or one seen (it goes). Result: {} */
 export type AskDoneParams = {
   /** an `asks` item */
@@ -789,6 +841,14 @@ export interface Commands {
   "bridge": BridgeParams;
   "web_open": WebOpenParams;
   "web_close": WebCloseParams;
+  "topics": TopicsParams;
+  "topic_set": TopicSetParams;
+  "topic_new": TopicNewParams;
+  "claude_items": ClaudeItemsParams;
+  "claude_set": ClaudeSetParams;
+  "claude_new": ClaudeNewParams;
+  "claude_restore": ClaudeRestoreParams;
+  "edit_file": EditFileParams;
   "ask_done": AskDoneParams;
   "ask_open": AskOpenParams;
   "notes_open": NotesOpenParams;

@@ -187,7 +187,7 @@ pub fn serve() {
 }
 
 /// `path` in the user's editor (the setting, else the desktop's choice).
-fn open_in_editor(path: &Path) -> Result<(), String> {
+pub(crate) fn open_in_editor(path: &Path) -> Result<(), String> {
     let editor = crate::settings::get().editor;
     let mut words = editor.split_whitespace();
     let mut command = match words.next() {

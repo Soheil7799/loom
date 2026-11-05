@@ -270,6 +270,7 @@ async fn run() -> u8 {
         loom_core::log::write("notes", &format!("vault {}: {err}", vault.display()));
     }
     loom_core::asks::serve();
+    loom_core::library::serve();
     if loom_core::paths::loom_program().is_none() {
         eprintln!("loomd: no `loom` program beside loomd: agents will have no loom tools, and the bridges won't start");
     }
