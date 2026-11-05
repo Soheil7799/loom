@@ -182,6 +182,14 @@ fn handle() {
         crate::changes::revert(path, hunk).map_err(Error::Failed)?;
         Ok(json!({}))
     });
+    hub.handle("press", |who, params| {
+        let agent = person(who, params, "press agents' buttons")?;
+        let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("which notice (its entry)?".into()))?;
+        if !agent.press(entry) {
+            return Err(Error::Conflict("no button there (pressed already?)".into()));
+        }
+        Ok(json!({}))
+    });
     hub.handle("rewind", |who, params| {
         let agent = person(who, params, "rewind agents")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("rewind needs a message of yours (its entry)".into()))?;

@@ -4,7 +4,7 @@
 //! Entries, in order: `user` (`text`, `pictures`), `agent` (`text`, `message`: the agent's id
 //! for the latest message in it) and `thought` (`text`), `tool`
 //! (`id`, `title`, `tool`: its kind, `status`, `parent`: the task it runs under, `output`: the
-//! end of what it printed, `exit`), `notice` (`text`, `class`), `question` (`text`, `detail`,
+//! end of what it printed, `exit`), `notice` (`text`, `class`, `button`: one to `press`), `question` (`text`, `detail`,
 //! `options`: [{id, name, kind}] for a permission, `form`: the schema for a form; once
 //! settled, `answer`) and `turn` (`seconds`: how long the turn took). Entries change as they stream in; each change is a new revision, so a reader
 //! asks only for what changed after the last revision it saw. Revisions count within an
@@ -354,6 +354,8 @@ pub struct Recorded {
     pub usage: RefCell<Value>,
     /// Its id in the core API's `usage`, once published.
     agent: RefCell<Option<String>>,
+    /// The buttons of notices that have one, by entry (`press`); a choice's goes once pressed.
+    actions: RefCell<std::collections::HashMap<String, (Rc<dyn Fn()>, bool)>>,
 }
 
 /// The core API's `usage` resource: the account's limits (`{id: "account", kind: "account",
@@ -404,6 +406,29 @@ impl Recorded {
         }
     }
 
+    /// A notice with a button: `button` in its entry, pressed through the API (`press`).
+    fn with_button(&self, text: &str, button: &str, action: Rc<dyn Fn()>, once: bool) {
+        let mut transcript = self.transcript.borrow_mut();
+        let i = transcript.push(json!({ "kind": "notice", "text": text, "class": "", "button": button }));
+        let id = transcript.meta[i].id.clone();
+        self.actions.borrow_mut().insert(id, (action, once));
+    }
+
+    /// Presses the button of notice `entry`; false if it has none (any more). A choice's
+    /// button goes from its entry once pressed (as the window's does).
+    pub fn press(&self, entry: &str) -> bool {
+        let Some((action, once)) = self.actions.borrow().get(entry).cloned() else { return false };
+        if once {
+            self.actions.borrow_mut().remove(entry);
+            let mut transcript = self.transcript.borrow_mut();
+            if let Some(i) = transcript.meta.iter().position(|m| m.id == entry) {
+                transcript.change(i, |e| e["button"] = Value::Null);
+            }
+        }
+        action();
+        true
+    }
+
     /// Its subagents in the core API (`crew/<agent>`), once it is published.
     fn crew(&self) -> Option<Store> {
         self.agent.borrow().as_ref().map(|id| crate::api::hub().store(&format!("crew/{id}")))
@@ -429,7 +454,7 @@ impl Recorded {
 
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default() }
+        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default() }
     }
 }
 
@@ -579,11 +604,11 @@ impl View for Recorded {
         self.inner.notice(text, class);
     }
     fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
-        self.transcript.borrow_mut().push(json!({ "kind": "notice", "text": text, "class": "" }));
+        self.with_button(text, button, action.clone(), false);
         self.inner.notice_action(text, button, action);
     }
     fn notice_choice(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
-        self.transcript.borrow_mut().push(json!({ "kind": "notice", "text": text, "class": "" }));
+        self.with_button(text, button, action.clone(), true);
         self.inner.notice_choice(text, button, action);
     }
     fn tool(&self, update: &Value) {
@@ -757,6 +782,23 @@ impl View for Recorded {
 
 #[cfg(test)]
 mod tests {
+    use super::super::view::View;
+
+    #[test]
+    fn a_notices_button_is_pressed_once_through_the_api() {
+        let recorded = Recorded::new(super::super::headless::Headless::new());
+        let pressed = Rc::new(std::cell::Cell::new(0));
+        let count = pressed.clone();
+        recorded.notice_choice("Rewind with the files?", "Rewind", Rc::new(move || count.set(count.get() + 1)));
+        let id = recorded.transcript.borrow().meta[0].id.clone();
+        assert_eq!(recorded.transcript.borrow().item(0).unwrap()["button"], "Rewind");
+        assert!(recorded.press(&id));
+        assert_eq!(pressed.get(), 1);
+        assert!(recorded.transcript.borrow().item(0).unwrap()["button"].is_null(), "a choice's button goes");
+        assert!(!recorded.press(&id), "and is not pressed twice");
+        assert!(!recorded.press("e99"));
+    }
+
 
     #[test]
     fn limits_keep_each_window_until_it_resets() {

@@ -420,6 +420,10 @@
             "type": "string",
             "description": "the agent's id for it (rewind, forks)"
           },
+          "button": {
+            "type": "string",
+            "description": "a notice's button, to `press` (gone once a choice is pressed)"
+          },
           "images": {
             "type": "array",
             "description": "pictures: blob ids (`blob`)"
@@ -1283,6 +1287,32 @@
         "required": [
           "agent",
           "path"
+        ]
+      },
+      "result": "{}"
+    },
+    "press": {
+      "description": "Presses a notice's button (\"Rewind\" with the files…). A choice's button goes once pressed.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "entry": {
+            "type": "string",
+            "description": "a notice with a `button`"
+          }
+        },
+        "required": [
+          "agent",
+          "entry"
         ]
       },
       "result": "{}"

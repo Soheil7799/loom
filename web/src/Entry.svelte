@@ -7,9 +7,11 @@
   import Icon from "./Icon.svelte";
   import Question from "./Question.svelte";
   import { markdown } from "./lib/markdown";
+  import { command } from "./lib/api";
 
   let { row, agent }: { row: Row; agent: string } = $props();
   let open = $state(false);
+  let pressProblem = $state("");
 
   type Diff = { path?: string; oldText?: string; newText?: string };
   const diffs = (content: unknown[] | undefined): Diff[] =>
@@ -64,7 +66,12 @@
       <Question entry={e} {agent} />
     </div>
   {:else if e.kind === "notice"}
-    {#if e.text}<p class="notice" class:error={e.status === "failed"}>{e.text}</p>{/if}
+    {#if e.text}
+      <p class="notice" class:error={e.status === "failed"}>{e.text}
+        {#if e.button}<button class="btn small" onclick={() => command("press", { agent, entry: e.id }).catch((err) => (pressProblem = err.message))}>{e.button}</button>{/if}
+        {#if pressProblem}<span class="error">{pressProblem}</span>{/if}
+      </p>
+    {/if}
   {:else if e.text}
     <div class="msg-agent">{e.text}</div>
   {/if}

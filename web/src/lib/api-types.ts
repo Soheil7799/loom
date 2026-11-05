@@ -72,6 +72,8 @@ export type ConversationItem = {
   text?: string;
   /** the agent's id for it (rewind, forks) */
   message?: string;
+  /** a notice's button, to `press` (gone once a choice is pressed) */
+  button?: string;
   /** pictures: blob ids (`blob`) */
   images?: unknown[];
   /** a tool's call id */
@@ -419,6 +421,14 @@ export type RevertParams = {
   path: string;
   /** one hunk of that file's diff (from 0); none: the whole file */
   hunk?: number;
+};
+
+/** Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed. Result: {} */
+export type PressParams = {
+  /** the agent's id */
+  agent: string;
+  /** a notice with a `button` */
+  entry: string;
 };
 
 /** A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too. Result: {} */
@@ -802,6 +812,7 @@ export interface Commands {
   "set_awake": SetAwakeParams;
   "changes": ChangesParams;
   "revert": RevertParams;
+  "press": PressParams;
   "rewind": RewindParams;
   "set_option": SetOptionParams;
   "set_draft": SetDraftParams;

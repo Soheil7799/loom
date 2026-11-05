@@ -40,7 +40,7 @@
   $effect(() => {
     const ids = new Set(agents.map((a) => a.id));
     if (!selected || (had.has(selected) && !ids.has(selected))) selected = (agents.find((a) => a.questions > 0) ?? agents[0])?.id ?? null;
-    const copy = copyAfter && agents.find((a) => !had.has(a.id) && Date.now() - copyAfter < 60000);
+    const copy = copyAfter && agents.find((a) => !had.has(a.id) && Date.now() - copyAfter < 180000);
     if (copy) { selected = copy.id; copyAfter = 0; }
     had = ids;
   });

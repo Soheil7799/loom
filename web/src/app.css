@@ -317,3 +317,4 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .settings-section .adding { padding: 8px 0 0; }
 .settings-section .adding input { width: 200px; flex: none; }
 .small-path { font-size: 13px; overflow-wrap: anywhere; }
+.notice .btn.small { margin-left: 8px; }

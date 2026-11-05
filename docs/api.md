@@ -80,6 +80,7 @@ Who: window, cli, bridge, agent (its own).
 | `turn_id` | string? | t1, t2…: the turn it belongs to |
 | `text` | string? | text; streamed as `append` ops |
 | `message` | string? | the agent's id for it (rewind, forks) |
+| `button` | string? | a notice's button, to `press` (gone once a choice is pressed) |
 | `images` | array? | pictures: blob ids (`blob`) |
 | `call` | string? | a tool's call id |
 | `title` | string? | a tool's title |
@@ -396,6 +397,17 @@ Who: window, cli. Result: `{}`.
 | `agent` | string | the agent's id |
 | `path` | string | one of its `changes`' files |
 | `hunk` | integer? | one hunk of that file's diff (from 0); none: the whole file |
+
+### `press`
+
+Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `entry` | string | a notice with a `button` |
 
 ### `rewind`
 

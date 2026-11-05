@@ -563,6 +563,11 @@ impl Agent {
         self.emit(Event::Changed);
     }
 
+    /// Presses the button of notice `entry` in its conversation; false if it has none.
+    pub fn press(&self, entry: &str) -> bool {
+        self.recorded.press(entry)
+    }
+
     /// What waits in its input, said from elsewhere (a page that sent it, or took it).
     pub fn set_draft(self: &Rc<Self>, text: &str) {
         self.view.set_draft(text);
