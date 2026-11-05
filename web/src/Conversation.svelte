@@ -20,6 +20,7 @@
   let expanded = $state(new Set<string>());
   let box: HTMLElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
+  let naming = $state<string | null>(null);
 
   $effect(() => follow(`conversation/${agent.id}`, (f) => {
     entries = [...f.items] as Entry[];
@@ -73,7 +74,14 @@
   function keys(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
+  async function rename(e?: SubmitEvent) {
+    e?.preventDefault();
+    const title = naming?.trim();
+    naming = null;
+    if (title && title !== agent.title) await run(command("rename", { agent: agent.id, title }));
+  }
   function jump(e: KeyboardEvent) {
+    if (e.key === "F2" && naming === null) { e.preventDefault(); naming = agent.title; return; }
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || !box) return;
     const top = box.getBoundingClientRect().top, at = box.scrollTop + 120;
     const marks = [...box.querySelectorAll<HTMLElement>('[data-bead="wait"], [data-bead="fail"]')].map((m) => m.getBoundingClientRect().top - top + box!.scrollTop);
@@ -88,7 +96,16 @@
   <header class="header">
     <i class="st {st.shape}" role="img" aria-label={st.word}></i>
     <span class="headline">
-      <span class="title">{agent.title || "New agent"}</span>
+      {#if naming !== null}
+        <form class="rename" onsubmit={rename}>
+          <!-- svelte-ignore a11y_autofocus -->
+          <input aria-label="The agent's name" bind:value={naming} autofocus onblur={() => rename()} onkeydown={(e) => e.key === "Escape" && (naming = null)} />
+        </form>
+      {:else}
+        <!-- svelte-ignore a11y_no_static_element_interactions -->
+        <span class="title" ondblclick={() => (naming = agent.title)}>{agent.title || "New agent"}</span>
+        <button class="tiny" aria-label="Rename (F2)" title="Rename (F2)" onclick={() => (naming = agent.title)}><Icon name="pencil" size={13} /></button>
+      {/if}
       <span class="place">· {agent.project}</span>
       {#if st.shape === "wait"}<span class="needs">waits for you</span>{/if}
     </span>

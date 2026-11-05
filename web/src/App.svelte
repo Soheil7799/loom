@@ -1,6 +1,6 @@
 <script lang="ts">
   // loom's web page: the sidebar and the open agent's conversation, as the window has them.
-  import { onState, follow, command, type State } from "./lib/api";
+  import { onState, follow, type State } from "./lib/api";
   import type { AgentsItem, ProjectsItem, AsksItem } from "./lib/api-types";
   import Sidebar from "./Sidebar.svelte";
   import Conversation from "./Conversation.svelte";
@@ -27,19 +27,21 @@
     return () => stops.forEach((s) => s());
   });
 
-  // the first agent waiting for you, else the first one, until you pick
+  // the first agent waiting for you, else the first one: until you pick, and when yours closes
+  let had = new Set<string>();
   $effect(() => {
-    if (!selected && agents.length) selected = (agents.find((a) => a.questions > 0) ?? agents[0]).id;
+    const ids = new Set(agents.map((a) => a.id));
+    if (!selected || (had.has(selected) && !ids.has(selected))) selected = (agents.find((a) => a.questions > 0) ?? agents[0])?.id ?? null;
+    had = ids;
   });
 
   const current = $derived(agents.find((a) => a.id === selected) ?? null);
 
-  async function newAgent(folder: string) {
+  async function act(p: Promise<{ agent?: string }>) {
     problem = "";
     try {
-      const answer = await command("new_agent", { folder });
-      selected = answer.agent;
-      view = "chat";
+      const answer = await p;
+      if (answer?.agent) { selected = answer.agent; view = "chat"; }
     } catch (e) {
       problem = (e as Error).message;
     }
@@ -53,7 +55,7 @@
   </main>
 {:else}
   <div class="app">
-    <Sidebar {agents} {projects} {selected} {view} pick={(id) => { selected = id; view = "chat"; }} show={(v) => (view = v)} {newAgent} />
+    <Sidebar {agents} {projects} {selected} {view} pick={(id) => { selected = id; view = "chat"; }} show={(v) => (view = v)} {act} />
     <main class="main">
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}

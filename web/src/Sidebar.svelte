@@ -1,7 +1,11 @@
 <script lang="ts">
   // The sidebar, as the GTK window's: the wordmark, what waits for you, the open agents
-  // (numbered: Ctrl+1-9), the projects with their agents, and the bottom bar.
+  // (numbered: Ctrl+1-9), the projects with their agents (a new one with each's +, closed
+  // with ×), and the bottom bar. The + there opens Start: a project, a folder, a
+  // conversation closed lately or a past one.
   import type { AgentsItem, ProjectsItem } from "./lib/api-types";
+  import { command } from "./lib/api";
+  import Start from "./Start.svelte";
   import { stateOf } from "./lib/state";
   import Icon from "./Icon.svelte";
   import wordmarkDark from "../../data/logo/wordmark-dark.svg?url";
@@ -14,7 +18,7 @@
     pick,
     view,
     show,
-    newAgent,
+    act,
   }: {
     agents: AgentsItem[];
     projects: ProjectsItem[];
@@ -22,13 +26,16 @@
     pick: (id: string) => void;
     view: string;
     show: (view: string) => void;
-    newAgent: (folder: string) => Promise<void>;
+    /** a command from here: its errors shown, an agent it starts (`{agent}`) opened */
+    act: (p: Promise<{ agent?: string }>) => Promise<void>;
   } = $props();
 
   let menu = $state(false);
-  let adding = $state(false);
-  let folder = $state("");
-  let folded = $state(new Set<string>());
+  let starting = $state(false);
+  // folded projects, kept per browser: loom's own `collapsed` until you fold one here
+  const FOLDED = "loom-folded";
+  let mine = $state<Record<string, boolean>>(JSON.parse(localStorage.getItem(FOLDED) ?? "{}"));
+  const isFolded = (p: ProjectsItem) => mine[p.id] ?? p.collapsed;
 
   const open = $derived(agents.filter((a) => a.status !== "suspended"));
   const waiting = $derived(agents.filter((a) => a.questions > 0));
@@ -47,18 +54,9 @@
     if (n >= 1 && n <= 9 && open[n - 1]) { e.preventDefault(); pick(open[n - 1].id); }
   }
 
-  function toggle(id: string) {
-    const next = new Set(folded);
-    if (!next.delete(id)) next.add(id);
-    folded = next;
-  }
-
-  async function add(e: SubmitEvent) {
-    e.preventDefault();
-    if (!folder.trim()) return;
-    await newAgent(folder.trim());
-    folder = "";
-    adding = false;
+  function toggle(p: ProjectsItem) {
+    mine = { ...mine, [p.id]: !isFolded(p) };
+    localStorage.setItem(FOLDED, JSON.stringify(mine));
   }
 </script>
 
@@ -106,18 +104,24 @@
     {#each grouped as p (p.id)}
       {@const waits = p.agents.filter((a) => a.questions > 0).length}
       <section class="project">
-        <button class="prow" aria-expanded={!folded.has(p.id)} onclick={() => toggle(p.id)}>
-          <Icon name={folded.has(p.id) ? "chev-r" : "chev-d"} size={13} /><span class="pname">{p.name}</span>
-          {#if waits}<span class="badge-wait"><i class="st wait"></i>{waits}</span>{/if}
-        </button>
-        {#if !folded.has(p.id)}
+        <div class="pline">
+          <button class="prow" aria-expanded={!isFolded(p)} title={p.id} onclick={() => toggle(p)}>
+            <Icon name={isFolded(p) ? "chev-r" : "chev-d"} size={13} /><span class="pname">{p.name}</span>
+            {#if waits}<span class="badge-wait"><i class="st wait"></i>{waits}</span>{/if}
+          </button>
+          <button class="tiny" aria-label="New agent in {p.name}" title="New agent in {p.name}" onclick={() => act(command("new_agent", { folder: p.id }))}><Icon name="plus" size={14} /></button>
+        </div>
+        {#if !isFolded(p)}
           {#each p.agents as a (a.id)}
             {@const s = stateOf(a)}
-            <button class="arow" class:sel={a.id === selected} aria-current={a.id === selected ? "page" : undefined} onclick={() => pick(a.id)}>
-              <i class="st {s.shape}" role="img" aria-label={s.word}></i>
-              <span class="t">{a.title || "New agent"}</span>
-              <span class="s"><span class="w-{s.shape}">{s.word}</span>{#if a.place} · {a.place}{/if}{#if a.edited} · <Icon name="diff" size={11} />{a.edited}{/if}</span>
-            </button>
+            <div class="aline">
+              <button class="arow" class:sel={a.id === selected} aria-current={a.id === selected ? "page" : undefined} onclick={() => pick(a.id)}>
+                <i class="st {s.shape}" role="img" aria-label={s.word}></i>
+                <span class="t">{a.title || "New agent"}</span>
+                <span class="s"><span class="w-{s.shape}">{s.word}</span>{#if a.place} · {a.place}{/if}{#if a.edited} · <Icon name="diff" size={11} />{a.edited}{/if}</span>
+              </button>
+              <button class="tiny" aria-label="Close {a.title || 'this agent'}" title="Close (reopen it from + · Closed lately)" onclick={() => act(command("close_agent", { agent: a.id }))}><Icon name="x" size={14} /></button>
+            </div>
           {/each}
         {/if}
       </section>
@@ -125,15 +129,9 @@
     {#if !grouped.length}<p class="empty">No agents yet. Start one with the + below.</p>{/if}
   </div>
 
-  {#if adding}
-    <form class="adding" onsubmit={add}>
-      <!-- svelte-ignore a11y_autofocus -->
-      <input aria-label="Project folder" placeholder="/path/to/project" bind:value={folder} autofocus />
-      <button class="go" disabled={!folder.trim()}>Start</button>
-    </form>
-  {/if}
+  {#if starting}<Start {projects} close={() => (starting = false)} act={(p) => { starting = false; return act(p); }} />{/if}
   <div class="bottom">
-    <button class="icon" aria-label="New agent" title="New agent" onclick={() => (adding = !adding)}><Icon name="plus" /></button>
+    <button class="icon" class:on={starting} aria-label="New agent" title="New agent" onclick={(e) => { e.stopPropagation(); starting = !starting; }}><Icon name="plus" /></button>
     <button class="icon" class:on={view === "jobs"} aria-label="Jobs" title="Jobs" onclick={() => show(view === "jobs" ? "chat" : "jobs")}><Icon name="terminal" /></button>
     <span class="grow"></span>
     <button class="icon" class:on={view === "asks"} aria-label="Asks" title="Asks" onclick={() => show(view === "asks" ? "chat" : "asks")}><Icon name="inbox" /></button>

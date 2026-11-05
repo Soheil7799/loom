@@ -73,12 +73,38 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .adding input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
 .go { border: 0; border-radius: var(--r-control); background: var(--accent); color: var(--accent-fg); padding: 5px 12px; }
 .bottom { display: flex; align-items: center; gap: 2px; padding: 4px 8px 8px; }
+/* a small action beside a row, shown while the row is hovered or focused */
+.tiny { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 6px; background: none; color: var(--quiet); }
+.tiny:hover, .tiny:focus-visible { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
+.pline, .aline { position: relative; display: flex; align-items: center; }
+.pline .tiny { margin-right: 6px; }
+.aline .tiny { position: absolute; right: 10px; top: 4px; }
+.pline .tiny, .aline .tiny { opacity: 0; }
+.pline:hover .tiny, .pline:focus-within .tiny, .aline:hover .tiny, .aline:focus-within .tiny { opacity: 1; }
+@media (hover: none) { .pline .tiny, .aline .tiny { opacity: 1; } }
+.aline .arow { padding-right: 30px; }
+/* Start an agent: above the bottom bar */
+.start { max-height: 60vh; overflow: auto; margin: 0 8px 4px; padding: 8px 6px; border-radius: var(--r-block); background: var(--pane); border: 1px solid var(--line);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow) 22%, transparent); }
+.start .sh { display: flex; align-items: center; justify-content: space-between; padding: 0 4px 0 10px; }
+.start h3 { margin: 10px 10px 2px; font-size: 12px; font-weight: 400; letter-spacing: 0.07em; color: var(--quiet); }
+.start .it { display: grid; grid-template-columns: 14px 1fr; gap: 0 8px; width: 100%; padding: 6px 10px; border: 0; border-radius: 8px; background: none; text-align: left; align-items: center; }
+.start .it span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.start .it:hover:not(:disabled), .start .it:focus-visible { background: var(--bubble); }
+.start .it small { grid-column: 2; color: var(--quiet); font-size: 12.5px; }
+.start .adding { padding: 4px 4px; }
+.start .find { width: calc(100% - 8px); margin: 4px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--window); padding: 5px 9px; }
+.start .small { margin: 6px 10px; font-size: 12.5px; }
 
 /* ---- the conversation ---- */
 .centre { display: flex; flex-direction: column; min-height: 0; height: 100%; }
 .header { display: flex; align-items: center; gap: 8px; padding: 12px 20px; border-bottom: 1px solid var(--line); }
 .headline { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
 .header .title { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.header .title { cursor: text; }
+.header .tiny { opacity: 0.6; align-self: center; }
+.header .tiny:hover, .header .tiny:focus-visible { opacity: 1; }
+.rename input { font: inherit; font-size: 17px; font-weight: 600; width: 22ch; border: 1px solid var(--accent); border-radius: var(--r-control); background: var(--pane); padding: 2px 8px; }
 .header .place { font-size: 13.5px; color: var(--quiet); white-space: nowrap; }
 .header .needs { align-self: center; }
 .ctx { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--quiet); font-variant-numeric: tabular-nums; }
