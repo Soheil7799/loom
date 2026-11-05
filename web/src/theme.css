@@ -1,0 +1,44 @@
+/* loom/default: loom's brand theme and its default (Nocturne colours, Onest + JetBrains Mono,
+   Vazirmatn for Persian). Other themes override these variables. Every text colour passes
+   WCAG 4.5:1 on --pane; --quiet and --wait also on --bubble.
+   Rule: Onest's lowercase i loses its dot in weights 500+ below 14 px on 1x screens, so text
+   below 14 px stays regular (400); bold starts at 14 px. */
+
+@font-face { font-family: "Onest"; src: url("./fonts/onest-normal-latin.woff2") format("woff2"); font-weight: 100 900; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "Onest"; src: url("./fonts/onest-normal-latin-ext.woff2") format("woff2"); font-weight: 100 900; font-display: swap;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "JetBrains Mono"; src: url("./fonts/jetbrains-mono-normal-latin.woff2") format("woff2"); font-weight: 100 800; font-display: swap;
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD; }
+@font-face { font-family: "JetBrains Mono"; src: url("./fonts/jetbrains-mono-normal-latin-ext.woff2") format("woff2"); font-weight: 100 800; font-display: swap;
+  unicode-range: U+0100-024F, U+0259, U+1E00-1EFF, U+2020, U+20A0-20AB, U+20AD-20CF, U+2C60-2C7F, U+A720-A7FF; }
+@font-face { font-family: "Vazirmatn"; src: url("./fonts/vazirmatn-normal-arabic.woff2") format("woff2"); font-weight: 100 900; font-display: swap;
+  unicode-range: U+0600-06FF, U+0750-077F, U+0870-088E, U+0890-0891, U+0897-08E1, U+08E3-08FF, U+200C-200E, U+2010-2011, U+204F, U+2E41, U+FB50-FDFF, U+FE70-FE74, U+FE76-FEFC; }
+
+:root {
+  --ui: "Onest", "Vazirmatn", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Vazirmatn", ui-monospace, monospace;
+  --r-panel: 16px; --r-block: 14px; --r-control: 9px; --r-inline: 4px;
+}
+
+/* dark (also the default when the system says nothing) */
+:root, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --window: #0a1729; --sidebar: #051122; --pane: #0f1f32; --bubble: #0f385a; --line: #26364c;
+  --fg: #e1eaf7; --quiet: #9bacc4; --accent: #75c8fc; --accent-fg: #00111e;
+  --wait: #fec84b; --ok: #60db89; --err: #fd7277; --shadow: #000;
+}
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    color-scheme: light;
+    --window: #eef4fb; --sidebar: #e7eff7; --pane: #f8fbff; --bubble: #d3e9fc; --line: #d2dae2;
+    --fg: #17202a; --quiet: #586676; --accent: #0067ab; --accent-fg: #fafcfe;
+    --wait: #826000; --ok: #008341; --err: #92002c; --shadow: #17202a;
+  }
+}
+:root[data-theme="light"] {
+  color-scheme: light;
+  --window: #eef4fb; --sidebar: #e7eff7; --pane: #f8fbff; --bubble: #d3e9fc; --line: #d2dae2;
+  --fg: #17202a; --quiet: #586676; --accent: #0067ab; --accent-fg: #fafcfe;
+  --wait: #826000; --ok: #008341; --err: #92002c; --shadow: #17202a;
+}

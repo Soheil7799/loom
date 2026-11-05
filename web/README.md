@@ -6,7 +6,13 @@ static files that loom serves on 127.0.0.1 (`docs/trust.md`, "The web page").
 ```sh
 bun install
 bun run build          # → dist/, which the next cargo build compiles into loom and loomd
+bun run check          # the API's types (src/lib/api-types.ts, from ../docs/api.schema.json), then svelte-check
 ```
+
+TypeScript, checked by `svelte-check` (warnings fail the build). `src/lib/api-types.ts` is
+generated from the API's spec by `scripts/api-types.ts`: don't edit it by hand. The look is
+loom/default (`src/theme.css`: the Nocturne colours as CSS variables, Onest + JetBrains Mono
+bundled from `src/fonts/`, SIL OFL; text under 14 px stays regular weight).
 
 A loom built after `bun run build` has the page in its binary (the release does); one built
 without it serves `$XDG_DATA_HOME/loom/web`, else a small built-in page. `LOOM_WEB_UI=<folder>`

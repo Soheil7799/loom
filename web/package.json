@@ -5,12 +5,16 @@
   "description": "loom's web page: a client of loom's core API (built to dist/, served by loom)",
   "type": "module",
   "scripts": {
-    "build": "bun --bun vite build",
-    "check": "bun --bun vite build --mode development"
+    "types": "bun scripts/api-types.ts",
+    "check": "bun scripts/api-types.ts && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "build": "bun run check && bun --bun vite build",
+    "dev": "bun --bun vite"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6",
     "svelte": "^5",
+    "svelte-check": "^4.7.8",
+    "typescript": "~5.9",
     "vite": "^7"
   }
 }
