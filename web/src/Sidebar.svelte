@@ -147,6 +147,7 @@
   {#if starting}<Start {projects} close={() => (starting = false)} act={(p) => { starting = false; return act(p); }} />{/if}
   <div class="bottom">
     <button class="icon" class:on={starting} aria-label="New agent" title="New agent" onclick={(e) => { e.stopPropagation(); starting = !starting; }}><Icon name="plus" /></button>
+    <button class="icon" class:on={view === "overview"} aria-label="Overview" title="Overview: every agent, and scheduled prompts" onclick={() => show(view === "overview" ? "chat" : "overview")}><Icon name="grid" /></button>
     <button class="icon" class:on={view === "jobs"} aria-label="Jobs" title="Jobs" onclick={() => show(view === "jobs" ? "chat" : "jobs")}><Icon name="terminal" /></button>
     <button class="icon" class:on={view === "notes"} aria-label="Notes" title="Notes: chat with your notes, and Scribe" onclick={() => show(view === "notes" ? "chat" : "notes")}><Icon name="notes" /></button>
     <span class="grow"></span>

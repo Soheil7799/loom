@@ -865,6 +865,38 @@
         ]
       }
     },
+    "overview": {
+      "description": "What the overview's cards show beside `agents`: people's alone.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an agent's id"
+          },
+          "waiting": {
+            "type": "array",
+            "description": "the titles of its questions waiting"
+          },
+          "reply": {
+            "type": "string",
+            "description": "the start of its last reply (240 characters, one line)"
+          },
+          "session": {
+            "type": "string",
+            "description": "its conversation (a schedule's `session`)"
+          }
+        },
+        "required": [
+          "id",
+          "waiting"
+        ]
+      }
+    },
     "inputs": {
       "description": "What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read).",
       "who": [

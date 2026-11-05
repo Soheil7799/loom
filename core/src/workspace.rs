@@ -283,6 +283,13 @@ impl Workspace {
         // which agents and bridges read).
         let inputs = self.agents_in_order().iter().map(|a| json!({ "id": a.id.to_string(), "draft": a.view.draft(), "queued": a.queued() })).collect();
         crate::api::hub().store("inputs").set(inputs);
+        // What the overview's cards show: people's too (an agent's words, its questions).
+        let cards = self
+            .agents_in_order()
+            .iter()
+            .map(|a| json!({ "id": a.id.to_string(), "waiting": a.questions().into_iter().map(|(_, title, _)| title).collect::<Vec<_>>(), "reply": a.last_reply(240), "session": a.session_id() }))
+            .collect();
+        crate::api::hub().store("overview").set(cards);
     }
 
     /// The API's `schedules`: `{id, title, prompt, when, next, paused, last_run, folder,

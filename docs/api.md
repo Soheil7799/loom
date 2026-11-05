@@ -231,6 +231,19 @@ Who: window, cli, bridge.
 | `ended` | string? |  |
 | `guessed` | boolean | no session of its own: its state is a guess from its steps |
 
+### `overview`
+
+What the overview's cards show beside `agents`: people's alone.
+
+Who: window, cli.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | an agent's id |
+| `waiting` | array | the titles of its questions waiting |
+| `reply` | string? | the start of its last reply (240 characters, one line) |
+| `session` | string? | its conversation (a schedule's `session`) |
+
 ### `inputs`
 
 What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read).

@@ -563,6 +563,16 @@ impl Agent {
         self.emit(Event::Changed);
     }
 
+    /// The start of its last reply (at most `chars` characters, one line), for a card.
+    pub fn last_reply(&self, chars: usize) -> Option<String> {
+        let transcript = self.recorded.transcript.borrow();
+        let text = transcript.last_reply()?.split_whitespace().collect::<Vec<_>>().join(" ");
+        Some(match text.char_indices().nth(chars) {
+            Some((at, _)) => format!("{}…", &text[..at]),
+            None => text,
+        })
+    }
+
     /// Presses the button of notice `entry` in its conversation; false if it has none.
     pub fn press(&self, entry: &str) -> bool {
         self.recorded.press(entry)

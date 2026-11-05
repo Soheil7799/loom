@@ -8,6 +8,7 @@
   import Asks from "./Asks.svelte";
   import Notes from "./Notes.svelte";
   import Settings from "./Settings.svelte";
+  import Overview from "./Overview.svelte";
 
   let conn = $state<{ state: State; hello: any }>({ state: "connecting", hello: null });
   let agents = $state.raw<AgentsItem[]>([]);
@@ -69,7 +70,9 @@
     <main class="main">
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
-      {#if view === "settings"}
+      {#if view === "overview"}
+        <Overview {agents} pick={(id) => { selected = id; view = "chat"; }} />
+      {:else if view === "settings"}
         <Settings />
       {:else if view === "notes"}
         <Notes bind:chat />

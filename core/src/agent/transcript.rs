@@ -137,6 +137,11 @@ impl Transcript {
     }
 
     /// Question `id` settled: answered (`answer` "→ …") or dropped (any other words).
+    /// The agent's last words: its latest `agent` entry's text.
+    pub fn last_reply(&self) -> Option<&str> {
+        self.entries.iter().rev().find(|(_, e)| e["kind"] == "agent").and_then(|(_, e)| e["text"].as_str())
+    }
+
     fn settled(&mut self, id: &str, answer: &str) {
         let Some(i) = self.meta.iter().position(|m| m.id == id) else { return };
         self.meta[i].status = if answer.starts_with('→') { "done" } else { "cancelled" };

@@ -222,6 +222,18 @@ export type CrewItem = {
   guessed: boolean;
 };
 
+/** What the overview's cards show beside `agents`: people's alone. */
+export type OverviewItem = {
+  /** an agent's id */
+  id: string;
+  /** the titles of its questions waiting */
+  waiting: unknown[];
+  /** the start of its last reply (240 characters, one line) */
+  reply?: string;
+  /** its conversation (a schedule's `session`) */
+  session?: string;
+};
+
 /** What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read). */
 export type InputsItem = {
   /** an agent's id */
@@ -359,6 +371,7 @@ export interface Resources {
   "notes_chats": NotesChatsItem;
   "scribe": ScribeItem;
   "crew/<agent>": CrewItem;
+  "overview": OverviewItem;
   "inputs": InputsItem;
   "closed": ClosedItem;
   "bridges": BridgesItem;
