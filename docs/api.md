@@ -43,6 +43,7 @@ Who: window, cli, bridge, agent.
 | `place` | string | where in the project it works (a repo, a folder) |
 | `edited` | integer | files it changed |
 | `awake` | boolean | kept from resting |
+| `draft` | string? | what waits in its input (a rewind's message), as last published |
 | `looking` | boolean? | the user has it in front of them in loom |
 | `mode` | string? | its permission mode |
 | `modes` | array? | the modes it can take (`set_mode`) |
@@ -332,6 +333,39 @@ Who: window, cli, bridge. Result: `{}`.
 |---|---|---|
 | `agent` | string | the agent's id |
 | `mode` | string | one of the agent's `modes` |
+
+### `suspend`
+
+Suspends an agent (frees its memory; opening it or a message resumes it). A conflict while it works.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `set_awake`
+
+Keeps an agent awake, or lets it be suspended when idle.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `awake` | boolean | never suspended for being idle (true), or allowed |
+
+### `rewind`
+
+A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `entry` | string | a message of yours (a `user` entry) |
+| `files` | boolean? | the files Claude changed from there on too |
 
 ### `rename`
 

@@ -298,6 +298,10 @@
             "type": "boolean",
             "description": "kept from resting"
           },
+          "draft": {
+            "type": "string",
+            "description": "what waits in its input (a rewind's message), as last published"
+          },
           "looking": {
             "type": "boolean",
             "description": "the user has it in front of them in loom"
@@ -1116,6 +1120,83 @@
         "required": [
           "agent",
           "mode"
+        ]
+      },
+      "result": "{}"
+    },
+    "suspend": {
+      "description": "Suspends an agent (frees its memory; opening it or a message resumes it). A conflict while it works.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "set_awake": {
+      "description": "Keeps an agent awake, or lets it be suspended when idle.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "awake": {
+            "type": "boolean",
+            "description": "never suspended for being idle (true), or allowed"
+          }
+        },
+        "required": [
+          "agent",
+          "awake"
+        ]
+      },
+      "result": "{}"
+    },
+    "rewind": {
+      "description": "A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "entry": {
+            "type": "string",
+            "description": "a message of yours (a `user` entry)"
+          },
+          "files": {
+            "type": "boolean",
+            "description": "the files Claude changed from there on too"
+          }
+        },
+        "required": [
+          "agent",
+          "entry"
         ]
       },
       "result": "{}"

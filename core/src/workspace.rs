@@ -222,6 +222,7 @@ impl Workspace {
                     "place": agent.place(),
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),
+                    "draft": agent.view.draft(),
                     "looking": self.looking.borrow().as_ref().is_some_and(|f| f(agent)),
                     "mode": agent.modes().0,
                     "modes": agent.modes().1,

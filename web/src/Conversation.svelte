@@ -3,6 +3,7 @@
   // finished turns fold to your message and how they ended; the tube down the left marks turn
   // starts, questions and failures, and moves while the agent works. Alt+Up/Down: the previous
   // or next question or failure.
+  import { untrack } from "svelte";
   import { follow, command, type Item } from "./lib/api";
   import type { AgentsItem, JobsItem, UsageItem } from "./lib/api-types";
   import { turns, type Entry } from "./lib/turns";
@@ -11,11 +12,12 @@
   import Tube from "./Tube.svelte";
   import Icon from "./Icon.svelte";
 
-  let { agent, jobs = [], showJob }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void } = $props();
+  let { agent, jobs = [], showJob, expectCopy }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: () => void } = $props();
   let entries = $state.raw<Entry[]>([]);
   let usage = $state.raw<UsageItem | null>(null);
   let gone = $state(false);
-  let text = $state("");
+  // what waits in its input (a rewind's message), taken once when it opens
+  let text = $state(untrack(() => agent.draft) ?? "");
   let problem = $state("");
   let expanded = $state(new Set<string>());
   let box: HTMLElement | undefined = $state();
@@ -27,6 +29,8 @@
     gone = f.gone;
     if (f.error) problem = f.error;
   }));
+  let compactAt = $state<number | null>(null);
+  $effect(() => follow("settings", (f) => (compactAt = f.items[0]?.compact_alert ? (f.items[0]?.compact_at ?? 80) : null)));
   $effect(() => follow("usage", (f) => (usage = (f.items.find((u: Item) => u.id === agent.id) as UsageItem) ?? null)));
 
   const all = $derived(turns(entries));
@@ -76,6 +80,10 @@
   function keys(e: KeyboardEvent) {
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
+  async function rewind(entry: string, files: boolean) {
+    expectCopy?.();
+    await run(command("rewind", { agent: agent.id, entry, files }));
+  }
   async function rename(e?: SubmitEvent) {
     e?.preventDefault();
     const title = naming?.trim();
@@ -113,7 +121,14 @@
     </span>
     <span class="grow"></span>
     {#if context !== null}<span class="ctx"><span class="bar"><i style:width="{Math.min(context, 100)}%"></i></span>{context}%</span>{/if}
+    {#if context !== null && compactAt !== null && context >= compactAt && agent.status !== "notes"}
+      <button class="chip warn" title="The context is {context}% full: summarise the conversation so far to make room (/compact)" disabled={busy} onclick={() => run(command("send", { agent: agent.id, text: "/compact" }))}>Compact</button>
+    {/if}
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
+    {#if agent.status !== "notes"}
+      <button class="tiny" class:on={agent.awake} aria-pressed={agent.awake} aria-label="Keep awake" title={agent.awake ? "Kept awake: never suspended while idle (click to allow it)" : "Keep awake: never suspended while idle"} onclick={() => run(command("set_awake", { agent: agent.id, awake: !agent.awake }))}><Icon name="coffee" size={15} /></button>
+      <button class="tiny" aria-label="Suspend" title={busy ? "Suspend: stop it first" : "Suspend (free its memory; a message resumes it)"} disabled={busy || agent.status === "suspended"} onclick={() => run(command("suspend", { agent: agent.id }))}><Icon name="moon" size={15} /></button>
+    {/if}
   </header>
   {#if jobs.length && showJob}
     <nav class="jobstrip" aria-label="This project's jobs">
@@ -133,7 +148,13 @@
         <section class="turn" class:current={i === all.length - 1}>
           {#if t.user}
             <div class="msg-user" data-bead="turn" data-bead-y="26">
-              <span class="bub"><span class="text">{t.user.text}</span><span class="when"><b>You</b>{#if t.seconds !== undefined} · {t.seconds}s{/if}</span></span>
+              <span class="bub"><span class="text">{t.user.text}</span>
+                {#if agent.status !== "notes" && !busy}
+                  <span class="rewind">
+                    <button title="A copy of the conversation from just before this message, with it in the input to change (this one is kept)" onclick={() => rewind(t.user!.id, false)}><Icon name="undo" size={12} /> Rewind to here</button>
+                    <button title="The same, and the files Claude changed from here on go back too" onclick={() => rewind(t.user!.id, true)}>files too</button>
+                  </span>
+                {/if}<span class="when"><b>You</b>{#if t.seconds !== undefined} · {t.seconds}s{/if}</span></span>
             </div>
           {/if}
           {#if folded(i)}

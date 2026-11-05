@@ -150,11 +150,62 @@ fn handle() {
         agent.rename(title);
         Ok(json!({}))
     });
+    // Suspend, keep awake and rewind: a person's (the window, the CLI), not a bridge's.
+    hub.handle("suspend", |who, params| {
+        let agent = person(who, params, "suspend agents")?;
+        if !agent.suspend() {
+            return Err(Error::Conflict("it is working: stop it first".into()));
+        }
+        Ok(json!({}))
+    });
+    hub.handle("set_awake", |who, params| {
+        let agent = person(who, params, "keep agents awake")?;
+        let on = params["awake"].as_bool().ok_or_else(|| Error::Invalid("awake: true or false".into()))?;
+        agent.set_awake(on);
+        Ok(json!({}))
+    });
+    hub.handle("rewind", |who, params| {
+        let agent = person(who, params, "rewind agents")?;
+        let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("rewind needs a message of yours (its entry)".into()))?;
+        // A copy is made by its running process: a resting one starts first.
+        match agent.status() {
+            super::Status::Suspended | super::Status::Failed => {
+                agent.start();
+                return Err(Error::Conflict("it was resting: it is starting now, rewind again in a few seconds".into()));
+            }
+            super::Status::Starting => return Err(Error::Conflict("it is starting: rewind again in a few seconds".into())),
+            _ => {}
+        }
+        let (at, before, text) = rewind_point(&crate::api::hub().store(&super::conversation(agent.id)).items(), entry).ok_or_else(|| Error::NotFound(format!("your message {entry}")))?;
+        if params["files"].as_bool() == Some(true) {
+            agent.rewind_files_at(at, before, text);
+        } else {
+            agent.rewind(at, before, text);
+        }
+        Ok(json!({}))
+    });
     hub.handle("stop", |who, params| {
         let agent = target(who, params, "stop agents")?;
         agent.cancel();
         Ok(json!({}))
     });
+}
+
+/// The agent a command is for, if `who` is a person at this computer (loom's window, the CLI).
+fn person(who: &Principal, params: &Value, what: &str) -> Result<Rc<Agent>, Error> {
+    if !matches!(who, Principal::Window | Principal::Cli) {
+        return Err(Error::Forbidden(format!("only loom's window or the CLI may {what}")));
+    }
+    target(who, params, what)
+}
+
+/// Where rewinding to user message `entry` goes, as `Agent::rewind` takes it: the agent's
+/// message before it (its `message` id), whether there was one, and the message's text.
+fn rewind_point(entries: &[Value], entry: &str) -> Option<(Option<String>, bool, String)> {
+    let at = entries.iter().position(|e| e["id"] == entry && e["kind"] == "user")?;
+    let previous = entries[..at].iter().rev().find(|e| e["kind"] == "agent");
+    let message = previous.and_then(|e| e["message"].as_str()).map(str::to_owned);
+    Some((message, previous.is_some(), entries[at]["text"].as_str().unwrap_or("").trim().to_owned()))
 }
 
 /// The agent a command is for (`agent`: its id), if `who` may tell agents anything.
@@ -165,4 +216,23 @@ pub(crate) fn target(who: &Principal, params: &Value, what: &str) -> Result<Rc<A
     let id = params["agent"].as_str().ok_or_else(|| Error::Invalid("which agent?".into()))?;
     let agent = id.parse::<u32>().ok().and_then(|id| AGENTS.with_borrow(|agents| agents.get(&id).and_then(Weak::upgrade)));
     agent.ok_or_else(|| Error::NotFound(format!("agent {id}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rewinding_goes_to_the_agents_message_before_yours() {
+        let entries = vec![
+            json!({ "id": "e1", "kind": "user", "text": "first" }),
+            json!({ "id": "e2", "kind": "agent", "text": "ok", "message": "m1" }),
+            json!({ "id": "e3", "kind": "tool" }),
+            json!({ "id": "e4", "kind": "user", "text": " second " }),
+        ];
+        assert_eq!(rewind_point(&entries, "e4"), Some((Some("m1".into()), true, "second".into())));
+        assert_eq!(rewind_point(&entries, "e1"), Some((None, false, "first".into())));
+        assert_eq!(rewind_point(&entries, "e2"), None, "only a message of yours");
+        assert_eq!(rewind_point(&entries, "e9"), None);
+    }
 }

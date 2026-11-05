@@ -27,6 +27,8 @@ export type AgentsItem = {
   edited: number;
   /** kept from resting */
   awake: boolean;
+  /** what waits in its input (a rewind's message), as last published */
+  draft?: string;
   /** the user has it in front of them in loom */
   looking?: boolean;
   /** its permission mode */
@@ -365,6 +367,30 @@ export type SetModeParams = {
   mode: string;
 };
 
+/** Suspends an agent (frees its memory; opening it or a message resumes it). A conflict while it works. Result: {} */
+export type SuspendParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Keeps an agent awake, or lets it be suspended when idle. Result: {} */
+export type SetAwakeParams = {
+  /** the agent's id */
+  agent: string;
+  /** never suspended for being idle (true), or allowed */
+  awake: boolean;
+};
+
+/** A copy of the conversation from just before your message, with it in the input to change; the copy shows in `agents` (this one is kept). With files: the files go back too. Result: {} */
+export type RewindParams = {
+  /** the agent's id */
+  agent: string;
+  /** a message of yours (a `user` entry) */
+  entry: string;
+  /** the files Claude changed from there on too */
+  files?: boolean;
+};
+
 /** Renames an agent (its own titles don't replace it then). Result: {} */
 export type RenameParams = {
   /** the agent's id */
@@ -632,6 +658,9 @@ export interface Commands {
   "send": SendParams;
   "answer": AnswerParams;
   "set_mode": SetModeParams;
+  "suspend": SuspendParams;
+  "set_awake": SetAwakeParams;
+  "rewind": RewindParams;
   "rename": RenameParams;
   "reopen": ReopenParams;
   "past_conversations": PastConversationsParams;

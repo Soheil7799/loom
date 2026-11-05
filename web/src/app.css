@@ -269,3 +269,13 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .settings-page > .quiet, .settings-section > .quiet { font-size: 13px; }
 @media (prefers-reduced-motion: reduce) { .switch, .switch::after { transition: none; } }
 .list > .empty { padding: 4px 16px; color: var(--quiet); }
+
+/* ---- agent actions ---- */
+.header .tiny.on { color: var(--wait); opacity: 1; }
+.header .tiny:disabled { opacity: 0.3; }
+.chip.warn { border-color: var(--wait); color: var(--wait); background: none; }
+.msg-user .rewind { display: none; gap: 10px; margin-top: 6px; font-size: 12.5px; }
+.msg-user .bub:hover .rewind, .msg-user .bub:focus-within .rewind { display: flex; }
+.msg-user .rewind button { display: inline-flex; align-items: center; gap: 4px; padding: 0; border: 0; background: none; color: var(--quiet); }
+.msg-user .rewind button:hover, .msg-user .rewind button:focus-visible { color: var(--accent); }
+@media (hover: none) { .msg-user .rewind { display: flex; } }

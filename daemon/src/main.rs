@@ -139,6 +139,10 @@ impl Host for Daemon {
     fn agent_event(&self, agent: &Rc<Agent>, event: Event) {
         // Nobody looks at it in a window: the bridges always may tell.
         self.bridges.agent_event(agent, &event, false);
+        // A copy (rewind, fork) opens beside it, as in the window.
+        if let Event::Forked(saved) = &event {
+            self.ws.add_agent(saved.clone());
+        }
         // Scribe reads conversations as in the window: quiet after a turn, before compacting.
         if let Some(session) = agent.session_id() {
             match event {

@@ -560,6 +560,13 @@ impl Agent {
         self.emit(Event::Changed);
     }
 
+    /// Kept awake (never suspended for being idle), or not.
+    pub fn set_awake(self: &Rc<Self>, on: bool) {
+        self.awake.set(on);
+        self.emit(Event::Session);
+        self.emit(Event::Changed);
+    }
+
     /// Stops the process and starts it again, resuming the conversation.
     pub fn restart(self: &Rc<Self>) {
         self.stop();

@@ -34,10 +34,14 @@
   });
 
   // the first agent waiting for you, else the first one: until you pick, and when yours closes
+  // a rewind's copy opens once it shows in `agents` (the first agent new since asking)
   let had = new Set<string>();
+  let copyAfter = 0;
   $effect(() => {
     const ids = new Set(agents.map((a) => a.id));
     if (!selected || (had.has(selected) && !ids.has(selected))) selected = (agents.find((a) => a.questions > 0) ?? agents[0])?.id ?? null;
+    const copy = copyAfter && agents.find((a) => !had.has(a.id) && Date.now() - copyAfter < 60000);
+    if (copy) { selected = copy.id; copyAfter = 0; }
     had = ids;
   });
 
@@ -74,7 +78,7 @@
       {:else if view === "jobs"}
         <Jobs {jobs} {projects} bind:open={job} />
       {:else if current}
-        {#key current.id}<Conversation agent={current} jobs={jobs.filter((j) => j.project_id === current.project_id)} showJob={(id) => { job = id; view = "jobs"; }} />{/key}
+        {#key current.id}<Conversation agent={current} jobs={jobs.filter((j) => j.project_id === current.project_id)} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={() => (copyAfter = Date.now())} />{/key}
       {:else}
         <p class="empty centre-note">No agents yet. Start one with the + at the bottom left.</p>
       {/if}
