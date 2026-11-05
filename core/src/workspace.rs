@@ -126,6 +126,40 @@ impl Workspace {
     }
 
     /// A project's name: the one given, else its folder's.
+    /// `rename_project`, `set_collapsed`: the project's change, if there is that project
+    /// (`project`: its folder). The host saves and redraws after.
+    pub fn change_project(&self, params: &Value) -> Result<(), crate::api::Error> {
+        use crate::api::Error;
+        let path = params["project"].as_str().map(PathBuf::from).ok_or_else(|| Error::Invalid("which project (its folder)?".into()))?;
+        let mut projects = self.projects.borrow_mut();
+        let project = projects.iter_mut().find(|p| p.path == path).ok_or_else(|| Error::NotFound(format!("project {}", path.display())))?;
+        if let Some(name) = params.get("name") {
+            project.name = name.as_str().ok_or_else(|| Error::Invalid("name: a string (empty: the folder's)".into()))?.trim().to_owned();
+        }
+        if let Some(collapsed) = params.get("collapsed") {
+            project.collapsed = collapsed.as_bool().ok_or_else(|| Error::Invalid("collapsed: true or false".into()))?;
+        }
+        drop(projects);
+        self.publish_agents();
+        Ok(())
+    }
+
+    /// `remove_project`: the project's agents, to close before it goes; a conflict while any
+    /// works (the window asks first; through the API, stop them first).
+    pub fn project_to_remove(&self, params: &Value) -> Result<(PathBuf, Vec<Rc<Agent>>), crate::api::Error> {
+        use crate::api::Error;
+        let path = params["project"].as_str().map(PathBuf::from).ok_or_else(|| Error::Invalid("which project (its folder)?".into()))?;
+        if !self.projects.borrow().iter().any(|p| p.path == path) {
+            return Err(Error::NotFound(format!("project {}", path.display())));
+        }
+        let agents: Vec<Rc<Agent>> = self.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
+        let busy = agents.iter().filter(|a| a.is_busy() || a.background_running()).count();
+        if busy > 0 {
+            return Err(Error::Conflict(format!("{busy} of its agents working: stop them first")));
+        }
+        Ok((path, agents))
+    }
+
     pub fn project_label(&self, path: &Path) -> String {
         let projects = self.projects.borrow();
         let named = projects.iter().find(|p| p.path == path).map(|p| p.name.trim()).filter(|n| !n.is_empty());

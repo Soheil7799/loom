@@ -32,10 +32,8 @@
 
   let menu = $state(false);
   let starting = $state(false);
-  // folded projects, kept per browser: loom's own `collapsed` until you fold one here
-  const FOLDED = "loom-folded";
-  let mine = $state<Record<string, boolean>>(JSON.parse(localStorage.getItem(FOLDED) ?? "{}"));
-  const isFolded = (p: ProjectsItem) => mine[p.id] ?? p.collapsed;
+  let naming = $state<{ id: string; name: string } | null>(null);
+  const isFolded = (p: ProjectsItem) => p.collapsed;
 
   const open = $derived(agents.filter((a) => a.status !== "suspended"));
   const waiting = $derived(agents.filter((a) => a.questions > 0));
@@ -54,9 +52,17 @@
     if (n >= 1 && n <= 9 && open[n - 1]) { e.preventDefault(); pick(open[n - 1].id); }
   }
 
-  function toggle(p: ProjectsItem) {
-    mine = { ...mine, [p.id]: !isFolded(p) };
-    localStorage.setItem(FOLDED, JSON.stringify(mine));
+  // folded in loom itself: every window and page shows it so
+  const toggle = (p: ProjectsItem) => act(command("set_collapsed", { project: p.id, collapsed: !p.collapsed }));
+  function renameProject(e?: SubmitEvent) {
+    e?.preventDefault();
+    const n = naming;
+    naming = null;
+    if (n) act(command("rename_project", { project: n.id, name: n.name.trim() }));
+  }
+  function removeProject(p: ProjectsItem & { agents: AgentsItem[] }) {
+    const n = p.agents.length;
+    if (confirm(`Remove ${p.name} from the sidebar?${n ? ` Its ${n === 1 ? "agent closes" : `${n} agents close`}; you can reopen ${n === 1 ? "it" : "them"} from + · Closed lately.` : ""}`)) act(command("remove_project", { project: p.id }));
   }
 </script>
 
@@ -105,10 +111,19 @@
       {@const waits = p.agents.filter((a) => a.questions > 0).length}
       <section class="project">
         <div class="pline">
-          <button class="prow" aria-expanded={!isFolded(p)} title={p.id} onclick={() => toggle(p)}>
-            <Icon name={isFolded(p) ? "chev-r" : "chev-d"} size={13} /><span class="pname">{p.name}</span>
-            {#if waits}<span class="badge-wait"><i class="st wait"></i>{waits}</span>{/if}
-          </button>
+          {#if naming?.id === p.id}
+            <form class="adding prename" onsubmit={renameProject}>
+              <!-- svelte-ignore a11y_autofocus -->
+              <input aria-label="The project's name (empty: its folder's)" bind:value={naming.name} autofocus onblur={() => renameProject()} onkeydown={(e) => e.key === "Escape" && (naming = null)} />
+            </form>
+          {:else}
+            <button class="prow" aria-expanded={!isFolded(p)} title={p.id} onclick={() => toggle(p)}>
+              <Icon name={isFolded(p) ? "chev-r" : "chev-d"} size={13} /><span class="pname">{p.name}</span>
+              {#if waits}<span class="badge-wait"><i class="st wait"></i>{waits}</span>{/if}
+            </button>
+            <button class="tiny" aria-label="Rename {p.name}" title="Rename" onclick={() => (naming = { id: p.id, name: p.name })}><Icon name="pencil" size={13} /></button>
+            <button class="tiny" aria-label="Remove {p.name} from the sidebar" title="Remove from the sidebar" onclick={() => removeProject(p)}><Icon name="x" size={14} /></button>
+          {/if}
           <button class="tiny" aria-label="New agent in {p.name}" title="New agent in {p.name}" onclick={() => act(command("new_agent", { folder: p.id }))}><Icon name="plus" size={14} /></button>
         </div>
         {#if !isFolded(p)}

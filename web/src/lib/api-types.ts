@@ -463,6 +463,28 @@ export type NewAgentParams = {
   folder: string;
 };
 
+/** Renames a project. Result: {} */
+export type RenameProjectParams = {
+  /** the project's id (its folder) */
+  project: string;
+  /** its new name (empty: the folder's) */
+  name: string;
+};
+
+/** Folds a project in the sidebar, or unfolds it (every UI's). Result: {} */
+export type SetCollapsedParams = {
+  /** the project's id (its folder) */
+  project: string;
+  /** its agents hidden (true) or shown */
+  collapsed: boolean;
+};
+
+/** Takes a project out of the sidebar, closing its agents (they can be reopened). A conflict while any of them works. Result: {} */
+export type RemoveProjectParams = {
+  /** the project's id (its folder) */
+  project: string;
+};
+
 /** Closes an agent (its conversation resource ends: gone). Result: {} */
 export type CloseAgentParams = {
   /** the agent's id */
@@ -671,6 +693,9 @@ export interface Commands {
   "schedule_act": ScheduleActParams;
   "stop": StopParams;
   "new_agent": NewAgentParams;
+  "rename_project": RenameProjectParams;
+  "set_collapsed": SetCollapsedParams;
+  "remove_project": RemoveProjectParams;
   "close_agent": CloseAgentParams;
   "run_job": RunJobParams;
   "stop_job": StopJobParams;

@@ -154,7 +154,15 @@ fn loomd_hosts_the_core_with_no_window() {
     command(&mut c, "rename", json!({ "agent": agent, "title": "Renamed" }));
     until(&mut c, "agents", Duration::from_secs(5), "the new title", |a| a.iter().any(|a| a["id"] == agent.as_str() && a["title"] == "Renamed"));
     assert!(c.command(&new_id(), "set_mode", json!({ "agent": agent, "mode": "bypassPermissions" })).is_err_and(|e| e.message.contains("window")));
+    command(&mut c, "set_awake", json!({ "agent": agent, "awake": true }));
+    until(&mut c, "agents", Duration::from_secs(5), "kept awake", |a| a.iter().any(|a| a["id"] == agent.as_str() && a["awake"] == true));
+    let folder = project.to_string_lossy().into_owned();
+    command(&mut c, "rename_project", json!({ "project": folder, "name": "Mine" }));
+    command(&mut c, "set_collapsed", json!({ "project": folder, "collapsed": true }));
+    until(&mut c, "projects", Duration::from_secs(5), "renamed and folded", |p| p.iter().any(|p| p["id"] == folder.as_str() && p["name"] == "Mine" && p["collapsed"] == true));
     command(&mut c, "close_agent", json!({ "agent": agent }));
+    command(&mut c, "remove_project", json!({ "project": folder }));
+    until(&mut c, "projects", Duration::from_secs(5), "the project gone", |p| !p.iter().any(|p| p["id"] == folder.as_str()));
     // Jobs left running, in a project and in the Notes vault: stopped with loomd.
     let mut pids = Vec::new();
     for (folder, name) in [(project.clone(), "p"), (d.root.join("vault"), "v")] {

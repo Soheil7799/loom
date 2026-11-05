@@ -746,6 +746,43 @@ impl App {
             app.close_agent(&agent);
             Ok(serde_json::json!({}))
         });
+        let weak = Rc::downgrade(self);
+        loom_core::api::hub().handle("rename_project", move |who, params| {
+            use loom_core::api::Error;
+            if !human(who) {
+                return Err(Error::Forbidden("changing projects".into()));
+            }
+            let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            app.ws.change_project(params)?;
+            // the history's label too
+            let path = std::path::PathBuf::from(params["project"].as_str().unwrap_or_default());
+            app.rename_project(&path, params["name"].as_str().unwrap_or_default().trim());
+            Ok(serde_json::json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        loom_core::api::hub().handle("set_collapsed", move |who, params| {
+            use loom_core::api::Error;
+            if !human(who) {
+                return Err(Error::Forbidden("changing projects".into()));
+            }
+            let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            app.ws.change_project(params)?;
+            app.refresh_sidebar();
+            app.save();
+            Ok(serde_json::json!({}))
+        });
+        let weak = Rc::downgrade(self);
+        loom_core::api::hub().handle("remove_project", move |who, params| {
+            use loom_core::api::Error;
+            if !human(who) {
+                return Err(Error::Forbidden("removing projects".into()));
+            }
+            let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let (path, _) = app.ws.project_to_remove(params)?;
+            // none of its agents works: it goes at once, without asking
+            app.remove_project(&path);
+            Ok(serde_json::json!({}))
+        });
         // The core API, for the CLI and the clients to come (`loom api --help`).
         let weak = Rc::downgrade(self);
         let path = loom_core::api::socket::socket_path(&self.app_id);

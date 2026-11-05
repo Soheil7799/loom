@@ -474,6 +474,38 @@ Who: window, cli. Result: `{agent}`.
 |---|---|---|
 | `folder` | string | an absolute folder: its project |
 
+### `rename_project`
+
+Renames a project.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
+| `name` | string | its new name (empty: the folder's) |
+
+### `set_collapsed`
+
+Folds a project in the sidebar, or unfolds it (every UI's).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
+| `collapsed` | boolean | its agents hidden (true) or shown |
+
+### `remove_project`
+
+Takes a project out of the sidebar, closing its agents (they can be reopened). A conflict while any of them works.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
+
 ### `close_agent`
 
 Closes an agent (its conversation resource ends: gone).

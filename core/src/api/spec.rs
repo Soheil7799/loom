@@ -111,6 +111,9 @@ pub const COMMANDS: &[Command] = &[
     },
     Command { name: "stop", who: &["window", "cli", "bridge"], params: &[("agent", "string", true, "the agent's id")], result: "{}", later: false, about: "Stops the agent's turn." },
     Command { name: "new_agent", who: PEOPLE, params: &[("folder", "string", true, "an absolute folder: its project")], result: "{agent}", later: false, about: "Starts an agent in a folder." },
+    Command { name: "rename_project", who: PEOPLE, params: &[("project", "string", true, "the project's id (its folder)"), ("name", "string", true, "its new name (empty: the folder's)")], result: "{}", later: false, about: "Renames a project." },
+    Command { name: "set_collapsed", who: PEOPLE, params: &[("project", "string", true, "the project's id (its folder)"), ("collapsed", "boolean", true, "its agents hidden (true) or shown")], result: "{}", later: false, about: "Folds a project in the sidebar, or unfolds it (every UI's)." },
+    Command { name: "remove_project", who: PEOPLE, params: &[("project", "string", true, "the project's id (its folder)")], result: "{}", later: false, about: "Takes a project out of the sidebar, closing its agents (they can be reopened). A conflict while any of them works." },
     Command { name: "close_agent", who: PEOPLE, params: &[("agent", "string", true, "the agent's id")], result: "{}", later: false, about: "Closes an agent (its conversation resource ends: gone)." },
     Command {
         name: "run_job",

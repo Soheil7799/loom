@@ -402,6 +402,33 @@ fn commands(daemon: &Rc<Daemon>) {
         daemon.close(&agent);
         Ok(json!({}))
     });
+    for name in ["rename_project", "set_collapsed"] {
+        let weak = Rc::downgrade(daemon);
+        hub.handle(name, move |who, params| {
+            if !human(who) {
+                return Err(Error::Forbidden("changing projects".into()));
+            }
+            let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            daemon.ws.change_project(params)?;
+            daemon.save_soon();
+            Ok(json!({}))
+        });
+    }
+    let weak = Rc::downgrade(daemon);
+    hub.handle("remove_project", move |who, params| {
+        if !human(who) {
+            return Err(Error::Forbidden("removing projects".into()));
+        }
+        let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+        let (path, agents) = daemon.ws.project_to_remove(params)?;
+        for agent in &agents {
+            daemon.close(agent);
+        }
+        daemon.ws.projects.borrow_mut().retain(|p| p.path != path);
+        daemon.ws.publish_agents();
+        daemon.save_soon();
+        Ok(json!({}))
+    });
     let weak = Rc::downgrade(daemon);
     hub.handle("tool", move |who, params| {
         let Principal::Agent(id) = who else { return Err(Error::Forbidden("an agent's tools, but for agents".into())) };

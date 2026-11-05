@@ -1440,6 +1440,79 @@
       },
       "result": "{agent}"
     },
+    "rename_project": {
+      "description": "Renames a project.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "the project's id (its folder)"
+          },
+          "name": {
+            "type": "string",
+            "description": "its new name (empty: the folder's)"
+          }
+        },
+        "required": [
+          "project",
+          "name"
+        ]
+      },
+      "result": "{}"
+    },
+    "set_collapsed": {
+      "description": "Folds a project in the sidebar, or unfolds it (every UI's).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "the project's id (its folder)"
+          },
+          "collapsed": {
+            "type": "boolean",
+            "description": "its agents hidden (true) or shown"
+          }
+        },
+        "required": [
+          "project",
+          "collapsed"
+        ]
+      },
+      "result": "{}"
+    },
+    "remove_project": {
+      "description": "Takes a project out of the sidebar, closing its agents (they can be reopened). A conflict while any of them works.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "the project's id (its folder)"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": "{}"
+    },
     "close_agent": {
       "description": "Closes an agent (its conversation resource ends: gone).",
       "who": [

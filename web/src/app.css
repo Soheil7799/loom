@@ -77,7 +77,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .tiny { display: inline-grid; place-items: center; width: 24px; height: 24px; flex: none; border: 0; border-radius: 6px; background: none; color: var(--quiet); }
 .tiny:hover, .tiny:focus-visible { background: color-mix(in srgb, var(--fg) 8%, transparent); color: var(--fg); }
 .pline, .aline { position: relative; display: flex; align-items: center; }
-.pline .tiny { margin-right: 6px; }
+.pline .tiny:last-child { margin-right: 6px; }
+.prename { flex: 1; padding: 6px 8px 2px; }
 .aline .tiny { position: absolute; right: 10px; top: 4px; }
 .pline .tiny, .aline .tiny { opacity: 0; }
 .pline:hover .tiny, .pline:focus-within .tiny, .aline:hover .tiny, .aline:focus-within .tiny { opacity: 1; }
