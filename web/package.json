@@ -6,9 +6,10 @@
   "type": "module",
   "scripts": {
     "types": "bun scripts/api-types.ts",
-    "check": "bun scripts/api-types.ts && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings",
+    "check": "bun scripts/api-types.ts && svelte-check --tsconfig ./tsconfig.json --fail-on-warnings && bun test",
     "build": "bun run check && bun --bun vite build",
-    "dev": "bun --bun vite"
+    "dev": "bun --bun vite",
+    "test": "bun test"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^6",
