@@ -459,6 +459,22 @@ export type StopJobParams = {
   job: string;
 };
 
+/** Types into a job's terminal. Result: {} */
+export type JobInputParams = {
+  /** the job's id */
+  job: string;
+  /** keys typed, as the terminal sends them (escapes included) */
+  text: string;
+};
+
+/** The size a job's terminal is shown at (one size for every client: the last one told). Result: {} */
+export type JobResizeParams = {
+  /** the job's id */
+  job: string;
+  rows: number;
+  cols: number;
+};
+
 /** Runs a job again (its output starts over). Result: {} */
 export type RestartJobParams = {
   /** the job's id */
@@ -629,6 +645,8 @@ export interface Commands {
   "close_agent": CloseAgentParams;
   "run_job": RunJobParams;
   "stop_job": StopJobParams;
+  "job_input": JobInputParams;
+  "job_resize": JobResizeParams;
   "restart_job": RestartJobParams;
   "set_settings": SetSettingsParams;
   "search_notes": SearchNotesParams;

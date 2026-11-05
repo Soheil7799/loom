@@ -171,6 +171,19 @@ fn handle() {
         jobs.stop(id);
         Ok(json!({}))
     });
+    hub.handle("job_input", |who, params| {
+        let (jobs, id) = target(who, params)?;
+        let text = params["text"].as_str().ok_or_else(|| Error::Invalid("job_input needs text".into()))?;
+        jobs.write(id, text.as_bytes());
+        Ok(json!({}))
+    });
+    hub.handle("job_resize", |who, params| {
+        let (jobs, id) = target(who, params)?;
+        let size = |k: &str| params[k].as_u64().and_then(|n| u16::try_from(n).ok()).filter(|n| (1..=1000).contains(n));
+        let (Some(rows), Some(cols)) = (size("rows"), size("cols")) else { return Err(Error::Invalid("rows and cols: 1 to 1000".into())) };
+        jobs.resize(id, rows, cols);
+        Ok(json!({}))
+    });
     hub.handle("restart_job", |who, params| {
         let (jobs, id) = target(who, params)?;
         jobs.restart(id);
@@ -192,6 +205,29 @@ fn target(who: &Principal, params: &Value) -> Result<(Jobs, Id), Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keys_typed_through_the_api_reach_the_job_and_sizes_are_bounded() {
+        crate::rt::set_host(|_| {}, |_, _| {});
+        let (jobs, _events) = Jobs::new(std::env::temp_dir());
+        let id = jobs.run("asks", "read line; echo \"got:$line\"; sleep 5", None);
+        PROJECTS.with_borrow_mut(|projects| projects.push(jobs.clone()));
+        handle();
+        let window = crate::api::hub().connect(Principal::Window);
+        let job = id.to_string();
+        assert!(matches!(window.command("r1", "job_resize", json!({ "job": job, "rows": 0, "cols": 80 })), Err(Error::Invalid(_))));
+        window.command("r2", "job_resize", json!({ "job": job, "rows": 30, "cols": 100 })).unwrap();
+        assert_eq!(jobs.screen(id).map(|s| (s.1, s.2)), Some((30, 100)));
+        // the shell may not be reading yet: type once it is up, then wait for the echo
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        window.command("i1", "job_input", json!({ "job": job, "text": "hi\r" })).unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !jobs.output(id, 20).contains("got:hi") {
+            assert!(std::time::Instant::now() < deadline, "{:?}", jobs.output(id, 20));
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        jobs.stop(id);
+    }
 
     #[test]
     fn a_followed_job_streams_what_it_prints_and_the_list_says_how_it_ended() {

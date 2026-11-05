@@ -1431,6 +1431,63 @@
       },
       "result": "{}"
     },
+    "job_input": {
+      "description": "Types into a job's terminal.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "the job's id"
+          },
+          "text": {
+            "type": "string",
+            "description": "keys typed, as the terminal sends them (escapes included)"
+          }
+        },
+        "required": [
+          "job",
+          "text"
+        ]
+      },
+      "result": "{}"
+    },
+    "job_resize": {
+      "description": "The size a job's terminal is shown at (one size for every client: the last one told).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "the job's id"
+          },
+          "rows": {
+            "type": "integer",
+            "description": ""
+          },
+          "cols": {
+            "type": "integer",
+            "description": ""
+          }
+        },
+        "required": [
+          "job",
+          "rows",
+          "cols"
+        ]
+      },
+      "result": "{}"
+    },
     "restart_job": {
       "description": "Runs a job again (its output starts over).",
       "who": [

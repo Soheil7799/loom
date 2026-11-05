@@ -472,6 +472,29 @@ Who: window, cli. Result: `{}`.
 |---|---|---|
 | `job` | string | the job's id |
 
+### `job_input`
+
+Types into a job's terminal.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `job` | string | the job's id |
+| `text` | string | keys typed, as the terminal sends them (escapes included) |
+
+### `job_resize`
+
+The size a job's terminal is shown at (one size for every client: the last one told).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `job` | string | the job's id |
+| `rows` | integer |  |
+| `cols` | integer |  |
+
 ### `restart_job`
 
 Runs a job again (its output starts over).

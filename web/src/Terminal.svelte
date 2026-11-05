@@ -1,9 +1,10 @@
 <script lang="ts">
-  // A job's terminal, read-only: its screen at the job's own size, then its output as it
-  // comes (`job/<id>`: the screen, then bytes after it). A new run starts it over.
+  // A job's terminal: its screen, then its output as it comes (`job/<id>`: the screen, then
+  // bytes after it); a new run starts it over. What you type goes to the job (`job_input`);
+  // the job takes the size of this pane (`job_resize`, one size for every client).
   import type { Terminal } from "@xterm/xterm";
   import "@xterm/xterm/css/xterm.css";
-  import { follow, fromBase64, type Follow } from "./lib/api";
+  import { command, follow, fromBase64, type Follow } from "./lib/api";
 
   let { job }: { job: string } = $props();
   let el: HTMLElement;
@@ -33,11 +34,11 @@
     let stop = () => {};
     let term: Terminal | undefined;
     // xterm.js loads with the first terminal opened, not with the page
-    import("@xterm/xterm").then(({ Terminal }) => {
+    let watching: ResizeObserver | undefined;
+    Promise.all([import("@xterm/xterm"), import("@xterm/addon-fit")]).then(([{ Terminal }, { FitAddon }]) => {
       if (done) return;
       const look = getComputedStyle(el);
       term = new Terminal({
-        disableStdin: true,
         cursorBlink: false,
         scrollback: 5000,
         fontFamily: look.fontFamily,
@@ -45,10 +46,25 @@
         // the theme's colours as the page has them resolved (light or dark)
         theme: { background: look.backgroundColor, foreground: look.color, cursor: look.color, selectionBackground: look.outlineColor },
       });
+      const fit = new FitAddon();
+      term.loadAddon(fit);
       term.open(el);
       stop = follow(name, draw(term));
+      term.onData((text) => command("job_input", { job, text }).catch(() => {}));
+      // the pane's size, told to the job once it settles
+      let timer = 0;
+      watching = new ResizeObserver(() => {
+        clearTimeout(timer);
+        timer = window.setTimeout(() => {
+          const size = fit.proposeDimensions();
+          if (!term || !size?.cols || !size?.rows || (size.cols === term.cols && size.rows === term.rows)) return;
+          term.resize(size.cols, size.rows);
+          command("job_resize", { job, rows: size.rows, cols: size.cols }).catch(() => {});
+        }, 150);
+      });
+      watching.observe(el);
     });
-    return () => { done = true; stop(); term?.dispose(); };
+    return () => { done = true; stop(); watching?.disconnect(); term?.dispose(); };
   });
 </script>
 
