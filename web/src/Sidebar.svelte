@@ -135,6 +135,7 @@
     <button class="icon" class:on={view === "jobs"} aria-label="Jobs" title="Jobs" onclick={() => show(view === "jobs" ? "chat" : "jobs")}><Icon name="terminal" /></button>
     <button class="icon" class:on={view === "notes"} aria-label="Notes" title="Notes: chat with your notes, and Scribe" onclick={() => show(view === "notes" ? "chat" : "notes")}><Icon name="notes" /></button>
     <span class="grow"></span>
+    <button class="icon" class:on={view === "settings"} aria-label="Settings" title="Settings" onclick={() => show(view === "settings" ? "chat" : "settings")}><Icon name="gear" /></button>
     <button class="icon" class:on={view === "asks"} aria-label="Asks" title="Asks" onclick={() => show(view === "asks" ? "chat" : "asks")}><Icon name="inbox" /></button>
   </div>
 </nav>
