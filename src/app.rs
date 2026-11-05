@@ -158,21 +158,16 @@ impl App {
         sidebar.set_hexpand(false);
         let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         top.add_css_class("sidebar-top");
-        // The lockup: the mark, and beside it the name over who made it; across the row up to
-        // the buttons. It opens About.
-        let lockup = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        // The lockup: the wordmark over who made it; across the row up to the buttons. It
+        // opens About.
+        let lockup = gtk::Box::new(gtk::Orientation::Vertical, 0);
         lockup.set_valign(gtk::Align::Center);
-        let mark = crate::logo::mark(32);
-        let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        words.set_valign(gtk::Align::Center);
-        let name = gtk::Label::builder().label("Loom").xalign(0.0).build();
-        name.add_css_class("brand");
+        let wordmark = crate::logo::wordmark(40);
+        wordmark.set_halign(gtk::Align::Start);
         let by = gtk::Label::builder().label("by shirvani.dev").xalign(0.0).build();
         by.add_css_class("brand-by");
-        words.append(&name);
-        words.append(&by);
-        lockup.append(&mark);
-        lockup.append(&words);
+        lockup.append(&wordmark);
+        lockup.append(&by);
         let brand = gtk::Button::builder().child(&lockup).tooltip_text("About Loom").hexpand(true).focus_on_click(false).build();
         brand.update_property(&[gtk::accessible::Property::Label("About Loom")]);
         brand.add_css_class("flat");
