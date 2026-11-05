@@ -103,7 +103,8 @@ export class Follow {
       case "synced": this.items = this.incoming ?? []; this.incoming = null; this.synced = true; break;
       case "resync": this.synced = false; this.incoming = []; return;
       case "gone": this.gone = true; this.items = []; break;
-      case "changes": for (const op of m.ops) applyOp(this.items, op as Change); break;
+      // a new array each time: a UI that keeps `items` sees it changed
+      case "changes": { const items = [...this.items]; for (const op of m.ops) applyOp(items, op as Change); this.items = items; break; }
       default: return;
     }
     this.tell();
