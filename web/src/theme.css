@@ -21,24 +21,23 @@
   --r-panel: 16px; --r-block: 14px; --r-control: 9px; --r-inline: 4px;
 }
 
-/* dark (also the default when the system says nothing) */
-:root, :root[data-theme="dark"] {
-  color-scheme: dark;
-  --window: #0a1729; --sidebar: #051122; --pane: #0f1f32; --bubble: #0f385a; --line: #26364c;
-  --fg: #e1eaf7; --quiet: #9bacc4; --accent: #75c8fc; --accent-fg: #00111e;
-  --wait: #fec84b; --ok: #60db89; --err: #fd7277; --shadow: #000;
-}
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme="dark"]) {
-    color-scheme: light;
-    --window: #eef4fb; --sidebar: #e7eff7; --pane: #f8fbff; --bubble: #d3e9fc; --line: #d2dae2;
-    --fg: #17202a; --quiet: #586676; --accent: #0067ab; --accent-fg: #fafcfe;
-    --wait: #826000; --ok: #008341; --err: #92002c; --shadow: #17202a;
-  }
-}
-:root[data-theme="light"] {
-  color-scheme: light;
-  --window: #eef4fb; --sidebar: #e7eff7; --pane: #f8fbff; --bubble: #d3e9fc; --line: #d2dae2;
-  --fg: #17202a; --quiet: #586676; --accent: #0067ab; --accent-fg: #fafcfe;
-  --wait: #826000; --ok: #008341; --err: #92002c; --shadow: #17202a;
+/* Each colour once: light-dark(light, dark), picked by color-scheme (the system's, unless a
+   page sets data-theme). */
+:root { color-scheme: light dark; }
+:root[data-theme="dark"] { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+:root {
+  --window:   light-dark(#eef4fb, #0a1729);
+  --sidebar:  light-dark(#e7eff7, #051122);
+  --pane:     light-dark(#f8fbff, #0f1f32);
+  --bubble:   light-dark(#d3e9fc, #0f385a);
+  --line:     light-dark(#d2dae2, #26364c);
+  --fg:       light-dark(#17202a, #e1eaf7);
+  --quiet:    light-dark(#586676, #9bacc4);
+  --accent:   light-dark(#0067ab, #75c8fc);
+  --accent-fg: light-dark(#fafcfe, #00111e);
+  --wait:     light-dark(#826000, #fec84b);
+  --ok:       light-dark(#008341, #60db89);
+  --err:      light-dark(#92002c, #fd7277);
+  --shadow:   light-dark(#17202a, #000);
 }

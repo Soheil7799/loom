@@ -1,5 +1,5 @@
 <script>
-  import { command } from "./lib/api.js";
+  import { command } from "./lib/api";
 
   // A question entry: a permission's options as buttons, a form's fields as inputs.
   let { entry, agent } = $props();

@@ -1,5 +1,5 @@
 <script>
-  import { follow, command } from "./lib/api.js";
+  import { follow, command } from "./lib/api";
   import Question from "./Question.svelte";
 
   let { agent } = $props();

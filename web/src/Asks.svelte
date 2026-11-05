@@ -1,5 +1,5 @@
 <script>
-  import { command } from "./lib/api.js";
+  import { command } from "./lib/api";
 
   // What agents ask beyond their conversation: a file to see, one to fill in, a word.
   let { asks } = $props();

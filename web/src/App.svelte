@@ -1,5 +1,5 @@
 <script>
-  import { onState, follow, command, has } from "./lib/api.js";
+  import { onState, follow, command, has } from "./lib/api";
   import Conversation from "./Conversation.svelte";
   import Jobs from "./Jobs.svelte";
   import Asks from "./Asks.svelte";

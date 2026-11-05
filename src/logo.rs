@@ -9,12 +9,8 @@ use gtk::{cairo, gdk_pixbuf::Pixbuf, prelude::*};
 
 const DARK: &[u8] = include_bytes!("../data/logo/agile-l-dark.png");
 const LIGHT: &[u8] = include_bytes!("../data/logo/agile-l-light.png");
-const SMALL_DARK: &[u8] = include_bytes!("../data/logo/agile-l-small-dark.png");
-const SMALL_LIGHT: &[u8] = include_bytes!("../data/logo/agile-l-small-light.png");
 const WORD_DARK: &[u8] = include_bytes!("../data/logo/wordmark-dark.png");
 const WORD_LIGHT: &[u8] = include_bytes!("../data/logo/wordmark-light.png");
-/// The wordmark's width over its height (its viewBox, 2460 x 1081).
-const WORD_RATIO: f64 = 2460.0 / 1081.0;
 
 /// A coffee cup in outline (the Running list's keep-awake), in the widget's own colour (CSS
 /// sets it: dim off, gold on); `steam` above it when on.
@@ -67,42 +63,35 @@ pub fn cup(size: i32, steam: bool) -> gtk::DrawingArea {
     area
 }
 
-/// The mark at `size` px: the dark-theme drawing when the theme's text is light, the
-/// thicker small drawing below 48 px.
+/// The mark at `size` px, the dark-theme drawing when the theme's text is light.
 pub fn mark(size: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder().content_width(size).content_height(size).build();
     area.add_css_class("logo");
-    area.set_draw_func(|area, cr, width, height| {
-        let small = width.min(height) < 48;
-        paint(area, cr, width, height, |dark| match (dark, small) {
-            (true, false) => (0, DARK),
-            (false, false) => (1, LIGHT),
-            (true, true) => (2, SMALL_DARK),
-            (false, true) => (3, SMALL_LIGHT),
-        });
-    });
+    area.set_draw_func(|area, cr, width, height| paint(area, cr, width, height, |dark| if dark { (0, DARK) } else { (1, LIGHT) }));
     area
 }
 
 /// The wordmark ("loom" written in one line, the fox's head as its l) `height` px tall.
 pub fn wordmark(height: i32) -> gtk::DrawingArea {
-    let width = (f64::from(height) * WORD_RATIO).round() as i32;
-    let area = gtk::DrawingArea::builder().content_width(width).content_height(height).build();
+    let ratio = full(2, WORD_DARK).map_or(2.27, |p| f64::from(p.width()) / f64::from(p.height()));
+    let area = gtk::DrawingArea::builder().content_width((f64::from(height) * ratio).round() as i32).content_height(height).build();
     area.add_css_class("logo");
-    area.set_draw_func(|area, cr, width, height| paint(area, cr, width, height, |dark| if dark { (4, WORD_DARK) } else { (5, WORD_LIGHT) }));
+    area.set_draw_func(|area, cr, width, height| paint(area, cr, width, height, |dark| if dark { (2, WORD_DARK) } else { (3, WORD_LIGHT) }));
     area
 }
 
-/// Draws a picture centred and fitted in the area, the dark-theme one when the theme's text is
-/// light; `pick` gives its cache key and PNG.
+/// Draws a picture centred and fitted in the area, sharp on HiDPI screens; the dark-theme one
+/// when the theme's text is light. `pick` gives its cache key and PNG.
 fn paint(area: &gtk::DrawingArea, cr: &cairo::Context, width: i32, height: i32, pick: impl Fn(bool) -> (u8, &'static [u8])) {
+    if width <= 0 || height <= 0 {
+        return;
+    }
     let c = area.color();
     let (key, bytes) = pick(0.2126 * c.red() + 0.7152 * c.green() + 0.0722 * c.blue() > 0.5);
+    let Some(original) = full(key, bytes) else { return };
     let fit = |pw: i32, ph: i32| (f64::from(width) / f64::from(pw)).min(f64::from(height) / f64::from(ph));
-    // Device pixels for the longer side, so HiDPI screens get a sharp picture.
-    let Some((pw, ph)) = size_of(key, bytes) else { return };
-    let k = fit(pw, ph) * f64::from(area.scale_factor());
-    let Some(pixbuf) = picture(key, bytes, (f64::from(pw.max(ph)) * k).round() as i32) else { return };
+    let px = (f64::from(original.width().max(original.height())) * fit(original.width(), original.height()) * f64::from(area.scale_factor())).round() as i32;
+    let Some(pixbuf) = scaled(key, &original, px.max(1)) else { return };
     let scale = fit(pixbuf.width(), pixbuf.height());
     let (w, h) = (f64::from(pixbuf.width()) * scale, f64::from(pixbuf.height()) * scale);
     cr.translate((f64::from(width) - w) / 2.0, (f64::from(height) - h) / 2.0);
@@ -111,29 +100,30 @@ fn paint(area: &gtk::DrawingArea, cr: &cairo::Context, width: i32, height: i32, 
     let _ = cr.paint();
 }
 
-/// A picture's own size in pixels.
-fn size_of(key: u8, bytes: &'static [u8]) -> Option<(i32, i32)> {
-    picture(key, bytes, 0).map(|p| (p.width(), p.height()))
+thread_local! {
+    /// Decoded pictures by key, and their scaled copies by (key, px): a handful of each.
+    static FULL: RefCell<HashMap<u8, Pixbuf>> = RefCell::new(HashMap::new());
+    static SCALED: RefCell<HashMap<(u8, i32), Pixbuf>> = RefCell::new(HashMap::new());
 }
 
-/// The picture scaled to `px` device pixels on its longer side (0: as it is), kept once made.
-fn picture(key: u8, bytes: &'static [u8], px: i32) -> Option<Pixbuf> {
-    thread_local! {
-        static MADE: RefCell<HashMap<(u8, i32), Pixbuf>> = RefCell::new(HashMap::new());
+/// The picture as shipped, decoded once.
+fn full(key: u8, bytes: &'static [u8]) -> Option<Pixbuf> {
+    if let Some(p) = FULL.with(|f| f.borrow().get(&key).cloned()) {
+        return Some(p);
     }
-    MADE.with(|made| {
-        if let Some(p) = made.borrow().get(&(key, px)) {
-            return Some(p.clone());
-        }
-        let full = Pixbuf::from_read(std::io::Cursor::new(bytes)).ok()?;
-        let p = if px <= 0 {
-            full
-        } else {
-            let k = f64::from(px) / f64::from(full.width().max(full.height()));
-            let (w, h) = ((f64::from(full.width()) * k).round().max(1.0) as i32, (f64::from(full.height()) * k).round().max(1.0) as i32);
-            full.scale_simple(w, h, gtk::gdk_pixbuf::InterpType::Hyper)?
-        };
-        made.borrow_mut().insert((key, px), p.clone());
-        Some(p)
-    })
+    let p = Pixbuf::from_read(std::io::Cursor::new(bytes)).ok()?;
+    FULL.with(|f| f.borrow_mut().insert(key, p.clone()));
+    Some(p)
+}
+
+/// The picture scaled to `px` device pixels on its longer side, made once.
+fn scaled(key: u8, original: &Pixbuf, px: i32) -> Option<Pixbuf> {
+    if let Some(p) = SCALED.with(|s| s.borrow().get(&(key, px)).cloned()) {
+        return Some(p);
+    }
+    let k = f64::from(px) / f64::from(original.width().max(original.height()));
+    let size = |v: i32| (f64::from(v) * k).round().max(1.0) as i32;
+    let p = original.scale_simple(size(original.width()), size(original.height()), gtk::gdk_pixbuf::InterpType::Hyper)?;
+    SCALED.with(|s| s.borrow_mut().insert((key, px), p.clone()));
+    Some(p)
 }

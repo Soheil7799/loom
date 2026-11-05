@@ -269,6 +269,49 @@ export type BridgeItem = {
   event: Record<string, unknown>;
 };
 
+/** One message on a subscription. `seq` counts the subscription's messages from 1, with no
+gaps: a client that sees one asks for a resync. */
+export type Message = {
+  sub: string;
+  seq: number;
+} & ({
+  kind: "page";
+  items: unknown[];
+} | {
+  kind: "synced";
+} | ({
+  kind: "changes";
+  ops: ({
+    op: "upsert";
+    item: unknown;
+  } | {
+    op: "remove";
+    id: string;
+  } | {
+    op: "append";
+    id: string;
+    field: string;
+    text: string;
+  } | {
+    op: "order";
+    ids: string[];
+  } | {
+    op: "bytes";
+    id: string;
+    offset: number;
+    data: string;
+  } | {
+    op: "unknown";
+  })[];
+}) | {
+  kind: "resync";
+  reason: string;
+} | {
+  kind: "gone";
+} | {
+  kind: "unknown";
+});
+
 /** Every resource's name and the type of its items. */
 export interface Resources {
   "agents": AgentsItem;

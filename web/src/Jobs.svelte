@@ -1,5 +1,5 @@
 <script>
-  import { follow, command, fromBase64 } from "./lib/api.js";
+  import { follow, command, fromBase64 } from "./lib/api";
 
   let { projects } = $props();
   let jobs = $state.raw([]);
