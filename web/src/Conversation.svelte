@@ -10,6 +10,8 @@
   import Entry_ from "./Entry.svelte";
   import Tube from "./Tube.svelte";
   import Changes from "./Changes.svelte";
+  import Picture from "./Picture.svelte";
+  import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
   let { agent, jobs = [], showJob, expectCopy }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void } = $props();
@@ -94,10 +96,33 @@
     problem = "";
     try { await p; return true; } catch (e) { problem = (e as Error).message; return false; }
   }
+  // pictures to go with the next message: base64, and a preview
+  let attached = $state.raw<{ data: string; preview: string }[]>([]);
+  let reading = $state(false);
+  async function attach(files: Iterable<File>) {
+    const pictures = [...files].filter((f) => f.type.startsWith("image/"));
+    if (!pictures.length) return;
+    reading = true;
+    try {
+      const read = await Promise.all(pictures.map(async (f) => ({ data: await prepare(f), preview: URL.createObjectURL(f) })));
+      attached = [...attached, ...read];
+    } catch { problem = "That picture could not be read."; }
+    reading = false;
+  }
+  function detach(i: number) {
+    URL.revokeObjectURL(attached[i].preview);
+    attached = attached.filter((_, k) => k !== i);
+  }
+  const ready = $derived(!!text.trim() || attached.length > 0);
+  let picker: HTMLInputElement | undefined = $state();
+
   async function send() {
-    if (!text.trim()) return;
-    if (await run(command("send", { agent: agent.id, text }))) {
+    if (!ready || reading) return;
+    const images = attached.map((a) => a.data);
+    if (await run(command("send", { agent: agent.id, text, ...(images.length ? { images } : {}) }))) {
       text = "";
+      attached.forEach((a) => URL.revokeObjectURL(a.preview));
+      attached = [];
       // what loom kept in its input went with it
       if (draft) { lastDraft = ""; run(command("set_draft", { agent: agent.id, text: "" })); }
     }
@@ -184,7 +209,8 @@
         <section class="turn" class:current={i === all.length - 1}>
           {#if t.user}
             <div class="msg-user" data-bead="turn" data-bead-y="26">
-              <span class="bub"><span class="text">{t.user.text}</span>
+              <span class="bub">{#if t.user.text}<span class="text">{t.user.text}</span>{/if}
+                {#if (t.user.images as string[] | undefined)?.length}<span class="pics">{#each t.user.images as string[] as id (id)}<Picture {id} />{/each}</span>{/if}
                 {#if agent.status !== "notes" && !busy}
                   <span class="rewind">
                     <button title="A copy of the conversation from just before this message, with it in the input to change (this one is kept)" onclick={() => rewind(t.user!.id, false)}><Icon name="undo" size={12} /> Rewind to here</button>
@@ -219,9 +245,18 @@
         {/each}
       </ul>
     {/if}
-    <div class="composer">
-      <textarea aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder="Ask Claude…  Enter sends, Shift+Enter: a new line" bind:value={text} onkeydown={keys} disabled={gone}></textarea>
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="composer" ondragover={(e) => e.preventDefault()} ondrop={(e) => { e.preventDefault(); if (e.dataTransfer) attach(e.dataTransfer.files); }}>
+      {#if attached.length || reading}
+        <div class="attached">
+          {#each attached as a, i (a.preview)}<span class="thumb"><img src={a.preview} alt="" /><button class="tiny" aria-label="Take this picture out" onclick={() => detach(i)}><Icon name="x" size={12} /></button></span>{/each}
+          {#if reading}<span class="quiet small">Reading…</span>{/if}
+        </div>
+      {/if}
+      <textarea onpaste={(e) => { if (e.clipboardData?.files.length) { e.preventDefault(); attach(e.clipboardData.files); } }} aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder="Ask Claude…  Enter sends, Shift+Enter: a new line" bind:value={text} onkeydown={keys} disabled={gone}></textarea>
       <div class="cbar">
+        <button class="tiny" aria-label="Attach pictures" title="Attach pictures (or paste, or drop them here)" disabled={gone} onclick={() => picker?.click()}><Icon name="image" size={15} /></button>
+        <input class="hidden" type="file" accept="image/*" multiple bind:this={picker} onchange={(e) => { attach(e.currentTarget.files ?? []); e.currentTarget.value = ""; }} />
         {#if agent.modes?.length}
           <select class="chip" aria-label="Permission mode" value={agent.mode} onchange={(e) => run(command("set_mode", { agent: agent.id, mode: e.currentTarget.value }))}>
             {#each agent.modes as mode}<option value={mode}>Mode · {mode}</option>{/each}
@@ -234,10 +269,10 @@
         {/each}
         <span class="grow"></span>
         {#if st.shape === "wait"}<span class="status waiting">Waits for you</span>{:else if busy}<span class="status">Working</span>{/if}
-        {#if busy && !text.trim()}
+        {#if busy && !ready}
           <button class="send stop" aria-label="Stop" title="Stop (Esc)" onclick={() => run(command("stop", { agent: agent.id }))}><Icon name="stop" /></button>
         {:else}
-          <button class="send" aria-label="Send" disabled={!text.trim() || gone} onclick={send}><Icon name="send" /></button>
+          <button class="send" aria-label="Send" disabled={!ready || reading || gone} onclick={send}><Icon name="send" /></button>
         {/if}
       </div>
     </div>

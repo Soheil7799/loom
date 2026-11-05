@@ -320,3 +320,17 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .settings-section .adding input { width: 200px; flex: none; }
 .small-path { font-size: 13px; overflow-wrap: anywhere; }
 .notice .btn.small { margin-left: 8px; }
+
+/* ---- pictures ---- */
+.hidden { display: none; }
+.pics { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.pic { padding: 0; border: 1px solid var(--line); border-radius: 8px; background: var(--pane); overflow: hidden; line-height: 0; cursor: zoom-in; }
+.pic img { display: block; max-width: 220px; max-height: 160px; object-fit: cover; }
+.pic.loading { display: inline-grid; place-items: center; width: 80px; height: 60px; color: var(--quiet); line-height: 1; cursor: default; }
+dialog.whole { padding: 0; border: 0; background: none; max-width: 92vw; max-height: 92vh; cursor: zoom-out; }
+dialog.whole::backdrop { background: color-mix(in srgb, #000 70%, transparent); }
+dialog.whole img { display: block; max-width: 92vw; max-height: 92vh; }
+.attached { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 10px 12px 0; }
+.thumb { position: relative; line-height: 0; }
+.thumb img { width: 64px; height: 64px; object-fit: cover; border-radius: 8px; border: 1px solid var(--line); }
+.thumb .tiny { position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%; background: var(--pane); border: 1px solid var(--line); color: var(--fg); }
