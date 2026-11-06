@@ -29,7 +29,8 @@ fn works() -> bool {
         return false;
     }
     std::process::Command::new("systemd-run")
-        .args(["--user", "--scope", "--quiet", "--collect", "--", "true"])
+        // the flag as `wrap` passes it: a systemd before 254 doesn't know it, and gets no scopes
+        .args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "--", "true"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -44,7 +45,9 @@ pub fn wrap(program: &[String], agent: u32) -> Vec<String> {
     }
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let unit = format!("{}{agent}-{}", prefix(), NEXT.fetch_add(1, Ordering::Relaxed));
-    let mut wrapped: Vec<String> = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--unit", &unit, "--"].map(str::to_owned).to_vec();
+    // The command as given: systemd-run would otherwise expand $VAR and ${…} in it first
+    // (`${#s}`, `$1`, `${x:-y}` emptied before bash sees them).
+    let mut wrapped: Vec<String> = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "--unit", &unit, "--"].map(str::to_owned).to_vec();
     wrapped.extend_from_slice(program);
     wrapped
 }
@@ -92,6 +95,10 @@ mod tests {
         let out = std::process::Command::new(&program[0]).args(&program[1..]).output().unwrap();
         let pid: u32 = String::from_utf8_lossy(&out.stdout).trim().parse().unwrap();
         assert_eq!(agent_of(pid), Some(42));
+        // the shell gets the command whole: systemd-run expands nothing in it
+        let program = wrap(&["sh".into(), "-c".into(), "x=abc; echo ${#x} ${x:-none}".into()], 42);
+        let out = std::process::Command::new(&program[0]).args(&program[1..]).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "3 abc");
         assert_eq!(agent_of(std::process::id()), None);
         // SAFETY: a plain kill of the sleep started above.
         unsafe { libc::kill(pid as i32, libc::SIGKILL) };
