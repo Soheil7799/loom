@@ -214,6 +214,20 @@ fn handle() {
         let agent = person(who, params, "export conversations")?;
         Ok(json!({ "markdown": agent.markdown() }))
     });
+    // Seen: one agent (opened in a page), or every one ("all": Mark all seen).
+    hub.handle("mark_seen", |who, params| {
+        if params["all"].as_bool() == Some(true) {
+            if matches!(who, Principal::Agent(_)) {
+                return Err(Error::Forbidden("an agent may not mark agents seen".into()));
+            }
+            for agent in AGENTS.with_borrow(|agents| agents.values().filter_map(Weak::upgrade).collect::<Vec<_>>()) {
+                agent.mark_seen();
+            }
+            return Ok(json!({}));
+        }
+        target(who, params, "mark agents seen")?.mark_seen();
+        Ok(json!({}))
+    });
     hub.handle("press", |who, params| {
         let agent = person(who, params, "press agents' buttons")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("which notice (its entry)?".into()))?;

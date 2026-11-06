@@ -499,6 +499,14 @@ export type MoveProjectParams = {
   by: number;
 };
 
+/** The user has seen what is new in an agent (or in all): `unseen` goes. Result: {} */
+export type MarkSeenParams = {
+  /** the agent's id */
+  agent?: string;
+  /** every agent (Mark all seen) */
+  all?: boolean;
+};
+
 /** Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed. Result: {} */
 export type PressParams = {
   /** the agent's id */
@@ -751,6 +759,12 @@ export type ScribeKeepRuleParams = {
   rule: string;
 };
 
+/** Everything Scribe wrote or was told no, newest first (`scribe_undo` takes a written one back). Result: {changes: [{id, kind: written|dropped, topic, reason, change, title, at, undone}]} */
+export type ScribeHistoryParams = {
+  /** 200; 2000 tops */
+  limit?: number;
+};
+
 /** Forgets a rule Scribe learned. Result: {} */
 export type ScribeForgetParams = {
   /** a `scribe` item */
@@ -966,6 +980,7 @@ export interface Commands {
   "export": ExportParams;
   "move_agent": MoveAgentParams;
   "move_project": MoveProjectParams;
+  "mark_seen": MarkSeenParams;
   "press": PressParams;
   "rewind": RewindParams;
   "set_option": SetOptionParams;
@@ -1000,6 +1015,7 @@ export interface Commands {
   "scribe_drop": ScribeDropParams;
   "scribe_teach": ScribeTeachParams;
   "scribe_keep_rule": ScribeKeepRuleParams;
+  "scribe_history": ScribeHistoryParams;
   "scribe_forget": ScribeForgetParams;
   "save": SaveParams;
   "transcribe": TranscribeParams;

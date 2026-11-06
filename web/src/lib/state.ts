@@ -21,9 +21,10 @@ export function clock(when?: string): string {
 }
 
 /** "12 min ago", "2 h ago", "yesterday"… */
-export function ago(when?: string, now = Date.now()): string {
+export function ago(when?: string | number, now = Date.now()): string {
   if (!when) return "";
-  const s = (now - new Date(when).getTime()) / 1000;
+  // RFC 3339, or Unix seconds (Scribe's)
+  const s = (now - (typeof when === "number" ? when * 1000 : new Date(when).getTime())) / 1000;
   if (!(s >= 0)) return "";
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;

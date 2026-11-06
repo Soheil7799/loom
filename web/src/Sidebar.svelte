@@ -97,7 +97,7 @@
 
   <div class="list">
     {#if open.length}
-      <h2 class="heading">OPEN · {open.length}</h2>
+      <h2 class="heading">OPEN · {open.length}{#if agents.some((a) => a.unseen)}<button class="link" title="Nothing new in any of them any more" onclick={() => act(command("mark_seen", { all: true }))}>Mark all seen</button>{/if}</h2>
       {#each open as a, i (a.id)}
         {@const s = stateOf(a)}
         <button class="running" class:sel={a.id === selected} aria-current={a.id === selected ? "page" : undefined} onclick={() => pick(a.id)}>

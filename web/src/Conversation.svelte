@@ -75,6 +75,11 @@
     if (last && document.visibilityState === "visible") localStorage.setItem(seenKey, last.id);
   });
 
+  // Looked at: what was new in it is seen (here, as in the window).
+  $effect(() => {
+    if (active && agent.unseen && agent.status !== "notes" && document.visibilityState === "visible") command("mark_seen", { agent: agent.id }).catch(() => {});
+  });
+
   // Opened at its end, then kept there as it grows, unless you scrolled up.
   let opened = false;
   $effect(() => {

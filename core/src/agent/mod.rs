@@ -573,6 +573,13 @@ impl Agent {
         })
     }
 
+    /// Seen by the user (a page opened it): nothing new in it any more.
+    pub fn mark_seen(self: &Rc<Self>) {
+        if self.unseen.replace(false) {
+            self.emit(Event::Changed);
+        }
+    }
+
     /// Its slash commands (name, what it does) and the next message it suggests.
     pub fn composer(&self) -> (Vec<(String, String)>, Option<String>) {
         (self.recorded.commands.borrow().clone(), self.recorded.suggestion.borrow().clone())

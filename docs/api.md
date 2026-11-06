@@ -498,6 +498,17 @@ Who: window, cli. Result: `{}`.
 | `project` | string | the project's id (its folder) |
 | `by` | integer | -1 up, 1 down |
 
+### `mark_seen`
+
+The user has seen what is new in an agent (or in all): `unseen` goes.
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string? | the agent's id |
+| `all` | boolean? | every agent (Mark all seen) |
+
 ### `press`
 
 Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed.
@@ -863,6 +874,16 @@ Who: window. Result: `{}`.
 |---|---|---|
 | `id` | string | a `scribe` item |
 | `rule` | string | the rule |
+
+### `scribe_history`
+
+Everything Scribe wrote or was told no, newest first (`scribe_undo` takes a written one back).
+
+Who: window. Result: `{changes: [{id, kind: written|dropped, topic, reason, change, title, at, undone}]}`.
+
+| Param | Type | |
+|---|---|---|
+| `limit` | integer? | 200; 2000 tops |
 
 ### `scribe_forget`
 

@@ -1523,6 +1523,30 @@
       },
       "result": "{}"
     },
+    "mark_seen": {
+      "description": "The user has seen what is new in an agent (or in all): `unseen` goes.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "all": {
+            "type": "boolean",
+            "description": "every agent (Mark all seen)"
+          }
+        },
+        "required": []
+      },
+      "result": "{}"
+    },
     "press": {
       "description": "Presses a notice's button (\"Rewind\" with the files…). A choice's button goes once pressed.",
       "who": [
@@ -2356,6 +2380,24 @@
         ]
       },
       "result": "{}"
+    },
+    "scribe_history": {
+      "description": "Everything Scribe wrote or was told no, newest first (`scribe_undo` takes a written one back).",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "limit": {
+            "type": "integer",
+            "description": "200; 2000 tops"
+          }
+        },
+        "required": []
+      },
+      "result": "{changes: [{id, kind: written|dropped, topic, reason, change, title, at, undone}]}"
     },
     "scribe_forget": {
       "description": "Forgets a rule Scribe learned.",

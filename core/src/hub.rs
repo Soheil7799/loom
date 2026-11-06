@@ -307,6 +307,19 @@ impl Hub {
             scribe.keep_rule(id, rule);
             Ok(json!({}))
         });
+        // Everything Scribe wrote or was told no, newest first (the notes before and after
+        // left out: `scribe_undo {id}` takes one back).
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_history", move |who, params| {
+            scribe_target(&weak, who, &json!({ "id": "0" }))?;
+            let limit = params["limit"].as_u64().unwrap_or(200).min(2000) as usize;
+            let items: Vec<Value> = history()
+                .into_iter()
+                .take(limit)
+                .map(|v| json!({ "id": v["id"].as_u64().map(|id| format!("change:{id}")), "kind": v["kind"], "topic": v["topic"], "reason": v["reason"], "change": v["change"], "title": v["title"], "at": v["at"], "undone": v["undone"].as_bool().unwrap_or(false) }))
+                .collect();
+            Ok(json!({ "changes": items }))
+        });
         let weak = Rc::downgrade(self);
         hub.handle("scribe_forget", move |who, params| {
             let (scribe, id) = scribe_target(&weak, who, params)?;
