@@ -6,7 +6,14 @@
   import Icon from "./Icon.svelte";
   import Terminal from "./Terminal.svelte";
 
-  let { jobs, projects, open = $bindable(null) }: { jobs: JobsItem[]; projects: ProjectsItem[]; open: string | null } = $props();
+  let { jobs, projects, open = $bindable(null), runAsked = 0 }: { jobs: JobsItem[]; projects: ProjectsItem[]; open: string | null; runAsked?: number } = $props();
+  let runInput: HTMLInputElement | undefined = $state();
+  // Ctrl+J: the command box, to type a command to run
+  $effect(() => { if (runAsked) runInput?.focus(); });
+  const finished = $derived(jobs.filter((j) => j.status === "exited"));
+  async function clearFinished() {
+    for (const j of finished) await run(command("remove_job", { job: j.id }));
+  }
   let project = $state("");
   let line = $state("");
   let problem = $state("");
@@ -33,8 +40,9 @@
     <select class="chip" aria-label="Project" bind:value={project}>
       {#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}
     </select>
-    <input aria-label="Command" placeholder="A command to run in the project's tray" bind:value={line} />
+    <input aria-label="Command" placeholder="A command to run in the project's tray (Ctrl+J)" bind:value={line} bind:this={runInput} />
     <button class="go" disabled={!line.trim() || !projects.length}>Run</button>
+    <button type="button" class="btn small" disabled={!finished.length} title="Take the jobs that ended out of the trays" onclick={clearFinished}>Clear finished</button>
   </form>
   {#if problem}<p class="error">{problem}</p>{/if}
   <div class="jobs-split">

@@ -2049,6 +2049,27 @@
       },
       "result": "{}"
     },
+    "remove_job": {
+      "description": "Takes a job that has exited out of its tray (a conflict while it runs).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "an exited job's id"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      },
+      "result": "{}"
+    },
     "job_input": {
       "description": "Types into a job's terminal.",
       "who": [

@@ -115,7 +115,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .column { position: relative; max-width: 744px; margin: 0 auto; padding-left: 30px; display: flex; flex-direction: column; gap: 10px; }
 .turn { display: flex; flex-direction: column; gap: 10px; }
 .msg-user { position: sticky; top: -18px; z-index: 3; padding: 8px 0 6px; background: var(--pane); }
-.msg-user .bub { display: flex; flex-direction: column; gap: 2px; width: fit-content; max-width: 100%; padding: 10px 16px 12px; border-radius: var(--r-control); white-space: pre-wrap; overflow-wrap: anywhere;
+.msg-user .bub { display: flex; flex-direction: column; gap: 2px; width: fit-content; max-width: calc(100% - 150px); padding: 10px 16px 12px; border-radius: var(--r-control); white-space: pre-wrap; overflow-wrap: anywhere;
   background: color-mix(in srgb, var(--accent) 11%, var(--pane)); border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent); line-height: 1.5; }
 .msg-user .when { order: -1; font-size: 12.5px; color: var(--quiet); }
 .msg-user .when b { color: var(--fg); font-weight: 600; }
@@ -409,3 +409,15 @@ textarea.code { flex: 1; min-height: 0; resize: none; font-family: var(--mono); 
 .slash button.on { background: var(--bubble); }
 .slash b { font-family: var(--mono); font-weight: 400; color: var(--accent); }
 .slash span { color: var(--quiet); overflow: hidden; text-overflow: ellipsis; }
+
+/* ---- palette, side by side, scratch ---- */
+.palette .trow { display: flex; justify-content: space-between; font-family: var(--ui); font-size: 14px; padding: 6px 10px; }
+kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); color: var(--quiet); white-space: nowrap; }
+.pair { display: grid; grid-template-columns: 1fr; height: 100%; min-height: 0; }
+.pair.two { grid-template-columns: 1fr 1fr; }
+.pair.two > .convo + .convo { border-left: 1px solid var(--line); }
+.main.with-scratch { display: grid; grid-template-rows: minmax(0, 1fr) 40%; }
+.scratch { display: flex; flex-direction: column; min-height: 0; border-top: 1px solid var(--line); background: var(--sidebar); }
+.scratch .term { margin: 0 12px 12px; }
+.app.no-sidebar { grid-template-columns: minmax(0, 1fr); }
+.app.no-sidebar .main { margin-left: 10px; }

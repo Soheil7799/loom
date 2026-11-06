@@ -19,6 +19,7 @@
     view,
     show,
     act,
+    starting = $bindable(false),
   }: {
     agents: AgentsItem[];
     projects: ProjectsItem[];
@@ -28,10 +29,10 @@
     show: (view: string) => void;
     /** a command from here: its errors shown, an agent it starts (`{agent}`) opened */
     act: (p: Promise<{ agent?: string }>) => Promise<void>;
+    starting?: boolean;
   } = $props();
 
   let menu = $state(false);
-  let starting = $state(false);
   let naming = $state<{ id: string; name: string } | null>(null);
   const isFolded = (p: ProjectsItem) => p.collapsed;
 

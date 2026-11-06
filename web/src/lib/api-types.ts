@@ -659,6 +659,12 @@ export type StopJobParams = {
   job: string;
 };
 
+/** Takes a job that has exited out of its tray (a conflict while it runs). Result: {} */
+export type RemoveJobParams = {
+  /** an exited job's id */
+  job: string;
+};
+
 /** Types into a job's terminal. Result: {} */
 export type JobInputParams = {
   /** the job's id */
@@ -981,6 +987,7 @@ export interface Commands {
   "close_agent": CloseAgentParams;
   "run_job": RunJobParams;
   "stop_job": StopJobParams;
+  "remove_job": RemoveJobParams;
   "job_input": JobInputParams;
   "job_resize": JobResizeParams;
   "restart_job": RestartJobParams;

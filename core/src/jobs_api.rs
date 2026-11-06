@@ -171,6 +171,14 @@ fn handle() {
         jobs.stop(id);
         Ok(json!({}))
     });
+    hub.handle("remove_job", |who, params| {
+        let (jobs, id) = target(who, params)?;
+        if jobs.info(id).is_some_and(|j| j.running) {
+            return Err(Error::Conflict("it is still running: stop it first".into()));
+        }
+        jobs.remove(id);
+        Ok(json!({}))
+    });
     hub.handle("job_input", |who, params| {
         let (jobs, id) = target(who, params)?;
         let text = params["text"].as_str().ok_or_else(|| Error::Invalid("job_input needs text".into()))?;
@@ -226,7 +234,13 @@ mod tests {
             assert!(std::time::Instant::now() < deadline, "{:?}", jobs.output(id, 20));
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        assert!(matches!(window.command("x1", "remove_job", json!({ "job": job })), Err(Error::Conflict(_))), "not while it runs");
         jobs.stop(id);
+        while jobs.info(id).is_some_and(|j| j.running) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        window.command("x2", "remove_job", json!({ "job": job })).unwrap();
+        assert!(jobs.info(id).is_none());
     }
 
     #[test]

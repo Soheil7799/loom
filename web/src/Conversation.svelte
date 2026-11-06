@@ -14,7 +14,7 @@
   import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
-  let { agent, jobs = [], showJob, expectCopy }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void } = $props();
+  let { agent, jobs = [], showJob, expectCopy, active = true }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void; active?: boolean } = $props();
   let entries = $state.raw<Entry[]>([]);
   let usage = $state.raw<UsageItem | null>(null);
   let gone = $state(false);
@@ -141,6 +141,13 @@
     if (slash.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); pickAt = (pickAt + (e.key === "ArrowDown" ? 1 : slash.length - 1)) % slash.length; return; }
     if (slash.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && text !== `/${slash[pickAt].name}`))) { e.preventDefault(); take(slash[pickAt]); return; }
     if (!text && suggestion && (e.key === "Tab" || e.key === "ArrowRight")) { e.preventDefault(); text = suggestion; return; }
+    if (e.key === "Escape" && busy) { e.preventDefault(); run(command("stop", { agent: agent.id })); return; }
+    if (e.key === "Tab" && e.shiftKey && agent.modes?.length) {
+      e.preventDefault();
+      const modes = agent.modes as string[];
+      run(command("set_mode", { agent: agent.id, mode: modes[(modes.indexOf(agent.mode ?? "") + 1) % modes.length] }));
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
   }
 
@@ -202,6 +209,8 @@
     if (title && title !== agent.title) await run(command("rename", { agent: agent.id, title }));
   }
   function jump(e: KeyboardEvent) {
+    // two side by side: the keys are the active one's
+    if (!active) return;
     if (e.key === "F2" && naming === null && agent.status !== "notes") { e.preventDefault(); naming = agent.title; return; }
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || !box) return;
     const top = box.getBoundingClientRect().top, at = box.scrollTop + 120;

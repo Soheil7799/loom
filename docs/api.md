@@ -726,6 +726,16 @@ Who: window, cli. Result: `{}`.
 |---|---|---|
 | `job` | string | the job's id |
 
+### `remove_job`
+
+Takes a job that has exited out of its tray (a conflict while it runs).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `job` | string | an exited job's id |
+
 ### `job_input`
 
 Types into a job's terminal.

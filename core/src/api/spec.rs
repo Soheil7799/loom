@@ -137,6 +137,7 @@ pub const COMMANDS: &[Command] = &[
         about: "A new job in the project's tray.",
     },
     Command { name: "stop_job", who: PEOPLE, params: &[("job", "string", true, "the job's id")], result: "{}", later: false, about: "Stops a job." },
+    Command { name: "remove_job", who: PEOPLE, params: &[("job", "string", true, "an exited job's id")], result: "{}", later: false, about: "Takes a job that has exited out of its tray (a conflict while it runs)." },
     Command { name: "job_input", who: PEOPLE, params: &[("job", "string", true, "the job's id"), ("text", "string", true, "keys typed, as the terminal sends them (escapes included)")], result: "{}", later: false, about: "Types into a job's terminal." },
     Command { name: "job_resize", who: PEOPLE, params: &[("job", "string", true, "the job's id"), ("rows", "integer", true, ""), ("cols", "integer", true, "")], result: "{}", later: false, about: "The size a job's terminal is shown at (one size for every client: the last one told)." },
     Command { name: "restart_job", who: PEOPLE, params: &[("job", "string", true, "the job's id")], result: "{}", later: false, about: "Runs a job again (its output starts over)." },
