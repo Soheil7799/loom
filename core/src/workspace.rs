@@ -146,6 +146,37 @@ impl Workspace {
         Ok(())
     }
 
+    /// `move_agent {agent, by}`: one up (-1) or down (1) among its project's agents; false if
+    /// it is at that end already (or no such agent).
+    pub fn move_agent(&self, id: u32, by: i32) -> bool {
+        let mut agents = self.agents.borrow_mut();
+        let Some(agent) = agents.iter().find(|a| a.id == id).cloned() else { return false };
+        let mine: Vec<usize> = agents.iter().enumerate().filter(|(_, a)| a.project == agent.project).map(|(i, _)| i).collect();
+        let Some(at) = mine.iter().position(|&i| agents[i].id == id) else { return false };
+        let to = at as i32 + by;
+        if to < 0 || to as usize >= mine.len() {
+            return false;
+        }
+        agents.swap(mine[at], mine[to as usize]);
+        drop(agents);
+        self.publish_agents();
+        true
+    }
+
+    /// `move_project {project, by}`: one up or down the sidebar; false at that end.
+    pub fn move_project(&self, path: &Path, by: i32) -> bool {
+        let mut projects = self.projects.borrow_mut();
+        let Some(at) = projects.iter().position(|p| p.path == path) else { return false };
+        let to = at as i32 + by;
+        if to < 0 || to as usize >= projects.len() {
+            return false;
+        }
+        projects.swap(at, to as usize);
+        drop(projects);
+        self.publish_agents();
+        true
+    }
+
     /// `remove_project`: the project's agents, to close before it goes; a conflict while any
     /// works (the window asks first; through the API, stop them first).
     pub fn project_to_remove(&self, params: &Value) -> Result<(PathBuf, Vec<Rc<Agent>>), crate::api::Error> {
@@ -281,7 +312,15 @@ impl Workspace {
         crate::api::hub().store("agents").set(items);
         // What waits in each one's input: the user's words, so people's alone (not `agents`,
         // which agents and bridges read).
-        let inputs = self.agents_in_order().iter().map(|a| json!({ "id": a.id.to_string(), "draft": a.view.draft(), "queued": a.queued() })).collect();
+        let inputs = self
+            .agents_in_order()
+            .iter()
+            .map(|a| {
+                let (commands, suggestion) = a.composer();
+                let commands: Vec<Value> = commands.into_iter().map(|(name, about)| json!({ "name": name, "about": about })).collect();
+                json!({ "id": a.id.to_string(), "draft": a.view.draft(), "queued": a.queued(), "commands": commands, "suggestion": suggestion })
+            })
+            .collect();
         crate::api::hub().store("inputs").set(inputs);
         // What the overview's cards show: people's too (an agent's words, its questions).
         let cards = self

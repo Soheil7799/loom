@@ -428,6 +428,24 @@ fn commands(daemon: &Rc<Daemon>) {
             Ok(json!({}))
         });
     }
+    for name in ["move_agent", "move_project"] {
+        let weak = Rc::downgrade(daemon);
+        hub.handle(name, move |who, params| {
+            if !human(who) {
+                return Err(Error::Forbidden("reordering the sidebar".into()));
+            }
+            let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+            let by = params["by"].as_i64().filter(|b| *b == 1 || *b == -1).ok_or_else(|| Error::Invalid("by: -1 or 1".into()))? as i32;
+            let moved = match name {
+                "move_agent" => daemon.ws.move_agent(params["agent"].as_str().and_then(|a| a.parse().ok()).ok_or_else(|| Error::Invalid("which agent?".into()))?, by),
+                _ => daemon.ws.move_project(Path::new(params["project"].as_str().ok_or_else(|| Error::Invalid("which project?".into()))?), by),
+            };
+            if moved {
+                daemon.save_soon();
+            }
+            Ok(json!({}))
+        });
+    }
     let weak = Rc::downgrade(daemon);
     hub.handle("remove_project", move |who, params| {
         if !human(who) {

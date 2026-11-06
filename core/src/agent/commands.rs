@@ -185,6 +185,35 @@ fn handle() {
         crate::changes::revert(path, hunk).map_err(|why| if why.contains("changed since") { Error::Conflict(why) } else { Error::Failed(why) })?;
         Ok(json!({}))
     });
+    // The window's actions on an agent: a person's.
+    hub.handle("fork", |who, params| {
+        let agent = person(who, params, "copy conversations")?;
+        agent.fork(None, String::new());
+        Ok(json!({}))
+    });
+    hub.handle("clear", |who, params| {
+        let agent = person(who, params, "clear conversations")?;
+        agent.clear_conversation();
+        Ok(json!({}))
+    });
+    hub.handle("restart", |who, params| {
+        let agent = person(who, params, "restart agents")?;
+        agent.restart();
+        Ok(json!({}))
+    });
+    hub.handle("add_folder", |who, params| {
+        let agent = person(who, params, "give agents folders")?;
+        let folder = params["folder"].as_str().map(|f| crate::state::expand(std::path::Path::new(f))).ok_or_else(|| Error::Invalid("which folder?".into()))?;
+        if !folder.is_absolute() || !folder.is_dir() {
+            return Err(Error::Invalid(format!("{} is not a folder", folder.display())));
+        }
+        agent.add_dir(folder);
+        Ok(json!({}))
+    });
+    hub.handle("export", |who, params| {
+        let agent = person(who, params, "export conversations")?;
+        Ok(json!({ "markdown": agent.markdown() }))
+    });
     hub.handle("press", |who, params| {
         let agent = person(who, params, "press agents' buttons")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("which notice (its entry)?".into()))?;

@@ -137,6 +137,23 @@ impl Transcript {
     }
 
     /// Question `id` settled: answered (`answer` "→ …") or dropped (any other words).
+    /// The conversation as Markdown: what was said, by whom (tools and thoughts left out).
+    pub fn markdown(&self) -> String {
+        let mut out = String::new();
+        for (_, e) in &self.entries {
+            let who = match e["kind"].as_str() {
+                Some("user") => "You",
+                Some("agent") => "Claude",
+                _ => continue,
+            };
+            let text = e["text"].as_str().unwrap_or("").trim();
+            if !text.is_empty() {
+                out.push_str(&format!("## {who}\n\n{text}\n\n"));
+            }
+        }
+        out
+    }
+
     /// The agent's last words: its latest `agent` entry's text.
     pub fn last_reply(&self) -> Option<&str> {
         self.entries.iter().rev().find(|(_, e)| e["kind"] == "agent").and_then(|(_, e)| e["text"].as_str())
@@ -361,6 +378,10 @@ pub struct Recorded {
     agent: RefCell<Option<String>>,
     /// The buttons of notices that have one, by entry (`press`); a choice's goes once pressed.
     actions: RefCell<std::collections::HashMap<String, (Rc<dyn Fn()>, bool)>>,
+    /// Its slash commands as the agent gave them (name, what it does), and the next message
+    /// it suggests: for a client's composer (`inputs`).
+    pub commands: RefCell<Vec<(String, String)>>,
+    pub suggestion: RefCell<Option<String>>,
 }
 
 /// The core API's `usage` resource: the account's limits (`{id: "account", kind: "account",
@@ -461,7 +482,7 @@ impl Recorded {
 
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default() }
+        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default(), commands: RefCell::default(), suggestion: RefCell::default() }
     }
 }
 
@@ -691,9 +712,11 @@ impl View for Recorded {
         self.inner.set_options(options);
     }
     fn set_commands(&self, commands: Vec<(String, String)>) {
+        *self.commands.borrow_mut() = commands.clone();
         self.inner.set_commands(commands);
     }
     fn set_suggestion(&self, text: Option<String>) {
+        *self.suggestion.borrow_mut() = text.clone();
         self.inner.set_suggestion(text);
     }
     fn set_show_thinking(&self, show: bool) {
@@ -792,6 +815,16 @@ impl View for Recorded {
 #[cfg(test)]
 mod tests {
     use super::super::view::View;
+
+    #[test]
+    fn a_conversation_exports_as_what_was_said() {
+        let mut t = Transcript::default();
+        t.push(json!({ "kind": "user", "text": "Hi " }));
+        t.push(json!({ "kind": "tool", "title": "Read" }));
+        t.push(json!({ "kind": "agent", "text": "Hello." }));
+        t.push(json!({ "kind": "agent", "text": "" }));
+        assert_eq!(t.markdown(), "## You\n\nHi\n\n## Claude\n\nHello.\n\n");
+    }
 
     #[test]
     fn a_notices_button_is_pressed_once_through_the_api() {

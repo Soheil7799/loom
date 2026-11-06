@@ -242,6 +242,10 @@ export type InputsItem = {
   draft: string;
   /** its messages waiting for the turn to end, in order (`unqueue`) */
   queued: unknown[];
+  /** its slash commands: {name, about} */
+  commands: unknown[];
+  /** the next message it suggests (Tab takes it) */
+  suggestion?: string;
 };
 
 /** Conversations closed lately, newest first (`reopen`). */
@@ -445,6 +449,54 @@ export type RevertParams = {
   hunk?: number;
   /** with `hunk`: that hunk as shown, from its @@ line (a conflict if the file's diff has changed there) */
   hunk_text?: string;
+};
+
+/** A copy of the whole conversation, as an agent of its own (it shows in `agents`). Result: {} */
+export type ForkParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** /clear: the agent starts a fresh conversation (the old one stays among the past ones). Result: {} */
+export type ClearParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Stops the agent's process and starts it again, resuming its conversation. Result: {} */
+export type RestartParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Lets the agent work in another folder too (it restarts). Result: {} */
+export type AddFolderParams = {
+  /** the agent's id */
+  agent: string;
+  /** an absolute folder */
+  folder: string;
+};
+
+/** The conversation as Markdown: what was said, by whom. Result: {markdown} */
+export type ExportParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Moves an agent in the sidebar's order. Result: {} */
+export type MoveAgentParams = {
+  /** the agent's id */
+  agent: string;
+  /** -1 up, 1 down, among its project's agents */
+  by: number;
+};
+
+/** Moves a project in the sidebar's order. Result: {} */
+export type MoveProjectParams = {
+  /** the project's id (its folder) */
+  project: string;
+  /** -1 up, 1 down */
+  by: number;
 };
 
 /** Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed. Result: {} */
@@ -901,6 +953,13 @@ export interface Commands {
   "set_awake": SetAwakeParams;
   "changes": ChangesParams;
   "revert": RevertParams;
+  "fork": ForkParams;
+  "clear": ClearParams;
+  "restart": RestartParams;
+  "add_folder": AddFolderParams;
+  "export": ExportParams;
+  "move_agent": MoveAgentParams;
+  "move_project": MoveProjectParams;
   "press": PressParams;
   "rewind": RewindParams;
   "set_option": SetOptionParams;

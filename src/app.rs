@@ -779,6 +779,26 @@ impl App {
             app.save();
             Ok(serde_json::json!({}))
         });
+        for name in ["move_agent", "move_project"] {
+            let weak = Rc::downgrade(self);
+            loom_core::api::hub().handle(name, move |who, params| {
+                use loom_core::api::Error;
+                if !human(who) {
+                    return Err(Error::Forbidden("reordering the sidebar".into()));
+                }
+                let app = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+                let by = params["by"].as_i64().filter(|b| *b == 1 || *b == -1).ok_or_else(|| Error::Invalid("by: -1 or 1".into()))? as i32;
+                let moved = match name {
+                    "move_agent" => app.ws.move_agent(params["agent"].as_str().and_then(|a| a.parse().ok()).ok_or_else(|| Error::Invalid("which agent?".into()))?, by),
+                    _ => app.ws.move_project(Path::new(params["project"].as_str().ok_or_else(|| Error::Invalid("which project?".into()))?), by),
+                };
+                if moved {
+                    app.refresh_sidebar();
+                    app.save();
+                }
+                Ok(serde_json::json!({}))
+            });
+        }
         let weak = Rc::downgrade(self);
         loom_core::api::hub().handle("remove_project", move |who, params| {
             use loom_core::api::Error;

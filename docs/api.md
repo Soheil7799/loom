@@ -255,6 +255,8 @@ Who: window, cli.
 | `id` | string | an agent's id |
 | `draft` | string | what waits in its input (a rewind's message, one taken back) |
 | `queued` | array | its messages waiting for the turn to end, in order (`unqueue`) |
+| `commands` | array | its slash commands: {name, about} |
+| `suggestion` | string? | the next message it suggests (Tab takes it) |
 
 ### `closed`
 
@@ -422,6 +424,79 @@ Who: window, cli. Result: `{}`.
 | `path` | string | one of its `changes`' files |
 | `hunk` | integer? | one hunk of that file's diff (from 0); none: the whole file |
 | `hunk_text` | string? | with `hunk`: that hunk as shown, from its @@ line (a conflict if the file's diff has changed there) |
+
+### `fork`
+
+A copy of the whole conversation, as an agent of its own (it shows in `agents`).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `clear`
+
+/clear: the agent starts a fresh conversation (the old one stays among the past ones).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `restart`
+
+Stops the agent's process and starts it again, resuming its conversation.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `add_folder`
+
+Lets the agent work in another folder too (it restarts).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `folder` | string | an absolute folder |
+
+### `export`
+
+The conversation as Markdown: what was said, by whom.
+
+Who: window, cli. Result: `{markdown}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `move_agent`
+
+Moves an agent in the sidebar's order.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `by` | integer | -1 up, 1 down, among its project's agents |
+
+### `move_project`
+
+Moves a project in the sidebar's order.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
+| `by` | integer | -1 up, 1 down |
 
 ### `press`
 

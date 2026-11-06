@@ -37,11 +37,15 @@
   // What waits in its input (`inputs`, people's alone): its draft (a rewind's message, one
   // taken back from the queue) comes into the composer when it opens or changes, if empty.
   let queued = $state.raw<string[]>([]);
+  let commands = $state.raw<{ name: string; about: string }[]>([]);
+  let suggestion = $state("");
   let draft = "";
   let lastDraft: string | null = null;
   $effect(() => follow("inputs", (f) => {
     const mine = f.items.find((i: Item) => i.id === agent.id);
     queued = mine?.queued ?? [];
+    commands = mine?.commands ?? [];
+    suggestion = mine?.suggestion ?? "";
     draft = mine?.draft ?? "";
     if (draft !== lastDraft) { lastDraft = draft; if (draft && !text.trim()) text = draft; }
   }));
@@ -127,8 +131,64 @@
       if (draft) { lastDraft = ""; run(command("set_draft", { agent: agent.id, text: "" })); }
     }
   }
+  // "/" at the start: its commands, to pick (↑↓, Tab or Enter); an empty box: Tab or →
+  // takes the suggested next message.
+  let pickAt = $state(0);
+  const slash = $derived(/^\/\S*$/.test(text) ? commands.filter((c) => ("/" + c.name).startsWith(text)).slice(0, 8) : []);
+  $effect(() => { slash; pickAt = 0; });
+  function take(c: { name: string }) { text = `/${c.name} `; }
   function keys(e: KeyboardEvent) {
+    if (slash.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); pickAt = (pickAt + (e.key === "ArrowDown" ? 1 : slash.length - 1)) % slash.length; return; }
+    if (slash.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && text !== `/${slash[pickAt].name}`))) { e.preventDefault(); take(slash[pickAt]); return; }
+    if (!text && suggestion && (e.key === "Tab" || e.key === "ArrowRight")) { e.preventDefault(); text = suggestion; return; }
     if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+  }
+
+  // Speech to text (Settings → Speech to text): recorded here, written by loom's service.
+  let sttOn = $state(false);
+  $effect(() => follow("settings", (f) => (sttOn = !!f.items[0]?.stt_enabled)));
+  let recorder: MediaRecorder | null = $state(null);
+  let hearing = $state(false);
+  async function listen() {
+    if (recorder) return recorder.stop();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const parts: Blob[] = [];
+      const r = new MediaRecorder(stream);
+      r.ondataavailable = (e) => parts.push(e.data);
+      r.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop());
+        recorder = null;
+        hearing = true;
+        try {
+          const audio = new Blob(parts, { type: r.mimeType });
+          const bytes = new Uint8Array(await audio.arrayBuffer());
+          let raw = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) raw += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+          const got = await command("transcribe", { audio: btoa(raw), mime: r.mimeType.split(";")[0], name: "speech.webm" });
+          if (got.text) text = text.trim() ? `${text.trimEnd()} ${got.text}` : got.text;
+        } catch (err) { problem = (err as Error).message; }
+        hearing = false;
+      };
+      r.start();
+      recorder = r;
+    } catch (err) { problem = `The microphone: ${(err as Error).message}`; }
+  }
+
+  // The agent's menu: a copy, a fresh start, another folder, Markdown, its place.
+  let menuOpen = $state(false);
+  async function exportIt() {
+    const got = await command("export", { agent: agent.id }).catch((e) => { problem = e.message; });
+    if (!got) return;
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([got.markdown], { type: "text/markdown" }));
+    a.download = `${(agent.title || "conversation").replace(/[^\p{L}\p{N} -]+/gu, "_").trim()}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  async function anotherFolder() {
+    const folder = prompt("Another folder this agent may work in (absolute path). It restarts.", agent.project_id);
+    if (folder?.trim()) run(command("add_folder", { agent: agent.id, folder: folder.trim() }));
   }
   async function rewind(entry: string, files: boolean) {
     expectCopy?.(true);
@@ -151,7 +211,7 @@
   }
 </script>
 
-<svelte:window onkeydown={jump} />
+<svelte:window onkeydown={jump} onclick={() => (menuOpen = false)} />
 
 <div class="convo" class:aside={showChanges}>
 <section class="centre" aria-label={agent.title || "Conversation"}>
@@ -179,6 +239,22 @@
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
     {#if agent.edited}<button class="chip" class:on={showChanges} aria-pressed={showChanges} title="The files it changed" onclick={() => (showChanges = !showChanges)}><Icon name="diff" size={13} /> {agent.edited}</button>{/if}
     {#if agent.status !== "notes"}
+      <div class="inbox-wrap amenu">
+        <button class="tiny" aria-label="More for this agent" aria-haspopup="menu" aria-expanded={menuOpen} onclick={(e) => { e.stopPropagation(); menuOpen = !menuOpen; }}><Icon name="more" size={15} /></button>
+        {#if menuOpen}
+          <div class="menu" role="menu">
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; expectCopy?.(true); run(command("fork", { agent: agent.id })); }}><Icon name="copy" size={13} /><span>Copy this conversation</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; if (confirm("Start a fresh conversation here? This one stays among the past ones.")) run(command("clear", { agent: agent.id })); }}><Icon name="refresh" size={13} /><span>Clear: a fresh conversation</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("restart", { agent: agent.id })); }}><Icon name="refresh" size={13} /><span>Restart it</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; anotherFolder(); }}><Icon name="folder" size={13} /><span>Work in another folder too…</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; exportIt(); }}><Icon name="diff" size={13} /><span>Save as Markdown</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move it up</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move it down</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move its project up</span></button>
+            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move its project down</span></button>
+          </div>
+        {/if}
+      </div>
       <button class="tiny" class:on={agent.awake} aria-pressed={agent.awake} aria-label="Keep awake" title={agent.awake ? "Kept awake: never suspended while idle (click to allow it)" : "Keep awake: never suspended while idle"} onclick={() => run(command("set_awake", { agent: agent.id, awake: !agent.awake }))}><Icon name="coffee" size={15} /></button>
       <button class="tiny" aria-label="Suspend" title={busy ? "Suspend: stop it first" : "Suspend (free its memory; a message resumes it)"} disabled={busy || agent.status === "suspended"} onclick={() => run(command("suspend", { agent: agent.id }))}><Icon name="moon" size={15} /></button>
     {/if}
@@ -253,10 +329,16 @@
           {#if reading}<span class="quiet small">Reading…</span>{/if}
         </div>
       {/if}
-      <textarea onpaste={(e) => { if (e.clipboardData?.files.length) { e.preventDefault(); attach(e.clipboardData.files); } }} aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder="Ask Claude…  Enter sends, Shift+Enter: a new line" bind:value={text} onkeydown={keys} disabled={gone}></textarea>
+      {#if slash.length}
+        <ul class="slash" role="listbox" aria-label="Commands">
+          {#each slash as c, i (c.name)}<li role="option" aria-selected={i === pickAt}><button class:on={i === pickAt} onmousedown={(e) => { e.preventDefault(); take(c); }}><b>/{c.name}</b> <span>{c.about}</span></button></li>{/each}
+        </ul>
+      {/if}
+      <textarea onpaste={(e) => { if (e.clipboardData?.files.length) { e.preventDefault(); attach(e.clipboardData.files); } }} aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder={suggestion ? `${suggestion}   (Tab takes it)` : "Ask Claude…  Enter sends, Shift+Enter: a new line"} bind:value={text} onkeydown={keys} disabled={gone}></textarea>
       <div class="cbar">
         <button class="tiny" aria-label="Attach pictures" title="Attach pictures (or paste, or drop them here)" disabled={gone} onclick={() => picker?.click()}><Icon name="image" size={15} /></button>
         <input class="hidden" type="file" accept="image/*" multiple bind:this={picker} onchange={(e) => { attach(e.currentTarget.files ?? []); e.currentTarget.value = ""; }} />
+        {#if sttOn}<button class="tiny" class:on={!!recorder} aria-pressed={!!recorder} aria-label={recorder ? "Stop and write it" : "Speak"} title={recorder ? "Stop: what you said goes in the box" : "Speak (speech to text)"} disabled={hearing || gone} onclick={listen}><Icon name="mic" size={15} /></button>{/if}
         {#if agent.modes?.length}
           <select class="chip" aria-label="Permission mode" value={agent.mode} onchange={(e) => run(command("set_mode", { agent: agent.id, mode: e.currentTarget.value }))}>
             {#each agent.modes as mode}<option value={mode}>Mode · {mode}</option>{/each}

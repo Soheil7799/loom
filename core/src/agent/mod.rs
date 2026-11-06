@@ -573,6 +573,16 @@ impl Agent {
         })
     }
 
+    /// Its slash commands (name, what it does) and the next message it suggests.
+    pub fn composer(&self) -> (Vec<(String, String)>, Option<String>) {
+        (self.recorded.commands.borrow().clone(), self.recorded.suggestion.borrow().clone())
+    }
+
+    /// The conversation as Markdown, titled.
+    pub fn markdown(&self) -> String {
+        format!("# {}\n\n{}", self.title(), self.recorded.transcript.borrow().markdown())
+    }
+
     /// Presses the button of notice `entry` in its conversation; false if it has none.
     pub fn press(&self, entry: &str) -> bool {
         self.recorded.press(entry)
@@ -2713,6 +2723,7 @@ impl Agent {
                     })
                     .unwrap_or_default();
                 self.view.set_commands(commands);
+                self.emit(Event::Changed);
             }
             "current_mode_update" => {
                 if let Some(mode) = update["currentModeId"].as_str() {
@@ -2775,6 +2786,7 @@ impl Agent {
                     let text = suggestions.iter().filter_map(|s| s["text"].as_str()).find(|t| !t.trim().is_empty());
                     crate::log::debug!(format!("agent {}", self.id), "prompt suggestion: {text:?}");
                     self.view.set_suggestion(text.map(str::to_owned));
+                    self.emit(Event::Changed);
                 }
                 // A name given by hand stays.
                 if let Some(title) = update["title"].as_str().filter(|t| !t.is_empty() && !self.named.get()) {

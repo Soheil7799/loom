@@ -917,12 +917,21 @@
           "queued": {
             "type": "array",
             "description": "its messages waiting for the turn to end, in order (`unqueue`)"
+          },
+          "commands": {
+            "type": "array",
+            "description": "its slash commands: {name, about}"
+          },
+          "suggestion": {
+            "type": "string",
+            "description": "the next message it suggests (Tab takes it)"
           }
         },
         "required": [
           "id",
           "draft",
-          "queued"
+          "queued",
+          "commands"
         ]
       }
     },
@@ -1348,6 +1357,168 @@
         "required": [
           "agent",
           "path"
+        ]
+      },
+      "result": "{}"
+    },
+    "fork": {
+      "description": "A copy of the whole conversation, as an agent of its own (it shows in `agents`).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "clear": {
+      "description": "/clear: the agent starts a fresh conversation (the old one stays among the past ones).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "restart": {
+      "description": "Stops the agent's process and starts it again, resuming its conversation.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "add_folder": {
+      "description": "Lets the agent work in another folder too (it restarts).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "folder": {
+            "type": "string",
+            "description": "an absolute folder"
+          }
+        },
+        "required": [
+          "agent",
+          "folder"
+        ]
+      },
+      "result": "{}"
+    },
+    "export": {
+      "description": "The conversation as Markdown: what was said, by whom.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{markdown}"
+    },
+    "move_agent": {
+      "description": "Moves an agent in the sidebar's order.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "by": {
+            "type": "integer",
+            "description": "-1 up, 1 down, among its project's agents"
+          }
+        },
+        "required": [
+          "agent",
+          "by"
+        ]
+      },
+      "result": "{}"
+    },
+    "move_project": {
+      "description": "Moves a project in the sidebar's order.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "the project's id (its folder)"
+          },
+          "by": {
+            "type": "integer",
+            "description": "-1 up, 1 down"
+          }
+        },
+        "required": [
+          "project",
+          "by"
         ]
       },
       "result": "{}"

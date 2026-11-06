@@ -398,3 +398,14 @@ textarea.code { flex: 1; min-height: 0; resize: none; font-family: var(--mono); 
 .finder { position: absolute; top: 70px; left: 50%; translate: -50% 0; width: min(560px, 92%); max-height: 60vh; overflow: auto; padding: 8px; border-radius: var(--r-block); background: var(--pane); border: 1px solid var(--line); box-shadow: 0 20px 50px color-mix(in srgb, var(--shadow) 35%, transparent); }
 .finder input { width: 100%; margin-bottom: 6px; padding: 7px 10px; border: 1px solid var(--accent); border-radius: var(--r-control); background: var(--window); color: var(--fg); font: inherit; }
 .finder .trow { font-family: var(--mono); font-size: 13px; }
+
+/* ---- the agent's menu, slash commands ---- */
+.amenu { margin: 0; }
+.amenu .menu { left: auto; right: 0; width: 260px; }
+.amenu .menu .it .ic { transform: none; }
+.composer { position: relative; }
+.slash { position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 20; list-style: none; margin: 0; padding: 4px; border-radius: var(--r-block); background: var(--pane); border: 1px solid var(--line); box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow) 22%, transparent); }
+.slash button { display: flex; gap: 8px; width: 100%; padding: 5px 10px; border: 0; border-radius: 8px; background: none; text-align: left; white-space: nowrap; overflow: hidden; }
+.slash button.on { background: var(--bubble); }
+.slash b { font-family: var(--mono); font-weight: 400; color: var(--accent); }
+.slash span { color: var(--quiet); overflow: hidden; text-overflow: ellipsis; }
