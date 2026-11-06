@@ -51,6 +51,9 @@ pub fn tool_title(title: &str) -> String {
     }
     title
 }
+/// How long after its background work has ended Claude is given to go on by itself before
+/// the turn counts as done.
+const SETTLE: Duration = Duration::from_secs(8);
 /// At most this many messages from before a compaction are shown when a conversation is
 /// opened again (the newest).
 const EARLIER: usize = 400;
@@ -261,6 +264,10 @@ pub struct Agent {
     /// that ends it once quiet.
     autonomous: Cell<Option<Instant>>,
     quiet_timer: RefCell<Option<Timer>>,
+    /// A turn ended with work Claude left going (background agents, commands, workflows):
+    /// "done" is owed, said once all of it has ended and Claude hasn't gone on by itself.
+    done_owed: Cell<bool>,
+    owed_timer: RefCell<Option<Timer>>,
     /// Waiting for a login in the tray to end.
     login_watch: RefCell<Option<Timer>>,
     /// The `!command` running, if one is (its process group).
@@ -367,6 +374,8 @@ impl Agent {
             dirs: RefCell::new(saved.dirs.clone()),
             autonomous: Cell::new(None),
             quiet_timer: RefCell::default(),
+            done_owed: Cell::new(false),
+            owed_timer: RefCell::default(),
             login_watch: RefCell::default(),
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
@@ -724,7 +733,8 @@ impl Agent {
             Status::Starting
         } else if !self.pending.borrow().is_empty() {
             Status::Blocked
-        } else if self.turn.get() || self.autonomous.get().is_some() {
+        } else if self.turn.get() || self.autonomous.get().is_some() || (self.done_owed.get() && self.background_busy()) {
+            // working too while what it left going runs: it goes on when that ends
             Status::Working
         } else {
             Status::Idle
@@ -1216,12 +1226,49 @@ impl Agent {
             self.view.set_working(None);
             self.view.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
-            if !self.focused.get() {
-                self.unseen.set(true);
-            }
-            self.emit(Event::Done);
+            self.done_owed.set(true);
+            self.settle_done(true);
         }
         self.refresh_status();
+    }
+
+    /// Work Claude left going past a turn: background subagents, commands, workflows. It
+    /// goes on by itself once they end.
+    pub fn background_busy(&self) -> bool {
+        self.background_running() || self.subs.borrow().iter().any(|s| s.ended.get().is_none() && s.state.borrow().as_deref() == Some("running"))
+    }
+
+    /// "Done", if owed and nothing is left going: at once at a turn's end (`now`); after a
+    /// pause once background work has ended, since Claude usually goes on by itself then.
+    fn settle_done(self: &Rc<Self>, now: bool) {
+        if let Some(timer) = self.owed_timer.take() {
+            timer.remove();
+        }
+        let idle = |a: &Agent| !a.turn.get() && a.autonomous.get().is_none() && !a.background_busy();
+        if !self.done_owed.get() || !idle(self) {
+            self.refresh_status();
+            return;
+        }
+        let say = |agent: &Rc<Agent>| {
+            agent.done_owed.set(false);
+            if !agent.focused.get() {
+                agent.unseen.set(true);
+            }
+            agent.refresh_status();
+            agent.emit(Event::Done);
+        };
+        if now {
+            return say(self);
+        }
+        let weak = Rc::downgrade(self);
+        let timer = crate::rt::timeout_once(SETTLE, move || {
+            let Some(agent) = weak.upgrade() else { return };
+            agent.owed_timer.take();
+            if agent.done_owed.get() && idle(&agent) {
+                say(&agent);
+            }
+        });
+        *self.owed_timer.borrow_mut() = Some(timer);
     }
 
     /// A copy of this conversation (at `at`, the agent message to end on; None: all of it),
@@ -1336,6 +1383,10 @@ impl Agent {
         }
         self.drop_partial_replay();
         self.end_autonomous(false);
+        self.done_owed.set(false);
+        if let Some(timer) = self.owed_timer.take() {
+            timer.remove();
+        }
         self.ready.set(false);
         self.turn.set(false);
         let mut unsent: Vec<_> = self.queue.borrow_mut().drain(..).collect();
@@ -1721,6 +1772,10 @@ impl Agent {
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
         self.last_heard.set(Instant::now());
+        self.done_owed.set(false);
+        if let Some(timer) = self.owed_timer.take() {
+            timer.remove();
+        }
         crate::log::debug!(format!("agent {}", self.id), "turn starts: {} chars, {} images, {} command outputs", text.len(), images.len(), self.context.borrow().len());
         let started = Instant::now();
         self.view.set_working(Some(started));
@@ -1798,14 +1853,12 @@ impl Agent {
                     }));
                 }
                 agent.last_turn.set(Instant::now());
-                if !agent.focused.get() {
-                    agent.unseen.set(true);
-                }
-                agent.refresh_status();
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.mark_used();
-                agent.emit(Event::Done);
+                // a queued message goes first: "done" is for the end of all of it
+                agent.done_owed.set(true);
                 agent.send_next();
+                agent.settle_done(true);
             },
         );
     }
@@ -2593,6 +2646,7 @@ impl Agent {
         }
         self.show_sub(&sub);
         self.emit(Event::Changed);
+        self.settle_done(false);
     }
 
     /// `session_message` on the main session: a prompt sent to a subagent (its launch), or a
@@ -2765,6 +2819,7 @@ impl Agent {
                     self.view.crew_set(Crew { key, name, step: "command".to_owned(), at: Instant::now(), started, state: Some("running".to_owned()), ended: None, guessed: false });
                 }
                 self.emit(Event::Changed);
+                self.settle_done(false);
             }
             // A background task ended (done, failed, stopped): a workflow's card says so.
             "task_update" => {
@@ -2774,6 +2829,7 @@ impl Agent {
                 for run in ended {
                     run.ended(update["status"].as_str().unwrap_or("completed"), output.clone());
                 }
+                self.settle_done(false);
             }
             // The provider goes on in a new conversation (a plan carried out in a fresh
             // context): reopened later, that one is read back.
