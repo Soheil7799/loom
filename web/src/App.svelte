@@ -60,6 +60,15 @@
     had = ids;
   });
 
+  // A job waiting for you to type (an agent's `loom_run` with input): its terminal, at once.
+  let seenAsks: Set<string> | null = null;
+  $effect(() => {
+    const fresh = seenAsks ? asks.filter((a) => a.kind === "input" && !seenAsks!.has(a.id)) : [];
+    seenAsks = new Set(asks.map((a) => a.id));
+    const latest = fresh.at(-1) as (typeof fresh)[number] & { job?: string } | undefined;
+    if (latest?.job) { job = latest.job; view = "jobs"; }
+  });
+
   const current = $derived(agents.find((a) => a.id === selected) ?? null);
 
   async function act(p: Promise<{ agent?: string }>) {
@@ -95,7 +104,7 @@
       {:else if view === "notes"}
         <Notes bind:chat />
       {:else if view === "asks"}
-        <Asks {asks} {agents} pick={(id) => { selected = id; view = "chat"; }} />
+        <Asks {asks} {agents} pick={(id) => { selected = id; view = "chat"; }} showJob={(id) => { job = id; view = "jobs"; }} />
       {:else if view === "jobs"}
         <Jobs {jobs} {projects} bind:open={job} />
       {:else if current}

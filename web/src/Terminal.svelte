@@ -49,6 +49,8 @@
       const fit = new FitAddon();
       term.loadAddon(fit);
       term.open(el);
+      // opened to be typed in (a password it waits for, say): the keys go to it
+      term.focus();
       stop = follow(name, draw(term));
       term.onData((text) => command("job_input", { job, text }).catch(() => {}));
       // the pane's size, told to the job once it settles

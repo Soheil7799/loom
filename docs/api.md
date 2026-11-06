@@ -322,8 +322,9 @@ Who: window, cli, bridge.
 | `id` | string |  |
 | `agent` | string | who asks |
 | `title` | string | its title |
-| `kind` | string | open (a file to see), edit (a file to fill in), notify |
+| `kind` | string | open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n) |
 | `path` | string? | the file |
+| `job` | string? | input's job (`job/<id>`, `job_input`) |
 | `message` | string |  |
 | `state` | string | waiting |
 | `at` | string | when |

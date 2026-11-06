@@ -1096,11 +1096,15 @@
           },
           "kind": {
             "type": "string",
-            "description": "open (a file to see), edit (a file to fill in), notify"
+            "description": "open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n)"
           },
           "path": {
             "type": "string",
             "description": "the file"
+          },
+          "job": {
+            "type": "string",
+            "description": "input's job (`job/<id>`, `job_input`)"
           },
           "message": {
             "type": "string",

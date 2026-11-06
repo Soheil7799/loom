@@ -284,6 +284,14 @@ impl Tray {
         job.term.grab_focus();
     }
 
+    /// Peeks job `id` (an agent's that waits for the user to type).
+    pub fn peek_id(&self, id: Id) {
+        let job = self.jobs.borrow().iter().find(|j| j.id == id).cloned();
+        if let Some(job) = job {
+            self.peek(&job);
+        }
+    }
+
     /// Peeks the newest job.
     pub fn peek_latest(&self) {
         let latest = self.jobs.borrow().last().cloned();

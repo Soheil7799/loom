@@ -127,7 +127,9 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
                 "name": name,
                 "command": { "type": "string", "description": "Shell command (bash -c)" },
                 "cwd": { "type": "string", "description": "Folder to run in (e.g. one repo of the project), relative to yours; default the project folder" },
-                "restart": { "type": "boolean", "description": "Stop the job if it is still running and start this instead (default false)" }
+                "restart": { "type": "boolean", "description": "Stop the job if it is still running and start this instead (default false)" },
+                "input": { "type": "boolean", "description": "The command asks the user to type something: sudo's password, a passphrase, a y/n. Its terminal opens in front of them and they type into it there (never put a password in the command or ask for it in the chat); then loom_wait until it exits. Default false" },
+                "message": { "type": "string", "description": "With input: what they are asked for, shown with the terminal (\"Your sudo password, to install the package\")" }
             }, "required": ["name", "command"] }
         },
         {
@@ -330,8 +332,14 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
     let args = &params["arguments"];
     let result = match params["name"].as_str().unwrap_or("") {
         "loom_wait" => wait(socket, agent, args, cancelled),
-        "loom_run" => call(socket, agent, "run_job", args.clone()).map(|v| {
-            format!("Started job {} in loom's tray. Use loom_wait or loom_output to follow it.", v["name"].as_str().unwrap_or("?"))
+        "loom_run" => call(socket, agent, "run_job", args.clone()).and_then(|v| {
+            let name = v["name"].as_str().unwrap_or("?").to_owned();
+            if args["input"].as_bool() != Some(true) {
+                return Ok(format!("Started job {name} in loom's tray. Use loom_wait or loom_output to follow it."));
+            }
+            // Its terminal in front of the user, to type into.
+            call(socket, agent, "show_job", json!({ "name": name, "message": args["message"] }))?;
+            Ok(format!("Started job {name}; its terminal is open in front of the user, who types into it there. Use loom_wait until it exits (a long timeout: they may take a while), then loom_output."))
         }),
         "loom_output" => call(socket, agent, "job_output", args.clone()).map(describe_job),
         "loom_stop" => call(socket, agent, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),

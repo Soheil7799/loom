@@ -2729,6 +2729,17 @@ impl App {
         }
         let agent = self.agent_by_id(id);
         match method {
+            // `loom_run` with input: its terminal in front of the user, to type in.
+            "show_job" => {
+                let agent = agent.ok_or("this agent is no longer open in loom")?;
+                let name = params["name"].as_str().ok_or("a job name is needed")?;
+                let job = agent.jobs.named(name).ok_or_else(|| format!("no job named {name}"))?;
+                self.tray_for(&agent.project).peek_id(job.id);
+                if !self.window.is_active() {
+                    self.notify(&agent, &format!("Type in {name}: {}", params["message"].as_str().unwrap_or("it waits for you")));
+                }
+                Ok(json!({}))
+            }
             "open_file" => {
                 let agent = agent.ok_or("this agent is no longer open in loom")?;
                 let path = Path::new(params["path"].as_str().ok_or("a path is needed")?);

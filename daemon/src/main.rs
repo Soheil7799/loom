@@ -102,9 +102,10 @@ impl Daemon {
         let found = self.ws.agent(agent).or_else(|| self.notes.agents().into_iter().find(|a| a.id == agent));
         let found = found.ok_or("this agent is no longer open in loom")?;
         let asked = loom_core::asks::tool(&found, name, params).ok_or_else(|| format!("unknown request {name}"))?;
-        if asked.is_ok() && matches!(name, "request_edit" | "notify" | "open_file") {
+        if asked.is_ok() && matches!(name, "request_edit" | "notify" | "open_file" | "show_job") {
             let what = match name {
                 "request_edit" => "waits for you to fill in a file",
+                "show_job" => "waits for you to type in a job's terminal",
                 "open_file" => "wants you to see a file",
                 _ => params["message"].as_str().unwrap_or("needs you"),
             };

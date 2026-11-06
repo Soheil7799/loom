@@ -5,14 +5,14 @@
   import type { AsksItem } from "./lib/api-types";
   import { ago } from "./lib/state";
 
-  let { asks, agents, pick }: { asks: AsksItem[]; agents: { id: string; title: string }[]; pick: (id: string) => void } = $props();
+  let { asks, agents, pick, showJob }: { asks: AsksItem[]; agents: { id: string; title: string }[]; pick: (id: string) => void; showJob: (id: string) => void } = $props();
   let problem = $state("");
 
   async function run(p: Promise<unknown>) {
     problem = "";
     try { await p; } catch (e) { problem = (e as Error).message; }
   }
-  const what: Record<string, string> = { open: "wants you to see a file", edit: "waits for you to fill in a file", notify: "needs you" };
+  const what: Record<string, string> = { open: "wants you to see a file", edit: "waits for you to fill in a file", notify: "needs you", input: "waits for you to type in a job's terminal" };
   const who = (id: string) => agents.find((a) => a.id === id);
 </script>
 
@@ -22,15 +22,16 @@
     {#if problem}<p class="error">{problem}</p>{/if}
     {#each [...asks].reverse() as ask (ask.id)}
       {@const a = who(ask.agent)}
-      <div class="permission-card" class:answered={ask.kind !== "edit"}>
+      <div class="permission-card" class:answered={ask.kind !== "edit" && ask.kind !== "input"}>
         <div class="qh">
-          {#if ask.kind === "edit"}<span class="needs">waits for you</span>{/if}
+          {#if ask.kind === "edit" || ask.kind === "input"}<span class="needs">waits for you</span>{/if}
           <b>{ask.title}</b><span class="quiet">{what[ask.kind] ?? ask.kind} · {ago(ask.at)}</span>
         </div>
         {#if ask.message}<p>{ask.message}</p>{/if}
         {#if ask.path}<pre class="code-block">{ask.path}</pre>{/if}
         <div class="controls">
           {#if ask.path}<button class="btn" onclick={() => run(command("ask_open", { id: ask.id }))}>Open in my editor</button>{/if}
+          {#if ask.job}<button class="btn suggested" onclick={() => showJob(ask.job!)}>Type in its terminal</button>{/if}
           <button class="btn" class:suggested={ask.kind === "edit"} onclick={() => run(command("ask_done", { id: ask.id }))}>{ask.kind === "edit" ? "Done: the agent goes on" : "Dismiss"}</button>
           {#if a}<button class="btn" onclick={() => pick(a.id)}>Go to {a.title || "the agent"}</button>{/if}
         </div>

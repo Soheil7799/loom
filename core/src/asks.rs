@@ -5,7 +5,9 @@
 //! - `open`: a file the agent wants the user to see (`loom_open`);
 //! - `edit`: a file the agent waits for the user to fill in (`loom_edit`: secrets kept out of
 //!   the chat); `state` `waiting` until the user says done (or the agent gives up);
-//! - `notify`: the agent wants the user (`loom_notify`).
+//! - `notify`: the agent wants the user (`loom_notify`);
+//! - `input`: a job of its waits for the user to type in its terminal (`loom_run` with
+//!   `input`: a password, a y/n), its id in `job`; a UI opens it.
 //!
 //! Commands, for people (loom's window, the CLI, a web page): `ask_done {id}` (an edit filled
 //! in; an open or a notify seen, and gone), `ask_open {id}` (the file opened in the user's
@@ -137,6 +139,21 @@ pub fn notify(agent: &Agent, params: &Value) -> Result<Value, String> {
     Ok(json!({}))
 }
 
+/// `loom_run` with `input`: job `name` of the agent's waits for the user to type into it.
+pub fn show_job(agent: &Agent, params: &Value) -> Result<Value, String> {
+    let name = params["name"].as_str().ok_or("a job name is needed")?;
+    let job = agent.jobs.named(name).ok_or_else(|| format!("no job named {name}"))?;
+    let message = params["message"].as_str().filter(|m| !m.trim().is_empty()).unwrap_or("It waits for you to type in its terminal.");
+    let n = add(agent, "input", None, message);
+    let store = store();
+    if let Some(mut item) = store.get(&format!("a{n}")) {
+        item["job"] = json!(job.id.to_string());
+        item["title"] = json!(format!("{}: {name}", agent.title()));
+        store.upsert(item);
+    }
+    Ok(json!({}))
+}
+
 /// What an agent's loom tool `name` asks, if it is one of these.
 pub fn tool(agent: &Agent, name: &str, params: &Value) -> Option<Result<Value, String>> {
     Some(match name {
@@ -145,6 +162,7 @@ pub fn tool(agent: &Agent, name: &str, params: &Value) -> Option<Result<Value, S
         "edit_state" => edit_state(agent.id, params),
         "edit_cancel" => edit_cancel(agent.id, params),
         "notify" => notify(agent, params),
+        "show_job" => show_job(agent, params),
         _ => return None,
     })
 }
