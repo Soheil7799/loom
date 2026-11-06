@@ -13,6 +13,8 @@
   import Palette, { type Action } from "./Palette.svelte";
   import Scratch from "./Scratch.svelte";
   import { command } from "./lib/api";
+  import wordmarkDark from "../../data/logo/wordmark-dark.svg?url";
+  import wordmarkLight from "../../data/logo/wordmark-light.svg?url";
 
   let conn = $state<{ state: State; hello: any }>({ state: "connecting", hello: null });
   let agents = $state.raw<AgentsItem[]>([]);
@@ -24,6 +26,30 @@
   let filesProject = $state("");
   let findAsked = $state(0);
   let palette = $state(false);
+  let about = $state(false);
+
+  // A word from this browser when an agent starts waiting for you or finishes a turn, while
+  // the page is out of sight (Settings: the same switches as the window's; the browser asks
+  // you once, from Settings → General).
+  let notifyOn = { questions: true, done: true };
+  $effect(() => follow("settings", (f) => (notifyOn = { questions: f.items[0]?.notify_questions !== false, done: f.items[0]?.notify_done !== false })));
+  let before = new Map<string, { questions: number; busy: boolean }>();
+  $effect(() => {
+    const now = new Map(agents.map((a) => [a.id, { questions: a.questions, busy: a.busy }]));
+    const away = document.visibilityState !== "visible" || !document.hasFocus();
+    if (away && "Notification" in window && Notification.permission === "granted") {
+      for (const a of agents) {
+        const was = before.get(a.id);
+        if (!was) continue;
+        const word = notifyOn.questions && was.questions === 0 && a.questions > 0 ? "Waits for you" : notifyOn.done && was.busy && !a.busy && a.questions === 0 ? "Finished" : null;
+        if (word) {
+          const n = new Notification(a.title || "loom", { body: word, tag: `loom-${a.id}` });
+          n.onclick = () => { window.focus(); pick(a.id); n.close(); };
+        }
+      }
+    }
+    before = now;
+  });
   let starting = $state(false);
   let noSidebar = $state(false);
   let scratch = $state(false);
@@ -63,6 +89,7 @@
     { name: "Asks", run: () => (view = "asks") },
     { name: "Settings", keys: "Ctrl+,", run: () => (view = "settings") },
     { name: "Actions and keys", keys: "Ctrl+K, Ctrl+/", run: () => (palette = true) },
+    { name: "About loom", run: () => (about = true) },
   ];
   // the conversation closed last, reopened (`closed`, newest first)
   function reopenLast() {
@@ -198,3 +225,13 @@
   </div>
 {/if}
 {#if palette}<Palette {actions} close={() => (palette = false)} />{/if}
+{#if about}
+  <div class="scrim" role="presentation" onclick={() => (about = false)}></div>
+  <div class="plan about" role="dialog" aria-modal="true" aria-label="About loom" tabindex="-1" onkeydown={(e) => e.key === "Escape" && (about = false)}>
+    <img class="wm on-dark" src={wordmarkDark} alt="loom" /><img class="wm on-light" src={wordmarkLight} alt="loom" />
+    <p>A workspace for Claude Code agents: many agents across projects, their jobs, your notes.</p>
+    <p class="quiet small">loom {conn.hello?.server?.version ?? ""} · {conn.hello?.server?.host === "daemon" ? "loomd, with no window" : "loom's window"} · protocol {conn.hello?.protocol ?? ""}</p>
+    <p class="small"><a href="https://github.com/Soheil7799/loom" target="_blank" rel="noopener noreferrer">github.com/Soheil7799/loom</a> · MIT licence · by shirvani.dev</p>
+    <div class="controls"><span class="grow"></span><button class="btn" onclick={() => (about = false)}>Close</button></div>
+  </div>
+{/if}

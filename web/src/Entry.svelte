@@ -17,6 +17,8 @@
   const diffs = (content: unknown[] | undefined): Diff[] =>
     (content ?? []).filter((c): c is Diff & { type: string } => !!c && typeof c === "object" && (c as { type?: string }).type === "diff");
   const name = (path?: string) => path?.split("/").pop() ?? "";
+  // ACP's kind of tool, as a label; "other" (an MCP tool, say) says nothing: TOOL
+  const kindOf = (kind?: string) => (!kind || kind === "other" ? "tool" : kind).toUpperCase();
 </script>
 
 {#if row.kind === "run"}
@@ -26,7 +28,7 @@
     </button>
     {#if open}
       <ul class="tools">
-        {#each row.tools as t (t.id)}<li><span class="kind">{(t.tool ?? "tool").toUpperCase()}</span><span class="tool-title">{t.title ?? ""}</span></li>{/each}
+        {#each row.tools as t (t.id)}<li><span class="kind">{kindOf(t.tool)}</span><span class="tool-title">{t.title ?? ""}</span></li>{/each}
       </ul>
     {/if}
   </div>
@@ -43,7 +45,7 @@
         <span class="g">
           {#if e.status === "failed"}<Icon name="x" size={13} label="Failed" />{:else if e.status === "done"}<Icon name="check" size={13} />{:else}<i class="spin" aria-label="Running"></i>{/if}
         </span>
-        <span class="kind">{(e.tool ?? "tool").toUpperCase()}</span>
+        <span class="kind">{kindOf(e.tool)}</span>
         <span class="tool-title">{e.title ?? ""}</span>
         {#if e.exit !== undefined && e.exit !== null && e.exit !== 0}<span class="exit">exit {e.exit}</span>{/if}
         <Icon name={open || ds.length ? "chev-d" : "chev-r"} size={13} />

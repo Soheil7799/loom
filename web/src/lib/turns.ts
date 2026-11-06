@@ -70,7 +70,7 @@ export function summary(tools: Entry[]): string {
   const words: Record<string, string> = { read: "Read", search: "Searched", execute: "Ran", edit: "Edited", fetch: "Fetched", think: "Thought", delete: "Deleted", move: "Moved" };
   const counts = new Map<string, number>();
   for (const t of tools) {
-    const w = words[t.tool ?? ""] ?? "Other";
+    const w = words[t.tool ?? ""] ?? "Used tools";
     counts.set(w, (counts.get(w) ?? 0) + 1);
   }
   return [...counts].map(([w, n]) => `${w} ${n}`).join(" · ");

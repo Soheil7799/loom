@@ -323,7 +323,8 @@ impl Transcript {
         self.change(i, |entry| {
             for (field, from) in [("title", "title"), ("tool", "kind"), ("status", "status")] {
                 if let Some(value) = update[from].as_str() {
-                    entry[field] = json!(value);
+                    // a title for people: "mcp__loom__loom_note_search" as "loom · note search"
+                    entry[field] = json!(if field == "title" { super::tool_title(value) } else { value.to_owned() });
                 }
             }
             // What the agent gave it (`input`), what it shows (`content`: diffs, text, a

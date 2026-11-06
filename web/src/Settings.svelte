@@ -85,6 +85,7 @@
   let page = $state(PAGES[0].name);
   let secrets = $state<Record<string, string>>({});
   let problem = $state("");
+  let browserNotes = $state("Notification" in window ? Notification.permission : "denied");
   type Topic = { name: string; path: string; folder: string; listens_for: string[]; apply: string; sync: boolean; enabled: boolean };
   type ClaudeItem = { kind: string; name: string; description: string; enabled: boolean; shipped: boolean; path: string };
   let topics = $state.raw<Topic[] | null>(null);
@@ -157,6 +158,17 @@
       {#if !s}
         <p class="empty">Loading…</p>
       {:else}
+        {#if page === "General"}
+          <div class="setting">
+            <div class="what"><span>Notifications in this browser</span><p>When an agent waits for you or finishes while this page is out of sight (the switches below say which).</p></div>
+            <div class="control">
+              {#if !("Notification" in window)}<span class="quiet small">This browser has none.</span>
+              {:else if browserNotes === "granted"}<span class="quiet small">On</span>
+              {:else if browserNotes === "denied"}<span class="quiet small">Blocked: allow them in the browser's site settings</span>
+              {:else}<button class="btn small" onclick={async () => (browserNotes = await Notification.requestPermission())}>Allow</button>{/if}
+            </div>
+          </div>
+        {/if}
         {#if page === "Telegram" && telegram}<p class="bridge-state">The bot: <b>{telegram.state}</b>{#if telegram.why}{" · "}{telegram.why}{/if}</p>{/if}
         {#if page === "Remote" && remote}<p class="bridge-state">The bridge: <b>{remote.state}</b>{#if remote.why}{" · "}{remote.why}{/if}</p>{/if}
 
