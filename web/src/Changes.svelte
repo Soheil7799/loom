@@ -6,10 +6,17 @@
   import { unified } from "./lib/diff";
   import Icon from "./Icon.svelte";
 
-  let { agent, edited, turns, close }: { agent: string; edited: number; turns: number; close: () => void } = $props();
+  let { agent, edited, turns, lastTurn = [], comment, close }: { agent: string; edited: number; turns: number; lastTurn?: string[]; comment?: (file: string, line: string, note: string) => void; close: () => void } = $props();
   type File = { path: string; mark: string; repo: string | null; status: string | null; diff: string | null };
   let files = $state.raw<File[] | null>(null);
   let problem = $state("");
+  // All its files, or only those the last turn edited
+  let scope = $state<"all" | "last">("all");
+  const shown = $derived((files ?? []).filter((f) => scope === "all" || lastTurn.includes(f.path)));
+  function note(f: File, line: string) {
+    const said = prompt(`Your note on this line of ${name(f)} (it goes with your next message):`, "");
+    if (said?.trim()) comment?.(name(f), line, said.trim());
+  }
 
   async function load() {
     try { files = (await command("changes", { agent })).files; problem = ""; } catch (e) { problem = (e as Error).message; }
@@ -27,12 +34,16 @@
 </script>
 
 <aside class="changes" aria-label="Its changes">
-  <div class="changes-head"><b>Changes</b><span class="grow"></span><button class="tiny" aria-label="Refresh" title="Refresh" onclick={load}><Icon name="refresh" size={13} /></button><button class="tiny" aria-label="Close" onclick={close}><Icon name="x" size={14} /></button></div>
+  <div class="changes-head"><b>Changes</b>
+    <div class="tabs small-tabs" role="tablist">
+      <button role="tab" aria-selected={scope === "all"} class:on={scope === "all"} onclick={() => (scope = "all")}>All</button>
+      <button role="tab" aria-selected={scope === "last"} class:on={scope === "last"} disabled={!lastTurn.length} title={lastTurn.length ? "The files the last turn edited" : "The last turn edited no file"} onclick={() => (scope = "last")}>Last turn</button>
+    </div><span class="grow"></span><button class="tiny" aria-label="Refresh" title="Refresh" onclick={load}><Icon name="refresh" size={13} /></button><button class="tiny" aria-label="Close" onclick={close}><Icon name="x" size={14} /></button></div>
   {#if problem}<p class="error">{problem}</p>{/if}
   {#if files === null}
     <p class="quiet">Reading…</p>
   {:else}
-    {#each files as f (f.path)}
+    {#each shown as f (f.path)}
       <section class="cfile">
         <div class="cfile-head">
           <span class="badge">{f.status?.trim() || (f.mark === "created" ? "new" : "=")}</span>
@@ -43,8 +54,7 @@
           {#each unified(f.diff) as h, i (i)}
             <div class="diff">
               <div class="f"><span>{h.head}</span>{#if f.status !== "??"}<button class="btn small" title="Undo only this change" onclick={() => revert(f, { n: i, text: [h.head, ...h.lines.map((l) => l.t + l.text)].join("\n") })}>Undo</button>{/if}</div>
-              <pre>{#each h.lines as l, k (k)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t}{l.text}
-</span>{/each}</pre>
+              <pre>{#each h.lines as l, k (k)}<button class="dl {l.t === '+' ? 'add' : l.t === '-' ? 'del' : ''}" title={comment ? "A note on this line, for your next message" : undefined} disabled={!comment} onclick={() => note(f, l.t + l.text)}>{l.t}{l.text}</button>{/each}</pre>
             </div>
           {/each}
         {:else if !f.repo}
@@ -54,7 +64,7 @@
         {/if}
       </section>
     {:else}
-      <p class="quiet">It changed no files.</p>
+      <p class="quiet">{scope === "last" ? "The last turn edited none of these." : "It changed no files."}</p>
     {/each}
   {/if}
 </aside>

@@ -26,6 +26,8 @@
   let column: HTMLElement | undefined = $state();
   let naming = $state<string | null>(null);
   let showChanges = $state(false);
+  // Notes on lines of its changes, sent with the next message
+  let comments = $state.raw<{ file: string; line: string; note: string }[]>([]);
 
   $effect(() => follow(`conversation/${agent.id}`, (f) => {
     entries = [...f.items] as Entry[];
@@ -60,6 +62,8 @@
 
   const all = $derived(turns(entries));
   // a Notes chat isn't among the agents: it works while an entry is still coming
+  // The files the last turn edited (its tools' diffs): the Changes panel's "Last turn".
+  const lastTurnFiles = $derived([...new Set((all.at(-1)?.rows ?? []).flatMap((r) => (r.kind === "run" ? r.tools : [r.entry])).flatMap((e) => (e.kind === "tool" ? ((e.content ?? []) as { type?: string; path?: string }[]).filter((c) => c.type === "diff" && c.path).map((c) => c.path!) : [])))]);
   const busy = $derived(agent.busy || (agent.status === "notes" && entries.some((e) => e.status === "pending" || e.status === "streaming")));
   const st = $derived(stateOf({ ...agent, busy }));
   const context = $derived(usage?.used && usage?.size ? Math.round((usage.used / usage.size) * 100) : null);
@@ -122,14 +126,16 @@
     URL.revokeObjectURL(attached[i].preview);
     attached = attached.filter((_, k) => k !== i);
   }
-  const ready = $derived(!!text.trim() || attached.length > 0);
+  const ready = $derived(!!text.trim() || attached.length > 0 || comments.length > 0);
   let picker: HTMLInputElement | undefined = $state();
 
   async function send() {
     if (!ready || reading) return;
     const images = attached.map((a) => a.data);
-    if (await run(command("send", { agent: agent.id, text, ...(images.length ? { images } : {}) }))) {
+    const notes = comments.length ? `About your changes:\n${comments.map((c) => `- ${c.file}, the line \`${c.line.trim()}\`: ${c.note}`).join("\n")}\n\n` : "";
+    if (await run(command("send", { agent: agent.id, text: notes + text, ...(images.length ? { images } : {}) }))) {
       text = "";
+      comments = [];
       attached.forEach((a) => URL.revokeObjectURL(a.preview));
       attached = [];
       // what loom kept in its input went with it
@@ -328,6 +334,17 @@
 
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
+    {#if agent.edited && !showChanges && agent.status !== "notes"}
+      <div class="changes-bar">
+        <Icon name="diff" size={13} /> {agent.edited === 1 ? "1 file" : `${agent.edited} files`} changed{#if lastTurnFiles.length}{" · "}{lastTurnFiles.length} in the last turn{/if}
+        <button class="link" onclick={() => (showChanges = true)}>Review</button>
+      </div>
+    {/if}
+    {#if comments.length}
+      <ul class="queued notes-on" aria-label="Notes on its changes, for your next message">
+        {#each comments as c, i (i)}<li><span class="qt">{c.file}: {c.note}</span><button class="tiny" aria-label="Take this note out" onclick={() => (comments = comments.filter((_, k) => k !== i))}><Icon name="x" size={12} /></button></li>{/each}
+      </ul>
+    {/if}
     {#if queued.length}
       <ul class="queued" aria-label="Waiting for the turn to end">
         {#each queued as q, i (i)}
@@ -374,5 +391,5 @@
     </div>
   </div>
 </section>
-{#if showChanges}<Changes agent={agent.id} edited={agent.edited} turns={(agent.last_turn as { turns?: number } | undefined)?.turns ?? 0} close={() => (showChanges = false)} />{/if}
+{#if showChanges}<Changes agent={agent.id} edited={agent.edited} turns={(agent.last_turn as { turns?: number } | undefined)?.turns ?? 0} lastTurn={lastTurnFiles} comment={(file, line, note) => (comments = [...comments, { file, line, note }])} close={() => (showChanges = false)} />{/if}
 </div>
