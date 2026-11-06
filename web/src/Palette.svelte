@@ -7,6 +7,8 @@
   let at = $state(0);
   const shown = $derived(actions.filter((a) => (!a.when || a.when()) && a.name.toLowerCase().includes(query.trim().toLowerCase())));
   $effect(() => { query; at = 0; });
+  // the chosen row in view as the arrows move it
+  $effect(() => { document.getElementById(`act-${at}`)?.scrollIntoView({ block: "nearest" }); });
   function go(a: Action | undefined) {
     if (!a) return;
     close();
@@ -22,10 +24,12 @@
 <div class="scrim" role="presentation" onclick={close}></div>
 <div class="finder palette" role="dialog" aria-modal="true" aria-label="Actions and their keys">
   <!-- svelte-ignore a11y_autofocus -->
-  <input placeholder="Do… (type to find an action)" bind:value={query} onkeydown={keys} autofocus aria-label="Find an action" />
-  {#each shown as a, i (a.name)}
-    <button class="trow" class:sel={i === at} onclick={() => go(a)}><span>{a.name}</span>{#if a.keys}<kbd>{a.keys}</kbd>{/if}</button>
-  {:else}
-    <p class="quiet small">Nothing like that.</p>
-  {/each}
+  <input placeholder="Find an action" bind:value={query} onkeydown={keys} autofocus aria-label="Find an action" role="combobox" aria-expanded="true" aria-controls="actions" aria-activedescendant={shown.length ? `act-${at}` : undefined} />
+  <div id="actions" role="listbox" aria-label="Actions">
+    {#each shown as a, i (a.name)}
+      <div id="act-{i}" role="option" aria-selected={i === at} class="trow" class:sel={i === at} tabindex="-1" onclick={() => go(a)} onkeydown={(e) => e.key === "Enter" && go(a)}><span>{a.name}</span>{#if a.keys}<kbd>{a.keys}</kbd>{/if}</div>
+    {:else}
+      <p class="quiet small">Nothing like that.</p>
+    {/each}
+  </div>
 </div>

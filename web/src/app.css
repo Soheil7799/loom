@@ -70,7 +70,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .arow.sel .t { font-weight: 600; }
 .arow .s { grid-column: 2; font-size: 12.5px; color: var(--quiet); }
 .adding { display: flex; gap: 6px; padding: 6px 10px; }
-.adding input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
+.adding input { flex: 1; min-width: 0; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
 .go { border: 0; border-radius: var(--r-control); background: var(--accent); color: var(--accent-fg); padding: 5px 12px; }
 .bottom { display: flex; align-items: center; gap: 2px; padding: 4px 8px 8px; }
 /* a small action beside a row, shown while the row is hovered or focused */
@@ -94,7 +94,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .start .it:hover:not(:disabled), .start .it:focus-visible { background: var(--bubble); }
 .start .it small { grid-column: 2; color: var(--quiet); font-size: 12.5px; }
 .start .adding { padding: 4px 4px; }
-.start .find { width: calc(100% - 8px); margin: 4px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--window); padding: 5px 9px; }
+.start .find { width: calc(100% - 8px); margin: 4px; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--window); padding: 5px 9px; }
 .start .small { margin: 6px 10px; font-size: 12.5px; }
 
 /* ---- the conversation ---- */
@@ -200,7 +200,7 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .jchip:hover, .jchip:focus-visible { border-color: var(--accent); }
 .jobs-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .runbar { display: flex; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
-.runbar input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 10px; font-family: var(--mono); font-size: 13px; }
+.runbar input { flex: 1; min-width: 0; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 10px; font-family: var(--mono); font-size: 13px; }
 .runbar .chip { height: auto; }
 .jobs-split { display: grid; grid-template-columns: 260px 1fr; flex: 1; min-height: 0; }
 .jobs-list { list-style: none; margin: 0; padding: 8px 0; overflow: auto; border-right: 1px solid var(--line); }
@@ -253,14 +253,15 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .setting .what label, .setting .what > span { font-size: 15px; }
 .setting .what p { margin: 2px 0 0; font-size: 13px; color: var(--quiet); }
 .setting .control { flex: none; max-width: 50%; }
-.setting .control input:not([type=checkbox]) { width: 260px; max-width: 100%; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
+.setting .control input:not([type=checkbox]) { width: 260px; max-width: 100%; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
 .setting .control input[type=number] { width: 110px; }
 .setting .control .adding { padding: 0; }
 .setting .control .adding input { width: 200px; }
 .mono { font-family: var(--mono); }
-.switch { appearance: none; width: 38px; height: 22px; border-radius: 999px; background: color-mix(in srgb, var(--fg) 18%, transparent); position: relative; cursor: pointer; transition: background 0.15s; }
-.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--pane); transition: translate 0.15s; }
-.switch:checked { background: var(--accent); }
+.switch { appearance: none; width: 38px; height: 22px; border-radius: 999px; background: color-mix(in srgb, var(--fg) 12%, transparent); box-shadow: inset 0 0 0 1.5px var(--control-line); position: relative; cursor: pointer; transition: background 0.15s; }
+.switch::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--quiet); transition: translate 0.15s; }
+.switch:checked { background: var(--accent); box-shadow: none; }
+.switch:checked::after { background: var(--pane); }
 .switch:checked::after { translate: 16px 0; }
 .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .bridge-state { margin: 12px 0 0; color: var(--quiet); }
@@ -313,7 +314,7 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 @media (max-width: 1000px) { .convo.aside { grid-template-columns: 1fr; grid-template-rows: 1fr 45%; } .changes { border-left: 0; border-top: 1px solid var(--line); } }
 .setting .control.row { display: flex; align-items: center; gap: 10px; }
 .new-topic { display: flex; gap: 8px; margin-top: 12px; }
-.new-topic input { min-width: 0; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
+.new-topic input { min-width: 0; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
 .new-topic input:first-child { width: 160px; flex: none; }
 .new-topic input:nth-child(2) { flex: 1; }
 .settings-section .adding { padding: 8px 0 0; }
@@ -363,7 +364,7 @@ dialog.whole img { display: block; max-width: 92vw; max-height: 92vh; }
 .plan h3 { margin: 0; font-size: 16px; }
 .plan label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--quiet); }
 .plan label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--fg); }
-.plan textarea, .plan input:not([type=checkbox]) { font: inherit; color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-control); background: var(--window); padding: 6px 10px; }
+.plan textarea, .plan input:not([type=checkbox]) { font: inherit; color: var(--fg); border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--window); padding: 6px 10px; }
 @media (max-width: 1000px) { .overview-split { grid-template-columns: 1fr; } .scheduled { border-left: 0; border-top: 1px solid var(--line); } }
 
 /* ---- files and git ---- */
@@ -391,7 +392,7 @@ textarea.code { flex: 1; min-height: 0; resize: none; font-family: var(--mono); 
 .git .badge.st { background: color-mix(in srgb, var(--ok) 25%, transparent); }
 .git h3 { margin: 18px 0 6px; font-size: 12px; font-weight: 400; letter-spacing: 0.07em; color: var(--quiet); }
 .commit { display: flex; gap: 6px; margin: 10px 0; }
-.commit input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
+.commit input { flex: 1; min-width: 0; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
 .commitrow { margin: 0; padding: 3px 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .commitrow code { font-family: var(--mono); color: var(--accent); }
 .commitrow .refs { margin-left: 6px; padding: 0 5px; border-radius: 5px; font-size: 11.5px; background: color-mix(in srgb, var(--wait) 18%, transparent); }
@@ -462,3 +463,16 @@ kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radi
 @media (prefers-color-scheme: dark) { .about .wm.on-light { display: none; } }
 @media (prefers-color-scheme: light) { .about .wm.on-dark { display: none; } }
 .about p { margin: 0; }
+
+/* the selected row's second line, readable on its tint */
+.arow.sel .s { color: color-mix(in srgb, var(--fg) 70%, var(--quiet)); }
+/* bigger targets: a picture's ×, file tree rows */
+.thumb .tiny { width: 24px; height: 24px; }
+.trow { padding-top: 5px; padding-bottom: 5px; }
+.awake { color: var(--wait); display: inline-flex; }
+
+/* ---- one look for section headings, page headers ---- */
+.heading, .start h3, .git h3, .scribe h3, .cards h3, .scheduled h3, .note h3, .settings-section h3 { text-transform: uppercase; }
+.notes-bar.header { padding: 12px 20px; }
+.calm { margin: 18px 0 0; color: var(--ok); }
+.job > .empty { max-width: 520px; margin: 60px auto; line-height: 1.6; }

@@ -47,6 +47,7 @@
   }
 
   function keys(e: KeyboardEvent) {
+    if (e.key === "Escape" && menu) { menu = false; return; }
     if (!e.ctrlKey || e.altKey || e.metaKey) return;
     if (e.key === "i") { e.preventDefault(); nextWaiting(); }
     const n = Number(e.key);
@@ -80,14 +81,14 @@
 
   {#if waiting.length}
     <div class="inbox-wrap">
-      <button class="inbox" aria-haspopup="menu" aria-expanded={menu} onclick={(e) => { e.stopPropagation(); menu = !menu; }}>
+      <button class="inbox" aria-expanded={menu} onclick={(e) => { e.stopPropagation(); menu = !menu; }}>
         <i class="st wait"></i>{waiting.length === 1 ? "1 waits for you" : `${waiting.length} wait for you`} · Ctrl+I
         <Icon name="chev-d" size={13} />
       </button>
       {#if menu}
-        <div class="menu" role="menu">
+        <div class="menu">
           {#each waiting as a (a.id)}
-            <button class="it" role="menuitem" onclick={() => pick(a.id)}><i class="st wait"></i><span>{a.title || "New agent"}</span><small>{a.project}</small></button>
+            <button class="it" onclick={() => pick(a.id)}><i class="st wait"></i><span>{a.title || "New agent"}</span><small>{a.project}</small></button>
           {/each}
           <p class="foot">Ctrl+I goes to the next</p>
         </div>
@@ -97,17 +98,17 @@
 
   <div class="list">
     {#if open.length}
-      <h2 class="heading">OPEN · {open.length}{#if agents.some((a) => a.unseen)}<button class="link" title="Nothing new in any of them any more" onclick={() => act(command("mark_seen", { all: true }))}>Mark all seen</button>{/if}</h2>
+      <h2 class="heading">Open · {open.length}{#if agents.some((a) => a.unseen)}<button class="link" title="Nothing new in any of them any more" onclick={() => act(command("mark_seen", { all: true }))}>Mark all seen</button>{/if}</h2>
       {#each open as a, i (a.id)}
         {@const s = stateOf(a)}
         <button class="running" class:sel={a.id === selected} aria-current={a.id === selected ? "page" : undefined} onclick={() => pick(a.id)}>
           <span class="num">{i < 9 ? i + 1 : ""}</span><i class="st {s.shape}" role="img" aria-label={s.word}></i>
-          <span class="t">{a.title || "New agent"}</span><span class="p">{a.project}</span>
+          <span class="t">{a.title || "New agent"}</span>
         </button>
       {/each}
     {/if}
 
-    <h2 class="heading">PROJECTS</h2>
+    <h2 class="heading">Projects</h2>
     {#each grouped as p (p.id)}
       {@const waits = p.agents.filter((a) => a.questions > 0).length}
       <section class="project">

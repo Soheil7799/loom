@@ -43,7 +43,8 @@
 
 <div class="notes">
   <div class="notes-chat">
-    <div class="notes-bar">
+    <div class="notes-bar header">
+      <span class="headline"><span class="title">Notes</span></span>
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected={tab === "chat"} class:on={tab === "chat"} onclick={() => (tab = "chat")}>Chat</button>
         <button role="tab" aria-selected={tab === "vault"} class:on={tab === "vault"} onclick={() => (tab = "vault")}>Vault</button>
@@ -51,11 +52,11 @@
       </div>
       <button class="btn" onclick={() => open()}><Icon name="plus" size={13} /> New chat</button>
       <div class="inbox-wrap">
-        <button class="btn" aria-haspopup="menu" aria-expanded={listing} disabled={!chats.length} onclick={(e) => { e.stopPropagation(); listing = !listing; }}>Past chats <Icon name="chev-d" size={13} /></button>
+        <button class="btn" aria-expanded={listing} disabled={!chats.length} onclick={(e) => { e.stopPropagation(); listing = !listing; }}>Past chats <Icon name="chev-d" size={13} /></button>
         {#if listing}
-          <div class="menu" role="menu">
+          <div class="menu">
             {#each chats as c (c.id)}
-              <button class="it" role="menuitem" onclick={() => open(c.id, c.title)}><Icon name="back" size={13} /><span>{c.title || "Untitled"}</span><small>{ago(c.updated)}{#if c.current} · open{/if}</small></button>
+              <button class="it" onclick={() => open(c.id, c.title)}><Icon name="back" size={13} /><span>{c.title || "Untitled"}</span><small>{ago(c.updated)}{#if c.current} · open{/if}</small></button>
             {/each}
           </div>
         {/if}
@@ -82,4 +83,4 @@
   <Scribe />
 </div>
 
-<svelte:window onclick={() => (listing = false)} />
+<svelte:window onclick={() => (listing = false)} onkeydown={(e) => e.key === "Escape" && (listing = false)} />

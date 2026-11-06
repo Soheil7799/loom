@@ -220,6 +220,7 @@
     if (title && title !== agent.title) await run(command("rename", { agent: agent.id, title }));
   }
   function jump(e: KeyboardEvent) {
+    if (e.key === "Escape" && menuOpen) { menuOpen = false; return; }
     // two side by side: the keys are the active one's
     if (!active) return;
     if (e.key === "F2" && naming === null && agent.status !== "notes") { e.preventDefault(); naming = agent.title; return; }
@@ -259,24 +260,26 @@
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
     {#if agent.edited}<button class="chip" class:on={showChanges} aria-pressed={showChanges} title="The files it changed" onclick={() => (showChanges = !showChanges)}><Icon name="diff" size={13} /> {agent.edited}</button>{/if}
     {#if agent.status !== "notes"}
+      {#if agent.awake}<span class="awake" title="Kept awake: never suspended while idle"><Icon name="coffee" size={13} /></span>{/if}
       <div class="inbox-wrap amenu">
-        <button class="tiny" aria-label="More for this agent" aria-haspopup="menu" aria-expanded={menuOpen} onclick={(e) => { e.stopPropagation(); menuOpen = !menuOpen; }}><Icon name="more" size={15} /></button>
+        <button class="tiny" aria-label="More for this agent" aria-expanded={menuOpen} onclick={(e) => { e.stopPropagation(); menuOpen = !menuOpen; }}><Icon name="more" size={15} /></button>
         {#if menuOpen}
-          <div class="menu" role="menu">
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; expectCopy?.(true); run(command("fork", { agent: agent.id })); }}><Icon name="copy" size={13} /><span>Copy this conversation</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; if (confirm("Start a fresh conversation here? This one stays among the past ones.")) run(command("clear", { agent: agent.id })); }}><Icon name="refresh" size={13} /><span>Clear: a fresh conversation</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("restart", { agent: agent.id })); }}><Icon name="refresh" size={13} /><span>Restart it</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; anotherFolder(); }}><Icon name="folder" size={13} /><span>Work in another folder too…</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; exportIt(); }}><Icon name="diff" size={13} /><span>Save as Markdown</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move it up</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move it down</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move its project up</span></button>
-            <button class="it" role="menuitem" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move its project down</span></button>
+          <div class="menu">
+            <button class="it" onclick={() => { menuOpen = false; expectCopy?.(true); run(command("fork", { agent: agent.id })); }}><Icon name="copy" size={13} /><span>Copy this conversation</span></button>
+            <button class="it" onclick={() => { menuOpen = false; if (confirm("Start a fresh conversation here? This one stays among the past ones.")) run(command("clear", { agent: agent.id })); }}><Icon name="eraser" size={13} /><span>Clear: a fresh conversation</span></button>
+            <button class="it" onclick={() => { menuOpen = false; run(command("restart", { agent: agent.id })); }}><Icon name="refresh" size={13} /><span>Restart it</span></button>
+            <button class="it" onclick={() => { menuOpen = false; anotherFolder(); }}><Icon name="folder" size={13} /><span>Work in another folder too…</span></button>
+            <button class="it" onclick={() => { menuOpen = false; exportIt(); }}><Icon name="download" size={13} /><span>Save as Markdown</span></button>
+            <button class="it" title={agent.awake ? "Kept awake: never suspended while idle" : "Never suspend it while idle"} onclick={() => { menuOpen = false; run(command("set_awake", { agent: agent.id, awake: !agent.awake })); }}><Icon name="coffee" size={13} /><span>{agent.awake ? "Allow suspending it when idle" : "Keep it awake"}</span></button>
+            <button class="it" disabled={busy || agent.status === "suspended"} title={busy ? "Stop it first" : "Frees its memory; a message resumes it"} onclick={() => { menuOpen = false; run(command("suspend", { agent: agent.id })); }}><Icon name="moon" size={13} /><span>Suspend it now</span></button>
+            <button class="it" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move it up</span></button>
+            <button class="it" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move it down</span></button>
+            <button class="it" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move its project up</span></button>
+            <button class="it" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move its project down</span></button>
           </div>
         {/if}
       </div>
-      <button class="tiny" class:on={agent.awake} aria-pressed={agent.awake} aria-label="Keep awake" title={agent.awake ? "Kept awake: never suspended while idle (click to allow it)" : "Keep awake: never suspended while idle"} onclick={() => run(command("set_awake", { agent: agent.id, awake: !agent.awake }))}><Icon name="coffee" size={15} /></button>
-      <button class="tiny" aria-label="Suspend" title={busy ? "Suspend: stop it first" : "Suspend (free its memory; a message resumes it)"} disabled={busy || agent.status === "suspended"} onclick={() => run(command("suspend", { agent: agent.id }))}><Icon name="moon" size={15} /></button>
+
     {/if}
   </header>
   {#if crew.length}

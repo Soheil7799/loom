@@ -42,7 +42,7 @@
     </select>
     <input aria-label="Command" placeholder="A command to run in the project's tray (Ctrl+J)" bind:value={line} bind:this={runInput} />
     <button class="go" disabled={!line.trim() || !projects.length}>Run</button>
-    <button type="button" class="btn small" disabled={!finished.length} title="Take the jobs that ended out of the trays" onclick={clearFinished}>Clear finished</button>
+    {#if finished.length}<button type="button" class="btn small" title="Take the jobs that ended out of the trays" onclick={clearFinished}>Clear finished</button>{/if}
   </form>
   {#if problem}<p class="error">{problem}</p>{/if}
   <div class="jobs-split">
@@ -69,6 +69,8 @@
         </div>
         {#key job.id}<Terminal job={job.id} />{/key}
       </div>
+    {:else}
+      <div class="job"><p class="empty">A job is a command that keeps running in a project's tray: a dev server, a build, tests. Type one above (<code>bun run dev</code>, <code>cargo test</code>) and press Run; agents start theirs here too.</p></div>
     {/if}
   </div>
 </section>

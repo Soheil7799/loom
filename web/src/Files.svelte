@@ -98,12 +98,12 @@
 <section class="files-page" aria-label="Files">
   <header class="header">
     <span class="headline"><span class="title">Files</span></span>
-    <select class="chip" aria-label="Project" bind:value={project}>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select>
-    <span class="grow"></span>
     <div class="tabs" role="tablist">
       <button role="tab" aria-selected={tab === "files"} class:on={tab === "files"} onclick={() => (tab = "files")}>Files</button>
       <button role="tab" aria-selected={tab === "git"} class:on={tab === "git"} onclick={() => { tab = "git"; loadGit(); }}>Git</button>
     </div>
+    <span class="grow"></span>
+    <select class="chip" aria-label="Project" bind:value={project}>{#each projects as p (p.id)}<option value={p.id}>{p.name}</option>{/each}</select>
     <button class="tiny" aria-label="Find a file (Ctrl+P)" title="Find a file (Ctrl+P)" onclick={() => { finding = true; tab = "files"; }}><Icon name="search" size={15} /></button>
   </header>
   {#if problem}<p class="error" role="alert">{problem}</p>{/if}

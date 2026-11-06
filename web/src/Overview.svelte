@@ -23,10 +23,10 @@
   const working = (a: AgentsItem) => !needs(a) && a.busy;
   const unseen = (a: AgentsItem) => !needs(a) && !working(a) && a.unseen;
   const groups = $derived([
-    { title: "NEEDS YOU", list: byUse(agents.filter(needs)), quiet: false },
-    { title: "WORKING", list: byUse(agents.filter(working)), quiet: false },
-    { title: "DONE, NOT SEEN", list: byUse(agents.filter(unseen)), quiet: false },
-    { title: "QUIET", list: byUse(agents.filter((a) => !needs(a) && !working(a) && !unseen(a))), quiet: true },
+    { title: "Needs you", list: byUse(agents.filter(needs)), quiet: false },
+    { title: "Working", list: byUse(agents.filter(working)), quiet: false },
+    { title: "Done, not seen", list: byUse(agents.filter(unseen)), quiet: false },
+    { title: "Quiet", list: byUse(agents.filter((a) => !needs(a) && !working(a) && !unseen(a))), quiet: true },
   ].filter((g) => g.list.length));
   const summary = $derived.by(() => {
     const parts = [
@@ -59,6 +59,7 @@
   {#if problem}<p class="error" role="alert">{problem}</p>{/if}
   <div class="overview-split">
     <div class="cards">
+      {#if agents.length && !agents.some(needs)}<p class="calm">Nothing needs you.</p>{/if}
       {#each groups as g (g.title)}
         <h3>{g.title}</h3>
         <div class="card-grid" class:compact={g.quiet}>
@@ -66,7 +67,7 @@
             {@const s = stateOf(a)}
             {@const c = card(a)}
             {@const n = scheduledFor(a)}
-            <article class="ocard" class:needs={g.title === "NEEDS YOU"}>
+            <article class="ocard" class:needs={g.title === "Needs you"}>
               <button class="ohead" onclick={() => pick(a.id)}>
                 <i class="st {s.shape}" role="img" aria-label={s.word}></i><b>{a.title || "New agent"}</b>
                 <span class="w-{s.shape}">{s.word}</span>
@@ -81,7 +82,7 @@
       {/each}
     </div>
     <aside class="scheduled" aria-label="Scheduled prompts">
-      <h3>SCHEDULED PROMPTS</h3>
+      <h3>Scheduled prompts</h3>
       {#each schedules as sc (sc.id)}
         <div class="srow" class:paused={sc.paused}>
           <p class="sprompt">{sc.prompt}</p>
