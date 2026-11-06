@@ -1129,11 +1129,12 @@ Who: window, cli. Result: `{files: [path relative to the project]}`, once done.
 
 A file's text (null: not text, or over 2 MB) and when it changed (ms), for `file_write`.
 
-Who: window, cli. Result: `{text, size, modified}`, once done.
+Who: window, cli. Result: `{text, size, modified} or {data, size}`, once done.
 
 | Param | Type | |
 |---|---|---|
 | `path` | string | a file in a project |
+| `bytes` | boolean? | its bytes instead ({data}: base64, 10 MB at most) |
 
 ### `file_write`
 
@@ -1182,16 +1183,38 @@ Who: window, cli. Result: `{}`, once done.
 | `files` | array? | relative paths (not for commit) |
 | `message` | string? | commit's |
 
+### `open_path`
+
+Opens it on this computer (xdg-open).
+
+Who: window, cli. Result: `{}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `path` | string | a file or folder in a project |
+| `how` | string? | app (its own app: the default), folder (its folder in the file manager) |
+
+### `trash_file`
+
+Moves it to the desktop's trash (gio trash).
+
+Who: window, cli. Result: `{}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `path` | string | a file or folder in a project (not the project) |
+
 ### `git_log`
 
 The newest commits.
 
-Who: window, cli. Result: `{commits: [{hash, refs, subject, author, when}]}`, once done.
+Who: window, cli. Result: `{commits: [{graph, hash, refs, subject, author, when}]}`, once done.
 
 | Param | Type | |
 |---|---|---|
 | `repo` | string |  |
 | `limit` | integer? | 200; 2000 tops |
+| `graph` | boolean? | every branch, with the graph drawn before each line |
 
 ### `ask_done`
 

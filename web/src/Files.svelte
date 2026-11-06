@@ -9,7 +9,38 @@
   import { unified } from "./lib/diff";
   import Icon from "./Icon.svelte";
 
-  let { projects, project = $bindable(""), findAsked = $bindable(false) }: { projects: ProjectsItem[]; project: string; findAsked?: boolean } = $props();
+  let { projects, project = $bindable(""), findAsked = $bindable(false), mention }: { projects: ProjectsItem[]; project: string; findAsked?: boolean; mention?: (path: string) => void } = $props();
+  import { markdown } from "./lib/markdown";
+  // A file's kind, by its name: how it is shown, and its icon's colour.
+  const ext = (p: string) => p.split("/").pop()!.split(".").slice(1).pop()?.toLowerCase() ?? "";
+  const PICTURE: Record<string, string> = { png: "image/png", jpg: "image/jpeg", jpeg: "image/jpeg", gif: "image/gif", webp: "image/webp", svg: "image/svg+xml", avif: "image/avif", bmp: "image/bmp", ico: "image/x-icon" };
+  const kind = (p: string) => {
+    const e = ext(p);
+    if (PICTURE[e]) return "pic";
+    if (["md", "markdown", "txt", "rst"].includes(e)) return "doc";
+    if (["json", "toml", "yaml", "yml", "ini", "conf", "env", "lock"].includes(e) || /^\./.test(p.split("/").pop()!)) return "conf";
+    if (["rs", "ts", "js", "svelte", "py", "go", "kt", "swift", "c", "h", "cpp", "java", "sh", "css", "html", "sql"].includes(e)) return "code";
+    return "file";
+  };
+  let picture = $state<string | null>(null);
+  let reading = $state(true);
+  // the right-click menu of a row
+  let rowMenu = $state<{ x: number; y: number; e: Entry } | null>(null);
+  async function rowAct(what: string, e: Entry) {
+    rowMenu = null;
+    const rel = e.path.startsWith(project + "/") ? e.path.slice(project.length + 1) : e.path;
+    if (what === "app" || what === "folder") await call(command("open_path", { path: e.path, how: what }));
+    else if (what === "copy") navigator.clipboard?.writeText(e.path);
+    else if (what === "copyrel") navigator.clipboard?.writeText(rel);
+    else if (what === "mention") mention?.(rel);
+    else if (what === "trash" && confirm(`Move ${e.name} to the trash?`)) {
+      if (await call(command("trash_file", { path: e.path }))) {
+        if (file?.path === e.path) file = null;
+        const parent = e.path.slice(0, e.path.lastIndexOf("/"));
+        load(parent);
+      }
+    }
+  }
   type Entry = { name: string; path: string; dir: boolean };
   type Repo = { path: string; name: string; branch: string; ahead: number; behind: number; changes: { code: string; file: string }[] };
   let tab = $state<"files" | "git">("files");
@@ -24,7 +55,8 @@
   let repo = $state("");
   let diff = $state<{ file: string; staged: boolean; text: string } | null>(null);
   let message = $state("");
-  let commits = $state.raw<{ hash: string; refs: string; subject: string; author: string; when: string }[]>([]);
+  let commits = $state.raw<{ graph?: string; hash: string | null; refs: string; subject: string; author: string; when: string }[]>([]);
+  let graph = $state(false);
 
   $effect(() => { if (!project && projects.length) project = projects[0].id; });
   // Ctrl+P from elsewhere: the page opened here to find a file
@@ -56,8 +88,16 @@
   const dirty = $derived(!!file && file.text !== null && file.text !== file.saved);
   async function show(path: string) {
     if (dirty && !confirm("Leave this file without saving it?")) return;
+    picture = null;
+    if (kind(path) === "pic") {
+      const got = await call(command("file_read", { path, bytes: true }));
+      if (got) { picture = `data:${PICTURE[ext(path)]};base64,${got.data}`; file = { path, text: null, modified: 0, saved: "" }; }
+      return;
+    }
     const got = await call(command("file_read", { path }));
     if (got) file = { path, text: got.text, modified: got.modified, saved: got.text ?? "" };
+    // a document opens to be read; its text a click away
+    reading = kind(path) === "doc";
   }
   async function save(force = false) {
     if (!file || file.text === null) return;
@@ -89,7 +129,7 @@
     repos = got?.repos ?? [];
     if (!repos.some((r) => r.path === repo)) repo = repos[0]?.path ?? "";
     diff = null;
-    const log = repo ? await call(command("git_log", { repo, limit: 60 })) : null;
+    const log = repo ? await call(command("git_log", { repo, limit: graph ? 200 : 60, graph })) : null;
     commits = log?.commits ?? [];
   }
   const current = $derived(repos.find((r) => r.path === repo));
@@ -128,8 +168,8 @@
       <nav class="tree" aria-label="The project's files">
         {#snippet folder(path: string, depth: number)}
           {#each tree[path] ?? [] as e (e.path)}
-            <button class="trow" class:sel={file?.path === e.path} style:padding-left="{10 + depth * 14}px" aria-expanded={e.dir ? open.has(e.path) : undefined} onclick={() => (e.dir ? toggle(e) : show(e.path))}>
-              {#if e.dir}<Icon name={open.has(e.path) ? "chev-d" : "chev-r"} size={12} />{:else}<span class="fdot"></span>{/if}<span>{e.name}</span>
+            <button class="trow" class:sel={file?.path === e.path} style:padding-left="{10 + depth * 14}px" aria-expanded={e.dir ? open.has(e.path) : undefined} onclick={() => (e.dir ? toggle(e) : show(e.path))} oncontextmenu={(ev) => { ev.preventDefault(); rowMenu = { x: ev.clientX, y: ev.clientY, e }; }}>
+              {#if e.dir}<Icon name={open.has(e.path) ? "chev-d" : "chev-r"} size={12} />{:else}<span class="ficon {kind(e.name)}"><Icon name={kind(e.name) === "pic" ? "image" : kind(e.name) === "doc" ? "notes" : "file"} size={12} /></span>{/if}<span>{e.name}</span>
             </button>
             {#if e.dir && open.has(e.path)}{@render folder(e.path, depth + 1)}{/if}
           {/each}
@@ -140,11 +180,16 @@
         {#if file}
           <div class="ebar">
             <code title={file.path}>{rel(file.path)}</code>{#if dirty}<span class="needs">not saved</span>{/if}<span class="grow"></span>
+            {#if file.text !== null && kind(file.path) === "doc"}<button class="btn small" onclick={() => (reading = !reading)}>{reading ? "Edit" : "Read"}</button>{/if}
             <button class="btn small" onclick={() => command("edit_file", { path: file!.path }).catch((e) => (problem = e.message))}>Open in my editor</button>
             {#if file.text !== null}<button class="btn small suggested" disabled={!dirty} onclick={() => save()}>Save</button>{/if}
           </div>
-          {#if file.text === null}
-            <p class="quiet">Not text, or too big to show here.</p>
+          {#if picture}
+            <div class="picture"><img src={picture} alt={file.path.split("/").pop()} /></div>
+          {:else if file.text === null}
+            <p class="quiet">Not text, or too big to show here. <button class="btn small" onclick={() => call(command("open_path", { path: file!.path, how: "app" }))}>Open in its app</button></p>
+          {:else if kind(file.path) === "doc" && reading}
+            <div class="note md doc-read">{@html markdown(file.text)}</div>
           {:else}
             <textarea class="code" aria-label="The file's text" spellcheck="false" bind:value={file.text}></textarea>
           {/if}
@@ -175,8 +220,10 @@
               <button class="go" disabled={!message.trim()}>Commit</button>
             </form>
           {/if}
-          <h3>Newest commits</h3>
-          {#each commits as c (c.hash)}<p class="commitrow"><code>{c.hash}</code>{#if c.refs}<span class="refs">{c.refs}</span>{/if} {c.subject} <span class="quiet">· {c.author}, {c.when}</span></p>{/each}
+          <h3>Newest commits <label class="quiet small graph-toggle"><input type="checkbox" checked={graph} onchange={(e) => { graph = e.currentTarget.checked; loadGit(); }} /> every branch, as a graph</label></h3>
+          {#each commits as c, i (i)}
+            <p class="commitrow">{#if graph}<span class="graph">{c.graph}</span>{/if}{#if c.hash}<code>{c.hash}</code>{#each (c.refs ?? "").split(", ").filter(Boolean) as r (r)}<span class="refs" class:head={r.startsWith("HEAD")} class:tag={r.startsWith("tag:")}>{r.replace("HEAD -> ", "")}</span>{/each} {c.subject} <span class="quiet">· {c.author}, {c.when}</span>{/if}</p>
+          {/each}
         {:else}
           <p class="empty">No git repository in this project.</p>
         {/if}
@@ -197,6 +244,17 @@
     </div>
   {/if}
 
+  {#if rowMenu}
+    <div class="scrim clear" role="presentation" onclick={() => (rowMenu = null)} oncontextmenu={(e) => { e.preventDefault(); rowMenu = null; }}></div>
+    <div class="menu rowmenu" style:left="{rowMenu.x}px" style:top="{rowMenu.y}px">
+      {#if !rowMenu.e.dir}<button class="it" onclick={() => rowAct("app", rowMenu!.e)}><Icon name="file" size={13} /><span>Open in its app</span></button>{/if}
+      <button class="it" onclick={() => rowAct("folder", rowMenu!.e)}><Icon name="folder" size={13} /><span>Show in the file manager</span></button>
+      {#if mention}<button class="it" onclick={() => rowAct("mention", rowMenu!.e)}><Icon name="send" size={13} /><span>Mention in the chat</span></button>{/if}
+      <button class="it" onclick={() => rowAct("copy", rowMenu!.e)}><Icon name="copy" size={13} /><span>Copy its path</span></button>
+      <button class="it" onclick={() => rowAct("copyrel", rowMenu!.e)}><Icon name="copy" size={13} /><span>Copy its path in the project</span></button>
+      <button class="it danger" onclick={() => rowAct("trash", rowMenu!.e)}><Icon name="x" size={13} /><span>Move to the trash</span></button>
+    </div>
+  {/if}
   {#if finding}
     <div class="scrim" role="presentation" onclick={() => (finding = false)}></div>
     <div class="finder" role="dialog" aria-modal="true" aria-label="Find a file">

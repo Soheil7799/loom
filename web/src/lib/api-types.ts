@@ -947,10 +947,12 @@ export type FilesFindParams = {
   limit?: number;
 };
 
-/** A file's text (null: not text, or over 2 MB) and when it changed (ms), for `file_write`. Result: {text, size, modified} */
+/** A file's text (null: not text, or over 2 MB) and when it changed (ms), for `file_write`. Result: {text, size, modified} or {data, size} */
 export type FileReadParams = {
   /** a file in a project */
   path: string;
+  /** its bytes instead ({data}: base64, 10 MB at most) */
+  bytes?: boolean;
 };
 
 /** Saves a file. Result: {modified} */
@@ -989,11 +991,27 @@ export type GitDoParams = {
   message?: string;
 };
 
-/** The newest commits. Result: {commits: [{hash, refs, subject, author, when}]} */
+/** Opens it on this computer (xdg-open). Result: {} */
+export type OpenPathParams = {
+  /** a file or folder in a project */
+  path: string;
+  /** app (its own app: the default), folder (its folder in the file manager) */
+  how?: string;
+};
+
+/** Moves it to the desktop's trash (gio trash). Result: {} */
+export type TrashFileParams = {
+  /** a file or folder in a project (not the project) */
+  path: string;
+};
+
+/** The newest commits. Result: {commits: [{graph, hash, refs, subject, author, when}]} */
 export type GitLogParams = {
   repo: string;
   /** 200; 2000 tops */
   limit?: number;
+  /** every branch, with the graph drawn before each line */
+  graph?: boolean;
 };
 
 /** An ask answered: a file filled in (the agent goes on), or one seen (it goes). Result: {} */
@@ -1104,6 +1122,8 @@ export interface Commands {
   "git_repos": GitReposParams;
   "git_diff": GitDiffParams;
   "git_do": GitDoParams;
+  "open_path": OpenPathParams;
+  "trash_file": TrashFileParams;
   "git_log": GitLogParams;
   "ask_done": AskDoneParams;
   "ask_open": AskOpenParams;

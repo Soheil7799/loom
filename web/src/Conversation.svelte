@@ -16,7 +16,9 @@
   import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
-  let { agent, jobs = [], showJob, expectCopy, active = true }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void; active?: boolean } = $props();
+  let { agent, jobs = [], showJob, expectCopy, active = true, insert = $bindable(null) }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void; active?: boolean; insert?: string | null } = $props();
+  // text put into its box from elsewhere (a file mentioned from Files), taken once
+  $effect(() => { if (insert && active) { const add = insert; insert = null; text = `${untrack(() => text)}${untrack(() => text) && !untrack(() => text).endsWith(" ") ? " " : ""}${add}`; } });
   let entries = $state.raw<Entry[]>([]);
   let usage = $state.raw<UsageItem | null>(null);
   let gone = $state(false);

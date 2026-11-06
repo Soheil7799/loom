@@ -3,13 +3,18 @@
 //!
 //! - `files_list {folder}` → `{entries: [{name, path, dir, size, modified}]}`, folders first
 //! - `files_find {project, query, limit?}` → `{files: [relative path]}`, best first
-//! - `file_read {path}` → `{text, modified}` (`text` null: not text, or over 2 MB: `size`)
+//! - `file_read {path, bytes?}` → `{text, modified}` (`text` null: not text, or over 2 MB:
+//!   `size`); with `bytes`, `{data}` (base64, 10 MB at most: a picture to show)
 //! - `file_write {path, text, modified?}` → `{modified}`: a conflict if it changed on disk since
 //!   `modified` (the time `file_read` gave); a new file when there was none
 //! - `git_repos {project}` → `{repos: [{path, name, branch, ahead, behind, changes: [{code, file}]}]}`
 //! - `git_diff {repo, file, staged?}` → `{diff}`
 //! - `git_do {repo, act: stage|unstage|discard|commit, files?, message?}` → `{}`
-//! - `git_log {repo, limit?}` → `{commits: [{hash, refs, subject, author, when}]}`
+//! - `git_log {repo, limit?, graph?}` → `{commits: [{graph, hash, refs, subject, author, when}]}`
+//!   (`graph`: the branch lines drawn before each, and lines of their own between)
+//! - `open_path {path, how: app|folder}` → `{}`: the file in its app, or its folder in the file
+//!   manager, on this computer
+//! - `trash_file {path}` → `{}`: to the desktop's trash (gio)
 
 use std::path::{Path, PathBuf};
 
@@ -18,8 +23,9 @@ use serde_json::{Value, json};
 use crate::api::{Error, Principal};
 use crate::files::git;
 
-/// What `file_read` gives as text, at most.
+/// What `file_read` gives as text, at most; and as bytes.
 const READ: u64 = 2 << 20;
+const BYTES: u64 = 10 << 20;
 
 /// The sidebar's projects (their folders), read on the core's thread.
 fn projects() -> Vec<PathBuf> {
@@ -98,6 +104,36 @@ fn read(path: &Path) -> Result<Value, Error> {
     Ok(json!({ "text": String::from_utf8(bytes).ok(), "size": meta.len(), "modified": modified(&meta) }))
 }
 
+fn bytes(path: &Path) -> Result<Value, Error> {
+    let meta = std::fs::metadata(path).map_err(|e| Error::NotFound(format!("{}: {e}", path.display())))?;
+    if !meta.is_file() || meta.len() > BYTES {
+        return Err(Error::Invalid("a file of 10 MB at most".into()));
+    }
+    let data = std::fs::read(path).map_err(|e| Error::Failed(e.to_string()))?;
+    Ok(json!({ "data": crate::api::wire::base64(&data), "size": meta.len() }))
+}
+
+/// `path` opened on this computer: in the app it belongs to, or its folder in the file manager.
+fn open(path: &Path, how: &str) -> Result<Value, Error> {
+    let target = match how {
+        "app" => path.to_owned(),
+        "folder" => if path.is_dir() { path.to_owned() } else { path.parent().unwrap_or(path).to_owned() },
+        _ => return Err(Error::Invalid("how: app or folder".into())),
+    };
+    let child = std::process::Command::new("xdg-open").arg(&target).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).spawn();
+    let mut child = child.map_err(|e| Error::Failed(format!("xdg-open: {e}")))?;
+    std::thread::spawn(move || child.wait());
+    Ok(json!({}))
+}
+
+fn trash(path: &Path) -> Result<Value, Error> {
+    let out = std::process::Command::new("gio").arg("trash").arg(path).output().map_err(|e| Error::Failed(format!("no trash here (gio: {e})")))?;
+    if !out.status.success() {
+        return Err(Error::Failed(String::from_utf8_lossy(&out.stderr).trim().to_owned()));
+    }
+    Ok(json!({}))
+}
+
 fn write(path: &Path, text: &str, seen: Option<u64>) -> Result<Value, Error> {
     if let (Ok(meta), Some(seen)) = (std::fs::metadata(path), seen)
         && modified(&meta) != seen
@@ -139,17 +175,28 @@ fn act(repo: &Path, act: &str, files: &[String], message: &str) -> Result<Value,
     git(repo, &args).map(|_| json!({})).map_err(Error::Failed)
 }
 
-fn log(repo: &Path, limit: usize) -> Result<Value, Error> {
+fn log(repo: &Path, limit: usize, graph: bool) -> Result<Value, Error> {
     let n = limit.to_string();
-    let out = git(repo, &["-c", "core.quotePath=false", "log", "--date-order", "-n", &n, "--format=%h%x1f%D%x1f%s%x1f%an%x1f%ar"]).map_err(Error::Failed)?;
-    let commits: Vec<Value> = out
-        .lines()
-        .map(|l| {
-            let f: Vec<&str> = l.split('\u{1f}').collect();
-            json!({ "hash": f.first(), "refs": f.get(1), "subject": f.get(2), "author": f.get(3), "when": f.get(4) })
+    let mut args = vec!["-c", "core.quotePath=false", "log", "--date-order", "-n", &n, "--format=%x1e%h%x1f%D%x1f%s%x1f%an%x1f%ar"];
+    if graph {
+        args.extend(["--graph", "--all"]);
+    }
+    let out = git(repo, &args).map_err(Error::Failed)?;
+    Ok(json!({ "commits": log_lines(&out) }))
+}
+
+/// git log's lines: the graph drawn before a commit (up to its \x1e), then its fields; a line
+/// of graph alone has no hash.
+fn log_lines(out: &str) -> Vec<Value> {
+    out.lines()
+        .map(|l| match l.split_once('\u{1e}') {
+            Some((graph, rest)) => {
+                let f: Vec<&str> = rest.split('\u{1f}').collect();
+                json!({ "graph": graph, "hash": f.first(), "refs": f.get(1), "subject": f.get(2), "author": f.get(3), "when": f.get(4) })
+            }
+            None => json!({ "graph": l, "hash": null }),
         })
-        .collect();
-    Ok(json!({ "commits": commits }))
+        .collect()
 }
 
 /// Registers the commands (once, at start).
@@ -169,7 +216,20 @@ pub fn serve() {
         }),
         ("file_read", |p, ps| {
             let path = inside(string(p, "path")?, ps)?;
-            Ok(Box::new(move || read(&path)))
+            let raw = p["bytes"].as_bool() == Some(true);
+            Ok(Box::new(move || if raw { bytes(&path) } else { read(&path) }))
+        }),
+        ("open_path", |p, ps| {
+            let path = inside(string(p, "path")?, ps)?;
+            let how = p["how"].as_str().unwrap_or("app").to_owned();
+            Ok(Box::new(move || open(&path, &how)))
+        }),
+        ("trash_file", |p, ps| {
+            let path = inside(string(p, "path")?, ps)?;
+            if ps.iter().any(|project| project.canonicalize().is_ok_and(|c| c == path)) {
+                return Err(Error::Forbidden("a project itself: remove it from the sidebar instead".into()));
+            }
+            Ok(Box::new(move || trash(&path)))
         }),
         ("file_write", |p, ps| {
             let path = inside(string(p, "path")?, ps)?;
@@ -202,7 +262,8 @@ pub fn serve() {
         ("git_log", |p, ps| {
             let repo = inside(string(p, "repo")?, ps)?;
             let limit = p["limit"].as_u64().unwrap_or(200).min(2000) as usize;
-            Ok(Box::new(move || log(&repo, limit)))
+            let graph = p["graph"].as_bool() == Some(true);
+            Ok(Box::new(move || log(&repo, limit, graph)))
         }),
     ];
     for (name, check) in commands {
@@ -247,6 +308,10 @@ mod tests {
         write(&file, "two", Some(first)).unwrap();
         assert_eq!(list(&project).unwrap()["entries"][0]["name"], "src", "folders first");
         assert_eq!(score("src/main.rs", "main"), Some("src/main.rs".len()));
+        let lines = log_lines("* \u{1e}abc\u{1f}HEAD -> main\u{1f}two\u{1f}me\u{1f}now\n|\\\n");
+        assert_eq!((lines[0]["graph"].as_str(), lines[0]["hash"].as_str(), lines[0]["subject"].as_str()), (Some("* "), Some("abc"), Some("two")));
+        assert!(lines[1]["hash"].is_null(), "a line of graph alone");
+        assert_eq!(bytes(&file).unwrap()["data"], crate::api::wire::base64(b"two"));
         assert!(score("src/main.rs", "zz").is_none());
         let _ = std::fs::remove_dir_all(&root);
     }

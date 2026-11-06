@@ -2982,13 +2982,17 @@
           "path": {
             "type": "string",
             "description": "a file in a project"
+          },
+          "bytes": {
+            "type": "boolean",
+            "description": "its bytes instead ({data}: base64, 10 MB at most)"
           }
         },
         "required": [
           "path"
         ]
       },
-      "result": "{text, size, modified}"
+      "result": "{text, size, modified} or {data, size}"
     },
     "file_write": {
       "description": "Saves a file.",
@@ -3105,6 +3109,52 @@
       },
       "result": "{}"
     },
+    "open_path": {
+      "description": "Opens it on this computer (xdg-open).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "a file or folder in a project"
+          },
+          "how": {
+            "type": "string",
+            "description": "app (its own app: the default), folder (its folder in the file manager)"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "result": "{}"
+    },
+    "trash_file": {
+      "description": "Moves it to the desktop's trash (gio trash).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "a file or folder in a project (not the project)"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "result": "{}"
+    },
     "git_log": {
       "description": "The newest commits.",
       "who": [
@@ -3122,13 +3172,17 @@
           "limit": {
             "type": "integer",
             "description": "200; 2000 tops"
+          },
+          "graph": {
+            "type": "boolean",
+            "description": "every branch, with the graph drawn before each line"
           }
         },
         "required": [
           "repo"
         ]
       },
-      "result": "{commits: [{hash, refs, subject, author, when}]}"
+      "result": "{commits: [{graph, hash, refs, subject, author, when}]}"
     },
     "ask_done": {
       "description": "An ask answered: a file filled in (the agent goes on), or one seen (it goes).",

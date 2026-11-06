@@ -25,6 +25,8 @@
   let chat = $state<{ agent: string; title: string } | null>(null);
   let filesProject = $state("");
   let findAsked = $state(false);
+  // text put into the open conversation's box from elsewhere (a file mentioned from Files)
+  let insert = $state<string | null>(null);
   let palette = $state(false);
   let about = $state(false);
 
@@ -221,7 +223,7 @@
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
       {#if view === "files"}
-        <Files {projects} bind:project={filesProject} bind:findAsked />
+        <Files {projects} bind:project={filesProject} bind:findAsked mention={(path) => { if (current) { insert = `@${path} `; view = "chat"; } }} />
       {:else if view === "overview"}
         <Overview {agents} {pick} />
       {:else if view === "settings"}
@@ -234,7 +236,7 @@
         <Jobs {jobs} {projects} bind:open={job} bind:runAsked />
       {:else if current}
         <div class="pair" class:two={!!besideAgent}>
-          {#key current.id}<Conversation agent={current} active jobs={jobs.filter((j) => j.project_id === current.project_id && j.name !== "scratch")} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
+          {#key current.id}<Conversation agent={current} active bind:insert jobs={jobs.filter((j) => j.project_id === current.project_id && j.name !== "scratch")} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
           {#if besideAgent}{#key besideAgent.id}<Conversation agent={besideAgent} active={false} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}{/if}
         </div>
       {:else}

@@ -506,3 +506,21 @@ select.chip option { color: var(--fg); background: var(--pane); }
 .msg-actions { position: absolute; top: -6px; right: 0; display: none; gap: 2px; padding: 2px; border-radius: 8px; background: var(--pane); border: 1px solid var(--line); }
 .msg-agent:hover .msg-actions, .msg-agent:focus-within .msg-actions { display: flex; }
 @media (hover: none) { .msg-actions { display: flex; position: static; width: fit-content; margin-top: 4px; } }
+
+/* ---- files: kinds, pictures, documents, the row menu, the graph ---- */
+.ficon { display: inline-grid; place-items: center; width: 12px; flex: none; color: var(--quiet); }
+.ficon.code { color: var(--accent); }
+.ficon.doc { color: var(--ok); }
+.ficon.conf { color: var(--wait); }
+.ficon.pic { color: color-mix(in srgb, var(--err) 70%, var(--accent)); }
+.picture { flex: 1; min-height: 0; overflow: auto; display: grid; place-items: center; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-block); background: repeating-conic-gradient(color-mix(in srgb, var(--fg) 6%, transparent) 0 25%, transparent 0 50%) 0 0 / 16px 16px; }
+.picture img { max-width: 100%; max-height: 100%; }
+.doc-read { flex: 1; min-height: 0; overflow: auto; max-width: none; padding: 12px 18px; border: 1px solid var(--line); border-radius: var(--r-block); background: var(--pane); }
+.scrim.clear { background: none; }
+.rowmenu { position: fixed; right: auto; top: auto; width: 250px; z-index: 50; }
+.menu .it.danger { color: var(--err); }
+.graph-toggle { margin-left: 10px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.commitrow .graph { font-family: var(--mono); color: var(--accent); white-space: pre; margin-right: 4px; }
+.commitrow .refs.head { background: color-mix(in srgb, var(--accent) 22%, transparent); }
+.commitrow .refs.tag { background: color-mix(in srgb, var(--ok) 22%, transparent); }
+.commitrow .refs { margin-right: 4px; }
