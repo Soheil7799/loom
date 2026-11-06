@@ -234,6 +234,52 @@ export type OverviewItem = {
   session?: string;
 };
 
+/** Claude's plan for the work (its to-do list), as it last said it. */
+export type PlanItem = {
+  /** its place, from 0 */
+  id: string;
+  /** the step */
+  content: string;
+  /** pending, in_progress, completed */
+  status: string;
+  priority?: string;
+};
+
+/** The workflows an agent launched, followed from their files (`stop_workflow`). */
+export type WorkflowsItem = {
+  /** its tool call */
+  id: string;
+  name: string;
+  summary?: string;
+  running: boolean;
+  /** running, failed, stopped, ended, or what it said when done */
+  state: string;
+  /** agents done */
+  done: number;
+  /** agents in all */
+  agents: number;
+  /** {label, phase, done} */
+  members: unknown[];
+};
+
+/** Each agent's MCP servers, as its process last said. */
+export type McpItem = {
+  /** an agent's id */
+  id: string;
+  /** {name, status, error} */
+  servers: unknown[];
+};
+
+/** A job an agent brings forward for the user: a client opens it. */
+export type JobsShownItem = {
+  /** an agent's id */
+  id: string;
+  /** the job it opened for the user (a login) */
+  job: string;
+  /** grows each time */
+  n: number;
+};
+
 /** What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read). */
 export type InputsItem = {
   /** an agent's id */
@@ -378,6 +424,10 @@ export interface Resources {
   "scribe": ScribeItem;
   "crew/<agent>": CrewItem;
   "overview": OverviewItem;
+  "plan/<agent>": PlanItem;
+  "workflows/<agent>": WorkflowsItem;
+  "mcp": McpItem;
+  "jobs_shown": JobsShownItem;
   "inputs": InputsItem;
   "closed": ClosedItem;
   "bridges": BridgesItem;
@@ -505,6 +555,20 @@ export type MarkSeenParams = {
   agent?: string;
   /** every agent (Mark all seen) */
   all?: boolean;
+};
+
+/** Ctrl+Enter: its queued messages go into the running turn now (or as the next prompt). Result: {} */
+export type SendNowParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Stops a workflow the agent runs. Result: {} */
+export type StopWorkflowParams = {
+  /** the agent's id */
+  agent: string;
+  /** a `workflows/<agent>` item's id */
+  workflow: string;
 };
 
 /** Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed. Result: {} */
@@ -981,6 +1045,8 @@ export interface Commands {
   "move_agent": MoveAgentParams;
   "move_project": MoveProjectParams;
   "mark_seen": MarkSeenParams;
+  "send_now": SendNowParams;
+  "stop_workflow": StopWorkflowParams;
   "press": PressParams;
   "rewind": RewindParams;
   "set_option": SetOptionParams;

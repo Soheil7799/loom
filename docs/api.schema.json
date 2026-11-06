@@ -897,6 +897,149 @@
         ]
       }
     },
+    "plan/<agent>": {
+      "description": "Claude's plan for the work (its to-do list), as it last said it.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "its place, from 0"
+          },
+          "content": {
+            "type": "string",
+            "description": "the step"
+          },
+          "status": {
+            "type": "string",
+            "description": "pending, in_progress, completed"
+          },
+          "priority": {
+            "type": "string",
+            "description": ""
+          }
+        },
+        "required": [
+          "id",
+          "content",
+          "status"
+        ]
+      }
+    },
+    "workflows/<agent>": {
+      "description": "The workflows an agent launched, followed from their files (`stop_workflow`).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "its tool call"
+          },
+          "name": {
+            "type": "string",
+            "description": ""
+          },
+          "summary": {
+            "type": "string",
+            "description": ""
+          },
+          "running": {
+            "type": "boolean",
+            "description": ""
+          },
+          "state": {
+            "type": "string",
+            "description": "running, failed, stopped, ended, or what it said when done"
+          },
+          "done": {
+            "type": "integer",
+            "description": "agents done"
+          },
+          "agents": {
+            "type": "integer",
+            "description": "agents in all"
+          },
+          "members": {
+            "type": "array",
+            "description": "{label, phase, done}"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "running",
+          "state",
+          "done",
+          "agents",
+          "members"
+        ]
+      }
+    },
+    "mcp": {
+      "description": "Each agent's MCP servers, as its process last said.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an agent's id"
+          },
+          "servers": {
+            "type": "array",
+            "description": "{name, status, error}"
+          }
+        },
+        "required": [
+          "id",
+          "servers"
+        ]
+      }
+    },
+    "jobs_shown": {
+      "description": "A job an agent brings forward for the user: a client opens it.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an agent's id"
+          },
+          "job": {
+            "type": "string",
+            "description": "the job it opened for the user (a login)"
+          },
+          "n": {
+            "type": "integer",
+            "description": "grows each time"
+          }
+        },
+        "required": [
+          "id",
+          "job",
+          "n"
+        ]
+      }
+    },
     "inputs": {
       "description": "What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read).",
       "who": [
@@ -1544,6 +1687,54 @@
           }
         },
         "required": []
+      },
+      "result": "{}"
+    },
+    "send_now": {
+      "description": "Ctrl+Enter: its queued messages go into the running turn now (or as the next prompt).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
+    "stop_workflow": {
+      "description": "Stops a workflow the agent runs.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "workflow": {
+            "type": "string",
+            "description": "a `workflows/<agent>` item's id"
+          }
+        },
+        "required": [
+          "agent",
+          "workflow"
+        ]
       },
       "result": "{}"
     },

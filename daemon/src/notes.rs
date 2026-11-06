@@ -158,6 +158,8 @@ impl Notes {
         open.agent.stop();
         loom_core::api::close(&loom_core::agent::conversation(id));
         loom_core::api::close(&format!("crew/{id}"));
+        loom_core::api::close(&format!("plan/{}", id));
+        loom_core::api::close(&format!("workflows/{}", id));
         self.publish();
         true
     }

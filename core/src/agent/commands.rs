@@ -228,6 +228,19 @@ fn handle() {
         target(who, params, "mark agents seen")?.mark_seen();
         Ok(json!({}))
     });
+    // Ctrl+Enter: the queued messages go into the running turn now.
+    hub.handle("send_now", |who, params| {
+        target(who, params, "send messages")?.send_waiting_now();
+        Ok(json!({}))
+    });
+    hub.handle("stop_workflow", |who, params| {
+        let agent = person(who, params, "stop workflows")?;
+        let id = params["workflow"].as_str().ok_or_else(|| Error::Invalid("which workflow (its id)?".into()))?;
+        if !agent.stop_workflow_named(id) {
+            return Err(Error::NotFound(format!("workflow {id}")));
+        }
+        Ok(json!({}))
+    });
     hub.handle("press", |who, params| {
         let agent = person(who, params, "press agents' buttons")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("which notice (its entry)?".into()))?;

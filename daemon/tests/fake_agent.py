@@ -4,6 +4,7 @@ two turns for loomd's tests:
 - "background": says "started", leaves a background subagent running and ends its turn; the
   subagent ends 1.5 s later and the agent goes on by itself: "all finished".
 - "server": says "serving", leaves a background command (a dev server) running, ends its turn.
+- "plan": says its plan (two steps).
 Anything else is answered with an empty result."""
 import json, sys, threading, time
 
@@ -46,6 +47,9 @@ for line in sys.stdin:
             say("started")
             update({"sessionUpdate": "subagent_update", "sessionId": "sub1", "description": "helper", "state": {"state": "running"}})
             threading.Thread(target=later, daemon=True).start()
+        elif "plan" in prompt:
+            update({"sessionUpdate": "plan", "entries": [{"content": "Read it", "status": "completed", "priority": "high"}, {"content": "Fix it", "status": "in_progress", "priority": "high"}]})
+            say("planned")
         elif "server" in prompt:
             say("serving")
             update({"sessionUpdate": "background_tasks", "tasks": [{"taskId": "t1", "toolCallId": "c1", "taskType": "local_bash", "description": "dev server"}]})

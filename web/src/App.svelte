@@ -174,6 +174,18 @@
     const latest = fresh.at(-1) as (typeof fresh)[number] & { job?: string } | undefined;
     if (latest?.job) { job = latest.job; view = "jobs"; }
   });
+  // A job an agent opened for you (Claude's login, say): brought forward, as the window does.
+  let shown: Map<string, number> | null = null;
+  $effect(() => {
+    if (conn.state !== "open") return;
+    return follow("jobs_shown", (f) => {
+      const was = shown;
+      shown = new Map(f.items.map((i) => [i.id, i.n]));
+      const fresh = was ? f.items.find((i) => was.get(i.id) !== i.n) : null;
+      if (fresh?.job) { job = fresh.job; view = "jobs"; }
+    });
+  });
+
   // An input ask whose job has ended is answered: it goes.
   $effect(() => {
     for (const a of asks as (AsksItem & { job?: string })[]) {

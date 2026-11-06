@@ -602,6 +602,12 @@ impl Agent {
         format!("# {}\n\n{}", self.title(), self.recorded.transcript.borrow().markdown())
     }
 
+    /// Stops its workflow `id` (the workflow's tool call); false if there is none such.
+    pub fn stop_workflow_named(self: &Rc<Self>, id: &str) -> bool {
+        let run = self.workflows.borrow().iter().find(|w| w.tool_id() == id).cloned();
+        run.map(|run| self.stop_workflow(&run)).is_some()
+    }
+
     /// Presses the button of notice `entry` in its conversation; false if it has none.
     pub fn press(&self, entry: &str) -> bool {
         self.recorded.press(entry)

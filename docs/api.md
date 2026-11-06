@@ -244,6 +244,59 @@ Who: window, cli.
 | `reply` | string? | the start of its last reply (240 characters, one line) |
 | `session` | string? | its conversation (a schedule's `session`) |
 
+### `plan/<agent>`
+
+Claude's plan for the work (its to-do list), as it last said it.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | its place, from 0 |
+| `content` | string | the step |
+| `status` | string | pending, in_progress, completed |
+| `priority` | string? |  |
+
+### `workflows/<agent>`
+
+The workflows an agent launched, followed from their files (`stop_workflow`).
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | its tool call |
+| `name` | string |  |
+| `summary` | string? |  |
+| `running` | boolean |  |
+| `state` | string | running, failed, stopped, ended, or what it said when done |
+| `done` | integer | agents done |
+| `agents` | integer | agents in all |
+| `members` | array | {label, phase, done} |
+
+### `mcp`
+
+Each agent's MCP servers, as its process last said.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | an agent's id |
+| `servers` | array | {name, status, error} |
+
+### `jobs_shown`
+
+A job an agent brings forward for the user: a client opens it.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | an agent's id |
+| `job` | string | the job it opened for the user (a login) |
+| `n` | integer | grows each time |
+
 ### `inputs`
 
 What waits in each agent's input: the user's own words, so people's alone (not in `agents`, which agents and bridges read).
@@ -508,6 +561,27 @@ Who: window, cli, bridge. Result: `{}`.
 |---|---|---|
 | `agent` | string? | the agent's id |
 | `all` | boolean? | every agent (Mark all seen) |
+
+### `send_now`
+
+Ctrl+Enter: its queued messages go into the running turn now (or as the next prompt).
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `stop_workflow`
+
+Stops a workflow the agent runs.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `workflow` | string | a `workflows/<agent>` item's id |
 
 ### `press`
 

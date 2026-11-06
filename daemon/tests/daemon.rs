@@ -130,6 +130,10 @@ fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
     // A turn that leaves a dev server running is done at once: it never ends by itself.
     command(&mut c, "send", json!({ "agent": agent, "text": "server" }));
     until(&mut c, "agents", Duration::from_secs(20), "done beside a dev server", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["unseen"] == true && a["busy"] == false));
+    // Its plan, as a client sees it.
+    command(&mut c, "send", json!({ "agent": agent, "text": "plan" }));
+    let plan = until(&mut c, &format!("plan/{agent}"), Duration::from_secs(20), "the plan", |p| p.len() == 2);
+    assert_eq!((plan[1]["content"].as_str(), plan[1]["status"].as_str()), (Some("Fix it"), Some("in_progress")));
 }
 
 fn agent_tests() -> bool {

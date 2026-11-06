@@ -383,6 +383,8 @@ pub struct Recorded {
     /// it suggests: for a client's composer (`inputs`).
     pub commands: RefCell<Vec<(String, String)>>,
     pub suggestion: RefCell<Option<String>>,
+    /// Bumped each time it opens a job for the user (`jobs_shown`).
+    shown: std::cell::Cell<u64>,
 }
 
 /// The core API's `usage` resource: the account's limits (`{id: "account", kind: "account",
@@ -428,6 +430,11 @@ impl Recorded {
         *self.agent.borrow_mut() = Some(id.to_string());
         // its subagents' list there from the start (empty), to follow before any comes
         crate::api::hub().store(&format!("crew/{id}"));
+        crate::api::hub().store(&format!("plan/{id}"));
+        crate::api::hub().store(&format!("workflows/{id}"));
+        // shared by every agent, there from the first one on
+        crate::api::hub().store("mcp");
+        crate::api::hub().store("jobs_shown");
         let usage = crate::api::hub().store(USAGE);
         let account = account_limits();
         if !account.is_null() && usage.get("account").is_none() {
@@ -483,7 +490,7 @@ impl Recorded {
 
     pub fn new(inner: Rc<dyn View>) -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default(), commands: RefCell::default(), suggestion: RefCell::default() }
+        Recorded { inner, transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default(), commands: RefCell::default(), suggestion: RefCell::default(), shown: std::cell::Cell::new(0) }
     }
 }
 
@@ -664,6 +671,10 @@ impl View for Recorded {
         self.inner.go_to_tool(id);
     }
     fn set_plan(&self, entries: &Value) {
+        if let Some(id) = self.agent.borrow().as_ref() {
+            let items = entries.as_array().into_iter().flatten().enumerate().map(|(i, e)| json!({ "id": i.to_string(), "content": e["content"], "status": e["status"], "priority": e["priority"] })).collect();
+            crate::api::hub().store(&format!("plan/{id}")).set(items);
+        }
         self.inner.set_plan(entries);
     }
     fn turn_done(&self, seconds: u64) {
@@ -671,6 +682,8 @@ impl View for Recorded {
         self.inner.turn_done(seconds);
     }
     fn turn_undo(&self, undo: Rc<dyn Fn()>) {
+        // for a client: a notice with its button (`press`), the window's own aside
+        self.with_button("This turn changed files.", "Undo its changes to files", undo.clone(), true);
         self.inner.turn_undo(undo);
     }
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card> {
@@ -688,7 +701,20 @@ impl View for Recorded {
         Rc::new(RecordedForm { inner, card })
     }
     fn workflow(&self, tool_id: &str, launch: Launch, live: bool, alive: Box<dyn Fn() -> bool>, on_changed: Rc<dyn Fn()>, on_stop: Rc<dyn Fn()>) -> Rc<dyn Workflow> {
-        self.inner.workflow(tool_id, launch, live, alive, on_changed, on_stop)
+        let store = self.agent.borrow().as_ref().map(|id| crate::api::hub().store(&format!("workflows/{id}")));
+        let progress = Rc::new(RefCell::new(crate::workflow::Progress::new(&launch, live)));
+        let inner = self.inner.workflow(tool_id, launch.clone(), live, alive, on_changed, on_stop);
+        let recorded = Rc::new(RecordedWorkflow { inner, progress, store, launch });
+        recorded.publish();
+        // followed from its files while it runs, as the window's card is
+        let weak = Rc::downgrade(&recorded);
+        let _ = crate::rt::every(std::time::Duration::from_secs(2), move || {
+            let Some(w) = weak.upgrade() else { return false };
+            w.progress.borrow_mut().poll(true);
+            w.publish();
+            !w.progress.borrow().done()
+        });
+        recorded
     }
 
     fn set_cwd(&self, cwd: &Path) {
@@ -773,6 +799,10 @@ impl View for Recorded {
         self.inner.crew_clear();
     }
     fn show_mcp(&self, servers: Option<Vec<(String, String, Option<String>)>>) {
+        if let Some(id) = self.agent.borrow().as_ref() {
+            let list: Vec<Value> = servers.iter().flatten().map(|(name, status, error)| json!({ "name": name, "status": status, "error": error })).collect();
+            crate::api::hub().store("mcp").upsert(json!({ "id": id, "servers": list }));
+        }
         self.inner.show_mcp(servers);
     }
 
@@ -809,6 +839,11 @@ impl View for Recorded {
         self.inner.open_uri(uri);
     }
     fn show_job(&self, id: Id) {
+        // the job it opened for the user (a login): a client brings it forward
+        if let Some(agent) = self.agent.borrow().as_ref() {
+            self.shown.set(self.shown.get() + 1);
+            crate::api::hub().store("jobs_shown").upsert(json!({ "id": agent, "job": id.to_string(), "n": self.shown.get() }));
+        }
         self.inner.show_job(id);
     }
 }
@@ -1077,4 +1112,61 @@ mod tests {
 fn crew_item(c: &Crew) -> Value {
     let when = |at: Instant| crate::api::time(crate::state::now() as i64 - at.elapsed().as_secs() as i64);
     json!({ "id": c.key, "name": c.name, "step": c.step, "state": c.state, "started": when(c.started), "at": when(c.at), "ended": c.ended.map(when), "guessed": c.guessed })
+}
+
+/// A workflow as the API has it (`workflows/<agent>`): followed from its files, its end as the
+/// agent tells it; the view's own card is `inner`.
+struct RecordedWorkflow {
+    inner: Rc<dyn Workflow>,
+    progress: Rc<RefCell<crate::workflow::Progress>>,
+    store: Option<Store>,
+    launch: Launch,
+}
+
+impl RecordedWorkflow {
+    fn publish(&self) {
+        let Some(store) = &self.store else { return };
+        let p = self.progress.borrow();
+        let state = match &p.state {
+            crate::workflow::State::Running => json!("running"),
+            crate::workflow::State::Done(text) => json!(text),
+            crate::workflow::State::Failed => json!("failed"),
+            crate::workflow::State::Stopped => json!("stopped"),
+            crate::workflow::State::Ended => json!("ended"),
+        };
+        let members: Vec<Value> = p.members.iter().map(|m| json!({ "label": m.label, "phase": m.phase, "done": m.result.is_some() })).collect();
+        let (done, all) = p.counts();
+        store.upsert(json!({ "id": self.inner.tool_id(), "name": self.launch.name, "summary": self.launch.summary, "running": !p.done(), "state": state, "done": done, "agents": all, "members": members }));
+    }
+}
+
+impl Workflow for RecordedWorkflow {
+    fn tool_id(&self) -> String {
+        self.inner.tool_id()
+    }
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+    fn task(&self) -> String {
+        self.inner.task()
+    }
+    fn done(&self) -> bool {
+        self.inner.done()
+    }
+    fn counts(&self) -> (usize, usize) {
+        self.inner.counts()
+    }
+    fn stop_unanswered(&self) {
+        self.inner.stop_unanswered();
+    }
+    fn ended(&self, status: &str, output: Option<std::path::PathBuf>) {
+        self.progress.borrow_mut().ended(status, output.clone(), true);
+        self.publish();
+        self.inner.ended(status, output);
+    }
+    fn stopped(&self) {
+        self.progress.borrow_mut().state = crate::workflow::State::Stopped;
+        self.publish();
+        self.inner.stopped();
+    }
 }

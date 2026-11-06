@@ -3,6 +3,7 @@
   // finished turns fold to your message and how they ended; the tube down the left marks turn
   // starts, questions and failures, and moves while the agent works. Alt+Up/Down: the previous
   // or next question or failure.
+  import { untrack } from "svelte";
   import { follow, command, type Item } from "./lib/api";
   import type { AgentsItem, JobsItem, UsageItem } from "./lib/api-types";
   import { turns, type Entry } from "./lib/turns";
@@ -11,6 +12,7 @@
   import Tube from "./Tube.svelte";
   import Changes from "./Changes.svelte";
   import Picture from "./Picture.svelte";
+  import Plan from "./Plan.svelte";
   import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
@@ -58,7 +60,18 @@
   const options = $derived(((agent.options ?? []) as Opt[]).filter((o) => o.id !== "mode" && flat(o.options).length));
   let compactAt = $state<number | null>(null);
   $effect(() => follow("settings", (f) => (compactAt = f.items[0]?.compact_alert ? (f.items[0]?.compact_at ?? 80) : null)));
-  $effect(() => follow("usage", (f) => (usage = (f.items.find((u: Item) => u.id === agent.id) as UsageItem) ?? null)));
+  // its context and cost, and the account's limits (5-hour, weekly) as Claude Code last said
+  let limits = $state.raw<{ kind: string; utilization: number; resets_at?: string }[]>([]);
+  $effect(() => follow("usage", (f) => {
+    usage = (f.items.find((u: Item) => u.id === agent.id) as UsageItem) ?? null;
+    limits = f.items.find((u: Item) => u.id === "account")?.windows ?? [];
+  }));
+  const limitName = (k: string) => ({ five_hour: "5h", seven_day: "week", seven_day_opus: "week, Opus", seven_day_sonnet: "week, Sonnet" } as Record<string, string>)[k] ?? k.replace(/_/g, " ");
+  const pct = (u: number) => Math.round(u <= 1 ? u * 100 : u);
+  // its MCP servers, as its process last said
+  let mcp = $state.raw<{ name: string; status: string; error?: string }[]>([]);
+  $effect(() => follow("mcp", (f) => (mcp = f.items.find((m: Item) => m.id === agent.id)?.servers ?? [])));
+  const mcpBad = $derived(mcp.filter((m) => !/connected|ok|ready/i.test(m.status)));
 
   const all = $derived(turns(entries));
   // a Notes chat isn't among the agents: it works while an entry is still coming
@@ -78,6 +91,53 @@
     const last = entries.at(-1);
     if (last && document.visibilityState === "visible") localStorage.setItem(seenKey, last.id);
   });
+
+  let composerEl: HTMLTextAreaElement | undefined = $state();
+  // Ctrl+F: find in the conversation, folded turns too (those with a match unfold); the
+  // matches marked with the CSS Highlight API where the browser has it.
+  let finding = $state(false);
+  let findQuery = $state("");
+  let findEl: HTMLInputElement | undefined = $state();
+  let hits = $state.raw<Range[]>([]);
+  let hitAt = $state(0);
+  const entryText = (e: Entry) => [e.text, e.title, e.output].filter((x) => typeof x === "string").join(" ");
+  $effect(() => {
+    const q = findQuery.trim().toLowerCase();
+    if (!finding || !q) { hits = []; return; }
+    // unfold the turns that have it
+    const turnsWith = all.filter((t) => [t.user, ...t.rows.flatMap((r) => (r.kind === "run" ? r.tools : [r.entry]))].some((e) => e && entryText(e).toLowerCase().includes(q))).map((t) => t.id);
+    untrack(() => { const next = new Set(expanded); turnsWith.forEach((id) => next.add(id)); if (next.size !== expanded.size) expanded = next; });
+    // then find them in what is drawn
+    queueMicrotask(() => requestAnimationFrame(() => {
+      if (!box) return;
+      const found: Range[] = [];
+      const walker = document.createTreeWalker(box, NodeFilter.SHOW_TEXT);
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const t = n.textContent?.toLowerCase() ?? "";
+        for (let i = t.indexOf(q); i >= 0; i = t.indexOf(q, i + q.length)) { const r = new Range(); r.setStart(n, i); r.setEnd(n, i + q.length); found.push(r); }
+      }
+      hits = found;
+      hitAt = Math.max(0, found.length - 1);
+      showHit();
+    }));
+  });
+  function showHit() {
+    const css = (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS;
+    const H = (globalThis as { Highlight?: new (...r: Range[]) => unknown }).Highlight;
+    if (css?.highlights && H) {
+      css.highlights.set("find", new H(...hits));
+      if (hits[hitAt]) css.highlights.set("find-now", new H(hits[hitAt]));
+      else css.highlights.delete("find-now");
+    }
+    const r = hits[hitAt]?.getBoundingClientRect();
+    if (r && box) box.scrollBy({ top: r.top - box.getBoundingClientRect().top - box.clientHeight / 3, behavior: "smooth" });
+  }
+  function stepFind(by: number) { if (hits.length) { hitAt = (hitAt + by + hits.length) % hits.length; showHit(); } }
+  function closeFind() {
+    finding = false;
+    findQuery = "";
+    (globalThis as { CSS?: { highlights?: Map<string, unknown> } }).CSS?.highlights?.clear();
+  }
 
   // Looked at: what was new in it is seen (here, as in the window).
   $effect(() => {
@@ -113,7 +173,18 @@
   let attached = $state.raw<{ data: string; preview: string }[]>([]);
   let reading = $state(false);
   async function attach(files: Iterable<File>) {
-    const pictures = [...files].filter((f) => f.type.startsWith("image/"));
+    const all = [...files];
+    const pictures = all.filter((f) => f.type.startsWith("image/"));
+    // anything else: saved in its folder (the browser gives no path) and mentioned
+    for (const f of all.filter((f) => !f.type.startsWith("image/"))) {
+      try {
+        const bytes = new Uint8Array(await f.arrayBuffer());
+        let raw = "";
+        for (let i = 0; i < bytes.length; i += 0x8000) raw += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+        const got = await command("save", { agent: agent.id, name: f.name, data: btoa(raw) });
+        text = `${text}${text && !text.endsWith(" ") ? " " : ""}@${got.path} `;
+      } catch (e) { problem = (e as Error).message; }
+    }
     if (!pictures.length) return;
     reading = true;
     try {
@@ -148,7 +219,28 @@
   const slash = $derived(/^\/\S*$/.test(text) ? commands.filter((c) => ("/" + c.name).startsWith(text)).slice(0, 8) : []);
   $effect(() => { slash; pickAt = 0; });
   function take(c: { name: string }) { text = `/${c.name} `; }
+  // "@" and part of a name: the project's files, to mention (↑↓, Tab or Enter)
+  const mentionQuery = $derived(/(?:^|\s)@([^\s@]*)$/.exec(text)?.[1] ?? null);
+  let mentions = $state.raw<string[]>([]);
+  let mentionTimer = 0;
+  $effect(() => {
+    const q = mentionQuery;
+    clearTimeout(mentionTimer);
+    if (q === null) return void (mentions = []);
+    mentionTimer = window.setTimeout(async () => {
+      const got = await command("files_find", { project: agent.project_id, query: q || ".", limit: 8 }).catch(() => null);
+      if (mentionQuery === q) mentions = got?.files ?? [];
+    }, 120);
+  });
+  $effect(() => { mentions; pickAt = 0; });
+  function mention(path: string) { text = text.replace(/@([^\s@]*)$/, `@${path} `); mentions = []; }
+
   function keys(e: KeyboardEvent) {
+    if (mentions.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); pickAt = (pickAt + (e.key === "ArrowDown" ? 1 : mentions.length - 1)) % mentions.length; return; }
+    if (mentions.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey))) { e.preventDefault(); mention(mentions[pickAt]); return; }
+    if (e.key === "Escape" && mentions.length) { e.preventDefault(); mentions = []; return; }
+    // Ctrl+Enter: what is typed joins the queue, and the queue goes in now
+    if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) { e.preventDefault(); const was = busy; send().then(() => { if (was) run(command("send_now", { agent: agent.id })); }); return; }
     if (slash.length && (e.key === "ArrowDown" || e.key === "ArrowUp")) { e.preventDefault(); pickAt = (pickAt + (e.key === "ArrowDown" ? 1 : slash.length - 1)) % slash.length; return; }
     if (slash.length && (e.key === "Tab" || (e.key === "Enter" && !e.shiftKey && text !== `/${slash[pickAt].name}`))) { e.preventDefault(); take(slash[pickAt]); return; }
     if (!text && suggestion && (e.key === "Tab" || e.key === "ArrowRight")) { e.preventDefault(); text = suggestion; return; }
@@ -225,6 +317,7 @@
     // two side by side: the keys are the active one's
     if (!active) return;
     if (e.key === "F2" && naming === null && agent.status !== "notes") { e.preventDefault(); naming = agent.title; return; }
+    if ((e.ctrlKey || e.metaKey) && e.key === "f" && !e.altKey && !e.shiftKey) { e.preventDefault(); finding = true; queueMicrotask(() => findEl?.focus()); return; }
     if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || !box) return;
     const top = box.getBoundingClientRect().top, at = box.scrollTop + 120;
     const marks = [...box.querySelectorAll<HTMLElement>('[data-bead="wait"], [data-bead="fail"]')].map((m) => m.getBoundingClientRect().top - top + box!.scrollTop);
@@ -258,6 +351,8 @@
     {#if context !== null && compactAt !== null && context >= compactAt && agent.status !== "notes"}
       <button class="chip warn" title="The context is {context}% full: summarise the conversation so far to make room (/compact)" disabled={busy} onclick={() => run(command("send", { agent: agent.id, text: "/compact" }))}>Compact</button>
     {/if}
+    {#if limits.length && agent.status !== "notes"}<span class="ctx" title={limits.map((l) => `${limitName(l.kind)}: ${pct(l.utilization)}% used${l.resets_at ? `, resets ${new Date(l.resets_at).toLocaleString()}` : ""}`).join("\n")}>{limits.slice(0, 2).map((l) => `${limitName(l.kind)} ${pct(l.utilization)}%`).join(" · ")}</span>{/if}
+    {#if mcpBad.length}<span class="ctx warnmcp" title={mcpBad.map((m) => `${m.name}: ${m.status}${m.error ? ` (${m.error})` : ""}`).join("\n")}>⚠ {mcpBad.length === 1 ? mcpBad[0].name : `${mcpBad.length} tool servers`}</span>{/if}
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
     {#if agent.edited}<button class="chip" class:on={showChanges} aria-pressed={showChanges} title="The files it changed" onclick={() => (showChanges = !showChanges)}><Icon name="diff" size={13} /> {agent.edited}</button>{/if}
     {#if agent.status !== "notes"}
@@ -277,6 +372,9 @@
             <button class="it" onclick={() => { menuOpen = false; run(command("move_agent", { agent: agent.id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move it down</span></button>
             <button class="it" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: -1 })); }}><Icon name="chev-u" size={13} /><span>Move its project up</span></button>
             <button class="it" onclick={() => { menuOpen = false; run(command("move_project", { project: agent.project_id, by: 1 })); }}><Icon name="chev-d" size={13} /><span>Move its project down</span></button>
+            {#if mcp.length}
+              <p class="foot">Tool servers: {#each mcp as m, i (m.name)}{i ? ", " : ""}<span class:bad={mcpBad.includes(m)} title={m.error ?? m.status}>{m.name} ({m.status})</span>{/each}</p>
+            {/if}
           </div>
         {/if}
       </div>
@@ -300,6 +398,15 @@
     </nav>
   {/if}
 
+  {#if finding}
+    <div class="findbar">
+      <input bind:this={findEl} bind:value={findQuery} placeholder="Find in the conversation" aria-label="Find in the conversation" onkeydown={(e) => { if (e.key === "Enter") { e.preventDefault(); stepFind(e.shiftKey ? -1 : 1); } if (e.key === "Escape") closeFind(); }} />
+      <span class="quiet small">{findQuery.trim() ? (hits.length ? `${hitAt + 1} of ${hits.length}` : "none") : ""}</span>
+      <button class="tiny" aria-label="Previous" onclick={() => stepFind(-1)}><Icon name="chev-u" size={13} /></button>
+      <button class="tiny" aria-label="Next" onclick={() => stepFind(1)}><Icon name="chev-d" size={13} /></button>
+      <button class="tiny" aria-label="Close the find bar" onclick={closeFind}><Icon name="x" size={13} /></button>
+    </div>
+  {/if}
   <div class="messages" bind:this={box} role="log" aria-label="Conversation">
     <div class="column" bind:this={column}>
       <Tube {column} live={busy && st.shape !== "wait"} />
@@ -313,6 +420,7 @@
                 {#if (t.user.images as string[] | undefined)?.length}<span class="pics">{#each t.user.images as string[] as id (id)}<Picture {id} />{/each}</span>{/if}
                 {#if agent.status !== "notes" && !busy}
                   <span class="rewind">
+                    <button title="Put it back in the box, to change and send again" onclick={() => { text = t.user!.text ?? ""; composerEl?.focus(); }}><Icon name="pencil" size={12} /> Edit and send again</button>
                     <button title="A copy of the conversation from just before this message, with it in the input to change (this one is kept)" onclick={() => rewind(t.user!.id, false)}><Icon name="undo" size={12} /> Rewind to here</button>
                     <button title="The same, and the files Claude changed from here on go back too" onclick={() => rewind(t.user!.id, true)}><Icon name="undo" size={12} /> Rewind, files too</button>
                   </span>
@@ -327,7 +435,7 @@
           {:else}
             {#if expanded.has(t.id)}<button class="result" aria-expanded="true" onclick={() => toggle(t.id)}><span class="what quiet">Fold this turn</span><Icon name="chev-d" size={13} /></button>{/if}
             {#each t.rows as row, k (row.kind === "run" ? row.id : row.entry.id)}
-              <div class="row" data-latest={i === all.length - 1 && k === t.rows.length - 1 ? "" : undefined}><Entry_ {row} agent={agent.id} /></div>
+              <div class="row" data-latest={i === all.length - 1 && k === t.rows.length - 1 ? "" : undefined}><Entry_ {row} agent={agent.id} quote={(said) => { text = `${said.split("\n").map((l) => `> ${l}`).join("\n")}\n\n${text}`; composerEl?.focus(); }} /></div>
             {/each}
           {/if}
         </section>
@@ -338,6 +446,7 @@
 
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
+    {#if agent.status !== "notes"}<Plan agent={agent.id} />{/if}
     {#if agent.edited && !showChanges && agent.status !== "notes"}
       <div class="changes-bar">
         <Icon name="diff" size={13} /> {agent.edited === 1 ? "1 file" : `${agent.edited} files`} changed{#if lastTurnFiles.length}{" · "}{lastTurnFiles.length} in the last turn{/if}
@@ -369,7 +478,12 @@
           {#each slash as c, i (c.name)}<li role="option" aria-selected={i === pickAt}><button class:on={i === pickAt} onmousedown={(e) => { e.preventDefault(); take(c); }}><b>/{c.name}</b> <span>{c.about}</span></button></li>{/each}
         </ul>
       {/if}
-      <textarea onpaste={(e) => { if (e.clipboardData?.files.length) { e.preventDefault(); attach(e.clipboardData.files); } }} aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder={suggestion ? `${suggestion}   (Tab takes it)` : "Ask Claude…  Enter sends, Shift+Enter: a new line"} bind:value={text} onkeydown={keys} disabled={gone}></textarea>
+      {#if mentions.length}
+        <ul class="slash" role="listbox" aria-label="Files to mention">
+          {#each mentions as m, i (m)}<li role="option" aria-selected={i === pickAt}><button class:on={i === pickAt} onmousedown={(e) => { e.preventDefault(); mention(m); }}><b>@{m}</b></button></li>{/each}
+        </ul>
+      {/if}
+      <textarea onpaste={(e) => { if (e.clipboardData?.files.length) { e.preventDefault(); attach(e.clipboardData.files); } }} aria-label="Message to {agent.title || 'the agent'}" rows="2" placeholder={suggestion ? `${suggestion}   (Tab takes it)` : "Ask Claude…  Enter sends, Shift+Enter: a new line"} bind:value={text} bind:this={composerEl} onkeydown={keys} disabled={gone}></textarea>
       <div class="cbar">
         <button class="tiny" aria-label="Attach pictures" title="Attach pictures (or paste, or drop them here)" disabled={gone} onclick={() => picker?.click()}><Icon name="image" size={15} /></button>
         <input class="hidden" type="file" accept="image/*" multiple bind:this={picker} onchange={(e) => { attach(e.currentTarget.files ?? []); e.currentTarget.value = ""; }} />

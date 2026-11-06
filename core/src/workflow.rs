@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use serde_json::Value;
 
 /// A workflow's launch, from its tool call: task id, folder, name, what it does.
+#[derive(Clone, Debug)]
 pub struct Launch {
     pub task: String,
     pub dir: PathBuf,

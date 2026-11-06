@@ -9,7 +9,14 @@
   import { markdown } from "./lib/markdown";
   import { command } from "./lib/api";
 
-  let { row, agent }: { row: Row; agent: string } = $props();
+  let { row, agent, quote }: { row: Row; agent: string; quote?: (text: string) => void } = $props();
+  let copied = $state(false);
+  // a message's words: what is selected in it, else all of it
+  function words(el: HTMLElement, all: string) {
+    const sel = window.getSelection();
+    return sel && !sel.isCollapsed && el.contains(sel.anchorNode) ? sel.toString() : all;
+  }
+  let msgEl: HTMLElement | undefined = $state();
   let open = $state(false);
   let pressProblem = $state("");
 
@@ -35,7 +42,15 @@
 {:else}
   {@const e = row.entry}
   {#if e.kind === "agent"}
-    {#if e.text}<div class="msg-agent md">{@html markdown(e.text)}</div>{/if}
+    {#if e.text}
+      <div class="msg-agent md" bind:this={msgEl}>
+        <div class="md">{@html markdown(e.text)}</div>
+        <span class="msg-actions">
+          <button class="tiny" title={copied ? "Copied" : "Copy the whole message"} aria-label="Copy the message" onclick={() => navigator.clipboard?.writeText(e.text ?? "").then(() => { copied = true; setTimeout(() => (copied = false), 1200); })}><Icon name={copied ? "check" : "copy"} size={13} /></button>
+          {#if quote}<button class="tiny" title="Quote it in your reply (what you selected, else all)" aria-label="Quote in your reply" onclick={() => msgEl && quote(words(msgEl, e.text ?? ""))}><Icon name="quote" size={13} /></button>{/if}
+        </span>
+      </div>
+    {/if}
   {:else if e.kind === "thought"}
     {#if e.text}<details class="thought"><summary>Thinking</summary><div>{e.text}</div></details>{/if}
   {:else if e.kind === "tool"}

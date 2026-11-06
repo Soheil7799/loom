@@ -483,3 +483,26 @@ select.chip { appearance: none; padding-right: 26px; color: var(--fg); backgroun
   background-repeat: no-repeat; background-position: right 8px center; cursor: pointer; }
 select.chip option { color: var(--fg); background: var(--pane); }
 .diff pre .dl { user-select: text; }
+
+/* ---- the plan, workflows ---- */
+.plan-box { display: flex; flex-direction: column; max-width: 706px; position: relative; left: 15px; margin: 0 auto 6px; padding: 6px 12px; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); font-size: 13.5px; }
+.plan-box.wf { flex-direction: row; align-items: center; gap: 8px; }
+.plan-head { display: flex; align-items: center; gap: 8px; padding: 0; border: 0; background: none; text-align: left; overflow: hidden; white-space: nowrap; }
+.plan-head .quiet { overflow: hidden; text-overflow: ellipsis; }
+.plan-box ol { list-style: none; margin: 6px 0 2px; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.plan-box li { display: flex; gap: 8px; }
+.plan-box li.completed { color: var(--quiet); text-decoration: line-through; }
+.plan-box li.in_progress { color: var(--accent); }
+.plan-box .mark { width: 14px; flex: none; text-align: center; }
+
+/* ---- find, tool servers, message actions ---- */
+.findbar { display: flex; align-items: center; gap: 6px; padding: 6px 20px; border-bottom: 1px solid var(--line); }
+.findbar input { width: 280px; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 4px 9px; }
+::highlight(find) { background: color-mix(in srgb, var(--wait) 35%, transparent); }
+::highlight(find-now) { background: var(--wait); color: var(--window); }
+.warnmcp { color: var(--err); }
+.menu .foot .bad { color: var(--err); }
+.msg-agent { position: relative; }
+.msg-actions { position: absolute; top: -6px; right: 0; display: none; gap: 2px; padding: 2px; border-radius: 8px; background: var(--pane); border: 1px solid var(--line); }
+.msg-agent:hover .msg-actions, .msg-agent:focus-within .msg-actions { display: flex; }
+@media (hover: none) { .msg-actions { display: flex; position: static; width: fit-content; margin-top: 4px; } }

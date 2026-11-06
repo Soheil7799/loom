@@ -255,6 +255,8 @@ impl Workspace {
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
         crate::api::close(&crate::agent::conversation(agent.id));
         crate::api::close(&format!("crew/{}", agent.id));
+        crate::api::close(&format!("plan/{}", agent.id));
+        crate::api::close(&format!("workflows/{}", agent.id));
         self.publish_agents();
         self.publish_closed();
     }
