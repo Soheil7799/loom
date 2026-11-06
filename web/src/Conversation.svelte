@@ -93,7 +93,7 @@
   });
 
   // the result line is one line of plain words: markdown's marks taken out
-  const plain = (md: string) => md.replace(/[`*_#>]+/g, "").replace(/\s+/g, " ").trim();
+  const plain = (md: string) => md.replace(/```[\s\S]*?(```|$)/g, " ").replace(/[`*_#>]+/g, "").replace(/\s+/g, " ").trim();
 
   const folded = (i: number) => {
     const t = all[i];
