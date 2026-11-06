@@ -54,6 +54,14 @@ use the file without reading it or printing it (source it, point the program at 
 the keys it needs into the file first (`OPENAI_API_KEY=`), so the user only fills the values
 in. Use `secret: false` for a file you may read once they are done.
 
+## A command that needs the user to type (passwords, prompts)
+
+A command that asks for something only the user may type (sudo's password, an SSH or GPG
+passphrase, a y/n it won't take from a flag) runs with `loom_run(name, command, input: true,
+message)`: its terminal opens in front of them with your message, and they type into it there.
+Then `loom_wait(name, timeout_seconds: 600)` until it exits, and read `loom_output`. Never put
+a password in the command or ask for it in the chat; never pipe one in with `echo`.
+
 ## Get their attention
 
 `loom_notify(message)` sends a desktop notification. Only for something that needs them and
