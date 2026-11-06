@@ -789,8 +789,73 @@ export type ClaudeRestoreParams = {
 
 /** Opens the file in the user's editor (the setting, else the desktop's), on this computer. Result: {} */
 export type EditFileParams = {
-  /** a topic's file, or one of `claude_items`' */
+  /** a file in a project, a topic's, or one of `claude_items`' */
   path: string;
+};
+
+/** A folder's entries, folders first (.git left out). Result: {entries: [{name, path, dir, size, modified}]} */
+export type FilesListParams = {
+  /** a folder in a project (absolute) */
+  folder: string;
+};
+
+/** Finds a project's files by name (Ctrl+P), best first. Result: {files: [path relative to the project]} */
+export type FilesFindParams = {
+  /** a project's folder */
+  project: string;
+  /** letters of the path, in order */
+  query: string;
+  /** at most (50; 500 tops) */
+  limit?: number;
+};
+
+/** A file's text (null: not text, or over 2 MB) and when it changed (ms), for `file_write`. Result: {text, size, modified} */
+export type FileReadParams = {
+  /** a file in a project */
+  path: string;
+};
+
+/** Saves a file. Result: {modified} */
+export type FileWriteParams = {
+  /** a file in a project (new or not) */
+  path: string;
+  text: string;
+  /** when it changed as read: a conflict if it changed since */
+  modified?: number;
+};
+
+/** The project's git repositories and what changed in each (git's two letters: M  staged, ` M` not yet, ?? new). Result: {repos: [{path, name, branch, ahead, behind, changes: [{code, file}]}]} */
+export type GitReposParams = {
+  /** a project's folder */
+  project: string;
+};
+
+/** A file's diff. Result: {diff} */
+export type GitDiffParams = {
+  /** one of `git_repos`' */
+  repo: string;
+  /** relative to it */
+  file: string;
+  /** the staged changes (else the ones not yet) */
+  staged?: boolean;
+};
+
+/** Stages, unstages or throws away files' changes, or commits what is staged. Result: {} */
+export type GitDoParams = {
+  repo: string;
+  /** stage, unstage, discard (back to the last commit: it can't be undone), commit */
+  act: string;
+  /** relative paths (not for commit) */
+  files?: unknown[];
+  /** commit's */
+  message?: string;
+};
+
+/** The newest commits. Result: {commits: [{hash, refs, subject, author, when}]} */
+export type GitLogParams = {
+  repo: string;
+  /** 200; 2000 tops */
+  limit?: number;
 };
 
 /** An ask answered: a file filled in (the agent goes on), or one seen (it goes). Result: {} */
@@ -882,6 +947,14 @@ export interface Commands {
   "claude_new": ClaudeNewParams;
   "claude_restore": ClaudeRestoreParams;
   "edit_file": EditFileParams;
+  "files_list": FilesListParams;
+  "files_find": FilesFindParams;
+  "file_read": FileReadParams;
+  "file_write": FileWriteParams;
+  "git_repos": GitReposParams;
+  "git_diff": GitDiffParams;
+  "git_do": GitDoParams;
+  "git_log": GitLogParams;
   "ask_done": AskDoneParams;
   "ask_open": AskOpenParams;
   "notes_open": NotesOpenParams;

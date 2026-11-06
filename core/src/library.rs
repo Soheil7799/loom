@@ -8,7 +8,7 @@
 //!   file from it; answered once drafted) → `{path}`
 //! - `claude_items`: `{folder, items: [{kind: skill|agent|command, name, description, enabled, shipped, path}]}`
 //! - `claude_set {kind, name, enabled}`, `claude_new {kind, name}` → `{path}`, `claude_restore {name}`
-//! - `edit_file {path}`: one of those files, opened in the user's editor.
+//! - `edit_file {path}`: one of those files, or one in a project, opened in the user's editor.
 
 use std::path::{Path, PathBuf};
 
@@ -49,7 +49,8 @@ fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {
 /// Every file `edit_file` may open: the topics' and the Claude folder's.
 fn editable(path: &Path) -> bool {
     let topic = crate::vault::current().is_some_and(|v| topics::list(&v).iter().any(|t| t.path == path));
-    topic || Kind::ALL.iter().any(|k| plugin::items(*k).iter().any(|i| i.file == path))
+    let project = crate::api::hub().store("projects").items().iter().filter_map(|p| p["id"].as_str().and_then(|p| Path::new(p).canonicalize().ok())).any(|p| path.canonicalize().is_ok_and(|f| f.starts_with(&p)));
+    topic || project || Kind::ALL.iter().any(|k| plugin::items(*k).iter().any(|i| i.file == path))
 }
 
 /// Registers the commands (once, at start).
@@ -133,7 +134,7 @@ pub fn serve() {
         person(who)?;
         let path = PathBuf::from(string(params, "path")?);
         if !editable(&path) {
-            return Err(Error::Forbidden("only a topic's file or one of loom's Claude folder".into()));
+            return Err(Error::Forbidden("only a project's file, a topic's or one of loom's Claude folder".into()));
         }
         crate::asks::open_in_editor(&path).map_err(Error::Failed)?;
         Ok(json!({}))

@@ -25,6 +25,7 @@ pub mod notes_api;
 pub mod notes_chat;
 pub mod paths;
 pub mod plugin;
+pub mod project_files;
 pub mod provider;
 pub mod quickopen;
 pub mod repos;

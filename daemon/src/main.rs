@@ -271,6 +271,7 @@ async fn run() -> u8 {
     }
     loom_core::asks::serve();
     loom_core::library::serve();
+    loom_core::project_files::serve();
     if loom_core::paths::loom_program().is_none() {
         eprintln!("loomd: no `loom` program beside loomd: agents will have no loom tools, and the bridges won't start");
     }

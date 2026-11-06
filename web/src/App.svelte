@@ -9,6 +9,7 @@
   import Notes from "./Notes.svelte";
   import Settings from "./Settings.svelte";
   import Overview from "./Overview.svelte";
+  import Files from "./Files.svelte";
 
   let conn = $state<{ state: State; hello: any }>({ state: "connecting", hello: null });
   let agents = $state.raw<AgentsItem[]>([]);
@@ -17,6 +18,19 @@
   let jobs = $state.raw<JobsItem[]>([]);
   let job = $state<string | null>(null);
   let chat = $state<{ agent: string; title: string } | null>(null);
+  let filesProject = $state("");
+  let findAsked = $state(0);
+  // Ctrl+E: the files (of the open agent's project); Ctrl+P: find a file there
+  function keys(e: KeyboardEvent) {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return;
+    if (e.key === "e" || e.key === "p") {
+      e.preventDefault();
+      if (view !== "files" && current) filesProject = current.project_id;
+      if (e.key === "e" && view === "files") return void (view = "chat");
+      view = "files";
+      if (e.key === "p") findAsked++;
+    }
+  }
   let selected = $state<string | null>(null);
   let view = $state("chat");
   let problem = $state("");
@@ -59,6 +73,8 @@
   }
 </script>
 
+<svelte:window onkeydown={keys} />
+
 {#if conn.state === "refused"}
   <main class="refused">
     <h1>loom</h1>
@@ -66,11 +82,13 @@
   </main>
 {:else}
   <div class="app">
-    <Sidebar {agents} {projects} {selected} {view} pick={(id) => { selected = id; view = "chat"; }} show={(v) => (view = v)} {act} />
+    <Sidebar {agents} {projects} {selected} {view} pick={(id) => { selected = id; view = "chat"; }} show={(v) => { if (v === "files" && current) filesProject = current.project_id; view = v; }} {act} />
     <main class="main">
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
-      {#if view === "overview"}
+      {#if view === "files"}
+        <Files {projects} bind:project={filesProject} {findAsked} />
+      {:else if view === "overview"}
         <Overview {agents} pick={(id) => { selected = id; view = "chat"; }} />
       {:else if view === "settings"}
         <Settings />

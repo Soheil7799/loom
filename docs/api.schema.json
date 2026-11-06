@@ -2480,7 +2480,7 @@
         "properties": {
           "path": {
             "type": "string",
-            "description": "a topic's file, or one of `claude_items`'"
+            "description": "a file in a project, a topic's, or one of `claude_items`'"
           }
         },
         "required": [
@@ -2488,6 +2488,218 @@
         ]
       },
       "result": "{}"
+    },
+    "files_list": {
+      "description": "A folder's entries, folders first (.git left out).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "a folder in a project (absolute)"
+          }
+        },
+        "required": [
+          "folder"
+        ]
+      },
+      "result": "{entries: [{name, path, dir, size, modified}]}"
+    },
+    "files_find": {
+      "description": "Finds a project's files by name (Ctrl+P), best first.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "a project's folder"
+          },
+          "query": {
+            "type": "string",
+            "description": "letters of the path, in order"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "at most (50; 500 tops)"
+          }
+        },
+        "required": [
+          "project",
+          "query"
+        ]
+      },
+      "result": "{files: [path relative to the project]}"
+    },
+    "file_read": {
+      "description": "A file's text (null: not text, or over 2 MB) and when it changed (ms), for `file_write`.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "a file in a project"
+          }
+        },
+        "required": [
+          "path"
+        ]
+      },
+      "result": "{text, size, modified}"
+    },
+    "file_write": {
+      "description": "Saves a file.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string",
+            "description": "a file in a project (new or not)"
+          },
+          "text": {
+            "type": "string",
+            "description": ""
+          },
+          "modified": {
+            "type": "integer",
+            "description": "when it changed as read: a conflict if it changed since"
+          }
+        },
+        "required": [
+          "path",
+          "text"
+        ]
+      },
+      "result": "{modified}"
+    },
+    "git_repos": {
+      "description": "The project's git repositories and what changed in each (git's two letters: M  staged, ` M` not yet, ?? new).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "a project's folder"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": "{repos: [{path, name, branch, ahead, behind, changes: [{code, file}]}]}"
+    },
+    "git_diff": {
+      "description": "A file's diff.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": "one of `git_repos`'"
+          },
+          "file": {
+            "type": "string",
+            "description": "relative to it"
+          },
+          "staged": {
+            "type": "boolean",
+            "description": "the staged changes (else the ones not yet)"
+          }
+        },
+        "required": [
+          "repo",
+          "file"
+        ]
+      },
+      "result": "{diff}"
+    },
+    "git_do": {
+      "description": "Stages, unstages or throws away files' changes, or commits what is staged.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": ""
+          },
+          "act": {
+            "type": "string",
+            "description": "stage, unstage, discard (back to the last commit: it can't be undone), commit"
+          },
+          "files": {
+            "type": "array",
+            "description": "relative paths (not for commit)"
+          },
+          "message": {
+            "type": "string",
+            "description": "commit's"
+          }
+        },
+        "required": [
+          "repo",
+          "act"
+        ]
+      },
+      "result": "{}"
+    },
+    "git_log": {
+      "description": "The newest commits.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": ""
+          },
+          "limit": {
+            "type": "integer",
+            "description": "200; 2000 tops"
+          }
+        },
+        "required": [
+          "repo"
+        ]
+      },
+      "result": "{commits: [{hash, refs, subject, author, when}]}"
     },
     "ask_done": {
       "description": "An ask answered: a file filled in (the agent goes on), or one seen (it goes).",

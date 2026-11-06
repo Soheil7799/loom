@@ -1,0 +1,18 @@
+[
+ {"js":"document.querySelector('[aria-label=Files]').click(); 'files'", "wait":800},
+ {"js":"{ const s=document.querySelector('.files-page select'); s.value='/tmp/webtest/repo'; s.dispatchEvent(new Event('change',{bubbles:true})); } 'repo'", "wait":1200},
+ {"js":"[...document.querySelectorAll('.tree .trow')].map(b=>b.textContent).join(', ')", "wait":100},
+ {"js":"[...document.querySelectorAll('.tree .trow')].find(b=>b.textContent.includes('notes.txt')).click(); 'open'", "wait":1000},
+ {"js":"{ const t=document.querySelector('textarea.code'); t.value=t.value.replace('line 1','LINE ONE'); t.dispatchEvent(new Event('input',{bubbles:true})); } document.querySelector('.ebar .needs')?.textContent", "wait":300},
+ {"js":"document.dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true,bubbles:true})); window.dispatchEvent(new KeyboardEvent('keydown',{key:'s',ctrlKey:true})); 'save'", "wait":1000},
+ {"js":"(document.querySelector('.ebar .needs')?.textContent ?? 'saved') + ' ' + (document.querySelector('.files-page .error')?.textContent ?? '')", "wait":100},
+ {"js":"window.dispatchEvent(new KeyboardEvent('keydown',{key:'p',ctrlKey:true})); 'find'", "wait":500},
+ {"type":"nots", "wait":800, "shot":true},
+ {"js":"[...document.querySelectorAll('.finder .trow')].map(b=>b.textContent).join(', ')", "wait":100},
+ {"js":"document.querySelector('.finder')?.remove(); document.querySelector('.scrim')?.click(); [...document.querySelectorAll('.tabs button')][1].click(); 'git'", "wait":1500},
+ {"js":"[...document.querySelectorAll('.git .trow')].map(b=>b.textContent).join(', ')", "wait":100},
+ {"js":"document.querySelector('[aria-label^=\"Stage notes\"]').click(); 'stage'", "wait":1500},
+ {"js":"{ const i=document.querySelector('.commit input'); i.value='web test commit'; i.dispatchEvent(new Event('input',{bubbles:true})); } 'msg'", "wait":300},
+ {"js":"document.querySelector('.commit').requestSubmit(); 'commit'", "wait":2000, "shot":true},
+ {"js":"[...document.querySelectorAll('.commitrow')].slice(0,2).map(r=>r.textContent).join(' | ')", "wait":100}
+]

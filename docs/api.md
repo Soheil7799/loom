@@ -920,7 +920,97 @@ Who: window, cli. Result: `{}`.
 
 | Param | Type | |
 |---|---|---|
-| `path` | string | a topic's file, or one of `claude_items`' |
+| `path` | string | a file in a project, a topic's, or one of `claude_items`' |
+
+### `files_list`
+
+A folder's entries, folders first (.git left out).
+
+Who: window, cli. Result: `{entries: [{name, path, dir, size, modified}]}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `folder` | string | a folder in a project (absolute) |
+
+### `files_find`
+
+Finds a project's files by name (Ctrl+P), best first.
+
+Who: window, cli. Result: `{files: [path relative to the project]}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | a project's folder |
+| `query` | string | letters of the path, in order |
+| `limit` | integer? | at most (50; 500 tops) |
+
+### `file_read`
+
+A file's text (null: not text, or over 2 MB) and when it changed (ms), for `file_write`.
+
+Who: window, cli. Result: `{text, size, modified}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `path` | string | a file in a project |
+
+### `file_write`
+
+Saves a file.
+
+Who: window, cli. Result: `{modified}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `path` | string | a file in a project (new or not) |
+| `text` | string |  |
+| `modified` | integer? | when it changed as read: a conflict if it changed since |
+
+### `git_repos`
+
+The project's git repositories and what changed in each (git's two letters: M  staged, ` M` not yet, ?? new).
+
+Who: window, cli. Result: `{repos: [{path, name, branch, ahead, behind, changes: [{code, file}]}]}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | a project's folder |
+
+### `git_diff`
+
+A file's diff.
+
+Who: window, cli. Result: `{diff}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `repo` | string | one of `git_repos`' |
+| `file` | string | relative to it |
+| `staged` | boolean? | the staged changes (else the ones not yet) |
+
+### `git_do`
+
+Stages, unstages or throws away files' changes, or commits what is staged.
+
+Who: window, cli. Result: `{}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `repo` | string |  |
+| `act` | string | stage, unstage, discard (back to the last commit: it can't be undone), commit |
+| `files` | array? | relative paths (not for commit) |
+| `message` | string? | commit's |
+
+### `git_log`
+
+The newest commits.
+
+Who: window, cli. Result: `{commits: [{hash, refs, subject, author, when}]}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `repo` | string |  |
+| `limit` | integer? | 200; 2000 tops |
 
 ### `ask_done`
 

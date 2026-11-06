@@ -365,3 +365,36 @@ dialog.whole img { display: block; max-width: 92vw; max-height: 92vh; }
 .plan label.check { flex-direction: row; align-items: center; gap: 8px; color: var(--fg); }
 .plan textarea, .plan input:not([type=checkbox]) { font: inherit; color: var(--fg); border: 1px solid var(--line); border-radius: var(--r-control); background: var(--window); padding: 6px 10px; }
 @media (max-width: 1000px) { .overview-split { grid-template-columns: 1fr; } .scheduled { border-left: 0; border-top: 1px solid var(--line); } }
+
+/* ---- files and git ---- */
+.files-page { display: flex; flex-direction: column; height: 100%; min-height: 0; position: relative; }
+.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-control); overflow: hidden; }
+.tabs button { padding: 4px 14px; border: 0; background: none; color: var(--quiet); }
+.tabs button.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--fg); }
+.files-split { display: grid; grid-template-columns: 300px 1fr; flex: 1; min-height: 0; }
+.tree, .git { overflow: auto; padding: 8px 0; border-right: 1px solid var(--line); }
+.git { padding: 8px 10px; }
+.trow { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 10px; border: 0; background: none; text-align: left; font-size: 13.5px; white-space: nowrap; }
+.trow span { overflow: hidden; text-overflow: ellipsis; }
+.trow:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.trow.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.fdot { width: 12px; flex: none; }
+.editor { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 8px 16px 16px; }
+.editor .diffs { overflow: auto; }
+.ebar { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ebar code { font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+textarea.code { flex: 1; min-height: 0; resize: none; font-family: var(--mono); font-size: 13px; line-height: 1.5; tab-size: 4; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-block); background: var(--pane); color: var(--fg); white-space: pre; overflow: auto; }
+.grow-row { display: flex; align-items: center; }
+.grow-row .trow { flex: 1; min-width: 0; }
+.gacts { display: inline-flex; flex: none; }
+.git .badge { flex: none; min-width: 24px; text-align: center; padding: 0 4px; border-radius: 5px; font-family: var(--mono); font-size: 11.5px; background: color-mix(in srgb, var(--fg) 8%, transparent); }
+.git .badge.st { background: color-mix(in srgb, var(--ok) 25%, transparent); }
+.git h3 { margin: 18px 0 6px; font-size: 12px; font-weight: 400; letter-spacing: 0.07em; color: var(--quiet); }
+.commit { display: flex; gap: 6px; margin: 10px 0; }
+.commit input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: var(--r-control); background: var(--pane); padding: 5px 9px; }
+.commitrow { margin: 0; padding: 3px 0; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.commitrow code { font-family: var(--mono); color: var(--accent); }
+.commitrow .refs { margin-left: 6px; padding: 0 5px; border-radius: 5px; font-size: 11.5px; background: color-mix(in srgb, var(--wait) 18%, transparent); }
+.finder { position: absolute; top: 70px; left: 50%; translate: -50% 0; width: min(560px, 92%); max-height: 60vh; overflow: auto; padding: 8px; border-radius: var(--r-block); background: var(--pane); border: 1px solid var(--line); box-shadow: 0 20px 50px color-mix(in srgb, var(--shadow) 35%, transparent); }
+.finder input { width: 100%; margin-bottom: 6px; padding: 7px 10px; border: 1px solid var(--accent); border-radius: var(--r-control); background: var(--window); color: var(--fg); font: inherit; }
+.finder .trow { font-family: var(--mono); font-size: 13px; }
