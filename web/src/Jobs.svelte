@@ -6,10 +6,11 @@
   import Icon from "./Icon.svelte";
   import Terminal from "./Terminal.svelte";
 
-  let { jobs, projects, open = $bindable(null), runAsked = 0 }: { jobs: JobsItem[]; projects: ProjectsItem[]; open: string | null; runAsked?: number } = $props();
+  let { jobs, projects, open = $bindable(null), runAsked = $bindable(false) }: { jobs: JobsItem[]; projects: ProjectsItem[]; open: string | null; runAsked?: boolean } = $props();
   let runInput: HTMLInputElement | undefined = $state();
   // Ctrl+J: the command box, to type a command to run
-  $effect(() => { if (runAsked) runInput?.focus(); });
+  // Ctrl+J: the command box, once per press (a job opened to be typed in keeps the keys)
+  $effect(() => { if (runAsked && runInput) { runAsked = false; runInput.focus(); } });
   const finished = $derived(jobs.filter((j) => j.status === "exited"));
   async function clearFinished() {
     for (const j of finished) await run(command("remove_job", { job: j.id }));

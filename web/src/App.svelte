@@ -24,7 +24,7 @@
   let job = $state<string | null>(null);
   let chat = $state<{ agent: string; title: string } | null>(null);
   let filesProject = $state("");
-  let findAsked = $state(0);
+  let findAsked = $state(false);
   let palette = $state(false);
   let about = $state(false);
 
@@ -55,10 +55,10 @@
   let scratch = $state(false);
   let beside = $state<string | null>(null);
   let previous: string | null = null;
-  let runAsked = $state(0);
+  let runAsked = $state(false);
 
   const pick = (id: string) => { if (id !== selected) previous = selected; selected = id; view = "chat"; };
-  const files = (find = false) => { if (current) filesProject = current.project_id; view = "files"; if (find) findAsked++; };
+  const files = (find = false) => { if (current) filesProject = current.project_id; view = "files"; if (find) (findAsked = true); };
   const newestJob = () => { const j = jobs.at(-1); if (j) { job = j.id; view = "jobs"; } };
   const nextMode = () => {
     const modes = (current?.modes ?? []) as string[];
@@ -81,7 +81,7 @@
     { name: "Files and git", keys: "Ctrl+E", run: () => files() },
     { name: "Find a file in the project", keys: "Ctrl+P", run: () => files(true) },
     { name: "Scratch terminal", keys: "Ctrl+`", run: () => (scratch = !scratch) },
-    { name: "Run a command in the tray…", keys: "Ctrl+J", run: () => { view = "jobs"; runAsked++; } },
+    { name: "Run a command in the tray…", keys: "Ctrl+J", run: () => { view = "jobs"; (runAsked = true); } },
     { name: "Peek the newest job", keys: "Ctrl+Shift+J", run: newestJob },
     { name: "Questions waiting: the next", keys: "Ctrl+I", run: () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true })) },
     { name: "Overview of all agents", keys: "Alt+O", run: () => (view = "overview") },
@@ -117,7 +117,7 @@
       if (k === "e") return take(() => (view === "files" ? (view = "chat") : files()));
       if (k === "p") return take(() => files(true));
       if (k === "`") return take(() => (scratch = !scratch));
-      if (k === "j") return take(() => { view = "jobs"; runAsked++; });
+      if (k === "j") return take(() => { view = "jobs"; (runAsked = true); });
       if (k === "b") return take(() => (noSidebar = !noSidebar));
       if (k === "\\") return take(toggleBeside);
       if (k === ",") return take(() => (view = "settings"));
@@ -125,7 +125,7 @@
     if (ctrl && e.shiftKey && k === "j") return take(newestJob);
     if (e.altKey && !ctrl && !e.shiftKey) {
       if (k === "n") return take(() => (starting = true));
-      if (k === "w") return take(() => actions[2].run());
+      if (k === "w") return take(() => actions.find((a) => a.name === "Close this agent")?.run());
       if (k === "o") return take(() => (view = view === "overview" ? "chat" : "overview"));
       if (k === "m") return take(() => (view = view === "notes" ? "chat" : "notes"));
       if (e.key === "ArrowLeft" && beside) return take(swap);
@@ -146,7 +146,8 @@
     const stops = [
       follow("agents", (f) => (agents = [...f.items] as AgentsItem[])),
       follow("projects", (f) => (projects = [...f.items] as ProjectsItem[])),
-      follow("asks", (f) => (asks = [...f.items] as AsksItem[])),
+      // the asks there when the page opens are not new
+      follow("asks", (f) => { seenAsks ??= new Set(f.items.map((a) => a.id)); asks = [...f.items] as AsksItem[]; }),
       follow("jobs", (f) => (jobs = [...f.items] as JobsItem[])),
     ];
     return () => stops.forEach((s) => s());
@@ -167,10 +168,17 @@
   // A job waiting for you to type (an agent's `loom_run` with input): its terminal, at once.
   let seenAsks: Set<string> | null = null;
   $effect(() => {
-    const fresh = seenAsks ? asks.filter((a) => a.kind === "input" && !seenAsks!.has(a.id)) : [];
-    seenAsks = new Set(asks.map((a) => a.id));
+    if (!seenAsks) return;
+    const fresh = asks.filter((a) => a.kind === "input" && !seenAsks!.has(a.id));
+    for (const a of asks) seenAsks.add(a.id);
     const latest = fresh.at(-1) as (typeof fresh)[number] & { job?: string } | undefined;
     if (latest?.job) { job = latest.job; view = "jobs"; }
+  });
+  // An input ask whose job has ended is answered: it goes.
+  $effect(() => {
+    for (const a of asks as (AsksItem & { job?: string })[]) {
+      if (a.kind === "input" && a.job && jobs.find((j) => j.id === a.job)?.status === "exited") command("ask_done", { id: a.id }).catch(() => {});
+    }
   });
 
   const current = $derived(agents.find((a) => a.id === selected) ?? null);
@@ -201,7 +209,7 @@
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
       {#if view === "files"}
-        <Files {projects} bind:project={filesProject} {findAsked} />
+        <Files {projects} bind:project={filesProject} bind:findAsked />
       {:else if view === "overview"}
         <Overview {agents} {pick} />
       {:else if view === "settings"}
@@ -211,7 +219,7 @@
       {:else if view === "asks"}
         <Asks {asks} {agents} {pick} showJob={(id) => { job = id; view = "jobs"; }} />
       {:else if view === "jobs"}
-        <Jobs {jobs} {projects} bind:open={job} {runAsked} />
+        <Jobs {jobs} {projects} bind:open={job} bind:runAsked />
       {:else if current}
         <div class="pair" class:two={!!besideAgent}>
           {#key current.id}<Conversation agent={current} active jobs={jobs.filter((j) => j.project_id === current.project_id && j.name !== "scratch")} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}

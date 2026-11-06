@@ -126,7 +126,10 @@ pub enum Event {
     Files,
     /// A permission question came in (its title).
     Asked(String),
-    /// A turn finished.
+    /// A turn ended (its reply whole): the bridges relay it.
+    TurnEnded,
+    /// The work asked for is over: the turn ended and nothing it left going runs (background
+    /// agents, workflows). Notifications, "done, not seen".
     Done,
     /// Messages that never went out (the turn was stopped first): how many.
     Unsent(usize),
@@ -478,7 +481,7 @@ impl Agent {
 
     fn emit(self: &Rc<Self>, event: Event) {
         match &event {
-            Event::Done => self.turns_ended.set(self.turns_ended.get() + 1),
+            Event::TurnEnded => self.turns_ended.set(self.turns_ended.get() + 1),
             Event::Failed(why) => {
                 let mut failures = self.failures.borrow_mut();
                 *failures = (failures.0 + 1, why.clone());
@@ -1226,16 +1229,17 @@ impl Agent {
             self.view.set_working(None);
             self.view.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
+            self.emit(Event::TurnEnded);
             self.done_owed.set(true);
             self.settle_done(true);
         }
         self.refresh_status();
     }
 
-    /// Work Claude left going past a turn: background subagents, commands, workflows. It
-    /// goes on by itself once they end.
+    /// Work Claude left going past a turn that it goes on from once it ends: background
+    /// subagents and workflows. Not background commands: a dev server never ends.
     pub fn background_busy(&self) -> bool {
-        self.background_running() || self.subs.borrow().iter().any(|s| s.ended.get().is_none() && s.state.borrow().as_deref() == Some("running"))
+        self.workflow_running() || self.subs.borrow().iter().any(|s| s.ended.get().is_none() && s.state.borrow().as_deref() == Some("running"))
     }
 
     /// "Done", if owed and nothing is left going: at once at a turn's end (`now`); after a
@@ -1855,6 +1859,7 @@ impl Agent {
                 agent.last_turn.set(Instant::now());
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.mark_used();
+                agent.emit(Event::TurnEnded);
                 // a queued message goes first: "done" is for the end of all of it
                 agent.done_owed.set(true);
                 agent.send_next();

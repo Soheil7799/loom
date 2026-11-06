@@ -408,7 +408,9 @@ impl Host {
                 told["event"] = json!("agent");
             }
             Event::Asked(_) => told["event"] = json!("asked"),
-            Event::Done => {
+            // Each turn's reply goes to the phone as it ends (a turn that left background
+            // agents going is not the end of the work, but its words are said).
+            Event::TurnEnded => {
                 told["event"] = json!("done");
                 told["reply"] = json!(agent.view.last_reply());
                 told["took"] = json!(crate::paths::elapsed(agent.last_took.get()));

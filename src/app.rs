@@ -1799,35 +1799,19 @@ impl App {
     /// Moves the focused agent up or down among its project's agents.
     fn move_agent(self: &Rc<Self>, by: i32) {
         let Some(agent) = self.focused_agent() else { return };
-        {
-            let mut agents = self.ws.agents.borrow_mut();
-            let mine: Vec<usize> = agents.iter().enumerate().filter(|(_, a)| a.project == agent.project).map(|(i, _)| i).collect();
-            let Some(at) = mine.iter().position(|&i| Rc::ptr_eq(&agents[i], &agent)) else { return };
-            let to = at as i32 + by;
-            if to < 0 || to as usize >= mine.len() {
-                return;
-            }
-            agents.swap(mine[at], mine[to as usize]);
+        if self.ws.move_agent(agent.id, by) {
+            self.refresh_sidebar();
+            self.save();
         }
-        self.refresh_sidebar();
-        self.save();
     }
 
     /// Moves the project in view up or down the sidebar.
     fn move_project(self: &Rc<Self>, by: i32) {
         let project = self.focused_agent().map(|a| a.project.clone()).or_else(|| self.showing_project());
-        let Some(project) = project else { return };
-        {
-            let mut projects = self.ws.projects.borrow_mut();
-            let Some(at) = projects.iter().position(|p| p.path == project) else { return };
-            let to = at as i32 + by;
-            if to < 0 || to as usize >= projects.len() {
-                return;
-            }
-            projects.swap(at, to as usize);
+        if project.is_some_and(|p| self.ws.move_project(&p, by)) {
+            self.refresh_sidebar();
+            self.save();
         }
-        self.refresh_sidebar();
-        self.save();
     }
 
     /// Asks for a folder the focused agent may work in besides its own (another repo).
@@ -2378,6 +2362,7 @@ impl App {
                 Event::Session => "session".to_owned(),
                 Event::Files => "files".to_owned(),
                 Event::Asked(title) => format!("asked: {title}"),
+                Event::TurnEnded => "turn ended".to_owned(),
                 Event::Done => "done".to_owned(),
                 Event::Compacting => "compacting".to_owned(),
                 Event::Failed(why) => format!("failed: {why}"),
@@ -2425,12 +2410,15 @@ impl App {
                     }
                 }
             }
+            // Scribe reads each turn as it ends.
+            Event::TurnEnded => {
+                if let Some(session) = agent.session_id() {
+                    self.hub.turn_done(&session);
+                }
+            }
             Event::Done => {
                 if !looking && settings::get().notify_done {
                     self.notify(agent, "Finished");
-                }
-                if let Some(session) = agent.session_id() {
-                    self.hub.turn_done(&session);
                 }
                 self.refresh_sidebar();
             }

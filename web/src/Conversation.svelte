@@ -202,7 +202,8 @@
     a.href = URL.createObjectURL(new Blob([got.markdown], { type: "text/markdown" }));
     a.download = `${(agent.title || "conversation").replace(/[^\p{L}\p{N} -]+/gu, "_").trim()}.md`;
     a.click();
-    URL.revokeObjectURL(a.href);
+    // after the download has begun (Firefox would drop it)
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
   async function anotherFolder() {
     const folder = prompt("Another folder this agent may work in (absolute path). It restarts.", agent.project_id);

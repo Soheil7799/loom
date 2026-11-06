@@ -104,6 +104,34 @@ fn replied(entries: &[Value], text: &str) -> bool {
     entries.iter().any(|e| e["kind"] == "agent" && e["text"].as_str().is_some_and(|t| t.contains(text))) && entries.last().is_some_and(|e| e["kind"] == "turn")
 }
 
+/// The agent's item in `agents`.
+fn agent_item(c: &mut Connection, id: &str) -> Value {
+    c.get("agents").unwrap().into_iter().find(|a| a["id"] == id).expect("the agent")
+}
+
+#[test]
+fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
+    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
+    let (d, mut c) = start("Done", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let agent = command(&mut c, "new_agent", json!({ "folder": d.root.join("project") }))["agent"].as_str().unwrap().to_owned();
+    // A turn that leaves a background agent going: its reply ends the turn, the work goes on.
+    command(&mut c, "send", json!({ "agent": agent, "text": "background" }));
+    until(&mut c, &format!("conversation/{agent}"), Duration::from_secs(20), "the first turn's end", |e| replied(e, "started"));
+    let a = agent_item(&mut c, &agent);
+    assert_eq!((a["busy"].as_bool(), a["unseen"].as_bool()), (Some(true), Some(false)), "still working, not done: {a}");
+    assert_eq!(a["last_turn"]["turns"], 1, "the turn did end (its reply goes to the phone)");
+    // The background agent ends, the agent goes on by itself, then the work is done: once.
+    until(&mut c, "agents", Duration::from_secs(20), "done", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["unseen"] == true && a["busy"] == false));
+    let a = agent_item(&mut c, &agent);
+    assert_eq!(a["last_turn"]["turns"], 2, "two turns ended: {a}");
+    command(&mut c, "mark_seen", json!({ "agent": agent }));
+    std::thread::sleep(Duration::from_secs(3));
+    assert_eq!(agent_item(&mut c, &agent)["unseen"], false, "done only once");
+    // A turn that leaves a dev server running is done at once: it never ends by itself.
+    command(&mut c, "send", json!({ "agent": agent, "text": "server" }));
+    until(&mut c, "agents", Duration::from_secs(20), "done beside a dev server", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["unseen"] == true && a["busy"] == false));
+}
+
 fn agent_tests() -> bool {
     std::env::var_os("LOOM_E2E_AGENT").is_some()
 }

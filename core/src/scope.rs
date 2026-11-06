@@ -10,6 +10,9 @@ use std::sync::OnceLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 static WORKS: OnceLock<bool> = OnceLock::new();
+/// This systemd takes --expand-environment=no (254 and later, which expand $VAR in the
+/// command unless told not to; older ones never did).
+static NO_EXPAND: OnceLock<bool> = OnceLock::new();
 
 /// Finds out, off the core's thread, whether scopes work here (call once, early: loom's
 /// start). Until it knows, nothing is wrapped (loom goes by the process tree).
@@ -28,14 +31,22 @@ fn works() -> bool {
     if std::env::var_os("LOOM_NO_SCOPES").is_some() {
         return false;
     }
-    std::process::Command::new("systemd-run")
-        // the flag as `wrap` passes it: a systemd before 254 doesn't know it, and gets no scopes
-        .args(["--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "--", "true"])
-        .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()
-        .is_ok_and(|s| s.success())
+    let probe = |flag: &[&str]| {
+        std::process::Command::new("systemd-run")
+            .args(["--user", "--scope", "--quiet", "--collect"])
+            .args(flag)
+            .args(["--", "true"])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    };
+    if probe(&["--expand-environment=no"]) {
+        let _ = NO_EXPAND.set(true);
+        return true;
+    }
+    probe(&[])
 }
 
 /// `program` run in a new scope of agent `agent`'s (as it is, when scopes aren't available).
@@ -47,7 +58,11 @@ pub fn wrap(program: &[String], agent: u32) -> Vec<String> {
     let unit = format!("{}{agent}-{}", prefix(), NEXT.fetch_add(1, Ordering::Relaxed));
     // The command as given: systemd-run would otherwise expand $VAR and ${…} in it first
     // (`${#s}`, `$1`, `${x:-y}` emptied before bash sees them).
-    let mut wrapped: Vec<String> = ["systemd-run", "--user", "--scope", "--quiet", "--collect", "--expand-environment=no", "--unit", &unit, "--"].map(str::to_owned).to_vec();
+    let mut wrapped: Vec<String> = ["systemd-run", "--user", "--scope", "--quiet", "--collect"].map(str::to_owned).to_vec();
+    if NO_EXPAND.get() == Some(&true) {
+        wrapped.push("--expand-environment=no".to_owned());
+    }
+    wrapped.extend(["--unit".to_owned(), unit, "--".to_owned()]);
     wrapped.extend_from_slice(program);
     wrapped
 }

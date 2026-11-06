@@ -26,8 +26,11 @@ fn projects() -> Vec<PathBuf> {
     crate::api::hub().store("projects").items().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect()
 }
 
-/// `path` (absolute), if it lies in one of `projects`: no `..` past one, no symlink out of it.
-fn inside(path: &str, projects: &[PathBuf]) -> Result<PathBuf, Error> {
+/// `path` (absolute), if it lies in one of `projects`: no `..` past one, no symlink out of it
+/// (a dangling one too: written through, it would make its target wherever that is).
+// shortcut: checked, then used: a link swapped in between goes unseen; fine for one person's
+// own projects, a reason for openat-style checks if others could write into them
+pub(crate) fn inside(path: &str, projects: &[PathBuf]) -> Result<PathBuf, Error> {
     let path = Path::new(path);
     if !path.is_absolute() {
         return Err(Error::Invalid(format!("{} is not an absolute path", path.display())));
@@ -35,6 +38,7 @@ fn inside(path: &str, projects: &[PathBuf]) -> Result<PathBuf, Error> {
     // A file not there yet: its folder must be.
     let real = match path.canonicalize() {
         Ok(real) => real,
+        Err(_) if path.symlink_metadata().is_ok() => return Err(Error::Forbidden(format!("{} is a link to nowhere", path.display()))),
         Err(_) => path.parent().and_then(|p| p.canonicalize().ok()).map(|p| p.join(path.file_name().unwrap_or_default())).ok_or_else(|| Error::NotFound(path.display().to_string()))?,
     };
     let within = projects.iter().filter_map(|p| p.canonicalize().ok()).any(|p| real.starts_with(&p));
@@ -122,6 +126,10 @@ fn act(repo: &Path, act: &str, files: &[String], message: &str) -> Result<Value,
         _ if act != "commit" && files.is_empty() => return Err(Error::Invalid("which files?".into())),
         "stage" => with(&["add"]),
         "unstage" => with(&["restore", "--staged"]),
+        // only what the last commit has: a file new in the index has nothing to go back to
+        "discard" if files.iter().any(|f| git(repo, &["cat-file", "-e", &format!("HEAD:{f}")]).is_err()) => {
+            return Err(Error::Invalid("not in the last commit (new, or renamed): unstage it, then delete it".into()));
+        }
         "discard" => with(&["restore", "--staged", "--worktree", "--source=HEAD"]),
         "commit" if message.trim().is_empty() => return Err(Error::Invalid("a commit needs a message".into())),
         "commit" => vec!["commit".into(), "-m".into(), message.trim().into()],
@@ -230,6 +238,8 @@ mod tests {
         assert!(matches!(inside(&at(&project.join("../secret")), &projects), Err(Error::Forbidden(_))));
         assert!(matches!(inside(&at(&root.join("secret")), &projects), Err(Error::Forbidden(_))));
         assert!(matches!(inside("src/a", &projects), Err(Error::Invalid(_))));
+        std::os::unix::fs::symlink(root.join("nowhere/x"), project.join("dangling")).unwrap();
+        assert!(matches!(inside(&at(&project.join("dangling")), &projects), Err(Error::Forbidden(_))), "a link to nowhere");
         let file = project.join("src/a.rs");
         let first = write(&file, "one", None).unwrap()["modified"].as_u64().unwrap();
         assert_eq!(read(&file).unwrap()["text"], "one");

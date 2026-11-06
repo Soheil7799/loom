@@ -309,9 +309,8 @@ impl Hub {
         });
         // Everything Scribe wrote or was told no, newest first (the notes before and after
         // left out: `scribe_undo {id}` takes one back).
-        let weak = Rc::downgrade(self);
         hub.handle("scribe_history", move |who, params| {
-            scribe_target(&weak, who, &json!({ "id": "0" }))?;
+            window_only(who)?;
             let limit = params["limit"].as_u64().unwrap_or(200).min(2000) as usize;
             let items: Vec<Value> = history()
                 .into_iter()
@@ -1114,11 +1113,17 @@ impl Hub {
 /// The Scribe and the item's own id a command is for, if `who` may write to the vault: a
 /// person, in loom's window (the CLI too in a test instance: whatever loom can't place under
 /// an agent passes for the CLI, and Scribe's OKs and rules write the user's notes).
-fn scribe_target(scribe: &Weak<Hub>, who: &crate::api::Principal, params: &Value) -> Result<(Rc<Hub>, u64), crate::api::Error> {
+/// Scribe's commands are loom's window's (they write to the vault); a test instance's CLI too.
+fn window_only(who: &crate::api::Principal) -> Result<(), crate::api::Error> {
     let cli = *who == crate::api::Principal::Cli && crate::api::test_instance();
     if *who != crate::api::Principal::Window && !cli {
         return Err(crate::api::Error::Forbidden("Scribe, but in loom's window".into()));
     }
+    Ok(())
+}
+
+fn scribe_target(scribe: &Weak<Hub>, who: &crate::api::Principal, params: &Value) -> Result<(Rc<Hub>, u64), crate::api::Error> {
+    window_only(who)?;
     let scribe = scribe.upgrade().ok_or_else(|| crate::api::Error::NotFound("Scribe".into()))?;
     let id = params["id"].as_str().and_then(|id| id.rsplit(':').next()).and_then(|id| id.parse().ok()).ok_or_else(|| crate::api::Error::Invalid("which item (its id)?".into()))?;
     Ok((scribe, id))

@@ -49,7 +49,8 @@ fn string<'a>(params: &'a Value, key: &str) -> Result<&'a str, Error> {
 /// Every file `edit_file` may open: the topics' and the Claude folder's.
 fn editable(path: &Path) -> bool {
     let topic = crate::vault::current().is_some_and(|v| topics::list(&v).iter().any(|t| t.path == path));
-    let project = crate::api::hub().store("projects").items().iter().filter_map(|p| p["id"].as_str().and_then(|p| Path::new(p).canonicalize().ok())).any(|p| path.canonicalize().is_ok_and(|f| f.starts_with(&p)));
+    let projects: Vec<PathBuf> = crate::api::hub().store("projects").items().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
+    let project = crate::project_files::inside(&path.to_string_lossy(), &projects).is_ok();
     topic || project || Kind::ALL.iter().any(|k| plugin::items(*k).iter().any(|i| i.file == path))
 }
 

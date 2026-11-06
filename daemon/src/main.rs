@@ -147,7 +147,7 @@ impl Host for Daemon {
         // Scribe reads conversations as in the window: quiet after a turn, before compacting.
         if let Some(session) = agent.session_id() {
             match event {
-                Event::Done => self.scribe.turn_done(&session),
+                Event::TurnEnded => self.scribe.turn_done(&session),
                 Event::Compacting => self.scribe.check_now(&session, false),
                 _ => {}
             }

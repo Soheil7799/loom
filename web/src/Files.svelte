@@ -3,12 +3,13 @@
   // (Ctrl+S saves; a file changed on disk since is not overwritten without asking), Ctrl+P to
   // find one; and Git: each repository's changes, their diffs, stage, unstage, throw away,
   // commit, and the newest commits.
+  import { untrack } from "svelte";
   import { command } from "./lib/api";
   import type { ProjectsItem } from "./lib/api-types";
   import { unified } from "./lib/diff";
   import Icon from "./Icon.svelte";
 
-  let { projects, project = $bindable(""), findAsked = 0 }: { projects: ProjectsItem[]; project: string; findAsked?: number } = $props();
+  let { projects, project = $bindable(""), findAsked = $bindable(false) }: { projects: ProjectsItem[]; project: string; findAsked?: boolean } = $props();
   type Entry = { name: string; path: string; dir: boolean };
   type Repo = { path: string; name: string; branch: string; ahead: number; behind: number; changes: { code: string; file: string }[] };
   let tab = $state<"files" | "git">("files");
@@ -27,14 +28,26 @@
 
   $effect(() => { if (!project && projects.length) project = projects[0].id; });
   // Ctrl+P from elsewhere: the page opened here to find a file
-  $effect(() => { if (findAsked) { tab = "files"; finding = true; query = ""; found = []; } });
+  // Ctrl+P (here or from elsewhere): the finder, once per press
+  $effect(() => { if (findAsked) { findAsked = false; tab = "files"; finding = true; query = ""; found = []; } });
   const call = async <T,>(p: Promise<T>) => { problem = ""; try { return await p; } catch (e) { problem = (e as Error).message; } };
 
   async function load(folder: string) {
     const got = await call(command("files_list", { folder }));
     if (got) tree = { ...tree, [folder]: got.entries };
   }
-  $effect(() => { if (project) { tree = {}; open = new Set(); file = null; load(project); if (tab === "git") loadGit(); } });
+  // Another project: its tree (unsaved edits asked about first; kept, the project stays).
+  let shownProject = "";
+  $effect(() => {
+    if (!project || project === shownProject) return;
+    if (untrack(() => dirty) && !confirm("Leave this file without saving it?")) { project = shownProject; return; }
+    shownProject = project;
+    tree = {};
+    open = new Set();
+    file = null;
+    load(project);
+    if (untrack(() => tab) === "git") loadGit();
+  });
   function toggle(e: Entry) {
     const next = new Set(open);
     if (!next.delete(e.path)) { next.add(e.path); if (!tree[e.path]) load(e.path); }
@@ -49,8 +62,10 @@
   async function save(force = false) {
     if (!file || file.text === null) return;
     try {
-      const got = await command("file_write", { path: file.path, text: file.text, ...(force ? {} : { modified: file.modified }) });
-      file = { ...file, modified: got.modified, saved: file.text };
+      // what went: typed meanwhile is still unsaved
+      const sent = file.text;
+      const got = await command("file_write", { path: file.path, text: sent, ...(force ? {} : { modified: file.modified }) });
+      file = { ...file!, modified: got.modified, saved: sent };
       problem = "";
     } catch (e) {
       const why = (e as Error).message;
@@ -150,7 +165,7 @@
               <span class="gacts">
                 {#if unstaged(c.code)}<button class="tiny" title="Stage: put it in the next commit" aria-label="Stage {c.file}" onclick={() => git("stage", [c.file])}><Icon name="plus" size={13} /></button>{/if}
                 {#if staged(c.code)}<button class="tiny" title="Unstage: leave it out of the next commit" aria-label="Unstage {c.file}" onclick={() => git("unstage", [c.file])}><Icon name="back" size={13} /></button>{/if}
-                {#if c.code !== "??"}<button class="tiny" title="Throw its changes away" aria-label="Throw away {c.file}" onclick={() => git("discard", [c.file])}><Icon name="x" size={13} /></button>{/if}
+                {#if c.code !== "??" && !"AR".includes(c.code[0])}<button class="tiny" title="Throw its changes away" aria-label="Throw away {c.file}" onclick={() => git("discard", [c.file])}><Icon name="x" size={13} /></button>{/if}
               </span>
             </div>
           {/each}
