@@ -10,6 +10,7 @@
   import Settings from "./Settings.svelte";
   import Overview from "./Overview.svelte";
   import Files from "./Files.svelte";
+  import Project from "./Project.svelte";
   import Palette, { type Action } from "./Palette.svelte";
   import Scratch from "./Scratch.svelte";
   import { command } from "./lib/api";
@@ -27,6 +28,7 @@
   let findAsked = $state(false);
   // text put into the open conversation's box from elsewhere (a file mentioned from Files)
   let insert = $state<string | null>(null);
+  let projectPage = $state<string | null>(null);
   let palette = $state(false);
   let about = $state(false);
 
@@ -218,11 +220,13 @@
   </main>
 {:else}
   <div class="app" class:no-sidebar={noSidebar}>
-    {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting show={(v) => { if (v === "files" && current) filesProject = current.project_id; view = v; }} {act} />{/if}
+    {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting openProject={(id) => { projectPage = id; view = "project"; }} show={(v) => { if (v === "files" && current) filesProject = current.project_id; view = v; }} {act} />{/if}
     <main class="main" class:with-scratch={scratch && !!current}>
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
-      {#if view === "files"}
+      {#if view === "project" && projects.find((p) => p.id === projectPage)}
+        <Project project={projects.find((p) => p.id === projectPage)!} {act} />
+      {:else if view === "files"}
         <Files {projects} bind:project={filesProject} bind:findAsked mention={(path) => { if (current) { insert = `@${path} `; view = "chat"; } }} />
       {:else if view === "overview"}
         <Overview {agents} {pick} />

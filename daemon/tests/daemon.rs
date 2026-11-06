@@ -170,6 +170,9 @@ fn loomd_hosts_the_core_with_no_window() {
     let job = command(&mut c, "run_job", json!({ "project": project, "command": "echo from-loomd", "name": "d" }))["job"].as_str().unwrap().to_owned();
     until(&mut c, "jobs", Duration::from_secs(10), "the job ending", |jobs| jobs.iter().any(|j| j["id"] == job.as_str() && j["status"] == "exited" && j["exit_code"] == 0));
     let output = c.get(&format!("job/{job}")).unwrap();
+    assert!(command(&mut c, "job_text", json!({ "job": job }))["text"].as_str().unwrap().contains("from-loomd"), "a job's output as text");
+    let dirs = command(&mut c, "dirs_list", json!({ "folder": d.root }));
+    assert!(dirs["dirs"].as_array().unwrap().iter().any(|n| n == "project"), "{dirs}");
     assert!(String::from_utf8_lossy(&loom_core::api::wire::bytes_of(output[0]["screen"].as_str().unwrap())).contains("from-loomd"));
     assert!(command(&mut c, "web_open", json!({}))["url"].as_str().unwrap().starts_with("http://127.0.0.1:"));
 
@@ -180,6 +183,8 @@ fn loomd_hosts_the_core_with_no_window() {
     // Settings' lists: topics and the Claude folder; only their files open.
     let made = command(&mut c, "topic_new", json!({ "name": "Garden" }));
     let garden = made["path"].as_str().unwrap().to_owned();
+    let about = command(&mut c, "notes_open", json!({ "topic": "Garden" }))["agent"].as_str().unwrap().to_owned();
+    assert!(c.get(&format!("conversation/{about}")).is_ok(), "a chat about a topic");
     command(&mut c, "topic_set", json!({ "name": "Garden", "enabled": false }));
     let topics = command(&mut c, "topics", json!({}));
     assert!(topics["topics"].as_array().unwrap().iter().any(|t| t["name"] == "Garden" && t["enabled"] == false && t["path"] == garden.as_str()), "{topics}");

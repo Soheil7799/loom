@@ -2264,6 +2264,31 @@
       },
       "result": "{}"
     },
+    "job_text": {
+      "description": "A job's output as text (to copy).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "job": {
+            "type": "string",
+            "description": "the job's id"
+          },
+          "lines": {
+            "type": "integer",
+            "description": "its last lines (2000; 20000 tops)"
+          }
+        },
+        "required": [
+          "job"
+        ]
+      },
+      "result": "{text}"
+    },
     "remove_job": {
       "description": "Takes a job that has exited out of its tray (a conflict while it runs).",
       "who": [
@@ -2897,6 +2922,46 @@
       },
       "result": "{}"
     },
+    "delete_conversation": {
+      "description": "Deletes a past conversation (Claude Code's file of it). It can't be undone.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "description": "a past conversation (`past_conversations`)"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "result": "{}"
+    },
+    "dirs_list": {
+      "description": "A folder's folders (hidden ones left out), to pick a project's folder.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "folder": {
+            "type": "string",
+            "description": "an absolute folder (none: home)"
+          }
+        },
+        "required": []
+      },
+      "result": "{folder, parent, dirs: [name]}"
+    },
     "edit_file": {
       "description": "Opens the file in the user's editor (the setting, else the desktop's), on this computer.",
       "who": [
@@ -3240,6 +3305,10 @@
           "session": {
             "type": "string",
             "description": "a past chat (`notes_chats`); none: a new one"
+          },
+          "topic": {
+            "type": "string",
+            "description": "a new chat about this topic (`topics`), its notes in reach"
           }
         },
         "required": []

@@ -131,6 +131,29 @@ pub fn serve() {
         plugin::changed();
         Ok(json!({}))
     });
+    // A past conversation deleted (Claude Code's file of it): a project's page.
+    hub.handle_later("delete_conversation", |who, params, reply| {
+        let session = match person(who).and_then(|()| string(params, "session")) {
+            Ok(session) => session.to_owned(),
+            Err(err) => return reply(Err(err)),
+        };
+        crate::history::delete(session, move |done| {
+            if done.is_ok() {
+                crate::workspace::forget_past();
+            }
+            reply(done.map(|()| json!({})).map_err(Error::Failed));
+        });
+    });
+    // A folder's folders (not its files), to pick a project's from a page, which can't ask
+    // the desktop for one.
+    hub.handle("dirs_list", |who, params| {
+        person(who)?;
+        let folder = params["folder"].as_str().map(|f| crate::state::expand(Path::new(f))).unwrap_or_else(crate::paths::home);
+        let read = std::fs::read_dir(&folder).map_err(|e| Error::NotFound(format!("{}: {e}", folder.display())))?;
+        let mut dirs: Vec<String> = read.flatten().filter(|e| e.path().is_dir()).filter_map(|e| e.file_name().to_str().map(str::to_owned)).filter(|n| !n.starts_with('.')).collect();
+        dirs.sort_by_key(|d| d.to_lowercase());
+        Ok(json!({ "folder": folder, "parent": folder.parent(), "dirs": dirs }))
+    });
     hub.handle("edit_file", |who, params| {
         person(who)?;
         let path = PathBuf::from(string(params, "path")?);

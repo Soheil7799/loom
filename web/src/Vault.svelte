@@ -1,12 +1,14 @@
 <script lang="ts">
   // The notes vault, read here: its folders (`vault/<folder>`), a note rendered (`note/<path>`)
   // with what it links to and what links to it. Writing stays Scribe's and yours elsewhere.
+  import { untrack } from "svelte";
   import { follow, type Item } from "./lib/api";
   import { markdown } from "./lib/markdown";
   import Icon from "./Icon.svelte";
 
-  let folder = $state("");
-  let notePath = $state<string | null>(null);
+  let { start = "", note: first = null }: { start?: string; note?: string | null } = $props();
+  let folder = $state(untrack(() => start));
+  let notePath = $state<string | null>(untrack(() => first));
   let entries = $state.raw<Item[]>([]);
   let note = $state.raw<Item | null>(null);
 

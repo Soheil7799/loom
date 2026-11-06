@@ -20,6 +20,7 @@
     show,
     act,
     starting = $bindable(false),
+    openProject,
   }: {
     agents: AgentsItem[];
     projects: ProjectsItem[];
@@ -30,6 +31,7 @@
     /** a command from here: its errors shown, an agent it starts (`{agent}`) opened */
     act: (p: Promise<{ agent?: string }>) => Promise<void>;
     starting?: boolean;
+    openProject?: (id: string) => void;
   } = $props();
 
   let menu = $state(false);
@@ -108,7 +110,7 @@
       {/each}
     {/if}
 
-    <h2 class="heading">Projects</h2>
+    <h2 class="heading">Projects{#if projects.length > 1}<button class="link" title="Show every project's agents" onclick={() => projects.forEach((p) => p.collapsed && act(command("set_collapsed", { project: p.id, collapsed: false })))}>Unfold all</button><button class="link" title="Hide every project's agents" onclick={() => projects.forEach((p) => !p.collapsed && act(command("set_collapsed", { project: p.id, collapsed: true })))}>Fold all</button>{/if}</h2>
     {#each grouped as p (p.id)}
       {@const waits = p.agents.filter((a) => a.questions > 0).length}
       <section class="project">
@@ -126,6 +128,7 @@
             <button class="tiny" aria-label="Rename {p.name}" title="Rename" onclick={() => (naming = { id: p.id, name: p.name })}><Icon name="pencil" size={13} /></button>
             <button class="tiny" aria-label="Remove {p.name} from the sidebar" title="Remove from the sidebar" onclick={() => removeProject(p)}><Icon name="x" size={14} /></button>
           {/if}
+          <button class="tiny" aria-label="{p.name}: its conversations" title="Its conversations: start one, pick up a past one" onclick={() => openProject?.(p.id)}><Icon name="clock" size={13} /></button>
           <button class="tiny" aria-label="New agent in {p.name}" title="New agent in {p.name}" onclick={() => act(command("new_agent", { folder: p.id }))}><Icon name="plus" size={14} /></button>
         </div>
         {#if !isFolded(p)}

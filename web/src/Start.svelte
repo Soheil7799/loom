@@ -5,6 +5,7 @@
   import type { ProjectsItem } from "./lib/api-types";
   import { ago } from "./lib/state";
   import Icon from "./Icon.svelte";
+  import FolderPicker from "./FolderPicker.svelte";
 
   let { projects, close, act }: { projects: ProjectsItem[]; close: () => void; act: (p: Promise<{ agent?: string }>) => Promise<void> } = $props();
 
@@ -15,6 +16,7 @@
   let looking = $state(false);
   let find = $state("");
   let problem = $state("");
+  let browsing = $state(false);
 
   $effect(() => follow("closed", (f) => (closed = f.items)));
 
@@ -50,6 +52,7 @@
   <form class="adding" onsubmit={inFolder}>
     <!-- svelte-ignore a11y_autofocus -->
     <input aria-label="Project folder" placeholder="/path/to/project" bind:value={folder} autofocus={!projects.length} />
+    <button type="button" class="btn small" onclick={() => (browsing = true)}>Browse…</button>
     <button class="go" disabled={!folder.trim()}>Start</button>
   </form>
 
@@ -73,3 +76,4 @@
   {/if}
   {#if problem}<p class="error">{problem}</p>{/if}
 </div>
+{#if browsing}<FolderPicker pick={(f) => { browsing = false; folder = f; }} close={() => (browsing = false)} />{/if}

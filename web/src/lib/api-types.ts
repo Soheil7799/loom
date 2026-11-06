@@ -731,6 +731,14 @@ export type StopJobParams = {
   job: string;
 };
 
+/** A job's output as text (to copy). Result: {text} */
+export type JobTextParams = {
+  /** the job's id */
+  job: string;
+  /** its last lines (2000; 20000 tops) */
+  lines?: number;
+};
+
 /** Takes a job that has exited out of its tray (a conflict while it runs). Result: {} */
 export type RemoveJobParams = {
   /** an exited job's id */
@@ -925,6 +933,18 @@ export type ClaudeRestoreParams = {
   name: string;
 };
 
+/** Deletes a past conversation (Claude Code's file of it). It can't be undone. Result: {} */
+export type DeleteConversationParams = {
+  /** a past conversation (`past_conversations`) */
+  session: string;
+};
+
+/** A folder's folders (hidden ones left out), to pick a project's folder. Result: {folder, parent, dirs: [name]} */
+export type DirsListParams = {
+  /** an absolute folder (none: home) */
+  folder?: string;
+};
+
 /** Opens the file in the user's editor (the setting, else the desktop's), on this computer. Result: {} */
 export type EditFileParams = {
   /** a file in a project, a topic's, or one of `claude_items`' */
@@ -1030,6 +1050,8 @@ export type AskOpenParams = {
 export type NotesOpenParams = {
   /** a past chat (`notes_chats`); none: a new one */
   session?: string;
+  /** a new chat about this topic (`topics`), its notes in reach */
+  topic?: string;
 };
 
 /** loomd: a Notes chat closed (it stays among the past ones). Result: {} */
@@ -1086,6 +1108,7 @@ export interface Commands {
   "close_agent": CloseAgentParams;
   "run_job": RunJobParams;
   "stop_job": StopJobParams;
+  "job_text": JobTextParams;
   "remove_job": RemoveJobParams;
   "job_input": JobInputParams;
   "job_resize": JobResizeParams;
@@ -1114,6 +1137,8 @@ export interface Commands {
   "claude_set": ClaudeSetParams;
   "claude_new": ClaudeNewParams;
   "claude_restore": ClaudeRestoreParams;
+  "delete_conversation": DeleteConversationParams;
+  "dirs_list": DirsListParams;
   "edit_file": EditFileParams;
   "files_list": FilesListParams;
   "files_find": FilesFindParams;

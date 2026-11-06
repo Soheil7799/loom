@@ -65,6 +65,8 @@
       <div class="job">
         <div class="job-bar">
           <code>{job.command}</code><span class="grow"></span>
+          <button class="btn small" title="Copy the command" onclick={() => navigator.clipboard?.writeText(job.command)}><Icon name="copy" size={13} /> Command</button>
+          <button class="btn small" title="Copy its output" onclick={async () => { const got = await run(command("job_text", { job: job.id })); if (got) navigator.clipboard?.writeText(got.text); }}><Icon name="copy" size={13} /> Output</button>
           {#if job.status === "running"}<button class="btn" onclick={() => run(command("stop_job", { job: job.id }))}><Icon name="stop" size={13} /> Stop</button>{/if}
           <button class="btn" onclick={() => run(command("restart_job", { job: job.id }))}><Icon name="undo" size={13} /> Run again</button>
         </div>

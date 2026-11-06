@@ -83,13 +83,21 @@ impl Notes {
 
     /// Chat `session` open (None: a new one): its agent.
     pub fn open(&self, session: Option<String>) -> Option<Rc<Agent>> {
+        self.open_about(session, None)
+    }
+
+    /// A chat, new or past; `topic`: a new one about that topic (its notes in reach).
+    pub fn open_about(&self, session: Option<String>, topic: Option<&str>) -> Option<Rc<Agent>> {
         let vault = loom_core::vault::current()?;
         if let Some(session) = &session
             && let Some(open) = self.open.borrow().iter().find(|o| o.agent.session_id().as_ref() == Some(session))
         {
             return Some(open.agent.clone());
         }
-        let scope = session.as_deref().and_then(|s| scope_of(&vault, s));
+        let scope = match topic {
+            Some(name) => loom_core::topics::list(&vault).into_iter().find(|t| t.name == name).map(|t| (t.name, t.folder)),
+            None => session.as_deref().and_then(|s| scope_of(&vault, s)),
+        };
         let id = self.next.get();
         self.next.set(id + 1);
         let saved = saved_for(&vault, session, scope.as_ref());
@@ -219,7 +227,7 @@ pub fn commands(notes: &Rc<Notes>) {
             return Err(Error::Forbidden("the Notes chat".into()));
         }
         let notes = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
-        let agent = notes.open(params["session"].as_str().map(str::to_owned)).ok_or_else(|| Error::Failed("Notes is off in loom (Settings → Add-ons → Notes).".into()))?;
+        let agent = notes.open_about(params["session"].as_str().map(str::to_owned), params["topic"].as_str()).ok_or_else(|| Error::Failed("Notes is off in loom (Settings → Add-ons → Notes).".into()))?;
         Ok(json!({ "agent": agent.id.to_string() }))
     });
     let weak = Rc::downgrade(notes);

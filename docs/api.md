@@ -811,6 +811,17 @@ Who: window, cli. Result: `{}`.
 |---|---|---|
 | `job` | string | the job's id |
 
+### `job_text`
+
+A job's output as text (to copy).
+
+Who: window, cli. Result: `{text}`.
+
+| Param | Type | |
+|---|---|---|
+| `job` | string | the job's id |
+| `lines` | integer? | its last lines (2000; 20000 tops) |
+
 ### `remove_job`
 
 Takes a job that has exited out of its tray (a conflict while it runs).
@@ -1093,6 +1104,26 @@ Who: window, cli. Result: `{}`.
 |---|---|---|
 | `name` | string | one loom ships |
 
+### `delete_conversation`
+
+Deletes a past conversation (Claude Code's file of it). It can't be undone.
+
+Who: window, cli. Result: `{}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `session` | string | a past conversation (`past_conversations`) |
+
+### `dirs_list`
+
+A folder's folders (hidden ones left out), to pick a project's folder.
+
+Who: window, cli. Result: `{folder, parent, dirs: [name]}`.
+
+| Param | Type | |
+|---|---|---|
+| `folder` | string? | an absolute folder (none: home) |
+
 ### `edit_file`
 
 Opens the file in the user's editor (the setting, else the desktop's), on this computer.
@@ -1245,6 +1276,7 @@ Who: window, cli, bridge:remote. Result: `{agent}`.
 | Param | Type | |
 |---|---|---|
 | `session` | string? | a past chat (`notes_chats`); none: a new one |
+| `topic` | string? | a new chat about this topic (`topics`), its notes in reach |
 
 ### `notes_close`
 

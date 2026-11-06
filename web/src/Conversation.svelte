@@ -13,6 +13,7 @@
   import Changes from "./Changes.svelte";
   import Picture from "./Picture.svelte";
   import Plan from "./Plan.svelte";
+  import Terminal from "./Terminal.svelte";
   import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
@@ -30,6 +31,8 @@
   let column: HTMLElement | undefined = $state();
   let naming = $state<string | null>(null);
   let showChanges = $state(false);
+  // a job's terminal kept beside the chat (its chip, again to put it away)
+  let pinnedJob = $state<string | null>(null);
   // Notes on lines of its changes, sent with the next message
   let comments = $state.raw<{ file: string; line: string; note: string }[]>([]);
 
@@ -395,7 +398,7 @@
     <nav class="jobstrip" aria-label="This project's jobs">
       {#each jobs.slice(-6) as j (j.id)}
         {@const shape = j.status !== "exited" ? "work" : j.exit_code === 0 ? "done" : "fail"}
-        <button class="jchip" title={j.command} onclick={() => showJob(j.id)}><i class="st {shape}" role="img" aria-label={j.status}></i><Icon name="terminal" size={12} />{j.name}</button>
+        <button class="jchip" class:on={pinnedJob === j.id} title="{j.command} (click: its terminal here; again: away)" onclick={() => (pinnedJob = pinnedJob === j.id ? null : j.id)}><i class="st {shape}" role="img" aria-label={j.status}></i><Icon name="terminal" size={12} />{j.name}</button>
       {/each}
     </nav>
   {/if}
@@ -446,6 +449,15 @@
     </div>
   </div>
 
+  {#if pinnedJob && jobs.some((j) => j.id === pinnedJob)}
+    <section class="pinned" aria-label="A job's terminal">
+      <div class="job-bar"><Icon name="terminal" size={13} /><b>{jobs.find((j) => j.id === pinnedJob)?.name}</b><span class="grow"></span>
+        <button class="btn small" onclick={() => showJob?.(pinnedJob!)}>Open in Jobs</button>
+        <button class="tiny" aria-label="Put it away" onclick={() => (pinnedJob = null)}><Icon name="x" size={13} /></button>
+      </div>
+      {#key pinnedJob}<Terminal job={pinnedJob} />{/key}
+    </section>
+  {/if}
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
     {#if agent.status !== "notes"}<Plan agent={agent.id} />{/if}

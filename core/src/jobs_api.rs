@@ -171,6 +171,11 @@ fn handle() {
         jobs.stop(id);
         Ok(json!({}))
     });
+    hub.handle("job_text", |who, params| {
+        let (jobs, id) = target(who, params)?;
+        let lines = params["lines"].as_u64().unwrap_or(2000).clamp(1, 20_000) as usize;
+        Ok(json!({ "text": jobs.output(id, lines) }))
+    });
     hub.handle("remove_job", |who, params| {
         let (jobs, id) = target(who, params)?;
         if jobs.info(id).is_some_and(|j| j.running) {

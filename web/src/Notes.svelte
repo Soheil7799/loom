@@ -8,7 +8,30 @@
   import Scribe from "./Scribe.svelte";
   import Icon from "./Icon.svelte";
   import Vault from "./Vault.svelte";
-  let tab = $state<"chat" | "vault" | "history">("chat");
+  import TopicView from "./TopicView.svelte";
+  // a note opened from a topic: the vault shows it
+  let vaultNote = $state<string | null>(null);
+  let tab = $state<"chat" | "vault" | "history" | "topics">("chat");
+  // "Today", "Yesterday", else the date: the past chats by day, newest first
+  const day = (when?: string) => {
+    if (!when) return "Earlier";
+    const d = new Date(when), n = new Date();
+    const same = (a: Date, b: Date) => a.toDateString() === b.toDateString();
+    if (same(d, n)) return "Today";
+    if (same(d, new Date(n.getTime() - 864e5))) return "Yesterday";
+    return d.toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+  };
+  // Topics: each one's description and notes, and a chat about it
+  type Topic = { name: string; path: string; folder: string; listens_for: string[]; enabled: boolean };
+  let topics = $state.raw<Topic[] | null>(null);
+  let vault = $state("");
+  let topic = $state<Topic | null>(null);
+  async function loadTopics() {
+    try { const got = await command("topics", {}); topics = got.topics; vault = got.vault; } catch (e) { problem = (e as Error).message; topics = []; }
+  }
+  async function aboutTopic(t: Topic) {
+    try { const got = await command("notes_open", { topic: t.name }); chat = { agent: got.agent, title: t.name }; tab = "chat"; } catch (e) { problem = (e as Error).message; }
+  }
   type Change = { id: string | null; kind: string; topic: string; reason: string; change: { op?: string; note?: string } | null; title: string; at: number; undone: boolean };
   let history = $state.raw<Change[] | null>(null);
   async function loadHistory() {
@@ -48,6 +71,7 @@
       <div class="tabs" role="tablist">
         <button role="tab" aria-selected={tab === "chat"} class:on={tab === "chat"} onclick={() => (tab = "chat")}>Chat</button>
         <button role="tab" aria-selected={tab === "vault"} class:on={tab === "vault"} onclick={() => (tab = "vault")}>Vault</button>
+        <button role="tab" aria-selected={tab === "topics"} class:on={tab === "topics"} onclick={() => { tab = "topics"; loadTopics(); }}>Topics</button>
         <button role="tab" aria-selected={tab === "history"} class:on={tab === "history"} onclick={() => { tab = "history"; loadHistory(); }}>History</button>
       </div>
       <button class="btn" onclick={() => open()}><Icon name="plus" size={13} /> New chat</button>
@@ -55,7 +79,8 @@
         <button class="btn" aria-expanded={listing} disabled={!chats.length} onclick={(e) => { e.stopPropagation(); listing = !listing; }}>Past chats <Icon name="chev-d" size={13} /></button>
         {#if listing}
           <div class="menu">
-            {#each chats as c (c.id)}
+            {#each chats as c, i (c.id)}
+              {#if i === 0 || day(c.updated) !== day(chats[i - 1].updated)}<p class="foot day">{day(c.updated)}</p>{/if}
               <button class="it" onclick={() => open(c.id, c.title)}><Icon name="back" size={13} /><span>{c.title || "Untitled"}</span><small>{ago(c.updated)}{#if c.current} · open{/if}</small></button>
             {/each}
           </div>
@@ -64,7 +89,22 @@
       {#if problem}<span class="error">{problem}</span>{/if}
     </div>
     {#if tab === "vault"}
-      <Vault />
+      {#key vaultNote}<Vault start={vaultNote ? vaultNote.split("/").slice(0, -1).join("/") : ""} note={vaultNote} />{/key}
+    {:else if tab === "topics"}
+      <div class="vault">
+        <nav class="vault-list" aria-label="Topics">
+          {#each topics ?? [] as t (t.name)}
+            <button class="trow" class:sel={topic?.name === t.name} onclick={() => (topic = t)}><Icon name="notes" size={13} /><span>{t.name}</span>{#if !t.enabled}<small class="quiet">off</small>{/if}</button>
+          {:else}<p class="quiet small">{topics === null ? "Reading…" : "No topics yet (Settings → Notes)."}</p>{/each}
+        </nav>
+        <article class="note">
+          {#if topic}
+            <div class="controls"><h3 class="tname">{topic.name}</h3><span class="grow"></span><button class="btn small suggested" onclick={() => aboutTopic(topic!)}>Chat about it</button></div>
+            <p class="quiet small">Its notes in {topic.folder}/ · listens for {topic.listens_for.join(", ") || "nothing yet"}</p>
+            <TopicView file={topic.path.startsWith(vault + "/") ? topic.path.slice(vault.length + 1) : null} folder={topic.folder} openNote={(p) => { vaultNote = p; tab = "vault"; }} />
+          {:else}<p class="empty">Pick a topic: its description, its notes, a chat about it.</p>{/if}
+        </article>
+      </div>
     {:else if tab === "history"}
       <div class="nhistory">
         {#each history ?? [] as c, i (c.id ?? i)}
