@@ -294,6 +294,7 @@ pub const RESOURCES: &[Resource] = &[
             ("exit", "integer", false, "a command's exit code"),
             ("parent", "string", false, "the task a tool is part of"),
             ("detail", "string", false, "a question's detail"),
+            ("markdown", "boolean", false, "a question's detail is Markdown (a plan to approve)"),
             ("options", "array", false, "a permission question's options: {id, name, kind}"),
             ("form", "object", false, "a form question's JSON Schema"),
             ("answer", "string", false, "how a question was answered"),

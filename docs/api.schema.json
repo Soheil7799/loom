@@ -460,6 +460,10 @@
             "type": "string",
             "description": "a question's detail"
           },
+          "markdown": {
+            "type": "boolean",
+            "description": "a question's detail is Markdown (a plan to approve)"
+          },
           "options": {
             "type": "array",
             "description": "a permission question's options: {id, name, kind}"

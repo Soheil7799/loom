@@ -133,6 +133,12 @@ pub struct Chat {
     tools: RefCell<HashMap<String, Rc<ToolCard>>>,
     /// The conversation's text messages as the core's entries (warp), by entry id.
     entries: RefCell<HashMap<String, Rc<Message>>>,
+    /// Drawn wholly from the conversation's entries (the agent's id): the window is loomd's
+    /// client, with no agent of its own to draw notices, questions and turn ends.
+    from_entries: Cell<Option<u32>>,
+    /// Those drawn so far (notices, turn ends), and the questions' cards still open.
+    drawn: RefCell<std::collections::HashSet<String>>,
+    cards: RefCell<HashMap<String, PermissionCard>>,
     /// How many of each entry's pictures are drawn.
     entry_images: RefCell<HashMap<String, usize>>,
     /// Subagents at work this turn: their task's tool call, what they last did, when.
@@ -639,6 +645,9 @@ impl Chat {
             turn_result: RefCell::default(),
             tools: RefCell::default(),
             entries: RefCell::default(),
+            from_entries: Cell::new(None),
+            drawn: RefCell::default(),
+            cards: RefCell::default(),
             entry_images: RefCell::default(),
             crew: RefCell::default(),
             workflow_note: RefCell::default(),
@@ -2355,6 +2364,8 @@ impl Chat {
         self.turn_result.take();
         self.seen.take();
         self.since.take();
+        self.drawn.borrow_mut().clear();
+        self.cards.borrow_mut().clear();
         self.turn_steps.set(0);
         self.messages.borrow_mut().clear();
         self.tools.borrow_mut().clear();
@@ -2368,6 +2379,9 @@ impl Chat {
     /// `agent`, `thought`): the rest is still drawn by the View's calls.
     pub fn entry(&self, item: &Value) {
         let (Some(id), Some(kind)) = (item["id"].as_str(), item["kind"].as_str()) else { return };
+        if let (Some(agent), "notice" | "question" | "turn") = (self.from_entries.get(), kind) {
+            return self.entry_of_agent(agent, id, kind, item);
+        }
         if kind == "tool" {
             self.tool_entry(item);
             return;
@@ -2412,6 +2426,70 @@ impl Chat {
             *message.id.borrow_mut() = Some(said.to_owned());
         }
         self.entry_pictures(id, item);
+    }
+
+    /// From now on drawn wholly from agent `agent`'s conversation entries (loomd's client).
+    #[expect(dead_code, reason = "the window becomes loomd's client in the next steps (plan: Part 2)")]
+    pub fn draw_from_entries(&self, agent: u32) {
+        self.from_entries.set(Some(agent));
+    }
+
+    /// A notice, question or turn's end of the conversation, as the agent's view would have
+    /// drawn it; its buttons and answers go to loomd as commands (`press`, `answer`).
+    fn entry_of_agent(&self, agent: u32, id: &str, kind: &str, item: &Value) {
+        let first = self.drawn.borrow_mut().insert(id.to_owned());
+        let send = move |method: &str, mut params: Value| {
+            params["agent"] = Value::String(agent.to_string());
+            crate::conn::command(&format!("agent {agent}"), method, params);
+        };
+        let text = item["text"].as_str().unwrap_or_default();
+        match kind {
+            "notice" if first => match item["button"].as_str() {
+                Some(button) => {
+                    let entry = id.to_owned();
+                    self.notice_choice(text, button, Rc::new(move || send("press", serde_json::json!({ "entry": entry }))));
+                }
+                None => self.notice(text, item["class"].as_str().unwrap_or_default()),
+            },
+            "turn" if first => self.turn_done(item["seconds"].as_u64().unwrap_or(0)),
+            "question" => {
+                if first {
+                    let entry = id.to_owned();
+                    let card = if item["form"].is_object() {
+                        let form = self.form(
+                            text,
+                            &item["form"],
+                            Rc::new(move |content: Option<Value>| {
+                                send("answer", match content {
+                                    Some(content) => serde_json::json!({ "entry": entry, "content": content }),
+                                    None => serde_json::json!({ "entry": entry, "skip": true }),
+                                })
+                            }),
+                        );
+                        form.card.clone()
+                    } else {
+                        let options: Vec<(String, String, String)> = item["options"]
+                            .as_array()
+                            .into_iter()
+                            .flatten()
+                            .map(|o| (o["id"].as_str().unwrap_or_default().to_owned(), o["name"].as_str().unwrap_or_default().to_owned(), o["kind"].as_str().unwrap_or_default().to_owned()))
+                            .collect();
+                        let choose = Rc::new(move |option: String| send("answer", serde_json::json!({ "entry": entry, "option": option })));
+                        self.permission(text, item["detail"].as_str(), item["markdown"].as_bool() == Some(true), &options, choose)
+                    };
+                    self.cards.borrow_mut().insert(id.to_owned(), card);
+                }
+                // Answered (here, elsewhere, or before it was read back): the card says how.
+                let status = item["status"].as_str().unwrap_or_default();
+                if matches!(status, "done" | "cancelled")
+                    && let Some(card) = self.cards.borrow_mut().remove(id)
+                {
+                    let answer = item["answer"].as_str().unwrap_or_default();
+                    card.resolve(&if status == "done" { format!("→ {answer}") } else { answer.to_owned() });
+                }
+            }
+            _ => {}
+        }
     }
 
     /// Entry `id`'s pictures not drawn yet, drawn (fetched from the core's blobs).

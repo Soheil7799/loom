@@ -90,6 +90,7 @@ Who: window, cli, bridge, agent (its own).
 | `exit` | integer? | a command's exit code |
 | `parent` | string? | the task a tool is part of |
 | `detail` | string? | a question's detail |
+| `markdown` | boolean? | a question's detail is Markdown (a plan to approve) |
 | `options` | array? | a permission question's options: {id, name, kind} |
 | `form` | object? | a form question's JSON Schema |
 | `answer` | string? | how a question was answered |

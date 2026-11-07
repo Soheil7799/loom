@@ -694,7 +694,7 @@ impl View for Recorded {
     }
     fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> Rc<dyn Card> {
         let options_json: Vec<Value> = options.iter().map(|(id, name, kind)| json!({ "id": id, "name": name, "kind": kind })).collect();
-        let entry = self.transcript.borrow_mut().question(json!({ "kind": "question", "text": question, "detail": detail, "options": options_json }));
+        let entry = self.transcript.borrow_mut().question(json!({ "kind": "question", "text": question, "detail": detail, "markdown": markdown, "options": options_json }));
         self.inner.question_entry(&entry);
         let inner = self.inner.permission(question, detail, markdown, options, choose);
         Rc::new(RecordedCard { inner, transcript: Rc::downgrade(&self.transcript), entry })

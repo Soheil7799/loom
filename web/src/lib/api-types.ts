@@ -92,6 +92,8 @@ export type ConversationItem = {
   parent?: string;
   /** a question's detail */
   detail?: string;
+  /** a question's detail is Markdown (a plan to approve) */
+  markdown?: boolean;
   /** a permission question's options: {id, name, kind} */
   options?: unknown[];
   /** a form question's JSON Schema */
