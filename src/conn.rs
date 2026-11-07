@@ -120,7 +120,7 @@ pub fn start_loomd(socket: &Path, app_id: &str) -> Result<(), String> {
     let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| format!("{}: {e}", log.display()))?;
     let mut child = std::process::Command::new(&program)
         // The window's own switches are not loomd's.
-        .env_remove("LOOM_REMOTE")
+        .env_remove("LOOM_LOCAL")
         .env_remove("LOOM_CONTROL")
         .stdin(std::process::Stdio::null())
         .stdout(out.try_clone().map_err(|e| e.to_string())?)

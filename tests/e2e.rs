@@ -60,6 +60,8 @@ fn start_as(app_id: &str, prepare: impl FnOnce(&Path), env: &[(&str, String)]) -
         .env_remove("LOOM_API")
         // Only a test instance lets the CLI answer agents' questions.
         .env("LOOM_TEST_INSTANCE", "1")
+        // the core in the window's process, as these tests drive it
+        .env("LOOM_LOCAL", "1")
         .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .spawn()
         .expect("loom starts");

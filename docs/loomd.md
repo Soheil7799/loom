@@ -2,8 +2,13 @@
 
 `loomd` is loom's core as its own program: the agents (restored as loom left them), their
 jobs, the bridges (Telegram, your paired devices) and the core API, with nothing drawn. Every
-face of loom is then a client of it: a web page (`loom api web --open`), the phone, the
-Telegram bot, `loom api` in a terminal.
+face of loom is a client of it: loom's window, a web page (`loom api web --open`), the
+phone, the Telegram bot, `loom api` in a terminal.
+
+loom's window starts it (the `loomd` installed beside `loom`) when none runs, and stops it
+when it closes, unless Settings → General keeps agents working. Its footer says loomd's
+state; an older or newer loomd is restarted from there as the window's version.
+`LOOM_LOCAL=1 loom` runs the core in the window's own process instead, as before loomd.
 
 ```sh
 loomd                        # until SIGTERM or Ctrl+C
@@ -11,10 +16,10 @@ loomd --web                  # and a link to the web page, as loom's window woul
 LOOM_APP_ID=… loomd          # another instance's agents and settings, as with loom
 ```
 
-- **One core per app id.** loomd doesn't start while a loom of its app id runs (window or
-  loomd; it exits with 3, which its service isn't restarted for), and loom's window doesn't
-  start while loomd does: two cores on the same agents would fight over them. Stop one to
-  use the other; both read and save the same workspace.
+- **One core per app id.** loomd doesn't start while another core of its app id runs (a
+  loomd, or a window with `LOOM_LOCAL=1`; it exits with 3, which its service isn't restarted
+  for), and a `LOOM_LOCAL=1` window doesn't start while loomd does: two cores on the same
+  agents would fight over them.
 - **Stopping** (SIGTERM, Ctrl+C) saves the workspace and stops the agents and their jobs, as
   closing the window does.
 - **What the window would show, a UI shows** (`docs/api.md`):
@@ -42,7 +47,8 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
 
 The web page's UI is in `web/` (Svelte; `web/README.md` builds and installs it).
 
-It isn't started by itself. To have it from login on, as a systemd user service:
+To have it from login on, rather than with the window, as a systemd user service (then turn
+on Settings → General → Keep agents working when the window closes):
 
 ```sh
 cp data/loomd.service ~/.config/systemd/user/

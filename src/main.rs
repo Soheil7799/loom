@@ -141,10 +141,12 @@ fn main() -> glib::ExitCode {
     // agents. (Another window is GApplication's to raise.)
     let socket = loom_core::api::socket::socket_path(&app_id);
     let daemon = loom_core::api::socket::running(&socket).as_deref() == Some("daemon");
-    // LOOM_REMOTE=1 (trying it out, plan: Part 2): the window as loomd's client, its agents
-    // loomd's; the window runs none of its own.
-    if std::env::var("LOOM_REMOTE").as_deref() == Ok("1") {
-        // None runs: started now (it goes on when the window closes).
+    // The window is loomd's client: its agents are loomd's, the window runs none of its own.
+    // LOOM_LOCAL=1: the core in the window's own process, as before loomd (the window's
+    // end-to-end tests).
+    if std::env::var("LOOM_LOCAL").as_deref() != Ok("1") {
+        // None runs: started now (closing the window stops it, unless Settings keep agents
+        // working).
         if !daemon && let Err(err) = conn::start_loomd(&socket, &app_id) {
             eprintln!("loom: {err}");
             return glib::ExitCode::from(1);

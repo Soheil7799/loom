@@ -1,7 +1,7 @@
 # loomd as a systemd user service: loom's core with no window, from login on.
 #   cp data/loomd.service ~/.config/systemd/user/ && systemctl --user enable --now loomd
-# Its output goes to the journal (journalctl --user -u loomd). loom's window doesn't start
-# while it runs (one core per app id): `systemctl --user stop loomd` first.
+# Its output goes to the journal (journalctl --user -u loomd). loom's window is its client
+# (keep agents working when it closes: Settings → General, or closing it stops loomd).
 [Unit]
 Description=loom's core, with no window (agents, jobs, bridges, the API)
 # Failing over and over (a broken install): given up after 5 tries in 2 minutes.
