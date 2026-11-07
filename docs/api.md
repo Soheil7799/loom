@@ -216,6 +216,16 @@ Who: window, cli.
 | `running` | boolean? |  |
 | `calls_left` | integer? |  |
 
+### `subagent/<agent>/<subagent>`
+
+A subagent's own conversation (a `crew/<agent>` item's id; a tool entry's `subagent`), entries as an agent's.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | as `conversation/<agent>`'s |
+
 ### `crew/<agent>`
 
 An agent's subagents (tasks it runs), while its turn goes on.

@@ -144,8 +144,8 @@ pub trait View {
     fn restore_unsent(&self, messages: Vec<(String, Vec<Png>)>);
 
     // Elsewhere.
-    /// A view of a subagent's conversation (read only).
-    fn sub_view(&self) -> Rc<dyn View>;
+    /// A view of subagent `id`'s conversation (read only).
+    fn sub_view(&self, id: &str) -> Rc<dyn View>;
     /// `view` shown in place of the conversation.
     fn show_aside(&self, view: &Rc<dyn View>, title: &str);
     fn show_main(&self);

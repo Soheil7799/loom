@@ -2242,7 +2242,7 @@ impl Agent {
         if let Some(sub) = self.subs.borrow().iter().find(|s| s.id == id) {
             return sub.clone();
         }
-        let view = self.view.sub_view();
+        let view = self.view.sub_view(id);
         view.set_show_thinking(crate::settings::get().show_thinking);
         let sub = Rc::new(Sub {
             id: id.to_owned(),
@@ -2676,7 +2676,7 @@ impl Agent {
                 sub.cards.borrow_mut().push((id.clone(), text.clone(), false));
             }
             self.view.tool(&json!({
-                "toolCallId": id, "title": format!("Subagent · {}", sub.title.borrow()), "kind": "think", "status": "in_progress",
+                "toolCallId": id, "title": format!("Subagent · {}", sub.title.borrow()), "kind": "think", "status": "in_progress", "subagent": sub.id,
                 "content": [{ "type": "content", "content": { "type": "text", "text": format!("**Asked:** {text}") } }]
             }));
             if !known {

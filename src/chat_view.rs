@@ -582,7 +582,7 @@ impl View for ChatView {
     fn restore_unsent(&self, messages: Vec<(String, Vec<Png>)>) {
         self.chat.restore_unsent(messages.into_iter().map(|(text, images)| (text, bytes(images))).collect());
     }
-    fn sub_view(&self) -> Rc<dyn View> {
+    fn sub_view(&self, _id: &str) -> Rc<dyn View> {
         Rc::new(ChatView { chat: Chat::viewer(), tray: self.tray.clone(), follow: RefCell::default(), usage: RefCell::default(), agent: std::cell::Cell::new(None), question: RefCell::default() })
     }
     fn show_aside(&self, view: &Rc<dyn View>, title: &str) {

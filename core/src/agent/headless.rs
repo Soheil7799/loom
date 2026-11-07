@@ -226,7 +226,7 @@ impl View for Headless {
         self.put_back(&texts);
     }
 
-    fn sub_view(&self) -> Rc<dyn View> {
+    fn sub_view(&self, _id: &str) -> Rc<dyn View> {
         Headless::new()
     }
     fn show_aside(&self, _view: &Rc<dyn View>, _title: &str) {}

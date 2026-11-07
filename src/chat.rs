@@ -2547,6 +2547,24 @@ impl Chat {
         if item.get("exit").is_some() && card.exit.get() != Some(item["exit"].as_i64()) {
             self.tool_exit(call, item["exit"].as_i64());
         }
+        // A subagent's launch card, drawn from entries: "open" reads its conversation (once).
+        let mut child = card.actions.first_child();
+        let mut has_open = false;
+        while let Some(widget) = child {
+            has_open |= widget.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l == "open");
+            child = widget.next_sibling();
+        }
+        if self.from_entries.get().is_some()
+            && !has_open
+            && let Some(sub) = item["subagent"].as_str()
+        {
+            let (open, sub) = (self.on_crew_open.borrow().clone(), sub.to_owned());
+            self.tool_button(call, "open", "Read this subagent's conversation", Rc::new(move || {
+                if let Some(open) = &open {
+                    open(sub.clone());
+                }
+            }));
+        }
     }
 
     /// Dev builds: where what this chat drew differs from its conversation's entries `items`

@@ -821,6 +821,26 @@
         ]
       }
     },
+    "subagent/<agent>/<subagent>": {
+      "description": "A subagent's own conversation (a `crew/<agent>` item's id; a tool entry's `subagent`), entries as an agent's.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "as `conversation/<agent>`'s"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      }
+    },
     "crew/<agent>": {
       "description": "An agent's subagents (tasks it runs), while its turn goes on.",
       "who": [

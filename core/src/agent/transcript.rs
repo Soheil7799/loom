@@ -335,6 +335,10 @@ impl Transcript {
             }
             // What the agent gave it (`input`), what it shows (`content`: diffs, text, a
             // terminal) and where (`locations`), as ACP has them.
+            // A subagent's launch card: its subagent (whose conversation a client opens).
+            if let Some(sub) = update["subagent"].as_str() {
+                entry["subagent"] = json!(sub);
+            }
             for (field, from) in [("input", "rawInput"), ("content", "content"), ("locations", "locations")] {
                 let value = &update[from];
                 if !value.is_null() {
@@ -831,9 +835,15 @@ impl View for Recorded {
         self.inner.restore_unsent(messages);
     }
 
-    // A subagent's conversation is not recorded: it is read on the desktop.
-    fn sub_view(&self) -> Rc<dyn View> {
-        self.inner.sub_view()
+    // A subagent's conversation: published beside its agent's (`subagent/<agent>/<id>`), for
+    // a client to read (loomd's window).
+    // shortcut: these stay published until loomd ends (not closed with their agent); close them with it if many pile up
+    fn sub_view(&self, id: &str) -> Rc<dyn View> {
+        let inner = self.inner.sub_view(id);
+        let Some(agent) = self.agent.borrow().clone() else { return inner };
+        let recorded = Recorded::new(inner);
+        recorded.transcript.borrow_mut().publish_to(crate::api::hub().store(&format!("subagent/{agent}/{id}")));
+        Rc::new(recorded)
     }
     fn show_aside(&self, view: &Rc<dyn View>, title: &str) {
         self.inner.show_aside(view, title);

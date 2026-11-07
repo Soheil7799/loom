@@ -1,9 +1,8 @@
 //! An agent of loomd's, drawn in the window as loomd's client: its chat built from the core
 //! API's resources (its `agents` item, `conversation/<id>`, `usage`, `inputs`, `plan/<id>`,
-//! `crew/<id>`, `mcp`), its buttons and keys sent back as commands. The window's own agents
+//! `crew/<id>`, `mcp`, `workflows/<id>`, a subagent's `subagent/<id>/<sub>`), its buttons and
+//! keys sent back as commands. The window's own agents
 //! (the core in this process) are drawn by `chat_view` instead.
-//!
-//! Not yet: a subagent's own conversation (and its card's "open").
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -35,7 +34,12 @@ pub struct RemoteAgent {
     /// Its workflows' cards, by tool call, each with whether loomd says it still runs.
     runs: RefCell<Vec<WorkflowCard>>,
     me: RefCell<Weak<RemoteAgent>>,
+    /// The subagent's conversation open in place of its own: its chat, followed.
+    sub: RefCell<Option<SubView>>,
 }
+
+/// A subagent's conversation shown: its chat, and its resource followed.
+type SubView = (Rc<Chat>, Option<Rc<Follow>>);
 
 /// A workflow's card: its tool call, the card, and whether loomd says it still runs.
 type WorkflowCard = (String, Rc<crate::workflow::Run>, Rc<Cell<bool>>);
@@ -50,7 +54,7 @@ impl RemoteAgent {
     pub fn new(id: u32) -> Rc<RemoteAgent> {
         let chat = Chat::new();
         chat.draw_from_entries(id);
-        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default(), runs: RefCell::default(), me: RefCell::default() });
+        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default(), runs: RefCell::default(), me: RefCell::default(), sub: RefCell::default() });
         *agent.me.borrow_mut() = Rc::downgrade(&agent);
         // Its buttons first: the messages drawn next take their callbacks as they are made.
         agent.wire();
@@ -276,6 +280,23 @@ impl RemoteAgent {
         });
     }
 
+    /// Subagent `key`'s conversation, in place of its own (loomd's `subagent/<agent>/<key>`);
+    /// a task with none of its own: its card in the conversation.
+    fn open_sub(&self, key: &str) {
+        if let Some(rest) = key.strip_prefix("task:") {
+            let call = rest.split_once(':').map_or(rest, |(_, call)| call);
+            self.chat.go_to_tool(call);
+            return;
+        }
+        let viewer = Chat::viewer();
+        viewer.set_show_thinking(loom_core::settings::get().show_thinking);
+        let follow = Follow::start(&format!("subagent/{}/{key}", self.id), Of::Conversation, &viewer);
+        let crew = self.feeds.borrow().get(2).map(|f| f.items().clone()).unwrap_or_default();
+        let name = crew.iter().find(|c| c["id"] == key).and_then(|c| c["name"].as_str().map(str::to_owned)).unwrap_or_else(|| "Subagent".to_owned());
+        self.chat.show_aside(viewer.root.upcast_ref(), &format!("Subagent · {name}"));
+        *self.sub.borrow_mut() = Some((viewer, follow));
+    }
+
     /// The chat's buttons and keys, as commands to loomd.
     fn wire(self: &Rc<Self>) {
         let chat = &self.chat;
@@ -317,6 +338,12 @@ impl RemoteAgent {
         *chat.on_option.borrow_mut() = Some(Rc::new(move |(option, value): (String, String)| {
             if let Some(agent) = weak.upgrade() {
                 agent.send("set_option", json!({ "option": option, "value": value }));
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *chat.on_crew_open.borrow_mut() = Some(Rc::new(move |key: String| {
+            if let Some(agent) = weak.upgrade() {
+                agent.open_sub(&key);
             }
         }));
         let weak = Rc::downgrade(self);
