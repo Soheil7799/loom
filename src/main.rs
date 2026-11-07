@@ -14,6 +14,7 @@ mod column;
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod devhooks;
 mod conn;
+mod remote_agent;
 mod feed;
 mod files;
 mod history;

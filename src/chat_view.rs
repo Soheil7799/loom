@@ -87,7 +87,7 @@ pub fn self_check() -> (Vec<String>, Vec<String>) {
 }
 
 /// What a chat follows in the core.
-enum Of {
+pub enum Of {
     /// Its agent's conversation: the text messages.
     Conversation,
     /// `usage`: its agent's item (by id) and the account's.
@@ -95,7 +95,7 @@ enum Of {
 }
 
 /// A chat following one of the core's resources.
-struct Follow {
+pub struct Follow {
     sub: RefCell<Option<crate::conn::Sub>>,
     store: Store,
     chat: Weak<Chat>,
@@ -104,7 +104,7 @@ struct Follow {
 
 impl Follow {
     /// Follows `resource` for `chat` (None: no such resource).
-    fn start(resource: &str, of: Of, chat: &Rc<Chat>) -> Option<Rc<Follow>> {
+    pub fn start(resource: &str, of: Of, chat: &Rc<Chat>) -> Option<Rc<Follow>> {
         let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(resource), chat: Rc::downgrade(chat), of });
         let weak = Rc::downgrade(&follow);
         let sub = crate::conn::subscribe(resource, move || {
