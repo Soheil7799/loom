@@ -162,6 +162,9 @@ pub struct Chat {
     /// The turn going on: your message that opened it, its tool calls so far, and Claude's
     /// last message in it (a finished turn folds to one line of it when the next one opens).
     turn_start: RefCell<Option<gtk::Widget>>,
+    /// The plan's steps shown (else its one line).
+    plan_open: Rc<Cell<bool>>,
+    mcp_alert: gtk::Button,
     tube: gtk::DrawingArea,
     /// Your message pinned over the top while its turn is read, and where its bubble is.
     pinned_ask: gtk::Button,
@@ -373,6 +376,14 @@ impl Chat {
         usage_button.add_css_class("flat");
         usage_button.add_css_class("usage-button");
         usage_button.set_tooltip_text(Some("Context and usage limits"));
+        // Tool servers (MCP) that failed or need a sign-in, named in the header (as the web
+        // page's); a click opens the list, with Reconnect.
+        let mcp_alert = gtk::Button::builder().valign(gtk::Align::Center).visible(false).tooltip_text("Tool servers (MCP) in trouble: the list, with Reconnect").build();
+        mcp_alert.add_css_class("flat");
+        mcp_alert.add_css_class("mcp-alert");
+        let shown = usage_button.clone();
+        mcp_alert.connect_clicked(move |_| shown.popup());
+        header.append(&mcp_alert);
         let compact = gtk::Button::with_label("Compact");
         compact.add_css_class("compact-alert");
         compact.set_valign(gtk::Align::Center);
@@ -496,6 +507,12 @@ impl Chat {
         attach.add_css_class("round");
         attach.set_tooltip_text(Some("Mention a file (or drop files here)"));
         attach.update_property(&[gtk::accessible::Property::Label("Mention a file")]);
+        // Pictures from a file (Ctrl+V and dropping work too).
+        let picture_button = gtk::Button::from_icon_name("image-x-generic-symbolic");
+        picture_button.add_css_class("flat");
+        picture_button.add_css_class("round");
+        picture_button.set_tooltip_text(Some("Attach pictures (Ctrl+V pastes one)"));
+        picture_button.update_property(&[gtk::accessible::Property::Label("Attach pictures")]);
         let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).width_chars(4).build();
         working.add_css_class("working");
         let mic = gtk::Button::from_icon_name("audio-input-microphone-symbolic");
@@ -520,6 +537,7 @@ impl Chat {
             .min_content_width(60)
             .build();
         toolbar.append(&attach);
+        toolbar.append(&picture_button);
         toolbar.append(&pickers_scroller);
         let shell_badge = gtk::Label::builder().label("Shell mode").visible(false).valign(gtk::Align::Center).build();
         shell_badge.add_css_class("shell-badge");
@@ -610,6 +628,8 @@ impl Chat {
             last: RefCell::new(Last::None),
             group: RefCell::default(),
             turn_start: RefCell::default(),
+            plan_open: Rc::default(),
+            mcp_alert,
             tube,
             pinned_ask,
             pinned_at: Cell::new(0.0),
@@ -712,6 +732,27 @@ impl Chat {
                     chat.submit();
                 }
             }
+        });
+        let weak = Rc::downgrade(&chat);
+        picture_button.connect_clicked(move |button| {
+            let Some(chat) = weak.upgrade() else { return };
+            let filter = gtk::FileFilter::new();
+            filter.set_name(Some("Pictures"));
+            filter.add_pixbuf_formats();
+            let filters = gio::ListStore::new::<gtk::FileFilter>();
+            filters.append(&filter);
+            let dialog = gtk::FileDialog::builder().title("Attach pictures").filters(&filters).modal(true).build();
+            let parent = button.root().and_downcast::<gtk::Window>();
+            let weak = Rc::downgrade(&chat);
+            dialog.open_multiple(parent.as_ref(), None::<&gio::Cancellable>, move |chosen| {
+                let (Ok(files), Some(chat)) = (chosen, weak.upgrade()) else { return };
+                for file in files.iter::<gio::File>().flatten() {
+                    if let Ok(texture) = gdk::Texture::from_file(&file) {
+                        chat.attach(&texture);
+                    }
+                }
+                chat.input.grab_focus();
+            });
         });
         let weak = Rc::downgrade(&chat);
         attach.connect_clicked(move |_| {
@@ -1837,6 +1878,15 @@ impl Chat {
         for png in pngs {
             let Some(picture) = thumbnail(png, 360, 220) else { continue };
             picture.add_css_class("msg-image");
+            picture.set_tooltip_text(Some("Full size"));
+            let click = gtk::GestureClick::new();
+            let (full, held) = (png.clone(), picture.downgrade());
+            click.connect_released(move |_, _, _, _| {
+                if let Some(picture) = held.upgrade() {
+                    show_picture(&picture, &full);
+                }
+            });
+            picture.add_controller(click);
             picture.set_halign(gtk::Align::Start);
             row.insert(&picture, -1);
             if let Some(cell) = picture.parent() {
@@ -2194,6 +2244,9 @@ impl Chat {
     /// The agent's MCP servers in the usage popover: (name, status, error); None: not known
     /// (the agent is not running).
     pub fn show_mcp(&self, servers: Option<Vec<(String, String, Option<String>)>>) {
+        let trouble: Vec<&str> = servers.iter().flatten().filter(|(_, status, _)| matches!(status.as_str(), "failed" | "needs-auth")).map(|(name, _, _)| name.as_str()).collect();
+        self.mcp_alert.set_label(&format!("⚠ {}", trouble.join(", ")));
+        self.mcp_alert.set_visible(!trouble.is_empty());
         let Some(holder) = self.mcp_box.borrow().clone() else { return };
         while let Some(child) = holder.first_child() {
             holder.remove(&child);
@@ -3360,6 +3413,26 @@ impl Chat {
         }
         let entries = entries.as_array().cloned().unwrap_or_default();
         let open = entries.iter().any(|e| e["status"].as_str() != Some("completed"));
+        // One line, as the web page's ("Plan · 3 of 7 done · now: …"); a click shows it all.
+        let done = entries.iter().filter(|e| e["status"].as_str() == Some("completed")).count();
+        let now = entries.iter().find(|e| e["status"].as_str() == Some("in_progress")).and_then(|e| e["content"].as_str()).map(|c| format!(" · now: {c}")).unwrap_or_default();
+        let unfolded = self.plan_open.get();
+        let line = gtk::Button::builder().tooltip_text("Claude's plan: a click shows every step").build();
+        line.add_css_class("flat");
+        line.add_css_class("plan-line");
+        let said = format!("Plan · {done} of {} done{now}", entries.len());
+        let label = gtk::Label::builder().label(format!("{said}  {}", if unfolded { "⌄" } else { "›" })).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        line.set_child(Some(&label));
+        self.plan.append(&line);
+        let steps = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        steps.set_visible(unfolded);
+        let (open_now, shown) = (self.plan_open.clone(), steps.clone());
+        line.connect_clicked(move |_| {
+            let now = !open_now.get();
+            open_now.set(now);
+            shown.set_visible(now);
+            label.set_label(&format!("{said}  {}", if now { "⌄" } else { "›" }));
+        });
         for entry in &entries {
             let (mark, class) = match entry["status"].as_str() {
                 Some("completed") => ("✓", "done"),
@@ -3373,8 +3446,9 @@ impl Chat {
                 .wrap_mode(pango::WrapMode::WordChar)
                 .build();
             label.add_css_class(class);
-            self.plan.append(&label);
+            steps.append(&label);
         }
+        self.plan.append(&steps);
         self.plan_revealer.set_reveal_child(!entries.is_empty() && open);
     }
 }
@@ -3946,6 +4020,32 @@ pub fn any_digit(c: char) -> Option<u32> {
 
 /// A picture at most `max_w` × `max_h`, scaled down once. A full-size picture would ask for its
 /// own size: the input would grow to hold it, and the chat would be laid out taller than shown.
+/// A picture full size in a window of its own (Esc closes it).
+fn show_picture(from: &impl IsA<gtk::Widget>, png: &glib::Bytes) {
+    let Ok(texture) = gdk::Texture::from_bytes(png) else { return };
+    let picture = gtk::Picture::for_paintable(&texture);
+    picture.set_can_shrink(true);
+    let (w, h) = (texture.width().clamp(200, 1400), texture.height().clamp(150, 900));
+    let window = gtk::Window::builder().title("Picture").default_width(w).default_height(h).child(&picture).build();
+    window.add_css_class("loom");
+    if let Some(parent) = from.root().and_downcast::<gtk::Window>() {
+        window.set_transient_for(Some(&parent));
+    }
+    let keys = gtk::EventControllerKey::new();
+    let held = window.downgrade();
+    keys.connect_key_pressed(move |_, key, _, _| {
+        if key == gdk::Key::Escape
+            && let Some(window) = held.upgrade()
+        {
+            window.close();
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    window.add_controller(keys);
+    window.present();
+}
+
 fn thumbnail(png: &glib::Bytes, max_w: i32, max_h: i32) -> Option<gtk::Picture> {
     let full = gdk_pixbuf::Pixbuf::from_read(std::io::Cursor::new(png.to_vec())).ok()?;
     let (w, h) = (full.width().max(1), full.height().max(1));
