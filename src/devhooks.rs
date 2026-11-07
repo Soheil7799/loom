@@ -17,6 +17,7 @@
 //! - `scratch`, `files`, `switcher`, `inbox`, `help`, `peek`: what their keys do
 //! - `run:<command>`: run a command in the tray
 //! - `pin` / `unpin`: pin the newest job above the tray, or back
+//! - `notesstep:<n>`: the next past Notes chat (n 1) or the one before (-1), as Ctrl+↑/↓
 //! - `jobkeys:<text>`: keys typed into the newest job's terminal (`\n`: Enter)
 //! - `open:<file>`: open a file in the editor (relative to the focused agent's folder)
 //! - `mode`: next permission mode

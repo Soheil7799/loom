@@ -1225,6 +1225,7 @@ impl App {
                 }
             }
             "run" => self.current_tray().run(argument),
+            "notesstep" => self.notes_chat.step(argument.parse().unwrap_or(1)),
             "jobkeys" => self.current_tray().keys_to_latest(&argument.replace("\\n", "\r")),
             other => eprintln!("loom control: unknown command {other}"),
         }
@@ -1626,6 +1627,11 @@ impl App {
 
     /// The chat in view: the focused agent's, or that of loomd's agent in view.
     pub fn chat_in_view(&self) -> Option<Rc<crate::chat::Chat>> {
+        if self.notes_mode.get()
+            && let Some(chat) = self.notes_chat.remote_chat()
+        {
+            return Some(chat);
+        }
         let remote = self.remote_focused.get().and_then(|id| self.remote_agents.borrow().get(&id).map(|a| a.chat.clone()));
         remote.or_else(|| self.active_agent().map(|a| a.chat()))
     }

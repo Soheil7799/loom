@@ -1036,6 +1036,26 @@ Who: window. Result: `{}`.
 |---|---|---|
 | `id` | string | a `scribe` item |
 
+### `scribe_seen`
+
+A change Scribe wrote, seen: shown folded from then on.
+
+Who: window. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string? | a `change` item of `scribe` (none: all) |
+
+### `scribe_check`
+
+Scribe reads what is left unread of a conversation, now ("Check now").
+
+Who: window. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `session` | string | the conversation |
+
 ### `save`
 
 A file for an agent, saved in its folder under `<bridge>-files/` (never over another).

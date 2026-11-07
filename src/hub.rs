@@ -25,6 +25,9 @@ pub struct Hub {
     feed: RefCell<Option<crate::feed::Feed>>,
     /// Something new waits in it: drawn once the window is idle.
     due: Cell<bool>,
+    /// loomd's Scribe (the window as its client): what it had for the user last (questions,
+    /// proposals, changes not seen), to mark the Notes tab when that grows.
+    news: Cell<Option<usize>>,
     /// Itself (for what the core calls with only a reference).
     me: RefCell<std::rc::Weak<Hub>>,
     /// The conversation the window shows: (session, title).
@@ -129,6 +132,7 @@ impl Hub {
             core: loom_core::hub::Hub::new(),
             feed: RefCell::default(),
             due: Cell::new(false),
+            news: Cell::new(None),
             me: RefCell::default(),
             current: RefCell::default(),
             status,
@@ -143,7 +147,7 @@ impl Hub {
         let weak = Rc::downgrade(&hub);
         hub.panel.connect_unmap(move |_| {
             if let Some(hub) = weak.upgrade()
-                && hub.core.mark_seen(None)
+                && hub.mark_seen(None)
             {
                 // Shown folded from the next look on (rebuilt once the switch is over).
                 let weak = Rc::downgrade(&hub);
@@ -177,11 +181,16 @@ impl Hub {
             if let Some(hub) = weak.upgrade() {
                 let session = hub.current.borrow().as_ref().map(|(s, _)| s.clone());
                 let Some(session) = session else { return };
-                let busy = hub.core.running.get();
+                let busy = hub.running();
                 hub.check.set_sensitive(false);
                 hub.check.set_label(if busy { "Waiting…" } else { "Checking…" });
                 if busy {
                     hub.status.set_label("This conversation is read as soon as the check running now ends…");
+                }
+                // loomd's Scribe: it says what it does in `scribe`.
+                if crate::conn::is_remote() {
+                    scribe("scribe_check", json!({ "session": session }));
+                    return;
                 }
                 hub.core.check_now(&session, true);
                 // Nothing started: there was nothing new to read.
@@ -193,9 +202,12 @@ impl Hub {
         });
         let view: std::rc::Weak<Hub> = Rc::downgrade(&hub);
         *hub.me.borrow_mut() = view.clone();
-        hub.core.set_view(view);
-        // Scribe in the core API (warp): the panel's lists draw from it.
-        hub.core.serve();
+        // Scribe in the core API (warp): the panel's lists draw from it. loomd's client: Scribe
+        // is loomd's alone (one here would write in the same vault).
+        if !crate::conn::is_remote() {
+            hub.core.set_view(view);
+            hub.core.serve();
+        }
         let weak = Rc::downgrade(&hub);
         *hub.feed.borrow_mut() = crate::feed::Feed::new("scribe", move || {
             let Some(hub) = weak.upgrade() else { return };
@@ -251,13 +263,13 @@ impl Hub {
                     ),
                 });
                 // While a check runs it says so (one started by hand or by itself).
-                let running = self.core.running.get();
+                let running = self.running();
                 self.check.set_visible(unread.is_some() || running);
                 self.check.set_sensitive(!running);
                 self.check.set_label(if running { "Checking…" } else { "Check now" });
             }
         }
-        if !self.core.running.get() && self.status.label().is_empty() {
+        if !self.running() && self.status.label().is_empty() {
             self.status.set_label("Scribe keeps what you tell your agents in your notes.");
         }
     }
@@ -291,6 +303,9 @@ impl Hub {
                 .collect()
         };
         let (questions, pending, recent, teach) = (list("question"), list("proposal"), list("change"), list("teach"));
+        if crate::conn::is_remote() {
+            self.remote_news(&items, questions.len() + pending.len() + recent.iter().filter(|c| c["unseen"] == true).count());
+        }
         if questions.is_empty() && pending.is_empty() && recent.is_empty() && teach.is_empty() {
             let empty = gtk::Label::builder()
                 .label("Questions Scribe has, changes waiting for your OK, and what it wrote in your notes show up here.")
@@ -536,7 +551,7 @@ impl Hub {
             // Folded by hand: seen.
             if !row.is_expanded() {
                 if let (Some(hub), Some(id)) = (weak.upgrade(), v["id"].as_u64()) {
-                    hub.core.mark_seen(Some(id));
+                    hub.mark_seen(Some(id));
                 }
                 return;
             }
@@ -567,7 +582,12 @@ impl Hub {
                         if let Some(card) = held.upgrade() {
                             card.set_sensitive(false);
                         }
-                        hub.core.fix(row_data.clone(), text);
+                        if crate::conn::is_remote() {
+                            // shortcut: loomd fixes only changes still in Scribe's recent list, not older history rows; add a history-wide scribe_fix if that matters
+                            scribe("scribe_fix", json!({ "id": format!("change:{}", row_data["id"]), "said": text }));
+                        } else {
+                            hub.core.fix(row_data.clone(), text);
+                        }
                     }
                 });
                 card.append(&comment);
@@ -792,24 +812,78 @@ impl Hub {
         self.me.borrow().upgrade()
     }
 
+    // loomd's client: Scribe is loomd's, which hears of its agents itself; the core here
+    // must not write Scribe's store or the vault beside it.
     pub fn turn_done(&self, session: &str) {
-        self.core.turn_done(session);
+        if !crate::conn::is_remote() {
+            self.core.turn_done(session);
+        }
     }
 
     pub fn check_now(&self, session: &str, all: bool) {
-        self.core.check_now(session, all);
+        if !crate::conn::is_remote() {
+            self.core.check_now(session, all);
+        }
     }
 
     pub fn record_external(&self, edits: Vec<(String, Option<String>, String)>, session: &str, title: &str) {
-        self.core.record_external(edits, session, title);
+        if !crate::conn::is_remote() {
+            self.core.record_external(edits, session, title);
+        }
     }
 
     pub fn counts(&self) -> (usize, usize) {
+        if crate::conn::is_remote() {
+            let items = self.items();
+            let count = |list: &str| items.iter().filter(|i| i["list"] == list).count();
+            return (count("question"), count("proposal"));
+        }
         self.core.counts()
     }
 
     pub fn asks_about(&self, session: &str) -> bool {
+        if crate::conn::is_remote() {
+            return self.items().iter().any(|i| i["list"] == "question" && i["session"].as_str() == Some(session));
+        }
         self.core.asks_about(session)
+    }
+
+    /// The `scribe` feed's items as last read.
+    fn items(&self) -> Vec<Value> {
+        self.feed.borrow().as_ref().map(|f| f.items().clone()).unwrap_or_default()
+    }
+
+    /// Scribe is checking a conversation now (here, or loomd's).
+    fn running(&self) -> bool {
+        if crate::conn::is_remote() {
+            return self.items().iter().any(|i| i["id"] == "status" && i["running"] == true);
+        }
+        self.core.running.get()
+    }
+
+    /// Changes seen (one, or all): folded from then on. True if that changed anything here
+    /// (loomd's: its `scribe` says so when it did).
+    fn mark_seen(&self, id: Option<u64>) -> bool {
+        if crate::conn::is_remote() {
+            scribe("scribe_seen", json!({ "id": id.map(|id| format!("change:{id}")) }));
+            return false;
+        }
+        self.core.mark_seen(id)
+    }
+
+    /// loomd's Scribe as `scribe` says: what it does in the status line, and the Notes tab
+    /// marked when it has more for the user than before (`news`: that count).
+    fn remote_news(&self, items: &[Value], news: usize) {
+        let status = items.iter().find(|i| i["id"] == "status");
+        let doing = status.and_then(|s| s["doing"].as_str()).filter(|d| !d.is_empty());
+        if let Some(doing) = doing {
+            self.status.set_label(doing);
+        }
+        if self.news.replace(Some(news)).is_some_and(|before| news > before)
+            && let Some(attention) = self.on_attention.borrow().as_ref()
+        {
+            attention();
+        }
     }
 
     pub fn teach_newest(&self, said: &str) {

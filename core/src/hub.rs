@@ -333,6 +333,29 @@ impl Hub {
             scribe.forget_teaching(id);
             Ok(json!({}))
         });
+        // A written change seen (folded from then on); none given: all of them.
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_seen", move |who, params| {
+            window_only(who)?;
+            let scribe = weak.upgrade().ok_or_else(|| crate::api::Error::NotFound("Scribe".into()))?;
+            let id = match params.get("id").filter(|id| !id.is_null()) {
+                Some(id) => Some(id.as_str().and_then(|id| id.rsplit(':').next()).and_then(|id| id.parse().ok()).ok_or_else(|| crate::api::Error::Invalid("which change (its id)?".into()))?),
+                None => None,
+            };
+            if scribe.mark_seen(id) {
+                scribe.publish();
+            }
+            Ok(json!({}))
+        });
+        // "Check now": what is left unread of a conversation, read now (whole).
+        let weak = Rc::downgrade(self);
+        hub.handle("scribe_check", move |who, params| {
+            window_only(who)?;
+            let scribe = weak.upgrade().ok_or_else(|| crate::api::Error::NotFound("Scribe".into()))?;
+            let session = params["session"].as_str().filter(|s| !s.is_empty()).ok_or_else(|| crate::api::Error::Invalid("which conversation (session)?".into()))?;
+            scribe.check_now(session, true);
+            Ok(json!({}))
+        });
     }
 
     fn publish(&self) {
@@ -1164,5 +1187,10 @@ mod tests {
         let window = crate::api::hub().connect(Principal::Window);
         assert!(matches!(window.command("c2", "scribe_answer", json!({ "id": "question:8", "answer": "2026" })), Err(Error::Conflict(_))));
         assert!(matches!(window.command("c3", "scribe_decide", json!({ "id": "proposal:9" })), Err(Error::Invalid(_))));
+        // Seen and Check now: the window's (a change none has: nothing to save).
+        assert!(matches!(phone.command("c4", "scribe_seen", json!({})), Err(Error::Forbidden(_))));
+        assert!(window.command("c5", "scribe_seen", json!({ "id": "change:99" })).is_ok());
+        assert!(matches!(window.command("c6", "scribe_seen", json!({ "id": "change:x" })), Err(Error::Invalid(_))));
+        assert!(matches!(window.command("c7", "scribe_check", json!({})), Err(Error::Invalid(_))));
     }
 }

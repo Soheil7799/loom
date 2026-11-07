@@ -182,6 +182,8 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "scribe_keep_rule", who: WINDOW, params: &[("id", "string", true, "a `scribe` item"), ("rule", "string", true, "the rule")], result: "{}", later: false, about: "Keeps a rule Scribe proposes." },
     Command { name: "scribe_history", who: WINDOW, params: &[("limit", "integer", false, "200; 2000 tops")], result: "{changes: [{id, kind: written|dropped, topic, reason, change, title, at, undone}]}", later: false, about: "Everything Scribe wrote or was told no, newest first (`scribe_undo` takes a written one back)." },
     Command { name: "scribe_forget", who: WINDOW, params: &[("id", "string", true, "a `scribe` item")], result: "{}", later: false, about: "Forgets a rule Scribe learned." },
+    Command { name: "scribe_seen", who: WINDOW, params: &[("id", "string", false, "a `change` item of `scribe` (none: all)")], result: "{}", later: false, about: "A change Scribe wrote, seen: shown folded from then on." },
+    Command { name: "scribe_check", who: WINDOW, params: &[("session", "string", true, "the conversation")], result: "{}", later: false, about: "Scribe reads what is left unread of a conversation, now (\"Check now\")." },
     Command {
         name: "save",
         who: &["bridge"],

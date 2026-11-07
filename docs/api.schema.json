@@ -2767,6 +2767,44 @@
       },
       "result": "{}"
     },
+    "scribe_seen": {
+      "description": "A change Scribe wrote, seen: shown folded from then on.",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `change` item of `scribe` (none: all)"
+          }
+        },
+        "required": []
+      },
+      "result": "{}"
+    },
+    "scribe_check": {
+      "description": "Scribe reads what is left unread of a conversation, now (\"Check now\").",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "session": {
+            "type": "string",
+            "description": "the conversation"
+          }
+        },
+        "required": [
+          "session"
+        ]
+      },
+      "result": "{}"
+    },
     "save": {
       "description": "A file for an agent, saved in its folder under `<bridge>-files/` (never over another).",
       "who": [

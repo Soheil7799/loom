@@ -34,6 +34,13 @@ struct Open {
     before: Before,
 }
 
+/// A chat of loomd's (the window as its client): its agent's chat, its page, the starters.
+struct RemoteOpen {
+    agent: Rc<crate::remote_agent::RemoteAgent>,
+    page: gtk::Overlay,
+    starters: gtk::Box,
+}
+
 pub struct NotesChat {
     /// The sidebar's page: the vault, "New chat" and the past chats.
     pub side: gtk::Box,
@@ -64,6 +71,9 @@ pub struct NotesChat {
     pub on_agent_event: RefCell<Option<Rc<dyn Fn(&Rc<Agent>, &Event)>>>,
     /// A chat's agent closed (for the phone).
     pub on_closed: RefCell<Option<Rc<dyn Fn(u32)>>>,
+    /// loomd's chats open here (the window as its client), and the one shown (its agent).
+    remote_open: RefCell<Vec<RemoteOpen>>,
+    remote_current: Cell<Option<u32>>,
 }
 
 /// Working, or waiting for an answer: a chat left like that keeps going.
@@ -123,18 +133,20 @@ impl NotesChat {
             on_shown: RefCell::default(),
             on_agent_event: RefCell::default(),
             on_closed: RefCell::default(),
+            remote_open: RefCell::default(),
+            remote_current: Cell::new(None),
         });
-        // The core API's `notes_chats` (warp): read again for each new follower; the list
-        // draws from it too.
-        // (The list's own subscription first: it reads nothing anew when the window starts.)
-        let store = loom_core::api::hub().store("notes_chats");
-        *chat.feed.borrow_mut() = crate::feed::Feed::new("notes_chats", || {});
-        let weak = Rc::downgrade(&chat);
-        store.on_subscribe(move |_| {
-            if let Some(chat) = weak.upgrade() {
-                chat.refresh();
-            }
-        });
+        // loomd's client: its `notes_chats` is the list, and says who works.
+        if crate::conn::is_remote() {
+            let weak = Rc::downgrade(&chat);
+            *chat.feed.borrow_mut() = crate::feed::Feed::new("notes_chats", move || {
+                if let Some(chat) = weak.upgrade() {
+                    chat.remote_changed();
+                }
+            });
+        } else {
+            chat.follow_local();
+        }
         let weak = Rc::downgrade(&chat);
         chat.list.connect_row_activated(move |_, row| {
             if let Some(chat) = weak.upgrade() {
@@ -150,6 +162,20 @@ impl NotesChat {
         chat
     }
 
+    /// The core API's `notes_chats` (warp): read again for each new follower; the list draws
+    /// from it too. (The list's own subscription first: it reads nothing anew when the window
+    /// starts.)
+    fn follow_local(self: &Rc<Self>) {
+        let store = loom_core::api::hub().store("notes_chats");
+        *self.feed.borrow_mut() = crate::feed::Feed::new("notes_chats", || {});
+        let weak = Rc::downgrade(self);
+        store.on_subscribe(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.refresh();
+            }
+        });
+    }
+
     /// Shown: the list read again, and a chat ready to type in (a new one, if none is open).
     pub fn open(self: &Rc<Self>) {
         let Some(vault) = crate::vault::current() else {
@@ -159,6 +185,14 @@ impl NotesChat {
         let name = vault.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.heading.set_label(&format!("NOTES · {name}"));
         self.heading.set_tooltip_text(Some(&vault.to_string_lossy()));
+        if crate::conn::is_remote() {
+            self.fill();
+            match self.remote_current.get() {
+                Some(id) => self.show_remote(id),
+                None => self.new_chat(),
+            }
+            return;
+        }
         self.refresh();
         let current = self.current.borrow().clone();
         match current {
@@ -182,6 +216,9 @@ impl NotesChat {
         if let Some(agent) = self.current.borrow().as_ref() {
             agent.chat().input.grab_focus();
         }
+        if let Some(chat) = self.remote_chat() {
+            chat.input.grab_focus();
+        }
     }
 
     fn tray(&self, vault: &PathBuf) -> Rc<Tray> {
@@ -196,6 +233,9 @@ impl NotesChat {
     /// The chat shown is left: one at work (or waiting for you) keeps going, and goes once it
     /// is neither; else what it changed is recorded and it goes.
     fn set_aside(&self) {
+        if self.remote_current.take().is_some() {
+            self.close_idle_remote();
+        }
         let Some(agent) = self.current.borrow_mut().take() else { return };
         agent.focused.set(false);
         if !at_work(&agent) {
@@ -218,6 +258,9 @@ impl NotesChat {
 
     /// A chat waits for an answer.
     pub fn waiting(&self) -> bool {
+        if crate::conn::is_remote() {
+            return self.items().iter().any(|i| i["mark"] == "blocked");
+        }
         self.open.borrow().iter().any(|o| o.agent.status() == Status::Blocked)
     }
 
@@ -236,6 +279,9 @@ impl NotesChat {
 
     /// An agent for chat `session` (None: a new chat), about `scope` if given, shown.
     fn chat_for(self: &Rc<Self>, session: Option<String>, scope: Option<Scope>) {
+        if crate::conn::is_remote() {
+            return self.remote_chat_for(session, scope, None);
+        }
         let Some(vault) = crate::vault::current() else { return };
         self.set_aside();
         // Still at work from before: that one again.
@@ -258,7 +304,7 @@ impl NotesChat {
         let before = prepare(&agent, &vault, scope.as_ref());
         agent.set_show_thinking(crate::settings::get().show_thinking);
         agent.chat().set_hint(&hint(scope.as_ref()));
-        let starters = self.starters(&agent, &vault, scope.as_ref());
+        let starters = self.starters(&agent.chat(), &vault, scope.as_ref());
         starters.set_visible(session.is_none());
         let page = gtk::Overlay::builder().child(&agent.chat().root).build();
         page.add_overlay(&starters);
@@ -310,7 +356,7 @@ impl NotesChat {
     }
 
     /// Over an empty chat: what it is about, and a few beginnings that fill the input.
-    fn starters(&self, agent: &Rc<Agent>, vault: &Path, scope: Option<&Scope>) -> gtk::Box {
+    fn starters(&self, chat: &crate::chat::Chat, vault: &Path, scope: Option<&Scope>) -> gtk::Box {
         let starters = gtk::Box::new(gtk::Orientation::Vertical, 8);
         starters.add_css_class("notes-starters");
         starters.set_halign(gtk::Align::Center);
@@ -343,7 +389,7 @@ impl NotesChat {
         for (label, text) in lines {
             let button = gtk::Button::with_label(&label);
             button.add_css_class("notes-starter");
-            let input = agent.chat().input.downgrade();
+            let input = chat.input.downgrade();
             button.connect_clicked(move |_| {
                 let Some(input) = input.upgrade() else { return };
                 let buffer = input.buffer();
@@ -386,6 +432,13 @@ impl NotesChat {
 
     /// A new chat (the one open, if it is still empty).
     pub fn new_chat(self: &Rc<Self>) {
+        if crate::conn::is_remote() {
+            match self.remote_current.get().filter(|_| self.remote_chat().is_some_and(|c| !c.has_messages())) {
+                Some(id) => self.show_remote(id),
+                None => self.remote_chat_for(None, None, None),
+            }
+            return;
+        }
         let empty = self.current.borrow().as_ref().is_some_and(|a| a.session_id().is_none() && !a.is_busy());
         if empty {
             let current = self.current.borrow().clone();
@@ -399,6 +452,13 @@ impl NotesChat {
 
     /// A new chat with `text` in its input, for the user to send (or change first).
     pub fn new_chat_saying(self: &Rc<Self>, text: &str) {
+        if crate::conn::is_remote() {
+            match self.remote_chat().filter(|c| !c.has_messages()) {
+                Some(chat) => say_in(&chat, text),
+                None => self.remote_chat_for(None, None, Some(text.to_owned())),
+            }
+            return;
+        }
         self.new_chat();
         let current = self.current.borrow().clone();
         if let Some(agent) = current {
@@ -416,7 +476,7 @@ impl NotesChat {
 
     /// The next past chat (`by` 1) or the one before (-1), from the one shown.
     pub fn step(self: &Rc<Self>, by: i32) {
-        let session = self.current.borrow().as_ref().and_then(|a| a.session_id());
+        let session = self.current_session();
         let count = self.pasts.borrow().len() as i32;
         if count == 0 {
             return;
@@ -464,6 +524,13 @@ impl NotesChat {
     /// Past chat `index` of the list.
     fn pick(self: &Rc<Self>, index: usize) {
         let Some(past) = self.pasts.borrow().get(index).cloned() else { return };
+        if crate::conn::is_remote() {
+            match self.remote_current.get().filter(|id| self.session_of(*id).as_deref() == Some(past.session_id.as_str())) {
+                Some(id) => self.show_remote(id),
+                None => self.remote_chat_for(Some(past.session_id), None, None),
+            }
+            return;
+        }
         let current = self.current.borrow().clone().filter(|a| a.session_id().as_deref() == Some(past.session_id.as_str()));
         match current {
             // Shown again (another page may be in its place).
@@ -474,6 +541,10 @@ impl NotesChat {
 
     /// The vault's past chats, read again (Claude Code's own list of conversations).
     fn refresh(self: &Rc<Self>) {
+        // loomd's client: loomd lists them.
+        if crate::conn::is_remote() {
+            return;
+        }
         let Some(vault) = crate::vault::current() else { return };
         if self.listing.borrow().as_ref().is_some_and(|l| l.upgrade().is_some()) {
             return;
@@ -498,6 +569,9 @@ impl NotesChat {
     /// The core API's `notes_chats`: the vault's past chats, newest first, each `{id: its
     /// session, title, updated, mark: "working" | "blocked" | null, current}`.
     fn publish(&self) {
+        if crate::conn::is_remote() {
+            return;
+        }
         let current = self.current.borrow().as_ref().and_then(|a| a.session_id());
         let marked = self.marked.borrow();
         let items = self
@@ -521,13 +595,16 @@ impl NotesChat {
         // Drawn from what the core API has: published, then read back as any client reads it.
         self.publish();
         loom_core::api::hub().store("notes_chats").flush();
-        let items: Vec<serde_json::Value> = match self.feed.borrow().as_ref() {
-            Some(feed) => {
-                feed.update();
-                feed.items().clone()
-            }
-            None => Vec::new(),
-        };
+        let items = self.items();
+        // loomd's: its list is the past chats.
+        if crate::conn::is_remote()
+            && let Some(vault) = crate::vault::current()
+        {
+            *self.pasts.borrow_mut() = items
+                .iter()
+                .filter_map(|i| Some(Past { session_id: i["id"].as_str()?.to_owned(), cwd: vault.clone(), title: i["title"].as_str().map(str::to_owned), updated: i["updated"].as_str().unwrap_or_default().to_owned() }))
+                .collect();
+        }
         while let Some(row) = self.list.row_at_index(0) {
             self.list.remove(&row);
         }
@@ -560,13 +637,156 @@ impl NotesChat {
 
     /// The row of the chat shown, selected (none while it has no message yet).
     fn mark_selected(&self) {
-        let session = self.current.borrow().as_ref().and_then(|a| a.session_id());
+        let session = self.current_session();
         let index = session.and_then(|s| self.pasts.borrow().iter().position(|p| p.session_id == s));
         match index.and_then(|i| self.list.row_at_index(i as i32)) {
             Some(row) => self.list.select_row(Some(&row)),
             None => self.list.unselect_all(),
         }
     }
+}
+
+impl NotesChat {
+    /// `notes_chats` as last read.
+    fn items(&self) -> Vec<serde_json::Value> {
+        self.feed.borrow().as_ref().map(|feed| {
+            feed.update();
+            feed.items().clone()
+        }).unwrap_or_default()
+    }
+
+    /// The conversation of the chat shown, once it has one.
+    fn current_session(&self) -> Option<String> {
+        match self.remote_current.get() {
+            Some(id) => self.session_of(id),
+            None => self.current.borrow().as_ref().and_then(|a| a.session_id()),
+        }
+    }
+
+    /// The conversation of loomd's chat agent `id`, once it has one (`notes_chats` says).
+    fn session_of(&self, id: u32) -> Option<String> {
+        let id = id.to_string();
+        self.items().iter().find(|i| i["agent"].as_str() == Some(id.as_str()))?["id"].as_str().map(str::to_owned)
+    }
+
+    /// The chat of loomd's chat shown, if any.
+    pub fn remote_chat(&self) -> Option<Rc<crate::chat::Chat>> {
+        let id = self.remote_current.get()?;
+        self.remote_open.borrow().iter().find(|o| o.agent.id == id).map(|o| o.agent.chat.clone())
+    }
+
+    /// loomd's chat for `session` (None: a new one; `scope`: about that topic), shown; `text`
+    /// put in its input. loomd opens it (`notes_open`), then it is drawn here.
+    fn remote_chat_for(self: &Rc<Self>, session: Option<String>, scope: Option<Scope>, text: Option<String>) {
+        let Some(vault) = crate::vault::current() else { return };
+        self.set_aside();
+        let open = session.as_ref().and_then(|s| self.remote_open.borrow().iter().map(|o| o.agent.id).find(|id| self.session_of(*id).as_ref() == Some(s)));
+        if let Some(id) = open {
+            self.remote_current.set(Some(id));
+            return self.show_remote(id);
+        }
+        let mut params = serde_json::json!({});
+        if let Some(session) = &session {
+            params["session"] = session.as_str().into();
+        }
+        if let Some((topic, _)) = &scope {
+            params["topic"] = topic.as_str().into();
+        }
+        let weak = Rc::downgrade(self);
+        crate::conn::command_then("notes", "notes_open", params, move |answer| {
+            let Some(chat) = weak.upgrade() else { return };
+            let Some(id) = answer.and_then(|a| a["agent"].as_str().and_then(|a| a.parse::<u32>().ok())) else { return };
+            if !chat.remote_open.borrow().iter().any(|o| o.agent.id == id) {
+                let agent = crate::remote_agent::RemoteAgent::new(id);
+                agent.chat.set_hint(&hint(scope.as_ref()));
+                let starters = chat.starters(&agent.chat, &vault, scope.as_ref());
+                let page = gtk::Overlay::builder().child(&agent.chat.root).build();
+                page.add_overlay(&starters);
+                chat.stack.add_child(&page);
+                chat.remote_open.borrow_mut().push(RemoteOpen { agent, page, starters });
+            }
+            chat.remote_current.set(Some(id));
+            chat.show_remote(id);
+            if let (Some(text), Some(shown)) = (&text, chat.remote_chat()) {
+                say_in(&shown, text);
+            }
+        });
+    }
+
+    /// loomd's chat `id` shown.
+    fn show_remote(&self, id: u32) {
+        if let Some(shown) = self.on_shown.borrow().clone() {
+            shown();
+        }
+        let session = self.session_of(id);
+        let title = session.as_ref().and_then(|s| self.items().iter().find(|i| i["id"].as_str() == Some(s.as_str()))?["title"].as_str().map(str::to_owned));
+        if let Some(open) = self.remote_open.borrow().iter().find(|o| o.agent.id == id) {
+            self.stack.set_visible_child(&open.page);
+            open.starters.set_visible(session.is_none() && !open.agent.chat.has_messages());
+            let vault = crate::vault::current().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
+            open.agent.chat.set_title(title.as_deref().unwrap_or("New chat"), "your notes", &vault);
+            open.agent.chat.input.grab_focus();
+        }
+        self.mark_selected();
+    }
+
+    /// loomd's `notes_chats` changed: the list drawn, chats left that rest closed, the Notes
+    /// button told whether one waits.
+    fn remote_changed(self: &Rc<Self>) {
+        self.fill();
+        self.close_idle_remote();
+        if let Some(id) = self.remote_current.get() {
+            self.show_title(id);
+        }
+        if let Some(attention) = self.on_attention.borrow().clone() {
+            attention(self.waiting());
+        }
+    }
+
+    /// Its title in the header, and the starters gone once it has a conversation.
+    fn show_title(&self, id: u32) {
+        let session = self.session_of(id);
+        if let Some(open) = self.remote_open.borrow().iter().find(|o| o.agent.id == id) {
+            open.starters.set_visible(session.is_none() && !open.agent.chat.has_messages());
+        }
+        let title = session.and_then(|s| self.items().iter().find(|i| i["id"].as_str() == Some(s.as_str()))?["title"].as_str().map(str::to_owned));
+        if let (Some(title), Some(chat)) = (title, self.remote_chat()) {
+            let vault = crate::vault::current().map(|v| v.to_string_lossy().into_owned()).unwrap_or_default();
+            chat.set_title(&title, "your notes", &vault);
+        }
+    }
+
+    /// loomd's chats left (not shown) that rest, closed there: one never sent to, or one
+    /// whose conversation is neither working nor waiting. One sent to that has no
+    /// conversation yet is kept until it has (it may be working).
+    fn close_idle_remote(&self) {
+        let current = self.remote_current.get();
+        let items = self.items();
+        let resting = |o: &RemoteOpen| {
+            let id = o.agent.id.to_string();
+            match items.iter().find(|i| i["agent"].as_str() == Some(id.as_str())) {
+                Some(item) => item["mark"].is_null(),
+                None => !o.agent.chat.has_messages(),
+            }
+        };
+        let gone: Vec<u32> = self.remote_open.borrow().iter().filter(|o| Some(o.agent.id) != current && resting(o)).map(|o| o.agent.id).collect();
+        for id in gone {
+            let at = self.remote_open.borrow().iter().position(|o| o.agent.id == id);
+            if let Some(at) = at {
+                let open = self.remote_open.borrow_mut().remove(at);
+                self.stack.remove(&open.page);
+                crate::conn::command("notes", "notes_close", serde_json::json!({ "agent": id.to_string() }));
+            }
+        }
+    }
+}
+
+/// `text` in `chat`'s input, for the user to send (or change first).
+fn say_in(chat: &crate::chat::Chat, text: &str) {
+    let buffer = chat.input.buffer();
+    buffer.set_text(text);
+    buffer.place_cursor(&buffer.end_iter());
+    chat.input.grab_focus();
 }
 
 /// The Notes chat as the remote bridge reaches it (the phone's Vault tab): its chats, one of
