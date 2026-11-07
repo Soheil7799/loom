@@ -2429,7 +2429,6 @@ impl Chat {
     }
 
     /// From now on drawn wholly from agent `agent`'s conversation entries (loomd's client).
-    #[expect(dead_code, reason = "the window becomes loomd's client in the next steps (plan: Part 2)")]
     pub fn draw_from_entries(&self, agent: u32) {
         self.from_entries.set(Some(agent));
     }

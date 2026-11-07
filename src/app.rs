@@ -27,6 +27,8 @@ use loom_core::workspace::{Host, Workspace};
 enum Row {
     Project(PathBuf),
     Agent(Rc<Agent>),
+    /// One of loomd's agents (the window as its client).
+    Remote(u32),
     /// A heading (Running, Projects): nothing to open.
     Heading,
 }
@@ -128,6 +130,9 @@ pub struct App {
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// The bridges (the Telegram bot: off unless switched on), each a process of its own.
     bridges: Rc<crate::bridges::Host>,
+    /// loomd's agents opened in the window (its client), and the one in view.
+    remote_agents: RefCell<HashMap<u32, Rc<crate::remote_agent::RemoteAgent>>>,
+    remote_focused: Cell<Option<u32>>,
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -484,6 +489,8 @@ impl App {
             running_rows: RefCell::default(),
             sidebar_feeds: RefCell::default(),
             sidebar_due: Cell::new(false),
+            remote_agents: RefCell::default(),
+            remote_focused: Cell::new(None),
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
@@ -508,7 +515,10 @@ impl App {
         }));
         crate::theme::status_colors(&this.window);
         // The API first: the bridges `wire` starts are handed connections to it.
-        this.listen();
+        // loomd's client: loomd answers the API and runs the bridges.
+        if !crate::conn::is_remote() {
+            this.listen();
+        }
         this.wire(&new_button, &settings_button);
         let (weak, place) = (Rc::downgrade(&this), notes_place.downgrade());
         settings::on_change(move |_| {
@@ -551,9 +561,12 @@ impl App {
         let host: std::rc::Weak<App> = Rc::downgrade(&this);
         *this.me.borrow_mut() = host.clone();
         this.ws.set_host(host);
-        this.restore();
-        this.ws.serve_schedules();
-        this.ws.serve_conversations();
+        // loomd's client: the agents, schedules and conversations are loomd's.
+        if !crate::conn::is_remote() {
+            this.restore();
+            this.ws.serve_schedules();
+            this.ws.serve_conversations();
+        }
         this
     }
 
@@ -695,9 +708,14 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 app.apply_settings(s);
                 app.refresh_sidebar();
-                app.bridges.apply(s);
+                if !crate::conn::is_remote() {
+                    app.bridges.apply(s);
+                }
             }
         });
+        if crate::conn::is_remote() {
+            return;
+        }
         // Pictures sent to agents, in any format GTK reads, as PNG.
         self.bridges.attach(&self.ws, std::sync::Arc::new(|bytes| {
             let texture = gdk::Texture::from_bytes(&glib::Bytes::from_owned(bytes)).map_err(|e| e.to_string())?;
@@ -1580,6 +1598,32 @@ impl App {
         self.save();
     }
 
+    /// The chat in view: the focused agent's, or that of loomd's agent in view.
+    pub fn chat_in_view(&self) -> Option<Rc<crate::chat::Chat>> {
+        let remote = self.remote_focused.get().and_then(|id| self.remote_agents.borrow().get(&id).map(|a| a.chat.clone()));
+        remote.or_else(|| self.active_agent().map(|a| a.chat()))
+    }
+
+    /// One of loomd's agents in view (the window as its client): its chat made the first time.
+    fn focus_remote(self: &Rc<Self>, id: u32) {
+        self.leave_notes();
+        let agent = self.remote_agents.borrow().get(&id).cloned();
+        let agent = agent.unwrap_or_else(|| {
+            let agent = crate::remote_agent::RemoteAgent::new(id);
+            self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
+            self.remote_agents.borrow_mut().insert(id, agent.clone());
+            agent
+        });
+        if let Some(old) = self.remote_focused.replace(Some(id)).filter(|old| *old != id).and_then(|old| self.remote_agents.borrow().get(&old).cloned()) {
+            old.chat.left();
+        }
+        agent.chat.returned();
+        self.chat_stack.set_visible_child(&agent.chat.root);
+        // its header from the `agents` item, and the row marked
+        self.draw_sidebar();
+        agent.chat.input.grab_focus();
+    }
+
     fn show_files(&self, agent: &Rc<Agent>) {
         self.files.show(&agent.cwd, &agent.project, &agent.files());
         self.files.set_repos(agent.repos());
@@ -2208,6 +2252,11 @@ impl App {
     }
 
     fn start_agent_in(self: &Rc<Self>, cwd: PathBuf) {
+        // loomd's client: loomd starts it (it shows in the sidebar from `agents`).
+        if crate::conn::is_remote() {
+            crate::conn::command("window", "new_agent", serde_json::json!({ "folder": cwd }));
+            return;
+        }
         let agent = self.add_agent(Saved::new(cwd));
         self.focus(&agent);
     }
@@ -2846,18 +2895,21 @@ impl App {
         }
     }
 
-    fn activate_row(self: &Rc<Self>, index: usize) {
+    pub fn activate_row(self: &Rc<Self>, index: usize) {
         enum Do {
             Focus(Rc<Agent>),
+            Remote(u32),
             Start(PathBuf),
         }
         let what = match self.rows.borrow().get(index) {
             Some(Row::Project(path)) => Do::Start(path.clone()),
             Some(Row::Agent(agent)) => Do::Focus(agent.clone()),
+            Some(Row::Remote(id)) => Do::Remote(*id),
             Some(Row::Heading) | None => return,
         };
         match what {
             Do::Focus(agent) => self.focus(&agent),
+            Do::Remote(id) => self.focus_remote(id),
             Do::Start(path) => self.show_project(&path, &path),
         }
     }
@@ -2881,6 +2933,10 @@ impl App {
             Some(Row::Agent(agent)) => Some(Row::Agent(agent.clone())),
             _ => None,
         });
+        // shortcut: no menu on loomd's agents yet, until they have the window's actions
+        if index.is_some_and(|i| matches!(self.rows.borrow().get(i), Some(Row::Remote(_)))) {
+            return;
+        }
         let menu = match row {
             Some(Row::Project(path)) => {
                 let p = || path.clone();
@@ -3042,6 +3098,11 @@ impl App {
             let Some((agents, projects)) = feeds.as_ref() else { return };
             agents.update();
             projects.update();
+            for item in agents.items().iter() {
+                if let Some(agent) = item["id"].as_str().and_then(|id| id.parse().ok()).and_then(|id: u32| self.remote_agents.borrow().get(&id).cloned()) {
+                    agent.update(item);
+                }
+            }
             (agents.items().iter().filter_map(SideAgent::from).collect(), projects.items().iter().filter_map(SideProject::from).collect())
         };
         self.refresh_title();
@@ -3075,7 +3136,7 @@ impl App {
         }
         let mut rows = Vec::new();
         let mut edges = HashMap::new();
-        let focused = self.focused.borrow().as_ref().map(|f| f.id);
+        let focused = self.focused.borrow().as_ref().map(|f| f.id).or(self.remote_focused.get());
         // The running agents, numbered (Ctrl+1…9), each with its ☕; the projects below as
         // ever (a running agent is in both).
         let order = self.running_order(agents.iter().filter(|a| a.status != Status::Suspended).map(|a| a.id).collect());
@@ -3085,13 +3146,16 @@ impl App {
             self.list.append(&heading_row(&format!("RUNNING · {}", running.len()), None));
             rows.push(Row::Heading);
             for (i, item) in running.iter().enumerate() {
-                let Some(agent) = self.ws.agent(item.id) else { continue };
+                let agent = self.ws.agent(item.id);
+                if agent.is_none() && !crate::conn::is_remote() {
+                    continue;
+                }
                 let row = self.running_row(item, i);
                 if focused == Some(item.id) {
                     row.add_css_class("current");
                 }
                 self.list.append(&row);
-                rows.push(Row::Agent(agent));
+                rows.push(agent.map_or(Row::Remote(item.id), Row::Agent));
                 running_rows.push(row);
             }
             self.list.append(&heading_row("PROJECTS", Some(self)));
@@ -3118,8 +3182,11 @@ impl App {
             let alike = |agent: &SideAgent| mine.iter().filter(|a| a.title == agent.title).count() > 1;
             let alike: Vec<bool> = mine.iter().map(|a| alike(a)).collect();
             for (i, item) in mine.into_iter().enumerate() {
-                let Some(agent) = self.ws.agent(item.id) else { continue };
-                let row = agent_row(item, alike[i], agent.session_id().is_some_and(|s| self.hub.asks_about(&s)));
+                let agent = self.ws.agent(item.id);
+                if agent.is_none() && !crate::conn::is_remote() {
+                    continue;
+                }
+                let row = agent_row(item, alike[i], agent.as_ref().and_then(|a| a.session_id()).is_some_and(|s| self.hub.asks_about(&s)));
                 if i + 1 == count {
                     row.add_css_class("last");
                     last = row.clone();
@@ -3129,7 +3196,7 @@ impl App {
                 if focused == Some(item.id) {
                     self.list.select_row(Some(&row));
                 }
-                rows.push(Row::Agent(agent));
+                rows.push(agent.map_or(Row::Remote(item.id), Row::Agent));
             }
             edges.insert(project.path.clone(), (header, last));
         }

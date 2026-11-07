@@ -14,9 +14,13 @@ thread_local! {
 }
 
 /// From now on, the API is loomd's over `remote` (before anything follows a resource).
-#[expect(dead_code, reason = "the window becomes loomd's client in the next steps (plan: Part 2)")]
 pub fn use_remote(remote: Remote) {
     REMOTE.with_borrow_mut(|r| *r = Some(remote));
+}
+
+/// Whether the window is loomd's client (its agents are loomd's).
+pub fn is_remote() -> bool {
+    REMOTE.with_borrow(Option::is_some)
 }
 
 fn remote() -> Option<Remote> {

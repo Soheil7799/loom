@@ -105,7 +105,8 @@ pub fn self_check() -> Vec<String> {
 /// Dev builds: checks the window's copies against the core every few seconds, and answers
 /// `_selfcheck` (the end-to-end tests ask it last), so a copy that drifts is said at once.
 pub fn watch_copies() {
-    if !cfg!(debug_assertions) {
+    // loomd's client: the core here holds nothing to check against.
+    if !cfg!(debug_assertions) || crate::conn::is_remote() {
         return;
     }
     loom_core::rt::every(std::time::Duration::from_secs(5), || {

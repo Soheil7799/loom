@@ -22,7 +22,7 @@
 //! - `split`: what Ctrl+\ does
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
 //! - `stop`: what Esc does while the focused agent works (through the chat)
-//! - `agent:<n>`: focus the n-th agent (from 1)
+//! - `agent:<n>`: focus the n-th agent (from 1) · `row:<n>`: open sidebar row n (from 0)
 //! - `new:<folder>`: start an agent in a folder
 //! - `name:<folder>=<name>`: names a project (empty: its folder's name)
 //! - `pick:<n>`: row n of the project page (0: new conversation)
@@ -76,7 +76,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
     match command {
         // As if typed and sent: attachments waiting in the composer go with it.
-        "prompt" => app.active_agent().ok_or("no agent")?.chat().send_text(&argument.replace("\\n", "\n")),
+        "prompt" => app.chat_in_view().ok_or("no agent")?.send_text(&argument.replace("\\n", "\n")),
         // A message sent without the input (a "/command" typed there opens its popup, which an
         // unseen test window can hang on).
         "submit" => app.active_agent().ok_or("no agent")?.chat().submit_direct(argument),
@@ -87,7 +87,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "latest" => {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;
-            app.active_agent().ok_or("no agent")?.chat().scroll_to_latest();
+            app.chat_in_view().ok_or("no agent")?.scroll_to_latest();
         }
         "send" => {
             if !app.active_agent().ok_or("no agent")?.send_form() {
@@ -256,7 +256,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "scrollby" => app.active_agent().ok_or("no agent")?.chat().scroll_by_for_tests(argument.parse().map_err(|_| "scrollby:<px>")?),
         // Labels whose text is taller than the room they were given (drawn past their end).
         "overflow" => {
-            let list = app.active_agent().ok_or("no agent")?.chat().messages();
+            let list = app.chat_in_view().ok_or("no agent")?.messages();
             let mut found = Vec::new();
             collect(list.upcast_ref(), &|w| w.is::<gtk::Label>(), &mut found);
             let mut n = 0;
@@ -381,6 +381,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 return Err("no such question or option".into());
             }
         }
+        "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
         "name" => {

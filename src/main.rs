@@ -139,7 +139,17 @@ fn main() -> glib::ExitCode {
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
     // loomd hosts this app id's core already: a window would be a second core on the same
     // agents. (Another window is GApplication's to raise.)
-    if loom_core::api::socket::running(&loom_core::api::socket::socket_path(&app_id)).as_deref() == Some("daemon") {
+    let socket = loom_core::api::socket::socket_path(&app_id);
+    let daemon = loom_core::api::socket::running(&socket).as_deref() == Some("daemon");
+    // LOOM_REMOTE=1 (trying it out, plan: Part 2): the window as loomd's client, its agents
+    // loomd's; the window runs none of its own.
+    if std::env::var("LOOM_REMOTE").as_deref() == Ok("1") {
+        if !daemon {
+            eprintln!("loom: LOOM_REMOTE=1 needs loomd running for {app_id}");
+            return glib::ExitCode::from(1);
+        }
+        conn::use_remote(loom_core::api::remote::Remote::connect(socket, "loom window"));
+    } else if daemon {
         eprintln!("loom: loomd is running for {app_id}; open its web page (loom api web --open), or stop it first");
         return glib::ExitCode::from(1);
     }

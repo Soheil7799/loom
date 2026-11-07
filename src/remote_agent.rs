@@ -5,7 +5,6 @@
 //!
 //! Not yet: rewinding from a message (the chat says the agent's message before it; the API
 //! takes yours), a subagent's own conversation, workflows' cards, tool cards' buttons.
-#![expect(dead_code, reason = "the window becomes loomd's client in the next steps (plan: Part 2)")]
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
