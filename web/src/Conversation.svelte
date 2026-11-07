@@ -5,18 +5,17 @@
   // or next question or failure.
   import { untrack } from "svelte";
   import { follow, command, type Item } from "./lib/api";
-  import type { AgentsItem, JobsItem, UsageItem } from "./lib/api-types";
+  import type { AgentsItem, UsageItem } from "./lib/api-types";
   import { turns, type Entry } from "./lib/turns";
   import { stateOf } from "./lib/state";
   import Entry_ from "./Entry.svelte";
   import Tube from "./Tube.svelte";
   import Picture from "./Picture.svelte";
   import Plan from "./Plan.svelte";
-  import Terminal from "./Terminal.svelte";
   import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
-  let { agent, jobs = [], showJob, showChanges, expectCopy, active = true, insert = $bindable(null), note = $bindable(null) }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; showChanges?: () => void; expectCopy?: (on: boolean) => void; active?: boolean; insert?: string | null; note?: { file: string; line: string; note: string } | null } = $props();
+  let { agent, showChanges, expectCopy, active = true, insert = $bindable(null), note = $bindable(null) }: { agent: AgentsItem; showChanges?: () => void; expectCopy?: (on: boolean) => void; active?: boolean; insert?: string | null; note?: { file: string; line: string; note: string } | null } = $props();
   // text put into its box from elsewhere (a file mentioned from Files), taken once
   $effect(() => { if (insert && active) { const add = insert; insert = null; text = `${untrack(() => text)}${untrack(() => text) && !untrack(() => text).endsWith(" ") ? " " : ""}${add}`; } });
   let entries = $state.raw<Entry[]>([]);
@@ -29,8 +28,6 @@
   let box: HTMLElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
   let naming = $state<string | null>(null);
-  // a job's terminal kept beside the chat (its chip, again to put it away)
-  let pinnedJob = $state<string | null>(null);
   // Notes on lines of its changes, sent with the next message
   let comments = $state.raw<{ file: string; line: string; note: string }[]>([]);
   // a note on a line of its changes, from the right panel
@@ -394,14 +391,6 @@
       {/each}
     </nav>
   {/if}
-  {#if jobs.length && showJob}
-    <nav class="jobstrip" aria-label="This project's jobs">
-      {#each jobs.slice(-6) as j (j.id)}
-        {@const shape = j.status !== "exited" ? "work" : j.exit_code === 0 ? "done" : "fail"}
-        <button class="jchip" class:on={pinnedJob === j.id} title="{j.command} (click: its terminal here; again: away)" onclick={() => (pinnedJob = pinnedJob === j.id ? null : j.id)}><i class="st {shape}" role="img" aria-label={j.status}></i><Icon name="terminal" size={12} />{j.name}</button>
-      {/each}
-    </nav>
-  {/if}
 
   {#if finding}
     <div class="findbar">
@@ -449,15 +438,6 @@
     </div>
   </div>
 
-  {#if pinnedJob && jobs.some((j) => j.id === pinnedJob)}
-    <section class="pinned" aria-label="A job's terminal">
-      <div class="job-bar"><Icon name="terminal" size={13} /><b>{jobs.find((j) => j.id === pinnedJob)?.name}</b><span class="grow"></span>
-        <button class="btn small" onclick={() => showJob?.(pinnedJob!)}>Open in Jobs</button>
-        <button class="tiny" aria-label="Put it away" onclick={() => (pinnedJob = null)}><Icon name="x" size={13} /></button>
-      </div>
-      {#key pinnedJob}<Terminal job={pinnedJob} />{/key}
-    </section>
-  {/if}
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
     {#if agent.status !== "notes"}<Plan agent={agent.id} />{/if}

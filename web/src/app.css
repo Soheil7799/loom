@@ -11,10 +11,30 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .app { display: grid; grid-template-columns: 290px minmax(0, 1fr); height: 100vh; overflow: hidden; }
 .app.with-panel { grid-template-columns: 290px minmax(0, 1fr) 340px; }
 /* the chat and the open file: rounded panels side by side, the sidebars' colour between */
-.middle { display: flex; gap: 8px; min-width: 0; min-height: 0; margin: 10px 10px 0 0; }
+.middle { display: flex; flex-direction: column; min-width: 0; min-height: 0; margin: 10px 10px 0 0; }
 .with-panel .middle { margin-right: 0; }
-.middle > .main, .middle > .editor-pane { flex: 1 1 0; }
-.middle > .editor-pane { flex-basis: 0; flex-grow: 0.82; }
+.reading { display: flex; gap: 8px; flex: 1; min-width: 0; min-height: 0; }
+.reading > .main, .reading > .editor-pane { flex: 1 1 0; }
+.reading > .editor-pane { flex-grow: 0.82; }
+/* the job tray along the bottom, the pinned terminals docked above it */
+.tray { position: relative; display: flex; align-items: center; gap: 8px; flex: none; height: 38px; padding: 0 4px; }
+.tray .chips { display: flex; gap: 4px; flex: 1; min-width: 0; overflow-x: auto; }
+.tray .hint { margin-left: auto; color: var(--quiet); font-size: 12px; white-space: nowrap; }
+.tchip { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 26px; padding: 0 10px; border: 1px solid transparent; border-radius: var(--r-control); background: none; font-size: 13px; white-space: nowrap; }
+.tchip:hover, .tchip:focus-visible { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.tchip.on { border-color: var(--line); background: var(--pane); }
+.dock { display: flex; gap: 8px; height: 280px; flex: none; margin-top: 8px; }
+.dock .docked { flex: 1 1 0; min-width: 0; }
+.docked, .peek-frame { display: flex; flex-direction: column; min-height: 0; padding: 6px 10px 10px; border-radius: var(--r-panel); background: var(--pane); }
+.peek { position: absolute; bottom: 40px; z-index: 25; width: 780px; max-width: 100%; height: 360px; display: flex; border: 1px solid var(--line); border-radius: var(--r-panel);
+  box-shadow: 0 20px 50px color-mix(in srgb, var(--shadow) 35%, transparent); }
+.peek .peek-frame { flex: 1; }
+.frame-head { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; }
+.frame-head code { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-family: var(--mono); font-size: 13px; }
+.frame-head .btn { white-space: nowrap; }
+.run-pop { position: absolute; bottom: 40px; left: 4px; z-index: 25; display: flex; gap: 8px; width: min(560px, 90%); padding: 8px; border-radius: var(--r-block); background: var(--pane); border: 1px solid var(--line);
+  box-shadow: 0 20px 50px color-mix(in srgb, var(--shadow) 35%, transparent); }
+.run-pop input { flex: 1; min-width: 0; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 10px; font-family: var(--mono); font-size: 13px; }
 .editor-pane { display: flex; flex-direction: column; min-width: 320px; min-height: 0; padding: 8px 16px 16px; background: var(--pane); border-radius: var(--r-panel) var(--r-panel) 0 0;
   box-shadow: 0 2px 6px color-mix(in srgb, var(--shadow) 9%, transparent), 0 14px 36px color-mix(in srgb, var(--shadow) 8%, transparent); overflow: hidden; }
 .editor-pane .code { flex: 1; }
@@ -229,16 +249,8 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 @media (max-width: 760px) { .app { grid-template-columns: 1fr; } .sidebar { display: none; } .main { margin: 0; border-radius: 0; } }
 
 /* ---- jobs ---- */
-.jobstrip { display: flex; gap: 6px; padding: 6px 20px; border-bottom: 1px solid var(--line); overflow-x: auto; }
 .jchip { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 26px; padding: 0 10px; border: 1px solid var(--line); border-radius: 999px; background: var(--pane); font-size: 13px; }
 .jchip:hover, .jchip:focus-visible { border-color: var(--accent); }
-.jobs-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.runbar { display: flex; gap: 8px; padding: 10px 20px; border-bottom: 1px solid var(--line); }
-.runbar input { flex: 1; min-width: 0; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 5px 10px; font-family: var(--mono); font-size: 13px; }
-.runbar .chip { height: auto; }
-.jobs-split { display: grid; grid-template-columns: 260px 1fr; flex: 1; min-height: 0; }
-.jobs-list { list-style: none; margin: 0; padding: 8px 0; overflow: auto; border-right: 1px solid var(--line); }
-.jobs-list .empty { padding: 8px 16px; color: var(--quiet); }
 .job { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 .job-bar { display: flex; align-items: center; gap: 8px; padding: 8px 16px; }
 .job-bar code { font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -502,7 +514,6 @@ kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radi
 .heading, .start h3, .git h3, .scribe h3, .cards h3, .scheduled h3, .note h3, .settings-section h3 { text-transform: uppercase; }
 .notes-bar.header { padding: 12px 20px; }
 .calm { margin: 18px 0 0; color: var(--ok); }
-.job > .empty { max-width: 520px; margin: 60px auto; line-height: 1.6; }
 
 /* dropdowns drawn as the chips are: the theme's colours and a line chevron, not the system's */
 select.chip { appearance: none; padding-right: 26px; color: var(--fg); background-color: var(--pane); border-color: var(--control-line);
@@ -561,8 +572,6 @@ select.chip option { color: var(--fg); background: var(--pane); }
 .past-list .find { width: 100%; margin-bottom: 8px; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--pane); padding: 6px 10px; }
 .picker .crumbs { overflow-wrap: anywhere; }
 .picker .controls { margin: 4px 0 8px; }
-.pinned { display: flex; flex-direction: column; height: 34%; min-height: 160px; border-top: 1px solid var(--line); background: var(--sidebar); }
-.pinned .term { margin: 0 12px 10px; }
 .jchip.on { border-color: var(--accent); color: var(--accent); }
 .foot.day { margin: 8px 8px 2px; text-transform: uppercase; letter-spacing: 0.07em; font-size: 11.5px; }
 .tname { margin: 0; text-transform: none; font-size: 18px; color: var(--fg); letter-spacing: 0; }
@@ -571,3 +580,4 @@ select.chip option { color: var(--fg); background: var(--pane); }
 .note > .trow small { margin-left: auto; }
 .note h3.tname { text-transform: none; }
 .panel .grow-row { padding-right: 8px; }
+.docked .term, .peek-frame .term { margin: 0; padding: 4px; }

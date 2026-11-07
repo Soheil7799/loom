@@ -4,7 +4,7 @@
   import type { AgentsItem, ProjectsItem, AsksItem, JobsItem } from "./lib/api-types";
   import Sidebar from "./Sidebar.svelte";
   import Conversation from "./Conversation.svelte";
-  import Jobs from "./Jobs.svelte";
+  import Tray from "./Tray.svelte";
   import Asks from "./Asks.svelte";
   import Notes from "./Notes.svelte";
   import Settings from "./Settings.svelte";
@@ -24,7 +24,10 @@
   let projects = $state.raw<ProjectsItem[]>([]);
   let asks = $state.raw<AsksItem[]>([]);
   let jobs = $state.raw<JobsItem[]>([]);
-  let job = $state<string | null>(null);
+  // the job peeked in the tray, and the project whose tray shows (the open agent's, unless a
+  // job of another project was brought forward)
+  let peekJob = $state<string | null>(null);
+  let trayOf = $state<string | null>(null);
   let chat = $state<{ agent: string; title: string } | null>(null);
   // The right panel (Ctrl+E) and its tab; the file open beside the chat; Ctrl+P's finder
   let panel = $state(false);
@@ -72,7 +75,8 @@
   const togglePanel = () => (panel = !panel);
   const find = () => { if (current || projects.length) finding = true; };
   const mention = (rel: string) => { if (current) { insert = `@${rel} `; view = "chat"; } };
-  const newestJob = () => { const j = jobs.at(-1); if (j) { job = j.id; view = "jobs"; } };
+  const showJob = (id: string) => { const j = jobs.find((x) => x.id === id); trayOf = j?.project_id ?? null; peekJob = id; if (view !== "chat" && view !== "overview") view = "chat"; };
+  const newestJob = () => { const j = trayJobs.at(-1); if (j) peekJob = j.id; };
   const nextMode = () => {
     const modes = (current?.modes ?? []) as string[];
     if (current && modes.length) command("set_mode", { agent: current.id, mode: modes[(modes.indexOf(current.mode ?? "") + 1) % modes.length] }).catch((e) => (problem = e.message));
@@ -94,7 +98,7 @@
     { name: "Files and git: the right panel", keys: "Ctrl+E", run: togglePanel },
     { name: "Find a file in the project", keys: "Ctrl+P", run: find },
     { name: "Scratch terminal", keys: "Ctrl+`", run: () => (scratch = !scratch) },
-    { name: "Run a command in the tray…", keys: "Ctrl+J", run: () => { view = "jobs"; (runAsked = true); } },
+    { name: "Run a command in the tray…", keys: "Ctrl+J", run: () => (runAsked = true) },
     { name: "Peek the newest job", keys: "Ctrl+Shift+J", run: newestJob },
     { name: "Questions waiting: the next", keys: "Ctrl+I", run: () => window.dispatchEvent(new KeyboardEvent("keydown", { key: "i", ctrlKey: true })) },
     { name: "Overview of all agents", keys: "Alt+O", run: () => (view = "overview") },
@@ -130,7 +134,7 @@
       if (k === "e") return take(togglePanel);
       if (k === "p") return take(find);
       if (k === "`") return take(() => (scratch = !scratch));
-      if (k === "j") return take(() => { view = "jobs"; (runAsked = true); });
+      if (k === "j") return take(() => (runAsked = true));
       if (k === "b") return take(() => (noSidebar = !noSidebar));
       if (k === "\\") return take(toggleBeside);
       if (k === ",") return take(() => (view = "settings"));
@@ -185,7 +189,7 @@
     const fresh = asks.filter((a) => a.kind === "input" && !seenAsks!.has(a.id));
     for (const a of asks) seenAsks.add(a.id);
     const latest = fresh.at(-1) as (typeof fresh)[number] & { job?: string } | undefined;
-    if (latest?.job) { job = latest.job; view = "jobs"; }
+    if (latest?.job) showJob(latest.job);
   });
   // A job an agent opened for you (Claude's login, say): brought forward, as the window does.
   let shown: Map<string, number> | null = null;
@@ -195,7 +199,7 @@
       const was = shown;
       shown = new Map(f.items.map((i) => [i.id, i.n]));
       const fresh = was ? f.items.find((i) => was.get(i.id) !== i.n) : null;
-      if (fresh?.job) { job = fresh.job; view = "jobs"; }
+      if (fresh?.job) showJob(fresh.job);
     });
   });
 
@@ -207,6 +211,10 @@
   });
 
   const current = $derived(agents.find((a) => a.id === selected) ?? null);
+  // another agent opened: its project's tray
+  $effect(() => { current?.id; trayOf = null; });
+  const trayProject = $derived(trayOf ?? current?.project_id ?? "");
+  const trayJobs = $derived(jobs.filter((j) => j.project_id === trayProject && j.name !== "scratch"));
   const besideAgent = $derived(beside && beside !== selected ? (agents.find((a) => a.id === beside) ?? null) : null);
 
   async function act(p: Promise<{ agent?: string }>) {
@@ -231,6 +239,7 @@
   <div class="app" class:no-sidebar={noSidebar} class:with-panel={panel}>
     {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting openProject={(id) => { projectPage = id; view = "project"; }} show={(v) => (v === "files" ? togglePanel() : (view = v))} {act} />{/if}
     <div class="middle">
+    <div class="reading">
     <main class="main" class:with-scratch={scratch && !!current}>
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
@@ -243,12 +252,10 @@
       {:else if view === "notes"}
         <Notes bind:chat />
       {:else if view === "asks"}
-        <Asks {asks} {agents} {pick} showJob={(id) => { job = id; view = "jobs"; }} />
-      {:else if view === "jobs"}
-        <Jobs {jobs} {projects} bind:open={job} bind:runAsked />
+        <Asks {asks} {agents} {pick} {showJob} />
       {:else if current}
         <div class="pair" class:two={!!besideAgent}>
-          {#key current.id}<Conversation agent={current} active bind:insert bind:note showChanges={() => { panel = true; panelTab = "agent"; }} jobs={jobs.filter((j) => j.project_id === current.project_id && j.name !== "scratch")} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
+          {#key current.id}<Conversation agent={current} active bind:insert bind:note showChanges={() => { panel = true; panelTab = "agent"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
           {#if besideAgent}{#key besideAgent.id}<Conversation agent={besideAgent} active={false} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}{/if}
         </div>
       {:else}
@@ -257,6 +264,8 @@
       {#if scratch && current}<Scratch project={current.project_id} {jobs} close={() => (scratch = false)} />{/if}
     </main>
     <Editor bind:path={openPath} project={current?.project_id ?? ""} {mention} />
+    </div>
+    {#if trayProject}<Tray project={trayProject} jobs={trayJobs} bind:peek={peekJob} bind:runAsked />{/if}
     </div>
     {#if panel}<Panel agent={current} {projects} bind:tab={panelTab} open={(p) => (openPath = p)} {mention} comment={(file, line, said) => (note = { file, line, note: said })} />{/if}
   </div>
