@@ -3,7 +3,9 @@
 //!
 //! The commands themselves run in loom-core (`loom_core::jobs`); here they are drawn from
 //! the core API (warp): the chips from `jobs`, each terminal from its `job/<id>` (the screen,
-//! then the bytes the job prints), sending back the keys typed into it and its size.
+//! then the bytes the job prints), sending back the keys typed into it and its size. What is
+//! done to them goes as commands (`run_job`, `job_input`…), to loomd too when the window is
+//! its client.
 
 use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
@@ -11,6 +13,7 @@ use std::rc::{Rc, Weak};
 
 use gtk::{glib, prelude::*};
 use loom_core::api::{Body, Op, wire};
+use serde_json::json;
 use loom_core::jobs::{Id, Jobs};
 use serde_json::Value;
 use vte::prelude::*;
@@ -55,6 +58,8 @@ pub struct Tray {
     pub on_dock: RefCell<Option<Rc<dyn Fn()>>>,
     /// The core's `jobs`, followed: what the chips draw.
     feed: RefCell<Option<crate::feed::Feed>>,
+    /// Jobs removed while running: stopped, out of sight, taken out once they exit.
+    removing: RefCell<Vec<Id>>,
 }
 
 impl Tray {
@@ -83,7 +88,7 @@ impl Tray {
         let (core, events) = Jobs::new(cwd);
         // The core API publishes its jobs; the tray draws from what it publishes.
         drop(loom_core::jobs_api::published(&core, events));
-        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default() });
+        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default(), removing: RefCell::default() });
         let weak = Rc::downgrade(&tray);
         *tray.feed.borrow_mut() = crate::feed::Feed::new("jobs", move || {
             if let Some(tray) = weak.upgrade() {
@@ -120,6 +125,13 @@ impl Tray {
         let mine: Vec<&Value> = items.iter().filter(|item| item["project_id"].as_str() == Some(cwd.as_str())).collect();
         for item in &mine {
             let Some(id) = item["id"].as_str().and_then(|id| id.parse::<Id>().ok()) else { continue };
+            if self.removing.borrow().contains(&id) {
+                if item["status"] == "exited" {
+                    self.removing.borrow_mut().retain(|r| *r != id);
+                    crate::conn::command("jobs", "remove_job", json!({ "job": id.to_string() }));
+                }
+                continue;
+            }
             let job = match self.by_id(id) {
                 Some(job) => job,
                 None => self.add(id, item["name"].as_str().unwrap_or_default(), item["command"].as_str().unwrap_or_default()),
@@ -143,14 +155,19 @@ impl Tray {
             Some((name, command)) if !name.contains(' ') => (name.to_owned(), command.to_owned()),
             _ => (short_name(line), line.to_owned()),
         };
-        let id = self.core.run(&name, &command, None);
-        let job = self.add(id, &name, &command);
-        self.peek(&job);
+        let weak = Rc::downgrade(self);
+        let params = json!({ "project": self.cwd(), "name": name, "command": command });
+        crate::conn::command_then("jobs", "run_job", params, move |answer| {
+            let Some(tray) = weak.upgrade() else { return };
+            let Some(id) = answer.and_then(|a| a["job"].as_str().and_then(|id| id.parse::<Id>().ok())) else { return };
+            let job = tray.by_id(id).unwrap_or_else(|| tray.add(id, &name, &command));
+            tray.peek(&job);
+        });
     }
 
     /// How many jobs are running.
     pub fn running(&self) -> usize {
-        self.core.list().iter().filter(|j| j.running).count()
+        self.jobs.borrow().iter().filter(|j| j.is_running()).count()
     }
 
     fn add(self: &Rc<Self>, id: Id, name: &str, command: &str) -> Rc<Job> {
@@ -169,8 +186,7 @@ impl Tray {
         let term = term::new(&chip);
         term.set_size_request(760, 320);
         // It only draws: what is typed in it goes to the job.
-        let core = self.core.clone();
-        term.connect_commit(move |_, text, _| core.write(id, text.as_bytes()));
+        term.connect_commit(move |_, text, _| crate::conn::command("jobs", "job_input", json!({ "job": id.to_string(), "text": text })));
         let holder = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let status = gtk::Label::new(Some("running"));
         status.add_css_class("dim");
@@ -241,7 +257,7 @@ impl Tray {
                     }
                 }
             };
-            let command = job.core.info(job.id).map(|info| info.command).unwrap_or_default();
+            let command = job.chip.tooltip_text().map(|c| c.to_string()).unwrap_or_default();
             let docked = job.docked.borrow().is_some();
             let menu = crate::menu::Menu::new()
                 .item("Show its output", act(|tray, job| tray.peek(job)))
@@ -300,6 +316,13 @@ impl Tray {
     }
 
     /// Pins the newest job above the tray, or back (the test hooks).
+    /// Keys typed into the newest job's terminal (tests: as the terminal hands them on).
+    pub fn keys_to_latest(&self, text: &str) {
+        if let Some(job) = self.jobs.borrow().last() {
+            job.term.emit_by_name::<()>("commit", &[&text, &(text.len() as u32)]);
+        }
+    }
+
     pub fn pin_latest(&self, pin: bool) {
         let latest = self.jobs.borrow().last().cloned();
         match latest {
@@ -343,7 +366,12 @@ impl Tray {
     }
 
     fn remove(&self, job: &Rc<Job>) {
-        self.core.remove(job.id);
+        if job.is_running() {
+            self.removing.borrow_mut().push(job.id);
+            job.stop();
+        } else {
+            job.tell("remove_job", json!({}));
+        }
         self.drop_chip(job);
     }
 
@@ -369,8 +397,11 @@ impl Tray {
         }
     }
 
-    /// Stops the jobs this tray started (on quit).
+    /// Stops the jobs this tray started (on quit; loomd's go on without the window).
     pub fn stop_all(&self) {
+        if crate::conn::is_remote() {
+            return;
+        }
         self.core.stop_all();
     }
 }
@@ -528,8 +559,8 @@ impl Job {
     /// Its terminal's size, told to the job when it changed.
     fn send_size(&self) {
         let size = (self.term.row_count(), self.term.column_count());
-        if size != self.size.replace(size) {
-            self.core.resize(self.id, u16::try_from(size.0).unwrap_or(0), u16::try_from(size.1).unwrap_or(0));
+        if size != self.size.replace(size) && size.0 > 0 && size.1 > 0 {
+            self.tell("job_resize", json!({ "rows": size.0, "cols": size.1 }));
         }
     }
 
@@ -541,16 +572,23 @@ impl Job {
     /// Runs the command again: at once if nothing runs, else once the current run has
     /// exited (it is stopped).
     pub fn restart(&self) {
-        self.core.restart(self.id);
+        self.tell("restart_job", json!({}));
     }
 
+    /// Running, as `jobs` said last (one not seen there yet was just started).
     pub fn is_running(&self) -> bool {
-        self.core.info(self.id).is_some_and(|info| info.running)
+        !self.state.borrow().starts_with("exited:")
     }
 
     /// Stops it (and any restart it was waiting for).
     pub fn stop(&self) {
-        self.core.stop(self.id);
+        self.tell("stop_job", json!({}));
+    }
+
+    /// Command `method` done to it.
+    fn tell(&self, method: &str, mut params: Value) {
+        params["job"] = Value::String(self.id.to_string());
+        crate::conn::command("jobs", method, params);
     }
 
     fn finish(&self, code: Option<i64>) {

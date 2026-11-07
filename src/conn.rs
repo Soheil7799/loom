@@ -70,14 +70,22 @@ pub fn subscribe(resource: &str, ready: impl Fn() + 'static) -> Option<Sub> {
 
 /// Does command `method` as the window; a refusal is logged under `who`.
 pub fn command(who: &str, method: &str, params: Value) {
+    command_then(who, method, params, |_| {});
+}
+
+/// Does command `method` as the window, then `then` with what it answered (a refusal is
+/// logged under `who` too).
+pub fn command_then(who: &str, method: &str, params: Value, then: impl FnOnce(Option<Value>) + 'static) {
     let (who, said) = (who.to_owned(), method.to_owned());
-    let refused = move |result: Result<Value, loom_core::api::Error>| {
-        if let Err(err) = result {
+    let reply = move |result: Result<Value, loom_core::api::Error>| match result {
+        Ok(value) => then(Some(value)),
+        Err(err) => {
             loom_core::log::debug!(who, "{said} refused: {err}");
+            then(None);
         }
     };
     match remote() {
-        Some(remote) => remote.command_later(&loom_core::rt::uuid(), method, params, refused),
-        None => loom_core::api::hub().connect(Principal::Window).command_later(&loom_core::rt::uuid(), method, params, refused),
+        Some(remote) => remote.command_later(&loom_core::rt::uuid(), method, params, reply),
+        None => loom_core::api::hub().connect(Principal::Window).command_later(&loom_core::rt::uuid(), method, params, reply),
     }
 }

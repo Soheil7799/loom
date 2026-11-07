@@ -88,6 +88,11 @@ impl RemoteAgent {
         }
     }
 
+    /// Its project's folder (as its `agents` item last said).
+    pub fn project(&self) -> Option<std::path::PathBuf> {
+        self.item.borrow()["project_id"].as_str().map(std::path::PathBuf::from)
+    }
+
     /// One of its resources changed: what of it the chat shows, drawn again.
     fn feed_changed(&self, name: &str) {
         let feeds = self.feeds.borrow();

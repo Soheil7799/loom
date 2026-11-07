@@ -1201,6 +1201,7 @@ impl App {
                 }
             }
             "run" => self.current_tray().run(argument),
+            "jobkeys" => self.current_tray().keys_to_latest(&argument.replace("\\n", "\r")),
             other => eprintln!("loom control: unknown command {other}"),
         }
     }
@@ -1209,7 +1210,8 @@ impl App {
 
     fn current_project(&self) -> PathBuf {
         let focused = self.focused.borrow().as_ref().map(|a| a.project.clone());
-        focused.or_else(|| self.showing_project()).unwrap_or_else(glib::home_dir)
+        let remote = || self.remote_focused.get().and_then(|id| self.remote_agents.borrow().get(&id)?.project());
+        focused.or_else(remote).or_else(|| self.showing_project()).unwrap_or_else(glib::home_dir)
     }
 
     fn ask_command(&self) {
@@ -1621,6 +1623,9 @@ impl App {
         self.chat_stack.set_visible_child(&agent.chat.root);
         // its header from the `agents` item, and the row marked
         self.draw_sidebar();
+        if let Some(project) = agent.project() {
+            self.show_tray(&project, &self.tray_for(&project));
+        }
         agent.chat.input.grab_focus();
     }
 
