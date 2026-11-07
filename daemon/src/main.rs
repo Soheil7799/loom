@@ -423,7 +423,9 @@ fn commands(daemon: &Rc<Daemon>) {
             return Err(Error::Forbidden("stopping loomd: loom's window only".into()));
         }
         let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
-        daemon.stop.notify_one();
+        // Answered first: a moment for the answer to go out before loomd stops.
+        let stop = daemon.stop.clone();
+        let _ = loom_core::rt::timeout_once(Duration::from_millis(200), move || stop.notify_one());
         Ok(serde_json::json!({}))
     });
     let weak = Rc::downgrade(daemon);
