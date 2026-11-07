@@ -182,6 +182,13 @@ fn stop_loomd_now(socket: &Path) -> Result<(), String> {
     stop_old_loomd(pid)
 }
 
+/// An option's button in the inbox: a long one ("Yes, and don't ask again for …") cut, whole
+/// in its tooltip (the popover stays within the window).
+fn inbox_option(name: &str) -> gtk::Button {
+    let label = gtk::Label::builder().label(name).ellipsize(pango::EllipsizeMode::End).max_width_chars(28).build();
+    gtk::Button::builder().child(&label).tooltip_text(name).build()
+}
+
 /// loomd process `pid` (one older than `loomd_stop`) told to stop, as SIGTERM does: only if
 /// it is a loomd (the socket's other end could be loom's own window, which isn't stopped so).
 fn stop_old_loomd(pid: u32) -> Result<(), String> {
@@ -1026,7 +1033,7 @@ impl App {
                 }
             }
             (false, false, true, gdk::Key::Return | gdk::Key::KP_Enter) => {
-                if !self.active_agent().is_some_and(|a| a.send_form()) {
+                if !self.active_agent().is_some_and(|a| a.send_form()) && !self.remote_view().is_some_and(|a| a.send_form()) {
                     return glib::Propagation::Proceed;
                 }
             }
@@ -1299,6 +1306,11 @@ impl App {
             "loomdrestart" => self.restart_loomd(),
             "loomdclick" => self.loomd_clicked(),
             "swap" => self.swap(),
+            "putproject" => {
+                if let Some((from, onto)) = argument.split_once('=') {
+                    self.put_project(Path::new(from), Path::new(onto), true);
+                }
+            }
             "notesstep" => self.notes_chat.step(argument.parse().unwrap_or(1)),
             "jobkeys" => self.current_tray().keys_to_latest(&argument.replace("\\n", "\r")),
             other => eprintln!("loom control: unknown command {other}"),
@@ -1914,23 +1926,21 @@ impl App {
         });
     }
 
-    /// The questions loomd's agents wait on (`overview` titles them): each agent's, with a way
-    /// to it (they are answered in its chat).
-    // shortcut: no answer buttons here for loomd's agents (that needs each one's conversation followed); add them if the inbox is used to answer
+    /// The questions loomd's agents wait on (`overview` has them): each agent's, answered
+    /// here as in the window's own inbox (a form, in its chat).
     fn refresh_remote_inbox(self: &Rc<Self>) {
-        let waiting: Vec<(u32, String, Vec<String>)> = {
-            let feeds = self.overview_feeds.borrow();
-            let overview = feeds.as_ref().map(|(o, _)| o.items().clone()).unwrap_or_default();
+        let waiting: Vec<(u32, String, Vec<Value>)> = {
+            let overview = self.overview_items();
             self.remote_items()
                 .iter()
                 .filter_map(|a| {
                     let id: u32 = a["id"].as_str()?.parse().ok()?;
-                    let titles: Vec<String> = overview.iter().find(|o| o["id"] == a["id"]).and_then(|o| o["waiting"].as_array().cloned()).into_iter().flatten().filter_map(|t| t.as_str().map(str::to_owned)).collect();
-                    (!titles.is_empty()).then(|| (id, a["title"].as_str().unwrap_or_default().to_owned(), titles))
+                    let questions: Vec<Value> = overview.iter().find(|o| o["id"] == a["id"]).and_then(|o| o["questions"].as_array().cloned()).unwrap_or_default();
+                    (!questions.is_empty()).then(|| (id, a["title"].as_str().unwrap_or_default().to_owned(), questions))
                 })
                 .collect()
         };
-        let count: usize = waiting.iter().map(|(_, _, t)| t.len()).sum();
+        let count: usize = waiting.iter().map(|(_, _, q)| q.len()).sum();
         self.inbox.set_label(&format!("⚑  {count} waiting for you  ·  Ctrl+I"));
         self.inbox.set_visible(count > 0);
         if count == 0 {
@@ -1939,7 +1949,7 @@ impl App {
         while let Some(child) = self.inbox_list.first_child() {
             self.inbox_list.remove(&child);
         }
-        for (id, title, titles) in waiting {
+        for (id, title, questions) in waiting {
             let go = gtk::Button::with_label(&title);
             go.add_css_class("flat");
             go.add_css_class("inbox-agent");
@@ -1951,20 +1961,33 @@ impl App {
                 }
             });
             self.inbox_list.append(&go);
-            for question in titles {
-                self.inbox_list.append(&gtk::Label::builder().label(&question).xalign(0.0).wrap(true).max_width_chars(50).build());
-            }
-            let open = gtk::Button::with_label("Answer in the chat");
-            open.add_css_class("suggested");
-            open.set_halign(gtk::Align::Start);
-            let weak = Rc::downgrade(self);
-            open.connect_clicked(move |_| {
-                if let Some(app) = weak.upgrade() {
-                    app.inbox.popdown();
-                    app.focus_remote(id);
+            for question in questions {
+                let label = gtk::Label::builder().label(question["title"].as_str().unwrap_or_default()).xalign(0.0).wrap(true).max_width_chars(50).build();
+                self.inbox_list.append(&label);
+                let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+                if question["form"] == true {
+                    let open = gtk::Button::with_label("Answer in the chat");
+                    open.add_css_class("suggested");
+                    let weak = Rc::downgrade(self);
+                    open.connect_clicked(move |_| {
+                        if let Some(app) = weak.upgrade() {
+                            app.inbox.popdown();
+                            app.focus_remote(id);
+                        }
+                    });
+                    buttons.append(&open);
                 }
-            });
-            self.inbox_list.append(&open);
+                let entry = question["entry"].as_str().unwrap_or_default().to_owned();
+                for option in question["options"].as_array().into_iter().flatten() {
+                    let kind = option["kind"].as_str().unwrap_or_default();
+                    let button = inbox_option(option["name"].as_str().unwrap_or_default());
+                    button.add_css_class(if kind.starts_with("allow") { "suggested" } else { "plain" });
+                    let params = json!({ "agent": id.to_string(), "entry": entry, "option": option["id"] });
+                    button.connect_clicked(move |_| crate::conn::command("window", "answer", params.clone()));
+                    buttons.append(&button);
+                }
+                self.inbox_list.append(&buttons);
+            }
         }
     }
 
@@ -2437,7 +2460,15 @@ impl App {
 
     /// The conversations loomd's agents have open (`overview` says them).
     fn remote_sessions(&self) -> Vec<String> {
-        self.overview_feeds.borrow().as_ref().map(|(overview, _)| overview.items().iter().filter_map(|o| o["session"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
+        self.overview_items().iter().filter_map(|o| o["session"].as_str().map(str::to_owned)).collect()
+    }
+
+    /// loomd's `overview` as it is now (what came applied first).
+    fn overview_items(&self) -> Vec<Value> {
+        let feeds = self.overview_feeds.borrow();
+        let Some((overview, _)) = feeds.as_ref() else { return Vec::new() };
+        overview.update();
+        overview.items().clone()
     }
 
     /// Takes loomd's project at `path` out of the sidebar, closing its agents there (asks
@@ -3053,7 +3084,7 @@ impl App {
         let Some((agents, _)) = feeds.as_ref() else { return };
         let Some(item) = agents.items().iter().find(|a| a["id"].as_str() == Some(id.to_string().as_str())).cloned() else { return };
         drop(feeds);
-        let has_conversation = self.overview_feeds.borrow().as_ref().is_some_and(|(o, _)| o.items().iter().any(|e| e["id"] == item["id"] && e["session"].is_string()));
+        let has_conversation = self.overview_items().iter().any(|e| e["id"] == item["id"] && e["session"].is_string());
         schedule::ask(self.window.upcast_ref(), item["title"].as_str().unwrap_or_default(), has_conversation, move |prompt, when, same| {
             crate::conn::command("window", "schedule_new", json!({ "agent": id.to_string(), "prompt": prompt, "when": when, "same": same }));
         });
@@ -4632,7 +4663,7 @@ impl App {
                     buttons.append(&open);
                 }
                 for (oi, (name, kind)) in options.iter().enumerate() {
-                    let button = gtk::Button::with_label(name);
+                    let button = inbox_option(name);
                     button.add_css_class(if kind.starts_with("allow") { "suggested" } else { "plain" });
                     let target = Rc::downgrade(&agent);
                     let weak = Rc::downgrade(self);

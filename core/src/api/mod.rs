@@ -285,6 +285,14 @@ impl Hub {
         }
     }
 
+    /// Every resource whose name starts with `prefix`, closed.
+    pub fn close_under(&self, prefix: &str) {
+        let names: Vec<String> = self.0.stores.borrow().keys().filter(|n| n.starts_with(prefix)).cloned().collect();
+        for name in names {
+            self.close(&name);
+        }
+    }
+
     /// A connection for `who`.
     pub fn connect(&self, who: Principal) -> Client {
         Client { hub: self.clone(), who, next: Cell::new(0) }
@@ -303,6 +311,11 @@ pub fn hub() -> Hub {
 /// Ends resource `name` of the core's hub (nothing, if the thread is ending).
 pub fn close(name: &str) {
     let _ = HUB.try_with(|hub| hub.close(name));
+}
+
+/// Every resource of the core's hub named under `prefix`, closed.
+pub fn close_under(prefix: &str) {
+    let _ = HUB.try_with(|hub| hub.close_under(prefix));
 }
 
 /// Takes item `id` out of resource `name` of the core's hub (nothing, if the thread is ending).

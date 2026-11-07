@@ -490,7 +490,10 @@ impl Recorded {
             Value::Null
         };
         let cost = if update["cost"]["amount"].is_number() { json!({ "amount": update["cost"]["amount"], "currency": update["cost"]["currency"].as_str().unwrap_or("USD") }) } else { Value::Null };
-        crate::api::hub().store(USAGE).upsert(json!({ "id": id, "kind": "agent", "used": update["used"].as_u64().unwrap_or(0), "size": update["size"].as_u64().unwrap_or(0), "cost": cost, "limit": limit }));
+        let store = crate::api::hub().store(USAGE);
+        // What fills its context, as last told, kept.
+        let parts = store.get(&id).map(|old| (old["parts"].clone(), old["compacts_at"].clone())).unwrap_or_default();
+        store.upsert(json!({ "id": id, "kind": "agent", "used": update["used"].as_u64().unwrap_or(0), "size": update["size"].as_u64().unwrap_or(0), "cost": cost, "limit": limit, "parts": parts.0, "compacts_at": parts.1 }));
     }
 
     /// A message is being sent from loom: pictures that follow belong to it, not to the last.
@@ -785,6 +788,14 @@ impl View for Recorded {
         self.inner.set_limits(merged);
     }
     fn set_context_parts(&self, parts: Vec<(String, u64)>, compacts_at: Option<u64>) {
+        // In its `usage` item too (a client's context popover).
+        if let Some(id) = self.agent.borrow().clone() {
+            let store = crate::api::hub().store(USAGE);
+            let mut item = store.get(&id).unwrap_or_else(|| json!({ "id": id, "kind": "agent", "used": 0, "size": 0 }));
+            item["parts"] = parts.iter().map(|(name, tokens)| json!({ "name": name, "tokens": tokens })).collect();
+            item["compacts_at"] = json!(compacts_at);
+            store.upsert(item);
+        }
         self.inner.set_context_parts(parts, compacts_at);
     }
     fn context_used(&self) -> u64 {
@@ -837,7 +848,7 @@ impl View for Recorded {
 
     // A subagent's conversation: published beside its agent's (`subagent/<agent>/<id>`), for
     // a client to read (loomd's window).
-    // shortcut: these stay published until loomd ends (not closed with their agent); close them with it if many pile up
+    // (closed with their agent: `close_resources`)
     fn sub_view(&self, id: &str) -> Rc<dyn View> {
         let inner = self.inner.sub_view(id);
         let Some(agent) = self.agent.borrow().clone() else { return inner };
@@ -1116,6 +1127,20 @@ mod tests {
         assert_eq!(cost.as_deref(), Some("$0.12"));
         assert_eq!(limit, Some(("5h 38%".to_owned(), "5-hour limit: 38% used".to_owned())));
         assert_eq!(crate::agent::spend_words(&json!({ "cost": null, "limit": null })), (None, None));
+    }
+
+    #[test]
+    fn what_fills_the_context_is_in_usage_and_stays() {
+        let recorded = Recorded::new(crate::agent::headless::Headless::new());
+        *recorded.agent.borrow_mut() = Some("9".to_owned());
+        recorded.set_context_parts(vec![("System prompt".to_owned(), 3000), ("Messages".to_owned(), 12_000)], Some(160_000));
+        let usage = crate::api::hub().store(USAGE);
+        let item = usage.get("9").unwrap();
+        assert_eq!((item["parts"][1]["name"].as_str(), item["parts"][1]["tokens"].as_u64(), item["compacts_at"].as_u64()), (Some("Messages"), Some(12_000), Some(160_000)));
+        // A usage report after: the parts kept.
+        recorded.usage_update(&json!({ "used": 15_000, "size": 200_000 }));
+        let item = usage.get("9").unwrap();
+        assert_eq!((item["used"].as_u64(), item["parts"].as_array().map(Vec::len)), (Some(15_000), Some(2)));
     }
 
     #[test]

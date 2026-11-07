@@ -196,6 +196,9 @@ pub struct Chat {
     pub on_rewind: Callback<(Option<String>, bool, String)>,
     /// "Rewind to here, files too": the same, Claude's file changes from there on undone.
     pub on_rewind_files: Callback<(Option<String>, bool, String)>,
+    /// Question forms drawn from entries, still open (oldest first): their entry, the form,
+    /// and how it is answered (Alt+Enter sends the oldest).
+    entry_forms: RefCell<Vec<EntryForm>>,
     /// Either, on a message drawn from entries (loomd's agent): its entry, and files too.
     pub on_rewind_entry: Callback<(String, bool)>,
     /// MCP servers: ("status" | "toggle" | "reconnect", server, on).
@@ -287,6 +290,9 @@ struct ToolCard {
 
 /// A question form (Claude Code's AskUserQuestion, or an MCP server asking for input): the
 /// model (in loom-core) and each field's widgets, kept the same both ways.
+/// A question form drawn from entries: its entry, the form, and how it is answered.
+type EntryForm = (String, Rc<FormCard>, Rc<dyn Fn(Option<Value>)>);
+
 pub struct FormCard {
     pub card: PermissionCard,
     model: Rc<RefCell<FormModel>>,
@@ -627,6 +633,7 @@ impl Chat {
             project_files: RefCell::default(),
             on_rewind_files: RefCell::default(),
             on_rewind_entry: RefCell::default(),
+            entry_forms: RefCell::default(),
             on_mcp: RefCell::default(),
             mcp_box: RefCell::default(),
             offered: RefCell::default(),
@@ -2461,16 +2468,14 @@ impl Chat {
                 if first {
                     let entry = id.to_owned();
                     let card = if item["form"].is_object() {
-                        let form = self.form(
-                            text,
-                            &item["form"],
-                            Rc::new(move |content: Option<Value>| {
-                                send("answer", match content {
-                                    Some(content) => serde_json::json!({ "entry": entry, "content": content }),
-                                    None => serde_json::json!({ "entry": entry, "skip": true }),
-                                })
-                            }),
-                        );
+                        let answer: Rc<dyn Fn(Option<Value>)> = Rc::new(move |content: Option<Value>| {
+                            send("answer", match content {
+                                Some(content) => serde_json::json!({ "entry": entry, "content": content }),
+                                None => serde_json::json!({ "entry": entry, "skip": true }),
+                            })
+                        });
+                        let form = self.form(text, &item["form"], answer.clone());
+                        self.entry_forms.borrow_mut().push((id.to_owned(), form.clone(), answer));
                         form.card.clone()
                     } else {
                         let options: Vec<(String, String, String)> = item["options"]
@@ -2486,6 +2491,9 @@ impl Chat {
                 }
                 // Answered (here, elsewhere, or before it was read back): the card says how.
                 let status = item["status"].as_str().unwrap_or_default();
+                if matches!(status, "done" | "cancelled") {
+                    self.entry_forms.borrow_mut().retain(|(entry, _, _)| entry != id);
+                }
                 if matches!(status, "done" | "cancelled")
                     && let Some(card) = self.cards.borrow_mut().remove(id)
                 {
@@ -2495,6 +2503,22 @@ impl Chat {
             }
             _ => {}
         }
+    }
+
+    /// Alt+Enter, drawn from entries: the oldest open form sent as filled in (or what it lacks
+    /// shown). False if none is open.
+    pub fn send_entry_form(&self) -> bool {
+        let Some((_, form, answer)) = self.entry_forms.borrow().first().cloned() else { return false };
+        if let Some(content) = form.checked() {
+            answer(Some(content));
+        }
+        true
+    }
+
+    /// Alt+1…9, drawn from entries: option `n` picked in the oldest open form. False if none.
+    pub fn pick_in_entry_form(&self, n: usize) -> bool {
+        let first = self.entry_forms.borrow().first().map(|(_, form, _)| form.clone());
+        first.is_some_and(|form| form.pick(n))
     }
 
     /// Entry `id`'s pictures not drawn yet, drawn (fetched from the core's blobs).

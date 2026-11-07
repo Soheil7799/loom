@@ -216,3 +216,16 @@ fn a_resource_made_when_asked_goes_once_nobody_follows_it() {
     assert!(window.subscribe("note/a.md", || {}).is_ok());
     drop(kept);
 }
+
+#[test]
+fn closing_under_a_prefix_closes_only_those() {
+    let hub = Hub::manual(Limits::default());
+    for name in ["subagent/7/a", "subagent/7/b", "subagent/70/c"] {
+        hub.store(name);
+    }
+    let window = hub.connect(Principal::Window);
+    let (a, other) = (window.subscribe("subagent/7/a", || {}).unwrap(), window.subscribe("subagent/70/c", || {}).unwrap());
+    hub.close_under("subagent/7/");
+    assert_eq!(a.drain().last().map(|m| m.body.clone()), Some(Body::Gone), "its own subagents' go");
+    assert_ne!(other.drain().last().map(|m| m.body.clone()), Some(Body::Gone), "agent 70's stay");
+}

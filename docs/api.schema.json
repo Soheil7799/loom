@@ -534,6 +534,14 @@
           "limit": {
             "type": "object",
             "description": "a spending limit"
+          },
+          "parts": {
+            "type": "array",
+            "description": "what fills an agent's context: {name, tokens}"
+          },
+          "compacts_at": {
+            "type": "integer",
+            "description": "the tokens it compacts at"
           }
         },
         "required": [
@@ -911,6 +919,10 @@
             "type": "array",
             "description": "the titles of its questions waiting"
           },
+          "questions": {
+            "type": "array",
+            "description": "those questions: {entry, title, options: [{id, name, kind}], form} (`answer`; a form in its conversation)"
+          },
           "reply": {
             "type": "string",
             "description": "the start of its last reply (240 characters, one line)"
@@ -922,7 +934,8 @@
         },
         "required": [
           "id",
-          "waiting"
+          "waiting",
+          "questions"
         ]
       }
     },

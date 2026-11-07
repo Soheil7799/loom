@@ -583,7 +583,6 @@ impl Hub {
                             card.set_sensitive(false);
                         }
                         if crate::conn::is_remote() {
-                            // shortcut: loomd fixes only changes still in Scribe's recent list, not older history rows; add a history-wide scribe_fix if that matters
                             scribe("scribe_fix", json!({ "id": format!("change:{}", row_data["id"]), "said": text }));
                         } else {
                             hub.core.fix(row_data.clone(), text);

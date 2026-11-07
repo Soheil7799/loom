@@ -159,6 +159,10 @@ impl Follow {
                 Some("account") => chat.set_limits(limits_of(item)),
                 Some("agent") if item["id"].as_str() == Some(agent.as_str()) => {
                     chat.set_usage(item["used"].as_u64().unwrap_or(0), item["size"].as_u64().unwrap_or(0));
+                    if let Some(parts) = item["parts"].as_array() {
+                        let parts = parts.iter().map(|p| (p["name"].as_str().unwrap_or_default().to_owned(), p["tokens"].as_u64().unwrap_or(0))).collect();
+                        chat.set_context_parts(parts, item["compacts_at"].as_u64());
+                    }
                     let (cost, limit) = loom_core::agent::spend_words(item);
                     chat.set_spend(cost, limit);
                 }

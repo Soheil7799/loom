@@ -327,6 +327,16 @@ pub fn conversation(id: u32) -> String {
     format!("conversation/{id}")
 }
 
+/// Agent `id`'s resources closed (it is closed): its conversation, subagents' list and their
+/// conversations, plan and workflows; their subscribers are told they are gone.
+pub fn close_resources(id: u32) {
+    crate::api::close(&conversation(id));
+    crate::api::close(&format!("crew/{id}"));
+    crate::api::close(&format!("plan/{id}"));
+    crate::api::close(&format!("workflows/{id}"));
+    crate::api::close_under(&format!("subagent/{id}/"));
+}
+
 impl Agent {
     /// Agent `id` from `saved`, in `project` (see repos::project_of).
     pub fn new(id: u32, saved: Saved, project: PathBuf, jobs: Jobs, view: Rc<dyn View>) -> Rc<Agent> {
@@ -1992,6 +2002,19 @@ impl Agent {
     }
 
     /// The open questions' serials, oldest first.
+    /// Its questions waiting, as a client answers them: `{entry, title, options: [{id, name,
+    /// kind}], form}` (a form is answered in its conversation).
+    pub fn questions_json(&self) -> Vec<Value> {
+        self.pending
+            .borrow()
+            .iter()
+            .map(|q| {
+                let options: Vec<Value> = q.options.iter().map(|(id, name, kind)| json!({ "id": id, "name": name, "kind": kind })).collect();
+                json!({ "entry": q.card.entry(), "title": q.title, "options": options, "form": q.form.is_some() })
+            })
+            .collect()
+    }
+
     pub fn open_questions(&self) -> Vec<u64> {
         self.pending.borrow().iter().map(|q| q.serial).collect()
     }

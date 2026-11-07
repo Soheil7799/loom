@@ -94,9 +94,18 @@ impl RemoteAgent {
     /// it is a form: picked in the form itself).
     pub fn answer(&self, option: usize) -> bool {
         let Some(question) = self.waiting_question() else { return false };
+        // A form: the option picked in it (sent with Alt+Enter).
+        if question["form"].is_object() {
+            return self.chat.pick_in_entry_form(option);
+        }
         let Some(chosen) = question["options"].get(option).and_then(|o| o["id"].as_str()) else { return false };
         self.send("answer", json!({ "entry": question["id"], "option": chosen }));
         true
+    }
+
+    /// Alt+Enter: its oldest question form sent as filled in.
+    pub fn send_form(&self) -> bool {
+        self.chat.send_entry_form()
     }
 
     /// Alt+Y / Alt+N: its oldest question's first option of that kind ("allow", "reject").

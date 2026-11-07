@@ -113,6 +113,8 @@ Who: window, cli, bridge.
 | `size` | integer? | its context's size |
 | `cost` | object? | {amount, currency} |
 | `limit` | object? | a spending limit |
+| `parts` | array? | what fills an agent's context: {name, tokens} |
+| `compacts_at` | integer? | the tokens it compacts at |
 
 ### `jobs`
 
@@ -253,6 +255,7 @@ Who: window, cli.
 |---|---|---|
 | `id` | string | an agent's id |
 | `waiting` | array | the titles of its questions waiting |
+| `questions` | array | those questions: {entry, title, options: [{id, name, kind}], form} (`answer`; a form in its conversation) |
 | `reply` | string? | the start of its last reply (240 characters, one line) |
 | `session` | string? | its conversation (a schedule's `session`) |
 

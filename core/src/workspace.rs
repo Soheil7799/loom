@@ -253,10 +253,7 @@ impl Workspace {
     /// subscribers are told it is gone.
     pub fn remove_agent(&self, agent: &Rc<Agent>) {
         self.agents.borrow_mut().retain(|a| !Rc::ptr_eq(a, agent));
-        crate::api::close(&crate::agent::conversation(agent.id));
-        crate::api::close(&format!("crew/{}", agent.id));
-        crate::api::close(&format!("plan/{}", agent.id));
-        crate::api::close(&format!("workflows/{}", agent.id));
+        crate::agent::close_resources(agent.id);
         self.publish_agents();
         self.publish_closed();
     }
@@ -329,7 +326,7 @@ impl Workspace {
         let cards = self
             .agents_in_order()
             .iter()
-            .map(|a| json!({ "id": a.id.to_string(), "waiting": a.questions().into_iter().map(|(_, title, _)| title).collect::<Vec<_>>(), "reply": a.last_reply(240), "session": a.session_id() }))
+            .map(|a| json!({ "id": a.id.to_string(), "waiting": a.questions().into_iter().map(|(_, title, _)| title).collect::<Vec<_>>(), "questions": a.questions_json(), "reply": a.last_reply(240), "session": a.session_id() }))
             .collect();
         crate::api::hub().store("overview").set(cards);
     }

@@ -20,6 +20,7 @@
 //! - `notesstep:<n>`: the next past Notes chat (n 1) or the one before (-1), as Ctrl+↑/↓
 //! - `loomdrestart`: loomd stopped and started again (as the sign does for an older one)
 //! - `loomdclick`: what clicking the footer's loomd sign does
+//! - `putproject:<folder>=<folder>`: the first project dropped before the second
 //! - `jobkeys:<text>`: keys typed into the newest job's terminal (`\n`: Enter)
 //! - `open:<file>`: open a file in the editor (relative to the focused agent's folder)
 //! - `mode`: next permission mode
@@ -93,7 +94,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             app.chat_in_view().ok_or("no agent")?.scroll_to_latest();
         }
         "send" => {
-            if !app.active_agent().ok_or("no agent")?.send_form() {
+            let local = app.active_agent().is_some_and(|a| a.send_form());
+            if !local && !app.remote_view().is_some_and(|a| a.send_form()) {
                 return Err("no question form open".into());
             }
         }

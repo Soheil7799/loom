@@ -164,10 +164,7 @@ impl Notes {
         }
         self.bridges.notes_closed(id);
         open.agent.stop();
-        loom_core::api::close(&loom_core::agent::conversation(id));
-        loom_core::api::close(&format!("crew/{id}"));
-        loom_core::api::close(&format!("plan/{}", id));
-        loom_core::api::close(&format!("workflows/{}", id));
+        loom_core::agent::close_resources(id);
         self.publish();
         true
     }
