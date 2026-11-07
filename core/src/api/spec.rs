@@ -37,7 +37,7 @@ const WINDOW: &[&str] = &["window"];
 const ALL_BUT_AGENTS: &[&str] = &["window", "cli", "bridge"];
 
 /// Commands only loomd has (the window does these its own way: its Notes view).
-pub const DAEMON_ONLY: &[&str] = &["notes_open", "notes_close"];
+pub const DAEMON_ONLY: &[&str] = &["notes_open", "notes_close", "set_looking", "loomd_stop"];
 
 pub const COMMANDS: &[Command] = &[
     Command {
@@ -129,6 +129,7 @@ pub const COMMANDS: &[Command] = &[
         about: "Acts on a scheduled prompt.",
     },
     Command { name: "stop", who: &["window", "cli", "bridge"], params: &[("agent", "string", true, "the agent's id")], result: "{}", later: false, about: "Stops the agent's turn." },
+    Command { name: "loomd_stop", who: WINDOW, params: &[], result: "{}", later: false, about: "loomd stops, as on SIGTERM: agents stopped (their conversations resume next time), the workspace saved. The window restarts an older loomd with it." },
     Command {
         name: "set_looking",
         who: WINDOW,

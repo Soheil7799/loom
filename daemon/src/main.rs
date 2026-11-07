@@ -50,6 +50,8 @@ struct Daemon {
     /// What loom's window last said it shows (`set_looking`): whether it is in use, the agents
     /// in view, and when it said so.
     looking: RefCell<(bool, Vec<u32>, std::time::Instant)>,
+    /// `loomd_stop`: told to stop, as by SIGTERM (the window restarting an older loomd).
+    stop: std::sync::Arc<tokio::sync::Notify>,
     me: Weak<Daemon>,
 }
 
@@ -329,6 +331,7 @@ async fn run() -> u8 {
         saving: std::cell::Cell::new(false),
         publishing: std::cell::Cell::new(false),
         looking: RefCell::new((false, Vec::new(), std::time::Instant::now())),
+        stop: std::sync::Arc::default(),
         me: me.clone(),
     });
     let weak = Rc::downgrade(&daemon);
@@ -387,9 +390,11 @@ async fn run() -> u8 {
             return 1;
         }
     };
+    let stop = daemon.stop.clone();
     tokio::select! {
         _ = term.recv() => {}
         _ = tokio::signal::ctrl_c() => {}
+        _ = stop.notified() => {}
     }
     eprintln!("loomd: stopping");
     // Stopped first, saved after: what waited to be sent goes back into each agent's draft,
@@ -412,6 +417,15 @@ async fn run() -> u8 {
 fn commands(daemon: &Rc<Daemon>) {
     let hub = loom_core::api::hub();
     let human = |who: &Principal| matches!(who, Principal::Window | Principal::Cli);
+    let weak = Rc::downgrade(daemon);
+    hub.handle("loomd_stop", move |who, _| {
+        if !matches!(who, Principal::Window) && !(*who == Principal::Cli && loom_core::api::test_instance()) {
+            return Err(Error::Forbidden("stopping loomd: loom's window only".into()));
+        }
+        let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+        daemon.stop.notify_one();
+        Ok(serde_json::json!({}))
+    });
     let weak = Rc::downgrade(daemon);
     hub.handle("set_looking", move |who, params| {
         // (the CLI too in a test instance, so the end-to-end tests can say it)

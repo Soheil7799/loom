@@ -2184,6 +2184,19 @@
       },
       "result": "{}"
     },
+    "loomd_stop": {
+      "description": "loomd stops, as on SIGTERM: agents stopped (their conversations resume next time), the workspace saved. The window restarts an older loomd with it.",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "result": "{}"
+    },
     "set_looking": {
       "description": "What loom's window shows (loomd: no desktop notice about those agents, none of a question while the window is in use). Said again within a minute, else forgotten.",
       "who": [

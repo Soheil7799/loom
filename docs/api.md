@@ -772,6 +772,12 @@ Who: window, cli, bridge. Result: `{}`.
 |---|---|---|
 | `agent` | string | the agent's id |
 
+### `loomd_stop`
+
+loomd stops, as on SIGTERM: agents stopped (their conversations resume next time), the workspace saved. The window restarts an older loomd with it.
+
+Who: window. Result: `{}`.
+
 ### `set_looking`
 
 What loom's window shows (loomd: no desktop notice about those agents, none of a question while the window is in use). Said again within a minute, else forgotten.

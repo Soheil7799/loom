@@ -9,7 +9,7 @@ license = "MIT"
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "webp", "gif"] }
 loom-core = { path = "../core" }
 serde_json = { version = "1", features = ["preserve_order"] }
-tokio = { version = "1", features = ["rt", "macros", "signal", "time"] }
+tokio = { version = "1", features = ["rt", "macros", "signal", "time", "sync"] }
 
 [dev-dependencies]
 tungstenite = { version = "0.30.0", default-features = false, features = ["handshake"] }

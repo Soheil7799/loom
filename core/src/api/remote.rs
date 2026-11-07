@@ -40,6 +40,8 @@ struct Inner {
     hello: RefCell<Value>,
     /// Told when it connects (true) or loses loomd (false).
     on_state: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// Why loomd last refused this client (`initialize` failed: another protocol…).
+    refused: RefCell<Option<String>>,
 }
 
 /// A resource followed through a `Remote`: what came waits here, numbered for a `Mirror`.
@@ -72,6 +74,7 @@ impl Remote {
             followed: RefCell::default(),
             hello: RefCell::new(Value::Null),
             on_state: RefCell::default(),
+            refused: RefCell::default(),
         }));
         Inner::open(&remote.0);
         remote
@@ -85,6 +88,11 @@ impl Remote {
     /// What loomd said when this connection began: `{protocol, server, principal, …}`.
     pub fn hello(&self) -> Value {
         self.0.hello.borrow().clone()
+    }
+
+    /// Why loomd refused this client last time it tried (None: it didn't).
+    pub fn refused(&self) -> Option<String> {
+        self.0.refused.borrow().clone()
     }
 
     /// `f` is told each time it connects (true) or loses loomd (false).
@@ -180,7 +188,17 @@ impl Inner {
             params,
             Box::new(move |answer| {
                 let Some(me) = weak.upgrade() else { return };
-                let Ok(hello) = answer else { return Inner::lost(&me, round) };
+                let hello = match answer {
+                    Ok(hello) => hello,
+                    Err(err) => {
+                        // loomd's answer (still connected), not the connection lost meanwhile.
+                        if me.writer.borrow().is_some() {
+                            *me.refused.borrow_mut() = Some(err.to_string());
+                        }
+                        return Inner::lost(&me, round);
+                    }
+                };
+                me.refused.borrow_mut().take();
                 *me.hello.borrow_mut() = hello;
                 let followed: Vec<Rc<SubInner>> = me.followed.borrow().iter().filter_map(Weak::upgrade).collect();
                 me.followed.borrow_mut().retain(|s| s.strong_count() > 0);

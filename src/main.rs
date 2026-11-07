@@ -144,8 +144,9 @@ fn main() -> glib::ExitCode {
     // LOOM_REMOTE=1 (trying it out, plan: Part 2): the window as loomd's client, its agents
     // loomd's; the window runs none of its own.
     if std::env::var("LOOM_REMOTE").as_deref() == Ok("1") {
-        if !daemon {
-            eprintln!("loom: LOOM_REMOTE=1 needs loomd running for {app_id}");
+        // None runs: started now (it goes on when the window closes).
+        if !daemon && let Err(err) = conn::start_loomd(&socket, &app_id) {
+            eprintln!("loom: {err}");
             return glib::ExitCode::from(1);
         }
         conn::use_remote(loom_core::api::remote::Remote::connect(socket, "loom window"));

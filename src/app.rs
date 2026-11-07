@@ -145,6 +145,8 @@ pub struct App {
     asking_edit: Cell<Option<u64>>,
     /// loomd's `overview` (cards' questions and replies) and `schedules`, followed.
     overview_feeds: RefCell<Option<(Feed, Feed)>>,
+    /// The footer's sign of loomd (the window as its client): the button, its dot, its words.
+    loomd_sign: (gtk::Button, gtk::Box, gtk::Label),
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -159,6 +161,28 @@ struct AgentsSide {
     /// The file open, and whether the editor showed; the editor's tabs.
     file: (Option<PathBuf>, bool),
     tabs: Vec<PathBuf>,
+}
+
+/// loomd process `pid` (one older than `loomd_stop`) told to stop, as SIGTERM does: only if
+/// it is a loomd (the socket's other end could be loom's own window, which isn't stopped so).
+fn stop_old_loomd(pid: u32) -> Result<(), String> {
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).map_err(|e| format!("loomd's process: {e}"))?;
+    if !exe.file_name().is_some_and(|n| n.to_string_lossy().starts_with("loomd")) {
+        return Err(format!("{} answers there, not loomd: close it first", exe.display()));
+    }
+    // SAFETY: a signal to a process of this user's, checked above to be loomd.
+    if unsafe { libc::kill(pid as i32, libc::SIGTERM) } != 0 {
+        return Err(format!("loomd ({pid}) couldn't be stopped: {}", std::io::Error::last_os_error()));
+    }
+    Ok(())
+}
+
+/// loomd's `hello` against this window (version `mine`): None if they match; else how many of
+/// the commands this window uses loomd lacks (0: only the version differs).
+fn loomd_differs(hello: &Value, mine: &str) -> Option<usize> {
+    let has: Vec<&str> = hello["capabilities"]["commands"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+    let missing = loom_core::api::spec::COMMANDS.iter().filter(|c| !has.contains(&c.name)).count();
+    (hello["server"]["version"].as_str() != Some(mine) || missing > 0).then_some(missing)
 }
 
 impl App {
@@ -265,6 +289,17 @@ impl App {
         let run_button = small("", "Run a command in the tray (Ctrl+J)", "Run a command");
         run_button.set_icon_name("media-playback-start-symbolic");
         let spacer = gtk::Box::builder().hexpand(true).build();
+        // loomd's client: a sign that loomd runs the agents (and how it is).
+        let loomd_dot = gtk::Box::builder().valign(gtk::Align::Center).build();
+        loomd_dot.add_css_class("dot");
+        let loomd_label = gtk::Label::builder().label("loomd").ellipsize(pango::EllipsizeMode::End).max_width_chars(14).build();
+        loomd_label.add_css_class("small");
+        let loomd_inner = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        loomd_inner.append(&loomd_dot);
+        loomd_inner.append(&loomd_label);
+        let loomd_sign = gtk::Button::builder().child(&loomd_inner).visible(crate::conn::is_remote()).build();
+        loomd_sign.add_css_class("flat");
+        loomd_sign.update_property(&[gtk::accessible::Property::Label("loomd")]);
         let settings_button = gtk::Button::from_icon_name("emblem-system-symbolic");
         settings_button.update_property(&[gtk::accessible::Property::Label("Settings")]);
         settings_button.add_css_class("flat");
@@ -278,6 +313,7 @@ impl App {
         bottom.append(&new_button);
         bottom.append(&scratch_button);
         bottom.append(&run_button);
+        bottom.append(&loomd_sign);
         bottom.append(&spacer);
         bottom.append(&settings_button);
         bottom.append(&help_button);
@@ -510,6 +546,7 @@ impl App {
             asks_started: Cell::new(false),
             asking_edit: Cell::new(None),
             overview_feeds: RefCell::default(),
+            loomd_sign: (loomd_sign, loomd_dot, loomd_label),
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
@@ -1229,6 +1266,8 @@ impl App {
                 }
             }
             "run" => self.current_tray().run(argument),
+            "loomdrestart" => self.restart_loomd(),
+            "loomdclick" => self.loomd_clicked(),
             "notesstep" => self.notes_chat.step(argument.parse().unwrap_or(1)),
             "jobkeys" => self.current_tray().keys_to_latest(&argument.replace("\\n", "\r")),
             other => eprintln!("loom control: unknown command {other}"),
@@ -1703,6 +1742,30 @@ impl App {
             None => glib::ControlFlow::Break,
         });
         self.tell_looking();
+        // The sign: as loomd connects and goes, and every 2 s (a refusal says nothing itself).
+        if let Some(remote) = crate::conn::loomd() {
+            let weak = Rc::downgrade(self);
+            remote.on_state(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.draw_loomd_sign();
+                }
+            });
+        }
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(2, move || match weak.upgrade() {
+            Some(app) => {
+                app.draw_loomd_sign();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+        let weak = Rc::downgrade(self);
+        self.loomd_sign.0.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.loomd_clicked();
+            }
+        });
+        self.draw_loomd_sign();
         let ready = || {
             let weak = Rc::downgrade(self);
             move || {
@@ -1717,6 +1780,115 @@ impl App {
             if let Some(app) = weak.upgrade() {
                 app.asks_changed();
             }
+        });
+    }
+
+    /// What loomd is to this window: connected as the same version, older or newer (its
+    /// version, or commands this window uses that it lacks), refusing it, or not reachable.
+    fn loomd_state(&self) -> (&'static str, String, String) {
+        let mine = env!("CARGO_PKG_VERSION");
+        let Some(remote) = crate::conn::loomd() else { return ("", String::new(), String::new()) };
+        let hello = remote.hello();
+        if hello.is_null() {
+            return match remote.refused() {
+                Some(why) => ("failed", "loomd: refused".to_owned(), format!("loomd refused this window ({why}). Stop it and open loom again: this window starts its own version.")),
+                None => ("suspended", "loomd…".to_owned(), "loomd isn't reachable now; the window tries again every second. Click to start it if it stopped. Your agents run in loomd.".to_owned()),
+            };
+        }
+        let version = hello["server"]["version"].as_str().unwrap_or("?");
+        if let Some(missing) = loomd_differs(&hello, mine) {
+            let lacks = if missing > 0 { format!(", and lacks {missing} of the commands this window uses") } else { String::new() };
+            return ("blocked", format!("loomd {version}"), format!("loomd is {version}, this window {mine}{lacks}. Click to restart it as this window's version."));
+        }
+        ("done", "loomd".to_owned(), format!("loomd {version} runs your agents, jobs and bridges. Closing this window leaves them working."))
+    }
+
+    fn draw_loomd_sign(&self) {
+        let (button, dot, label) = &self.loomd_sign;
+        // Restarting: it says so until that is over.
+        if !button.is_sensitive() {
+            return;
+        }
+        let (class, words, tip) = self.loomd_state();
+        for c in ["done", "failed", "blocked", "suspended"] {
+            dot.remove_css_class(c);
+        }
+        if !class.is_empty() {
+            dot.add_css_class(class);
+        }
+        label.set_label(&words);
+        button.set_tooltip_text(Some(&tip));
+    }
+
+    /// The sign clicked: an older or newer loomd restarted as this window's version (after
+    /// asking: its working agents stop), a refusing one explained, a gone one started again.
+    fn loomd_clicked(self: &Rc<Self>) {
+        let (class, _, tip) = self.loomd_state();
+        let detail = match class {
+            // Not reachable: none answers, so one is started (nothing runs to stop).
+            "suspended" if loom_core::api::socket::running(&loom_core::api::socket::socket_path(&self.app_id)).is_none() => return self.restart_loomd(),
+            "blocked" => {
+                let busy: Vec<String> = self.sidebar_feeds.borrow().as_ref().map(|(agents, _)| agents.items().iter().filter(|a| a["busy"] == true).filter_map(|a| a["title"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let stops = if busy.is_empty() { String::new() } else { format!(" Working now, they stop (their conversations are kept and go on): {}.", busy.join(", ")) };
+                format!("{tip}{stops}")
+            }
+            "failed" => {
+                gtk::AlertDialog::builder().message("loomd refuses this window").detail(tip).buttons(["OK"]).build().show(Some(&self.window));
+                return;
+            }
+            _ => return,
+        };
+        let dialog = gtk::AlertDialog::builder().message("Restart loomd?").detail(detail).buttons(["Cancel", "Restart"]).cancel_button(0).default_button(0).build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |choice| {
+            if let (Some(app), Ok(1)) = (weak.upgrade(), choice) {
+                app.restart_loomd();
+            }
+        });
+    }
+
+    /// loomd stopped, then started again as this window's version; the connection follows.
+    fn restart_loomd(self: &Rc<Self>) {
+        let (button, _, label) = &self.loomd_sign;
+        button.set_sensitive(false);
+        label.set_label("loomd…");
+        button.set_tooltip_text(Some("loomd is starting as this window's version."));
+        // Asked to stop; one older than loomd_stop is sent SIGTERM (as `systemctl stop` would).
+        let hello = crate::conn::loomd().map(|r| r.hello()).unwrap_or_default();
+        let asks = hello["capabilities"]["commands"].as_array().is_some_and(|c| c.iter().any(|c| c == "loomd_stop"));
+        if asks {
+            crate::conn::command("window", "loomd_stop", json!({}));
+        }
+        let (socket, app_id) = (loom_core::api::socket::socket_path(&self.app_id), self.app_id.clone());
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let started = gio::spawn_blocking(move || {
+                if !asks
+                    && let Some(pid) = loom_core::api::socket::server_pid(&socket)
+                {
+                    stop_old_loomd(pid)?;
+                }
+                // The old one gone first (it saves the workspace as it goes).
+                let deadline = std::time::Instant::now() + Duration::from_secs(20);
+                while loom_core::api::socket::running(&socket).is_some() {
+                    if std::time::Instant::now() > deadline {
+                        return Err("the old loomd didn't stop".to_owned());
+                    }
+                    std::thread::sleep(Duration::from_millis(200));
+                }
+                crate::conn::start_loomd(&socket, &app_id)
+            })
+            .await
+            .unwrap_or_else(|_| Err("restarting loomd failed".to_owned()));
+            let Some(app) = weak.upgrade() else { return };
+            app.loomd_sign.0.set_sensitive(true);
+            if let Err(err) = started {
+                crate::log::write("loomd", &err);
+                app.loomd_sign.2.set_label("loomd: failed");
+                app.loomd_sign.0.set_tooltip_text(Some(&err));
+                return;
+            }
+            app.draw_loomd_sign();
         });
     }
 
@@ -3097,6 +3269,11 @@ impl App {
             });
             return glib::Propagation::Stop;
         }
+        // loomd's client: loomd's agents go on; it may say things on the desktop again at
+        // once (else a minute after the window's last word).
+        if crate::conn::is_remote() {
+            crate::conn::command("window", "set_looking", json!({ "active": false, "agents": [] }));
+        }
         // Stopped first: what was waiting to be sent goes back in the input, and is saved
         // with it as the draft.
         for agent in self.ws.agents.borrow().iter() {
@@ -4196,5 +4373,19 @@ impl Host for App {
                 app.fill_overview();
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod loomd_tests {
+    use super::*;
+
+    #[test]
+    fn an_older_or_newer_loomd_is_told_apart() {
+        let all: Vec<&str> = loom_core::api::spec::COMMANDS.iter().map(|c| c.name).collect();
+        let hello = |version: &str, commands: &[&str]| json!({ "server": { "version": version }, "capabilities": { "commands": commands } });
+        assert_eq!(loomd_differs(&hello("0.5.0", &all), "0.5.0"), None);
+        assert_eq!(loomd_differs(&hello("0.4.0", &all), "0.5.0"), Some(0), "another version");
+        assert_eq!(loomd_differs(&hello("0.5.0", &all[1..]), "0.5.0"), Some(1), "the same version, a command short");
     }
 }

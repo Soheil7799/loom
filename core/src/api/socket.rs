@@ -111,6 +111,14 @@ pub fn serve(path: &Path, owner: impl Fn(u32) -> Option<Principal> + 'static) ->
     Ok(())
 }
 
+/// The process serving the API at `path` (its socket's other end), if one does as this user.
+pub fn server_pid(path: &Path) -> Option<u32> {
+    let stream = UnixStream::connect(path).ok()?;
+    // SAFETY: getuid has no preconditions.
+    let me = unsafe { libc::getuid() };
+    peer(&stream).filter(|(uid, _)| *uid == me).map(|(_, pid)| pid)
+}
+
 /// What hosts the core whose API answers at `path` (`window`, `daemon`), if one does.
 pub fn running(path: &Path) -> Option<String> {
     // A core that doesn't answer in time is taken as running (its socket answers).

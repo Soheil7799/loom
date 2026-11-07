@@ -508,6 +508,23 @@ unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
 
+/// The window stops loomd (to start a newer one): it ends cleanly, its socket gone.
+#[test]
+fn loomd_stops_when_the_window_says_so() {
+    let (mut d, mut c) = start("Stop", json!({}), &[], &[]);
+    command(&mut c, "loomd_stop", json!({}));
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let code = loop {
+        if let Some(status) = d.child.try_wait().unwrap() {
+            break status.code();
+        }
+        assert!(Instant::now() < deadline, "loomd never stopped");
+        std::thread::sleep(Duration::from_millis(50));
+    };
+    assert_eq!(code, Some(0), "it ends as on SIGTERM");
+    assert!(!loom_core::api::socket::socket_path(&d.app_id).exists(), "its socket removed");
+}
+
 /// The window as loomd's client (`api::remote`): it follows a resource and does commands over
 /// the socket, and when loomd goes and comes back, it reconnects by itself and its copy starts
 /// over from a fresh snapshot.
