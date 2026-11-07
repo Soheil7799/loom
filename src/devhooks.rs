@@ -1,5 +1,7 @@
 //! Driving a test instance from outside (unused in normal runs).
 //!
+//! Debug builds only (`cfg(debug_assertions)`: a release build ignores LOOM_CONTROL here).
+//!
 //! `LOOM_CONTROL=/path/cmds`: every 300 ms, if that file exists, its lines are run in order
 //! and the file is deleted. Lines:
 //!

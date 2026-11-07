@@ -11,6 +11,7 @@ mod chat;
 mod chat_view;
 mod cheatsheet;
 mod column;
+#[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod devhooks;
 mod feed;
 mod files;
@@ -203,6 +204,9 @@ fn main() -> glib::ExitCode {
         }
         let loom = app::App::new(app);
         loom.window.present();
+        // Driven from a file of commands (LOOM_CONTROL): test builds only. A release build is
+        // never driven that way, so a process outside the window can't press its buttons.
+        #[cfg(debug_assertions)]
         devhooks::watch(&loom);
         quit_on_signals(&loom);
         // The window owns everything through its widgets; keep the app state alive with it.
