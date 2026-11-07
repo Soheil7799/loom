@@ -143,6 +143,8 @@ pub struct App {
     asks_seen: RefCell<std::collections::HashSet<String>>,
     asks_started: Cell<bool>,
     asking_edit: Cell<Option<u64>>,
+    /// loomd's `overview` (cards' questions and replies) and `schedules`, followed.
+    overview_feeds: RefCell<Option<(Feed, Feed)>>,
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -507,6 +509,7 @@ impl App {
             asks_seen: RefCell::default(),
             asks_started: Cell::new(false),
             asking_edit: Cell::new(None),
+            overview_feeds: RefCell::default(),
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
@@ -589,6 +592,7 @@ impl App {
             this.ws.serve_schedules();
             this.ws.serve_conversations();
         } else {
+            this.wire_overview();
             this.wire_remote();
         }
         this
@@ -1008,7 +1012,7 @@ impl App {
             (true, false, false, gdk::Key::comma) => crate::prefs::open(&self.window),
             (true, _, false, gdk::Key::equal | gdk::Key::plus | gdk::Key::KP_Add) => zoom(0.1),
             (true, false, false, gdk::Key::minus | gdk::Key::KP_Subtract) => zoom(-0.1),
-            (true, false, false, gdk::Key::_0 | gdk::Key::KP_0) => settings::update(|s| s.text_scale = 1.0),
+            (true, false, false, gdk::Key::_0 | gdk::Key::KP_0) => crate::prefs::update(|s| s.text_scale = 1.0),
             (true, false, false, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 self.focus_nth(k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1);
             }
@@ -1699,6 +1703,15 @@ impl App {
             None => glib::ControlFlow::Break,
         });
         self.tell_looking();
+        let ready = || {
+            let weak = Rc::downgrade(self);
+            move || {
+                if let Some(app) = weak.upgrade() {
+                    app.refresh_overview();
+                }
+            }
+        };
+        *self.overview_feeds.borrow_mut() = Feed::new("overview", ready()).zip(Feed::new("schedules", ready()));
         let weak = Rc::downgrade(self);
         *self.asks_feed.borrow_mut() = Feed::new("asks", move || {
             if let Some(app) = weak.upgrade() {
@@ -2321,6 +2334,9 @@ impl App {
     }
 
     fn fill_overview(self: &Rc<Self>) {
+        if crate::conn::is_remote() {
+            return self.fill_remote_overview();
+        }
         let schedules = self.ws.schedules.borrow().clone();
         let cards = self
             .agents_in_order()
@@ -2336,6 +2352,54 @@ impl App {
                 reply: agent.chat().last_reply(),
                 used: agent.used.get(),
                 scheduled: schedules.iter().filter(|s| s.session_id.is_some() && s.session_id == agent.session_id()).count(),
+            })
+            .collect();
+        self.overview.fill(cards, &schedules);
+    }
+
+    /// The overview of loomd's agents and schedules (the window as its client).
+    fn fill_remote_overview(self: &Rc<Self>) {
+        let read = |feed: &Feed| {
+            feed.update();
+            feed.items().clone()
+        };
+        let agents = self.sidebar_feeds.borrow().as_ref().map(|(agents, _)| read(agents)).unwrap_or_default();
+        let (extra, schedules) = self.overview_feeds.borrow().as_ref().map(|(o, s)| (read(o), read(s))).unwrap_or_default();
+        let time = |v: &Value| loom_core::api::seconds(v);
+        let schedules: Vec<Schedule> = schedules
+            .iter()
+            .filter_map(|s| {
+                Some(Schedule {
+                    id: s["id"].as_str()?.parse().ok()?,
+                    cwd: PathBuf::from(s["folder"].as_str().unwrap_or_default()),
+                    session_id: s["session"].as_str().map(str::to_owned),
+                    title: s["title"].as_str().unwrap_or_default().to_owned(),
+                    prompt: s["prompt"].as_str().unwrap_or_default().to_owned(),
+                    when: s["when"].as_str().unwrap_or_default().to_owned(),
+                    next: time(&s["next"]),
+                    paused: s["paused"].as_bool() == Some(true),
+                    last_run: time(&s["last_run"]),
+                })
+            })
+            .collect();
+        let cards = agents
+            .iter()
+            .filter_map(|a| {
+                let id: u32 = a["id"].as_str()?.parse().ok()?;
+                let more = extra.iter().find(|e| e["id"] == a["id"]);
+                let session = more.and_then(|m| m["session"].as_str());
+                Some(crate::overview::Card {
+                    id,
+                    title: a["title"].as_str().unwrap_or_default().to_owned(),
+                    project: a["project"].as_str().unwrap_or_default().to_owned(),
+                    place: a["place"].as_str().unwrap_or_default().to_owned(),
+                    status: Status::from_css(a["status"].as_str().unwrap_or_default()),
+                    unseen: a["unseen"] == true,
+                    waiting: more.and_then(|m| m["waiting"].as_array()).into_iter().flatten().filter_map(|w| w.as_str().map(str::to_owned)).collect(),
+                    reply: more.and_then(|m| m["reply"].as_str()).map(str::to_owned),
+                    used: time(&a["used"]).map_or(0, |t| t.max(0) as u64),
+                    scheduled: schedules.iter().filter(|s| s.session_id.is_some() && s.session_id.as_deref() == session).count(),
+                })
             })
             .collect();
         self.overview.fill(cards, &schedules);
@@ -2358,8 +2422,7 @@ impl App {
         });
     }
 
-    /// The schedules from the last run, and the clock that sends them. A run missed by more
-    /// than an hour while loom was closed is skipped.
+    /// The overview's cards and scheduled prompts, wired to what they do.
     fn wire_overview(self: &Rc<Self>) {
         // Scribe's line: the Notes tab, beside the agent last looked at.
         let weak = Rc::downgrade(self);
@@ -2374,18 +2437,20 @@ impl App {
         }));
         let weak = Rc::downgrade(self);
         *self.overview.on_open.borrow_mut() = Some(Rc::new(move |id| {
-            if let Some(app) = weak.upgrade()
-                && let Some(agent) = app.agent_by_id(id)
-            {
-                app.focus(&agent);
+            let Some(app) = weak.upgrade() else { return };
+            match app.agent_by_id(id) {
+                Some(agent) => app.focus(&agent),
+                None if crate::conn::is_remote() => app.focus_remote(id),
+                None => {}
             }
         }));
         let weak = Rc::downgrade(self);
         *self.overview.on_schedule_for.borrow_mut() = Some(Rc::new(move |id| {
-            if let Some(app) = weak.upgrade()
-                && let Some(agent) = app.agent_by_id(id)
-            {
-                app.schedule_for(&agent);
+            let Some(app) = weak.upgrade() else { return };
+            match app.agent_by_id(id) {
+                Some(agent) => app.schedule_for(&agent),
+                None if crate::conn::is_remote() => app.schedule_for_remote(id),
+                None => {}
             }
         }));
         let weak = Rc::downgrade(self);
@@ -2407,10 +2472,31 @@ impl App {
         }));
         let weak = Rc::downgrade(self);
         *self.overview.on_schedule.borrow_mut() = Some(Rc::new(move |(id, act)| {
-            if let Some(app) = weak.upgrade() {
-                app.ws.act(id, act);
+            let Some(app) = weak.upgrade() else { return };
+            // loomd's schedules: acted on there.
+            if crate::conn::is_remote() {
+                let act = match act {
+                    crate::overview::Act::RunNow => "run_now",
+                    crate::overview::Act::Pause => "pause",
+                    crate::overview::Act::Remove => "remove",
+                };
+                crate::conn::command("window", "schedule_act", json!({ "id": id.to_string(), "act": act }));
+                return;
             }
+            app.ws.act(id, act);
         }));
+    }
+
+    /// Asks for a prompt and when to send it to loomd's agent `id` (the window as its client).
+    fn schedule_for_remote(self: &Rc<Self>, id: u32) {
+        let feeds = self.sidebar_feeds.borrow();
+        let Some((agents, _)) = feeds.as_ref() else { return };
+        let Some(item) = agents.items().iter().find(|a| a["id"].as_str() == Some(id.to_string().as_str())).cloned() else { return };
+        drop(feeds);
+        let has_conversation = self.overview_feeds.borrow().as_ref().is_some_and(|(o, _)| o.items().iter().any(|e| e["id"] == item["id"] && e["session"].is_string()));
+        schedule::ask(self.window.upcast_ref(), item["title"].as_str().unwrap_or_default(), has_conversation, move |prompt, when, same| {
+            crate::conn::command("window", "schedule_new", json!({ "agent": id.to_string(), "prompt": prompt, "when": when, "same": same }));
+        });
     }
 
     /// Asks for a prompt and when to send it to `agent`.
@@ -2964,6 +3050,10 @@ impl App {
     }
 
     fn save(&self) {
+        // loomd's client: the workspace is loomd's (it saves it); this one has none of it.
+        if crate::conn::is_remote() {
+            return;
+        }
         // On a project's page, the agent that had focus before it.
         let focused = self.focused.borrow().clone().or_else(|| self.previous.borrow().clone());
         // Not put back yet (opened on the overview): kept as it was.
@@ -4042,7 +4132,7 @@ fn split_line(target: &str) -> (&str, Option<u32>) {
 
 /// Chat text a step bigger or smaller (Ctrl+= / Ctrl+-).
 fn zoom(step: f64) {
-    settings::update(|s| s.text_scale = ((s.text_scale + step) * 10.0).round().clamp(7.0, 16.0) / 10.0);
+    crate::prefs::update(|s| s.text_scale = ((s.text_scale + step) * 10.0).round().clamp(7.0, 16.0) / 10.0);
 }
 
 impl App {

@@ -182,7 +182,8 @@ fn main() -> glib::ExitCode {
     log::set(settings::get().debug_log);
     plugin::init(&app_id);
     journal::init(&app_id);
-    if let Some(vault) = vault::current() {
+    // (loomd's client: loomd prepares it, commits included.)
+    if let Some(vault) = vault::current().filter(|_| !conn::is_remote()) {
         if let Err(err) = vault::prepare(&vault) {
             log::write("notes", &format!("vault {}: {err}", vault.display()));
         }

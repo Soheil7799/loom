@@ -337,6 +337,7 @@ Who: window, cli.
 | `state` | string | off, connecting, online, failed… |
 | `candidate` | object? | a device asking to pair: {id, name} |
 | `why` | string? |  |
+| `node` | string? | remote: this computer's id |
 
 ### `pairing`
 

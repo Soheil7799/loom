@@ -40,7 +40,7 @@
 //! - `teach:<why>` / `keeprule`: answer the newest "Why not?", keep its drafted rule
 //! - `fixnewest:<comment>`: a comment on the newest written change
 //! - `wfopen:<n>`: open agent n of the first workflow card
-//! - `state:<css class>=<file>`: whether those widgets show, each up to the window
+//! - `state:<css class>=<file>`: whether those widgets show (in any window), each up to its window
 //! - `remotestate:<file>`: the remote bridge state Settings shows (ticket…), written there
 //! - `quit`
 
@@ -211,14 +211,19 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 collect(&window, &test, &mut found);
             }
             collect(app.window.upcast_ref(), &test, &mut found);
-            found.last().and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
+            // One on screen (a hidden one of the same label is not the one meant).
+            let shown = found.iter().rev().find(|w| w.is_mapped()).or(found.last());
+            shown.and_then(|w| w.downcast_ref::<gtk::Button>()).ok_or("no such button")?.emit_clicked();
         }
         // Whether the widgets of a CSS class are shown, and why not: each one, then every parent
         // up to the window (visible, mapped, child-visible), into a file.
         "state" => {
             let (class, file) = argument.split_once('=').ok_or("state:<class>=<file>")?;
             let mut found = Vec::new();
-            collect(app.window.upcast_ref(), &|w: &gtk::Widget| w.has_css_class(class), &mut found);
+            // In every window (settings…).
+            for window in gtk::Window::list_toplevels() {
+                collect(&window, &|w: &gtk::Widget| w.has_css_class(class), &mut found);
+            }
             let mut out = String::new();
             for widget in found {
                 let mut at = Some(widget);

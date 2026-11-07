@@ -116,10 +116,14 @@ pub fn publish_states() {
     let mut ticket = None;
     let items = ["telegram", "remote"].iter().map(|name| {
         let mut state = super::host::state_of(name);
-        if let Some(fields) = state.as_object_mut()
-            && let Some(taken) = fields.remove("ticket")
-        {
-            ticket = Some(taken);
+        if let Some(fields) = state.as_object_mut() {
+            if let Some(taken) = fields.remove("ticket") {
+                ticket = Some(taken);
+            }
+            // The remote bridge's own id (this computer's, on iroh): the item's id is its name.
+            if let Some(node) = fields.remove("id") {
+                fields.insert("node".into(), node);
+            }
         }
         state["id"] = json!(name);
         state

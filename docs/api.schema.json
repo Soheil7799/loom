@@ -1140,6 +1140,10 @@
           "why": {
             "type": "string",
             "description": ""
+          },
+          "node": {
+            "type": "string",
+            "description": "remote: this computer's id"
           }
         },
         "required": [

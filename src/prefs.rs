@@ -18,7 +18,7 @@ fn current() -> Settings {
 
 /// A change made in this window, made through the core API (`set_settings`), as any client
 /// makes one.
-fn update(change: impl FnOnce(&mut Settings)) {
+pub(crate) fn update(change: impl FnOnce(&mut Settings)) {
     let old = current();
     let mut new = old.clone();
     change(&mut new);
@@ -563,7 +563,7 @@ fn telegram(s: &Settings) -> gtk::Box {
     let names = bot_name.clone();
     let (wd, wt, wdet, wl, wc, wu, wcard) = (dot.downgrade(), title.downgrade(), detail.downgrade(), link.downgrade(), code.downgrade(), user.downgrade(), card.downgrade());
     let (wp, wpl) = (proposal.downgrade(), proposed.downgrade());
-    crate::bridges::watch("telegram", move |state| {
+    watch_bridge("telegram", move |state| {
         let state = &Link::from_json(state);
         let (Some(dot), Some(title), Some(detail), Some(link), Some(code), Some(user), Some(card), Some(proposal), Some(proposed)) =
             (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wl.upgrade(), wc.upgrade(), wu.upgrade(), wcard.upgrade(), wp.upgrade(), wpl.upgrade())
@@ -686,7 +686,7 @@ fn remote(s: &Settings) -> gtk::Box {
     card.append(&pairing);
     let shown = ticket.clone();
     copy.connect_clicked(move |button| button.clipboard().set_text(&shown.borrow()));
-    cancel.connect_clicked(|_| crate::bridges::pair(false));
+    cancel.connect_clicked(|_| open_pairing(false));
 
     // The device that used the code: added only when the user says so, here.
     let proposal = gtk::Box::new(gtk::Orientation::Horizontal, 10);
@@ -704,10 +704,10 @@ fn remote(s: &Settings) -> gtk::Box {
     accept.connect_clicked(move |_| {
         let (id, name) = chosen.borrow().clone();
         if !id.is_empty() {
-            crate::bridges::accept_device(&id, &name);
+            accept_device(&id, &name);
         }
     });
-    refuse.connect_clicked(|_| crate::bridges::pair(false));
+    refuse.connect_clicked(|_| open_pairing(false));
     content.append(&card);
 
     let devices = section("Devices");
@@ -716,7 +716,7 @@ fn remote(s: &Settings) -> gtk::Box {
         rows.append(&list);
     }
     let pair = flat_button("Pair a device");
-    pair.connect_clicked(|_| crate::bridges::pair(true));
+    pair.connect_clicked(|_| open_pairing(true));
     row(&devices, "Pair a device", "Shows a code to scan. It stays good for ten minutes.", &pair);
     caption(&devices, "A paired device can do what the Telegram bot can: read replies, send messages, answer questions. “Always allow” and ! commands stay in loom.");
     content.append(&devices);
@@ -764,7 +764,7 @@ fn remote(s: &Settings) -> gtk::Box {
 
     let (wd, wt, wdet, wp, wq, wtext, wprop, wproposed, wcard, wpair) =
         (dot.downgrade(), title.downgrade(), detail.downgrade(), pairing.downgrade(), qr.downgrade(), text.downgrade(), proposal.downgrade(), proposed.downgrade(), card.downgrade(), pair.downgrade());
-    crate::bridges::watch("remote", move |state| {
+    watch_bridge("remote", move |state| {
         let (Some(dot), Some(title), Some(detail), Some(pairing), Some(qr), Some(text), Some(proposal), Some(proposed), Some(card), Some(pair)) =
             (wd.upgrade(), wt.upgrade(), wdet.upgrade(), wp.upgrade(), wq.upgrade(), wtext.upgrade(), wprop.upgrade(), wproposed.upgrade(), wcard.upgrade(), wpair.upgrade())
         else {
@@ -1456,4 +1456,60 @@ fn short(description: &str) -> String {
     }
     let cut: String = first.chars().take(108).collect();
     format!("{}…", cut.trim_end())
+}
+
+/// Bridge `name`'s state, now and on every change while `f` returns true: the core here's, or
+/// loomd's when the window is its client (its `bridges` item, the ticket from `pairing`).
+fn watch_bridge(name: &'static str, f: impl Fn(&serde_json::Value) -> bool + 'static) {
+    if !crate::conn::is_remote() {
+        return crate::bridges::watch(name, f);
+    }
+    type Feeds = Rc<std::cell::RefCell<Option<(crate::feed::Feed, crate::feed::Feed)>>>;
+    // Kept by their own callbacks until `f` says it is done (its widgets gone).
+    let feeds: Feeds = Rc::default();
+    let draw = {
+        let feeds = feeds.clone();
+        Rc::new(move || {
+            let state = {
+                let held = feeds.borrow();
+                let Some((bridges, pairing)) = held.as_ref() else { return };
+                bridges.update();
+                pairing.update();
+                let mut state = bridges.items().iter().find(|i| i["id"] == name).cloned().unwrap_or_else(|| serde_json::json!({ "state": "off" }));
+                state["id"] = state["node"].clone();
+                if let Some(pairing) = pairing.items().iter().find(|p| p["id"] == name) {
+                    state["ticket"] = pairing["ticket"].clone();
+                }
+                state
+            };
+            if !f(&state) {
+                feeds.borrow_mut().take();
+            }
+        })
+    };
+    let ready = || {
+        let draw = draw.clone();
+        move || draw()
+    };
+    let followed = crate::feed::Feed::new("bridges", ready()).zip(crate::feed::Feed::new("pairing", ready()));
+    *feeds.borrow_mut() = followed;
+    draw();
+}
+
+/// Opens pairing (a code to scan) or closes it, here or in loomd.
+fn open_pairing(open: bool) {
+    if crate::conn::is_remote() {
+        crate::conn::command("settings", "pairing", serde_json::json!({ "open": open }));
+    } else {
+        crate::bridges::pair(open);
+    }
+}
+
+/// The device asking to pair let in, here or in loomd.
+fn accept_device(id: &str, name: &str) {
+    if crate::conn::is_remote() {
+        crate::conn::command("settings", "pair_confirm", serde_json::json!({ "id": id }));
+    } else {
+        crate::bridges::accept_device(id, name);
+    }
 }
