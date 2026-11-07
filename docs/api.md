@@ -1235,6 +1235,17 @@ Who: window, cli. Result: `{}`, once done.
 |---|---|---|
 | `path` | string | a file or folder in a project (not the project) |
 
+### `git_show`
+
+One commit: who, when, its message, the files it changed and its diff (git show).
+
+Who: window, cli. Result: `{text}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `repo` | string |  |
+| `hash` | string | a commit's (`git_log`) |
+
 ### `git_log`
 
 The newest commits.

@@ -3220,6 +3220,32 @@
       },
       "result": "{}"
     },
+    "git_show": {
+      "description": "One commit: who, when, its message, the files it changed and its diff (git show).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "repo": {
+            "type": "string",
+            "description": ""
+          },
+          "hash": {
+            "type": "string",
+            "description": "a commit's (`git_log`)"
+          }
+        },
+        "required": [
+          "repo",
+          "hash"
+        ]
+      },
+      "result": "{text}"
+    },
     "git_log": {
       "description": "The newest commits.",
       "who": [

@@ -199,6 +199,11 @@ fn log_lines(out: &str) -> Vec<Value> {
         .collect()
 }
 
+/// A commit's hash, in hex: never an option or a range git would read.
+fn is_hash(s: &str) -> bool {
+    (4..=64).contains(&s.len()) && s.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// Registers the commands (once, at start).
 pub fn serve() {
     let hub = crate::api::hub();
@@ -259,6 +264,15 @@ pub fn serve() {
             let message = p["message"].as_str().unwrap_or("").to_owned();
             Ok(Box::new(move || act(&repo, &what, &files, &message)))
         }),
+        ("git_show", |p, ps| {
+            let repo = inside(string(p, "repo")?, ps)?;
+            // a commit's hash alone: never an option git would read
+            let hash = string(p, "hash")?.to_owned();
+            if !is_hash(&hash) {
+                return Err(Error::Invalid("hash: a commit's, in hex".into()));
+            }
+            Ok(Box::new(move || git(&repo, &["-c", "core.quotePath=false", "show", "--stat", "--patch", "--format=fuller", &hash, "--"]).map(|text| json!({ "text": text })).map_err(Error::Failed)))
+        }),
         ("git_log", |p, ps| {
             let repo = inside(string(p, "repo")?, ps)?;
             let limit = p["limit"].as_u64().unwrap_or(200).min(2000) as usize;
@@ -286,6 +300,12 @@ pub fn serve() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_hash_is_shown() {
+        assert!(is_hash("b15ce87") && is_hash("B15CE875f0bc7bb255d3debcdb1ec62f04dd0aff"));
+        assert!(!is_hash("--output=/tmp/x") && !is_hash("HEAD") && !is_hash("a1b") && !is_hash("a1b2..c3d4"));
+    }
 
     #[test]
     fn only_a_projects_files_and_a_write_over_a_newer_file_conflicts() {

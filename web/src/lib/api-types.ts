@@ -1025,6 +1025,13 @@ export type TrashFileParams = {
   path: string;
 };
 
+/** One commit: who, when, its message, the files it changed and its diff (git show). Result: {text} */
+export type GitShowParams = {
+  repo: string;
+  /** a commit's (`git_log`) */
+  hash: string;
+};
+
 /** The newest commits. Result: {commits: [{graph, hash, refs, subject, author, when}]} */
 export type GitLogParams = {
   repo: string;
@@ -1149,6 +1156,7 @@ export interface Commands {
   "git_do": GitDoParams;
   "open_path": OpenPathParams;
   "trash_file": TrashFileParams;
+  "git_show": GitShowParams;
   "git_log": GitLogParams;
   "ask_done": AskDoneParams;
   "ask_open": AskOpenParams;

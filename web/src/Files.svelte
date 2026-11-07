@@ -53,7 +53,7 @@
   let found = $state<string[]>([]);
   let repos = $state.raw<Repo[]>([]);
   let repo = $state("");
-  let diff = $state<{ file: string; staged: boolean; text: string } | null>(null);
+  let diff = $state<{ file: string; staged: boolean; text: string; commit?: boolean } | null>(null);
   let message = $state("");
   let commits = $state.raw<{ graph?: string; hash: string | null; refs: string; subject: string; author: string; when: string }[]>([]);
   let graph = $state(false);
@@ -140,6 +140,10 @@
     const got = await call(command("git_diff", { repo, file: f, staged: isStaged }));
     diff = { file: f, staged: isStaged, text: got?.diff || "(a new file: nothing to compare with)" };
   }
+  async function showCommit(hash: string) {
+    const got = await call(command("git_show", { repo, hash }));
+    if (got) diff = { file: hash, staged: false, text: got.text, commit: true };
+  }
   async function git(act: string, files: string[] = []) {
     if (act === "discard" && !confirm(`Throw away the changes to ${files.join(", ")}? They go back to the last commit. This can't be undone.`)) return;
     const done = await call(command("git_do", { repo, act, ...(files.length ? { files } : {}), ...(act === "commit" ? { message } : {}) }));
@@ -222,7 +226,7 @@
           {/if}
           <h3>Newest commits <label class="quiet small graph-toggle"><input type="checkbox" checked={graph} onchange={(e) => { graph = e.currentTarget.checked; loadGit(); }} /> every branch, as a graph</label></h3>
           {#each commits as c, i (i)}
-            <p class="commitrow">{#if graph}<span class="graph">{c.graph}</span>{/if}{#if c.hash}<code>{c.hash}</code>{#each (c.refs ?? "").split(", ").filter(Boolean) as r (r)}<span class="refs" class:head={r.startsWith("HEAD")} class:tag={r.startsWith("tag:")}>{r.replace("HEAD -> ", "")}</span>{/each} {c.subject} <span class="quiet">· {c.author}, {c.when}</span>{/if}</p>
+            <p class="commitrow">{#if graph}<span class="graph">{c.graph}</span>{/if}{#if c.hash}<button class="trow commitbtn" class:sel={diff?.commit && diff.file === c.hash} title="See this commit" onclick={() => showCommit(c.hash!)}><code>{c.hash}</code>{#each (c.refs ?? "").split(", ").filter(Boolean) as r (r)}<span class="refs" class:head={r.startsWith("HEAD")} class:tag={r.startsWith("tag:")}>{r.replace("HEAD -> ", "")}</span>{/each} {c.subject} <span class="quiet">· {c.author}, {c.when}</span></button>{/if}</p>
           {/each}
         {:else}
           <p class="empty">No git repository in this project.</p>
@@ -230,10 +234,11 @@
       </div>
       <div class="editor">
         {#if diff}
-          <div class="ebar"><code>{diff.file}</code><span class="quiet small">{diff.staged ? "staged" : "not staged yet"}</span></div>
+          <div class="ebar"><code>{diff.commit ? `commit ${diff.file}` : diff.file}</code><span class="quiet small">{diff.commit ? "" : diff.staged ? "staged" : "not staged yet"}</span></div>
           <div class="diffs">
+            {#if diff.commit}<pre class="about">{diff.text.split("\ndiff --git ")[0]}</pre>{/if}
             {#each unified(diff.text) as h, i (i)}
-              <div class="diff"><div class="f"><span>{h.head}</span></div><pre>{#each h.lines as l, k (k)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t}{l.text}
+              <div class="diff"><div class="f"><span>{diff.commit ? `${h.file}  ${h.head}` : h.head}</span></div><pre>{#each h.lines as l, k (k)}<span class={l.t === "+" ? "add" : l.t === "-" ? "del" : ""}>{l.t}{l.text}
 </span>{/each}</pre></div>
             {:else}<p class="quiet">{diff.text}</p>{/each}
           </div>

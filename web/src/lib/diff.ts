@@ -22,11 +22,13 @@ export function hunks(all: Line[], context = 2): Line[] {
   return all.filter((_, k) => near[k]);
 }
 
-/** A unified diff (git's) as its hunks: each its `@@` line and its lines, marked +, - or " ". */
-export function unified(diff: string): { head: string; lines: Line[] }[] {
-  const hunks: { head: string; lines: Line[] }[] = [];
+/** A unified diff (git's) as its hunks: each its `@@` line, its file and its lines, marked +, - or " ". */
+export function unified(diff: string): { head: string; file: string; lines: Line[] }[] {
+  const hunks: { head: string; file: string; lines: Line[] }[] = [];
+  let file = "";
   for (const raw of diff.split("\n")) {
-    if (raw.startsWith("@@")) hunks.push({ head: raw, lines: [] });
+    if (raw.startsWith("diff --git ")) file = raw.replace(/^diff --git a\/.* b\//, "");
+    else if (raw.startsWith("@@")) hunks.push({ head: raw, file, lines: [] });
     else if (hunks.length && /^[ +-]/.test(raw)) hunks.at(-1)!.lines.push({ t: raw[0] as Line["t"], text: raw.slice(1) });
   }
   return hunks;
