@@ -550,3 +550,13 @@ list.notes-topics row.notes-note { padding-left: 18px; }
 list.notes-topics row.notes-more { padding-left: 18px; }
 list.notes-topics row.notes-conflicts label.notes-topic-name { color: @loom_warn; }
 .conflict-actions { padding: 10px 12px; background: @window_bg_color; border-top: 1px solid alpha(currentColor, 0.12); }
+
+/* A changed file's diff, hunk by hunk (Undo each; a click on a line: a note on it). */
+.change-window { margin: 12px 14px 18px; }
+.hunk { border: 1px solid alpha(@window_fg_color, 0.12); border-radius: 10px; }
+.hunk-head { padding: 4px 6px 4px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.1); }
+list.hunk-lines { background: transparent; }
+list.hunk-lines row { padding: 0 12px; min-height: 0; }
+list.hunk-lines row:hover { box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.5); }
+list.hunk-lines row.added { color: @success_color; background: alpha(@success_color, 0.09); }
+list.hunk-lines row.removed { color: @error_color; background: alpha(@error_color, 0.09); }

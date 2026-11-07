@@ -45,6 +45,22 @@ pub fn describe(path: &Path, mark: Mark) -> Value {
     json!({ "path": path, "mark": mark, "repo": repo, "status": status, "diff": diff })
 }
 
+/// A unified diff's hunks: each its `@@` line and its lines (with their `+`, `-` or ` `).
+/// git's remarks ("\\ No newline at end of file") are left out.
+pub fn hunks(diff: &str) -> Vec<(String, Vec<String>)> {
+    let mut out: Vec<(String, Vec<String>)> = Vec::new();
+    for line in diff.lines() {
+        if line.starts_with("@@") {
+            out.push((line.to_owned(), Vec::new()));
+        } else if let Some((_, lines)) = out.last_mut()
+            && (line.starts_with(' ') || line.starts_with('+') || line.starts_with('-'))
+        {
+            lines.push(line.to_owned());
+        }
+    }
+    out
+}
+
 /// Hunk `n` (from 0) of `diff` as a patch of its own: the file's header, then that hunk.
 fn hunk_patch(diff: &str, n: usize) -> Option<String> {
     let lines: Vec<&str> = diff.split_inclusive('\n').collect();
@@ -108,6 +124,10 @@ mod tests {
         assert_eq!(described["status"], " M");
         assert_eq!(described["diff"].as_str().unwrap().matches("\n@@").count(), 2);
         let second = &described["diff"].as_str().unwrap()[described["diff"].as_str().unwrap().rfind("\n@@").unwrap() + 1..];
+        // the hunks as a window shows them: the second one's text is what revert checks
+        let parts = hunks(described["diff"].as_str().unwrap());
+        assert_eq!(parts.len(), 2);
+        assert_eq!(std::iter::once(parts[1].0.clone()).chain(parts[1].1.clone()).collect::<Vec<_>>().join("\n"), second.trim_end());
         assert!(revert(&file, Some((0, second))).is_err(), "not the hunk shown there");
         revert(&file, Some((1, second))).unwrap();
         let now = std::fs::read_to_string(&file).unwrap();

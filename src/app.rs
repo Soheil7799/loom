@@ -1149,6 +1149,7 @@ impl App {
                 self.files.show_graph_view();
             }
             "graphwin" => self.files.graph_window(),
+            "diff" => self.files.diff_for_tests(argument),
             "fork" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.fork(None, String::new());

@@ -1466,6 +1466,13 @@ impl Files {
 
     /// The whole graph in a window of its own: who and when too, dragged around to look; a
     /// click opens a commit.
+    /// A changed file of the repo the Changes view shows, in its window (devhooks).
+    pub fn diff_for_tests(&self, file: &str) {
+        if let Some(repo) = self.changes_repo.borrow().clone() {
+            self.show_diff(&repo, file);
+        }
+    }
+
     pub fn graph_window(self: &Rc<Self>) {
         let data = self.graph_data.borrow().clone();
         if data.is_empty() {
@@ -1682,22 +1689,148 @@ impl Files {
         let (me, repo, file) = (self.me.borrow().clone(), repo.to_owned(), file.to_owned());
         glib::spawn_future_local(async move {
             let (reading, name) = (repo.clone(), file.clone());
-            let diff = gio::spawn_blocking(move || {
-                loom_core::files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD", "--", &name])
-                    .ok()
-                    .filter(|d| !d.trim().is_empty())
-                    .or_else(|| {
-                        // Untracked: the whole file is new.
-                        std::fs::read_to_string(reading.join(&name)).ok().map(|text| text.lines().map(|l| format!("+{l}\n")).collect())
-                    })
-                    .unwrap_or_else(|| "No changes to show.".to_owned())
+            // (its diff against the last commit, or None: a new file, its text all new)
+            let (tracked, diff) = gio::spawn_blocking(move || {
+                match loom_core::files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD", "--", &name]).ok().filter(|d| !d.trim().is_empty()) {
+                    Some(diff) => (true, diff),
+                    None => (
+                        false,
+                        std::fs::read_to_string(reading.join(&name)).ok().map(|text| text.lines().map(|l| format!("+{l}\n")).collect()).unwrap_or_else(|| "No changes to show.".to_owned()),
+                    ),
+                }
             })
             .await
             .unwrap_or_default();
-            if let Some(files) = me.upgrade() {
+            let Some(files) = me.upgrade() else { return };
+            // A change of git's, not too long to list line by line: one to act on, hunk by hunk.
+            if tracked && diff.lines().count() <= 3000 {
+                files.change_window(&repo, &file, &diff);
+            } else {
                 files.diff_window(&format!("{file} — changes"), &diff);
             }
         });
+    }
+
+    /// A changed file's diff in a window, as the web page's: each change (hunk) with Undo
+    /// (only it goes back, if the file still reads as shown), the whole file thrown away, and a
+    /// click on a line: a note on it, into the chat's box for the next message.
+    fn change_window(&self, repo: &Path, file: &str, diff: &str) {
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        body.add_css_class("change-window");
+        let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        let name = gtk::Label::builder().label(file).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
+        name.add_css_class("mono");
+        let hint = gtk::Label::new(Some("Click a line to leave a note on it"));
+        hint.add_css_class("dim");
+        hint.add_css_class("small");
+        let throw = gtk::Button::with_label("Throw away all of it");
+        throw.add_css_class("destructive-action");
+        throw.set_tooltip_text(Some("Every change to it goes back to the last commit (asks first)"));
+        bar.append(&name);
+        bar.append(&hint);
+        bar.append(&throw);
+        body.append(&bar);
+        let window = gtk::Window::builder().title(format!("{file} — changes")).default_width(900).default_height(640).build();
+        window.add_css_class("loom");
+        if let Some(parent) = self.root.root().and_downcast::<gtk::Window>() {
+            window.set_transient_for(Some(&parent));
+        }
+        let (me, path) = (self.me.borrow().clone(), repo.join(file));
+        for (n, (head, lines)) in loom_core::changes::hunks(diff).into_iter().enumerate() {
+            let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            card.add_css_class("hunk");
+            let top = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            top.add_css_class("hunk-head");
+            let at = gtk::Label::builder().label(&head).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+            at.add_css_class("mono");
+            at.add_css_class("dim");
+            let undo = gtk::Button::with_label("Undo");
+            undo.add_css_class("flat");
+            undo.add_css_class("small");
+            undo.set_tooltip_text(Some("Undo only this change"));
+            top.append(&at);
+            top.append(&undo);
+            card.append(&top);
+            let list = gtk::ListBox::new();
+            list.add_css_class("hunk-lines");
+            list.set_selection_mode(gtk::SelectionMode::None);
+            for line in &lines {
+                let label = gtk::Label::builder().label(line).xalign(0.0).build();
+                label.add_css_class("mono");
+                let row = gtk::ListBoxRow::builder().child(&label).build();
+                match line.chars().next() {
+                    Some('+') => row.add_css_class("added"),
+                    Some('-') => row.add_css_class("removed"),
+                    _ => {}
+                }
+                list.append(&row);
+            }
+            let (me_note, name, shown) = (me.clone(), file.to_owned(), lines.clone());
+            list.connect_row_activated(move |_, row| {
+                let Some(line) = shown.get(row.index() as usize).cloned() else { return };
+                let entry = gtk::Entry::builder().placeholder_text("Your note on this line… Enter").width_chars(40).build();
+                let popover = gtk::Popover::builder().child(&entry).build();
+                popover.set_parent(row);
+                popover.connect_closed(|p| p.unparent());
+                let (me, name) = (me_note.clone(), name.clone());
+                let held = popover.downgrade();
+                entry.connect_activate(move |entry| {
+                    let note = entry.text().trim().to_owned();
+                    if let (false, Some(files)) = (note.is_empty(), me.upgrade())
+                        && let Some(ask) = files.on_ask.borrow().clone()
+                    {
+                        ask(format!("About your changes:\n- {name}, the line `{}`: {note}\n", line.trim()));
+                    }
+                    if let Some(popover) = held.upgrade() {
+                        popover.popdown();
+                    }
+                });
+                popover.popup();
+            });
+            card.append(&list);
+            body.append(&card);
+            let (me, path, held, repo, name) = (me.clone(), path.clone(), window.downgrade(), repo.to_owned(), file.to_owned());
+            let shown = std::iter::once(head).chain(lines).collect::<Vec<_>>().join("\n");
+            undo.connect_clicked(move |_| {
+                let Some(files) = me.upgrade() else { return };
+                match loom_core::changes::revert(&path, Some((n, &shown))) {
+                    Ok(()) => {
+                        if let Some(window) = held.upgrade() {
+                            window.close();
+                        }
+                        files.fill_changes();
+                        files.show_diff(&repo, &name);
+                    }
+                    Err(why) => {
+                        let parent = held.upgrade();
+                        gtk::AlertDialog::builder().message("Not undone").detail(why).build().show(parent.as_ref());
+                    }
+                }
+            });
+        }
+        let (me, held, repo, name) = (me.clone(), window.downgrade(), repo.to_owned(), file.to_owned());
+        throw.connect_clicked(move |_| {
+            if let Some(files) = me.upgrade() {
+                files.revert(&repo, &name);
+            }
+            if let Some(window) = held.upgrade() {
+                window.close();
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        let held = window.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape
+                && let Some(window) = held.upgrade()
+            {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+        window.set_child(Some(&gtk::ScrolledWindow::builder().child(&body).vexpand(true).build()));
+        window.present();
     }
 
     fn diff_window(&self, file: &str, diff: &str) -> gtk::Window {
