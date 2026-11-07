@@ -89,6 +89,8 @@ fn main() -> glib::ExitCode {
             glib::timeout_add_local_once(after, f);
         },
     );
+    // Each mode below (not the window) is in loom_core::api::socket::NOT_THE_WINDOW too: loomd
+    // gives the window's rights to `loom` run as anything else.
     // `loom mcp`: the MCP server an agent runs to reach loom (no window).
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);

@@ -288,11 +288,38 @@ fn command_line(pid: u32) -> String {
     raw.split(|b| *b == 0).filter(|a| !a.is_empty()).map(String::from_utf8_lossy).collect::<Vec<_>>().join(" ")
 }
 
+/// The `loom` program's modes that are not its window (`loom api …` is the CLI, `loom mcp`
+/// an agent's tools…). A new mode of `loom` goes here too, or it would pass for the window.
+pub const NOT_THE_WINDOW: &[&str] = &["mcp", "api", "bridge", "scribe-eval"];
+
+/// Whether a process running `exe` (as /proc gives it) with `mode` (its first argument) is
+/// loom's window installed beside this program (`loom`, `window`): its own file (" (deleted)"
+/// once an upgrade replaced it, the window still open), run as the window, not another mode.
+/// shortcut: a process outside every agent's scope could still start the real window or
+/// inject into it (LD_PRELOAD) and so act as it, as it could with a window hosting the core;
+/// a sandbox for agents (Landlock) is what closes that.
+fn is_window(exe: &str, mode: Option<&str>, window: &Path) -> bool {
+    Path::new(exe.strip_suffix(" (deleted)").unwrap_or(exe)) == window && !mode.is_some_and(|m| NOT_THE_WINDOW.contains(&m))
+}
+
+/// loom's window program: `loom` beside this one (loomd's, or the window's own when it hosts).
+fn window_program() -> Option<PathBuf> {
+    std::env::current_exe().ok()?.parent().map(|dir| dir.join("loom"))
+}
+
 /// Who process `pid` speaks for: the first of its ancestors `owner` knows, else the CLI.
 pub fn principal_of(pid: u32, owner: &impl Fn(u32) -> Option<Principal>) -> Principal {
     // In an agent's scope: that agent's, wherever it went in the process tree.
     if let Some(agent) = crate::scope::agent_of(pid) {
         return Principal::Agent(agent.to_string());
+    }
+    // loom's window, as a client of loomd.
+    let exe = std::fs::read_link(format!("/proc/{pid}/exe")).ok();
+    let mode = std::fs::read(format!("/proc/{pid}/cmdline")).ok().and_then(|raw| raw.split(|b| *b == 0).nth(1).map(|m| String::from_utf8_lossy(m).into_owned()));
+    if let (Some(exe), Some(window)) = (exe, window_program())
+        && is_window(&exe.to_string_lossy(), mode.as_deref(), &window)
+    {
+        return Principal::Window;
     }
     let me = std::process::id();
     let mut at = pid;
@@ -321,6 +348,18 @@ fn parent(pid: u32) -> Option<u32> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_loom_run_as_its_window_beside_loomd_is_the_window() {
+        let window = Path::new("/home/u/.local/bin/loom");
+        assert!(is_window("/home/u/.local/bin/loom", None, window));
+        assert!(is_window("/home/u/.local/bin/loom", Some("/home/u/project"), window), "opened on a folder");
+        assert!(is_window("/home/u/.local/bin/loom (deleted)", None, window), "upgraded while open");
+        assert!(!is_window("/home/u/.local/bin/loom", Some("api"), window), "the CLI");
+        assert!(!is_window("/home/u/.local/bin/loom", Some("mcp"), window), "an agent's tools");
+        assert!(!is_window("/tmp/loom", None, window), "a copy elsewhere");
+        assert!(!is_window("/usr/bin/socat", None, window));
+    }
 
     #[test]
     fn a_process_speaks_for_the_agent_it_descends_from() {
