@@ -1148,6 +1148,7 @@ impl App {
                 self.leave_for_files();
                 self.files.show_graph_view();
             }
+            "graphwin" => self.files.graph_window(),
             "fork" => {
                 if let Some(agent) = self.focused_agent() {
                     agent.fork(None, String::new());

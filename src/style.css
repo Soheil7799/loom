@@ -320,11 +320,11 @@ list.history row:hover .history-delete { opacity: 0.7; }
 /* Graph: commits and branch heads. */
 .repo-bar { margin: 2px 12px 4px 12px; }
 list.graph { background: transparent; }
-list.graph row { padding: 0 10px; min-height: 0; }
+list.graph row { padding: 0 10px 0 6px; min-height: 0; }
 list.graph row:hover { background: alpha(@window_fg_color, 0.04); }
 list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-.graph-row { min-height: 22px; }
-.graph-lanes { font-family: "JetBrains Mono", monospace; font-size: 0.9em; }
+.graph-row { min-height: 26px; }
+.graph-bar { padding: 0 8px 4px; }
 .graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.55; }
 .ref { font-size: 0.8em; font-weight: 700; padding: 0 6px; border-radius: 99px; }
 .ref.head { color: @accent_fg_color; background: @accent_color; }

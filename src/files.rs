@@ -58,6 +58,10 @@ pub struct Files {
     /// When the user last clicked, typed or scrolled in this panel.
     touched: Cell<std::time::Instant>,
     graph_commits: RefCell<Vec<Option<String>>>,
+    /// The commits read so far (newest first), the repo's remotes, and whether more are left.
+    graph_data: RefCell<Vec<GraphCommit>>,
+    graph_remotes: RefCell<Vec<String>>,
+    graph_more: Cell<bool>,
     /// Bumped by each graph fill (an older answer is dropped), and the repo shown.
     graph_round: Cell<u64>,
     graph_repo: RefCell<Option<PathBuf>>,
@@ -197,7 +201,18 @@ impl Files {
         graph.add_css_class("graph");
         graph.set_selection_mode(gtk::SelectionMode::Browse);
         let graph_scroller = gtk::ScrolledWindow::builder().child(&graph).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
-        views.add_named(&graph_scroller, Some("graph"));
+        let expand = gtk::Button::with_label("Expand");
+        expand.add_css_class("flat");
+        expand.add_css_class("small");
+        expand.set_tooltip_text(Some("The whole graph, big: drag it around"));
+        let graph_bar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        graph_bar.add_css_class("graph-bar");
+        graph_bar.append(&gtk::Box::builder().hexpand(true).build());
+        graph_bar.append(&expand);
+        let graph_view = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        graph_view.append(&graph_bar);
+        graph_view.append(&graph_scroller);
+        views.add_named(&graph_view, Some("graph"));
         views.set_size_request(-1, 120);
 
         let editor_box = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -397,6 +412,9 @@ impl Files {
             notes_tab: notes_tab.clone(),
             touched: Cell::new(std::time::Instant::now() - std::time::Duration::from_secs(3600)),
             graph_commits: RefCell::default(),
+            graph_data: RefCell::default(),
+            graph_remotes: RefCell::default(),
+            graph_more: Cell::new(false),
             graph_round: Cell::new(0),
             graph_repo: RefCell::default(),
             committing: Cell::new(false),
@@ -528,6 +546,19 @@ impl Files {
                     files.views.set_visible_child_name("graph");
                     files.fill_repos();
                 }
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        expand.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade() {
+                files.graph_window();
+            }
+        });
+        // The next commits as the list's end comes into sight.
+        let weak = Rc::downgrade(&files);
+        graph_scroller.connect_edge_reached(move |_, edge| {
+            if let (Some(files), gtk::PositionType::Bottom) = (weak.upgrade(), edge) {
+                files.more_graph();
             }
         });
         let weak = Rc::downgrade(&files);
@@ -1363,6 +1394,8 @@ impl Files {
         self.graph_round.set(round);
         // The old repo's commits go at once (a click must not open them under the new name).
         self.clear_graph();
+        self.graph_data.borrow_mut().clear();
+        self.graph_more.set(false);
         *self.graph_repo.borrow_mut() = None;
         let Some(repo) = repo else { return };
         let loading = gtk::Label::builder().label("Reading the history…").xalign(0.0).build();
@@ -1374,12 +1407,9 @@ impl Files {
         glib::spawn_future_local(async move {
             let reading = repo.clone();
             let found = gio::spawn_blocking(move || {
-                let log = loom_core::files::git(
-                    &reading,
-                    &["-c", "core.quotePath=false", "log", "--graph", "--all", "--date-order", "--color=never", "-n", "400", "--format=%x1f%h%x1f%D%x1f%s%x1f%an%x1f%ar"],
-                )?;
+                let commits = read_graph(&reading, 0)?;
                 let remotes: Vec<String> = loom_core::files::git(&reading, &["remote"]).unwrap_or_default().lines().map(str::to_owned).collect();
-                Ok::<_, String>((log, remotes))
+                Ok::<_, String>((commits, remotes))
             })
             .await
             .unwrap_or_else(|_| Err("git did not finish".to_owned()));
@@ -1390,7 +1420,12 @@ impl Files {
             files.clear_graph();
             *files.graph_repo.borrow_mut() = Some(repo.clone());
             match found {
-                Ok((log, remotes)) => files.show_graph(&log, &remotes),
+                Ok((commits, remotes)) => {
+                    files.graph_more.set(commits.len() == GRAPH_PAGE);
+                    *files.graph_data.borrow_mut() = commits;
+                    *files.graph_remotes.borrow_mut() = remotes;
+                    files.show_graph();
+                }
                 Err(err) => {
                     let note = gtk::Label::builder().label(format!("git: {err}")).xalign(0.0).wrap(true).build();
                     note.add_css_class("dim");
@@ -1400,44 +1435,85 @@ impl Files {
         });
     }
 
-    fn show_graph(&self, log: &str, remotes: &[String]) {
-        let mut commits = Vec::new();
-        for line in log.lines() {
-            let (lanes, rest) = line.split_once('\x1f').unwrap_or((line, ""));
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.add_css_class("graph-row");
-            let drawn = gtk::Label::builder().use_markup(true).xalign(0.0).build();
-            drawn.set_markup(&graph_markup(lanes.trim_end()));
-            drawn.add_css_class("graph-lanes");
-            row.append(&drawn);
-            let fields: Vec<&str> = rest.split('\x1f').collect();
-            if let [hash, refs, subject, author, age] = fields[..] {
-                let hash_label = gtk::Label::new(Some(hash));
-                hash_label.add_css_class("graph-hash");
-                row.append(&hash_label);
-                for (name, kind) in ref_badges(refs, remotes) {
-                    let badge = gtk::Label::new(Some(&name));
-                    badge.add_css_class("ref");
-                    badge.add_css_class(kind);
-                    row.append(&badge);
-                }
-                let text = gtk::Label::builder().label(subject).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
-                row.append(&text);
-                // The age, short ("4 min"); who wrote it is in the tooltip.
-                let short = age.replace(" minutes", " min").replace(" minute", " min").replace(" hours", " h").replace(" hour", " h").replace(" days", " d").replace(" day", " d").replace(" weeks", " w").replace(" week", " w").replace(" months", " mo").replace(" month", " mo").replace(" years", " y").replace(" year", " y").replace(" ago", "");
-                let who = gtk::Label::new(Some(&short));
-                who.add_css_class("dim");
-                who.add_css_class("small");
-                row.append(&who);
-                row.set_tooltip_text(Some(&format!("{hash} {subject}\n{author}, {age}")));
-                commits.push(Some(hash.to_owned()));
-            } else {
-                commits.push(None);
-            }
-            let list_row = gtk::ListBoxRow::builder().child(&row).activatable(!rest.is_empty()).selectable(!rest.is_empty()).build();
-            self.graph.append(&list_row);
+    /// The next page of commits, after those shown (once at a time).
+    fn more_graph(self: &Rc<Self>) {
+        let Some(repo) = self.graph_repo.borrow().clone() else { return };
+        if !self.graph_more.replace(false) {
+            return;
         }
-        *self.graph_commits.borrow_mut() = commits;
+        let (round, skip) = (self.graph_round.get(), self.graph_data.borrow().len());
+        let weak = Rc::downgrade(self);
+        glib::spawn_future_local(async move {
+            let found = gio::spawn_blocking(move || read_graph(&repo, skip)).await.unwrap_or_else(|_| Err("git did not finish".to_owned()));
+            let Some(files) = weak.upgrade() else { return };
+            if files.graph_round.get() != round {
+                return;
+            }
+            if let Ok(more) = found {
+                files.graph_more.set(more.len() == GRAPH_PAGE);
+                files.graph_data.borrow_mut().extend(more);
+                files.show_graph();
+            }
+        });
+    }
+
+    fn show_graph(&self) {
+        self.clear_graph();
+        let data = self.graph_data.borrow();
+        fill_graph_list(&self.graph, &data, &self.graph_remotes.borrow(), false);
+        *self.graph_commits.borrow_mut() = data.iter().map(|c| Some(c.hash.clone())).collect();
+    }
+
+    /// The whole graph in a window of its own: who and when too, dragged around to look; a
+    /// click opens a commit.
+    pub fn graph_window(self: &Rc<Self>) {
+        let data = self.graph_data.borrow().clone();
+        if data.is_empty() {
+            return;
+        }
+        let list = gtk::ListBox::new();
+        list.add_css_class("graph");
+        list.set_selection_mode(gtk::SelectionMode::Browse);
+        fill_graph_list(&list, &data, &self.graph_remotes.borrow(), true);
+        let scroller = gtk::ScrolledWindow::builder().child(&list).vexpand(true).build();
+        // Dragged: the view moves with the pointer.
+        let drag = gtk::GestureDrag::new();
+        let start = Rc::new(Cell::new((0.0, 0.0)));
+        let (s1, view) = (start.clone(), scroller.clone());
+        drag.connect_drag_begin(move |_, _, _| s1.set((view.hadjustment().value(), view.vadjustment().value())));
+        let view = scroller.clone();
+        drag.connect_drag_update(move |_, dx, dy| {
+            let (h, v) = start.get();
+            view.hadjustment().set_value(h - dx);
+            view.vadjustment().set_value(v - dy);
+        });
+        scroller.add_controller(drag);
+        let name = self.graph_repo.borrow().as_ref().and_then(|r| r.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let window = gtk::Window::builder().title(format!("{name} — every branch")).default_width(1100).default_height(720).child(&scroller).build();
+        window.add_css_class("loom");
+        if let Some(parent) = self.root.root().and_downcast::<gtk::Window>() {
+            window.set_transient_for(Some(&parent));
+        }
+        let hashes: Vec<String> = data.iter().map(|c| c.hash.clone()).collect();
+        let weak = Rc::downgrade(self);
+        list.connect_row_activated(move |_, row| {
+            if let (Some(files), Some(hash)) = (weak.upgrade(), hashes.get(row.index() as usize)) {
+                files.show_commit(hash);
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        let held = window.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape
+                && let Some(window) = held.upgrade()
+            {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+        window.present();
     }
 
     fn clear_graph(&self) {
@@ -2252,23 +2328,139 @@ fn tree_factory() -> gtk::SignalListItemFactory {
 }
 
 /// The lanes of `git log --graph` in colour: each column its own, commits as dots.
-fn graph_markup(lanes: &str) -> String {
-    const COLOURS: &[&str] = &["#7aa2f7", "#9ece6a", "#e0af68", "#f7768e", "#bb9af7", "#7dcfff", "#ff9e64"];
-    let mut out = String::new();
-    for (i, c) in lanes.chars().enumerate() {
-        let colour = COLOURS[(i / 2) % COLOURS.len()];
-        let shown = match c {
-            '*' => "●".to_owned(),
-            '|' => "│".to_owned(),
-            ' ' => {
-                out.push(' ');
-                continue;
-            }
-            other => glib::markup_escape_text(&other.to_string()).to_string(),
-        };
-        out.push_str(&format!("<span foreground=\"{colour}\">{shown}</span>"));
+/// A commit of the graph, as git log gives it.
+#[derive(Clone)]
+struct GraphCommit {
+    hash: String,
+    refs: String,
+    subject: String,
+    author: String,
+    age: String,
+    parents: Vec<String>,
+}
+
+/// Commits read at a time.
+const GRAPH_PAGE: usize = 400;
+/// A lane's width, in pixels.
+const LANE: f64 = 12.0;
+const LANE_COLOURS: &[(f64, f64, f64)] = &[(0.48, 0.64, 0.97), (0.62, 0.81, 0.42), (0.88, 0.69, 0.41), (0.97, 0.46, 0.56), (0.73, 0.60, 0.97), (0.49, 0.81, 1.0), (1.0, 0.62, 0.39)];
+
+/// Every branch's commits, newest first, each after its children (the lanes need it), from `skip` on.
+fn read_graph(repo: &Path, skip: usize) -> Result<Vec<GraphCommit>, String> {
+    let (n, skip) = (GRAPH_PAGE.to_string(), format!("--skip={skip}"));
+    let log = loom_core::files::git(repo, &["-c", "core.quotePath=false", "log", "--all", "--date-order", "-n", &n, &skip, "--format=%h%x1f%D%x1f%s%x1f%an%x1f%ar%x1f%p"])?;
+    Ok(log
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split('\x1f').collect();
+            let [hash, refs, subject, author, age, parents] = f[..] else { return None };
+            Some(GraphCommit { hash: hash.into(), refs: refs.into(), subject: subject.into(), author: author.into(), age: age.into(), parents: parents.split_whitespace().map(str::to_owned).collect() })
+        })
+        .collect())
+}
+
+/// `commits` as rows of `list`: the lanes drawn at the left of each (the lines crossing it,
+/// its commit's dot: hollow for a merge), then its hash, branches and tags, subject and age;
+/// `wide`: who wrote it too.
+fn fill_graph_list(list: &gtk::ListBox, commits: &[GraphCommit], remotes: &[String], wide: bool) {
+    let pairs: Vec<(&str, Vec<&str>)> = commits.iter().map(|c| (c.hash.as_str(), c.parents.iter().map(String::as_str).collect())).collect();
+    let layout = Rc::new(loom_core::lanes::layout(&pairs));
+    let rows = commits.len();
+    // each row's crossing lines
+    let mut crossing: Vec<Vec<usize>> = vec![Vec::new(); rows];
+    for (i, e) in layout.edges.iter().enumerate() {
+        for row in crossing.iter_mut().take(e.to.unwrap_or(rows - 1).min(rows - 1) + 1).skip(e.row) {
+            row.push(i);
+        }
     }
-    out
+    for (r, c) in commits.iter().enumerate() {
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        row.add_css_class("graph-row");
+        let area = gtk::DrawingArea::builder().content_width((layout.width as f64 * LANE) as i32 + 4).vexpand(true).build();
+        let (layout, edges, merge) = (layout.clone(), std::mem::take(&mut crossing[r]), c.parents.len() > 1);
+        area.set_draw_func(move |_, cr, _, h| draw_lanes(cr, &layout, &edges, r, rows, h as f64, merge));
+        row.append(&area);
+        let hash = gtk::Label::new(Some(&c.hash));
+        hash.add_css_class("graph-hash");
+        row.append(&hash);
+        for (name, kind) in ref_badges(&c.refs, remotes) {
+            let badge = gtk::Label::new(Some(&name));
+            badge.add_css_class("ref");
+            badge.add_css_class(kind);
+            row.append(&badge);
+        }
+        row.append(&gtk::Label::builder().label(&c.subject).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build());
+        if wide {
+            let who = gtk::Label::builder().label(&c.author).xalign(0.0).width_chars(18).max_width_chars(18).ellipsize(pango::EllipsizeMode::End).build();
+            who.add_css_class("dim");
+            row.append(&who);
+        }
+        // The age, short ("4 min"); who wrote it is in the tooltip.
+        let short = c.age.replace(" minutes", " min").replace(" minute", " min").replace(" hours", " h").replace(" hour", " h").replace(" days", " d").replace(" day", " d").replace(" weeks", " w").replace(" week", " w").replace(" months", " mo").replace(" month", " mo").replace(" years", " y").replace(" year", " y").replace(" ago", "");
+        let age = gtk::Label::new(Some(&short));
+        age.add_css_class("dim");
+        age.add_css_class("small");
+        row.append(&age);
+        row.set_tooltip_text(Some(&format!("{} {}\n{}, {}", c.hash, c.subject, c.author, c.age)));
+        list.append(&gtk::ListBoxRow::builder().child(&row).build());
+    }
+}
+
+/// Row `r`'s slice of the graph, `h` high: the lines crossing it (each curving between lanes
+/// at its ends, straight between), then its commit's dot.
+fn draw_lanes(cr: &gtk::cairo::Context, layout: &loom_core::lanes::Layout, edges: &[usize], r: usize, rows: usize, h: f64, merge: bool) {
+    let x = |lane: usize| lane as f64 * LANE + LANE / 2.0 + 2.0;
+    let y = |row: usize| (row as f64 - r as f64) * h + h / 2.0;
+    let colour = |lane: usize| LANE_COLOURS[lane % LANE_COLOURS.len()];
+    cr.set_line_width(2.0);
+    for &i in edges {
+        let e = layout.edges[i];
+        let (x1, y1, xl) = (x(e.from), y(e.row), x(e.lane));
+        let (red, green, blue) = colour(e.lane);
+        cr.set_source_rgba(red, green, blue, 0.9);
+        cr.move_to(x1, y1);
+        match e.to {
+            None => {
+                if e.from != e.lane {
+                    cr.curve_to(x1, y1 + h / 2.0, xl, y1 + h / 2.0, xl, y1 + h);
+                }
+                cr.line_to(xl, (rows as f64 - r as f64) * h);
+            }
+            Some(to) => {
+                let (x2, y2) = (x(e.at), y(to));
+                if to == e.row + 1 || (e.from == e.lane && e.lane == e.at) {
+                    if e.from == e.at {
+                        cr.line_to(x2, y2);
+                    } else {
+                        cr.curve_to(x1, y1 + h / 2.0, x2, y2 - h / 2.0, x2, y2);
+                    }
+                } else {
+                    if e.from != e.lane {
+                        cr.curve_to(x1, y1 + h / 2.0, xl, y1 + h / 2.0, xl, y1 + h);
+                    }
+                    cr.line_to(xl, if e.lane == e.at { y2 } else { y2 - h });
+                    if e.lane != e.at {
+                        cr.curve_to(xl, y2 - h / 2.0, x2, y2 - h / 2.0, x2, y2);
+                    }
+                }
+            }
+        }
+        let _ = cr.stroke();
+    }
+    let lane = layout.lanes[r];
+    let (red, green, blue) = colour(lane);
+    cr.arc(x(lane), h / 2.0, if merge { 3.5 } else { 4.0 }, 0.0, std::f64::consts::TAU);
+    if merge {
+        // hollow: the lines under it cleared, its ring drawn
+        cr.set_operator(gtk::cairo::Operator::Clear);
+        let _ = cr.fill_preserve();
+        cr.set_operator(gtk::cairo::Operator::Over);
+        cr.set_source_rgb(red, green, blue);
+        let _ = cr.stroke();
+    } else {
+        cr.set_source_rgb(red, green, blue);
+        let _ = cr.fill();
+    }
 }
 
 /// The text selected in a label under `widget` (the Read view), if any.

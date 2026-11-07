@@ -17,6 +17,7 @@ pub mod jobs;
 pub mod jobs_api;
 pub mod library;
 pub mod journal;
+pub mod lanes;
 pub mod log;
 pub mod mcp;
 pub mod memory;
