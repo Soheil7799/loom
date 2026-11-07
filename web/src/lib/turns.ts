@@ -29,10 +29,14 @@ const finished = (e: Entry) => e.kind === "tool" && e.status === "done";
 
 export function turns(entries: Entry[]): Turn[] {
   const out: Turn[] = [];
+  const ids = new Set<string>();
   let cur: Turn | undefined;
   for (const e of entries) {
     if (e.kind === "user") {
-      cur = { id: e.turn_id ?? e.id, user: e, rows: [], live: false, waits: false, failed: false, steps: 0 };
+      // a conversation read back may hold two messages of one turn: each its own, keys unique
+      const id = e.turn_id && !ids.has(e.turn_id) ? e.turn_id : e.id;
+      ids.add(id);
+      cur = { id, user: e, rows: [], live: false, waits: false, failed: false, steps: 0 };
       out.push(cur);
       continue;
     }

@@ -47,3 +47,9 @@ test("entries before any message of yours form their own turn", () => {
   expect(ts.length).toBe(2);
   expect(ts[0].user).toBeUndefined();
 });
+
+test("two messages read back in one turn: two turns, each its own key", () => {
+  const ts = turns([e("e1", "user", "done", { turn_id: "t5" }), e("e2", "user", "done", { turn_id: "t5" }), e("e3", "agent", "done", { turn_id: "t5", text: "ok" })]);
+  expect(ts.map((t) => t.id)).toEqual(["t5", "e2"]);
+  expect(ts[1].result).toBe("ok");
+});
