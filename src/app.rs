@@ -1534,7 +1534,11 @@ impl App {
         let old = self.focused.borrow().clone();
         if let Some(old) = old.filter(|old| !Rc::ptr_eq(old, agent)) {
             old.focused.set(false);
+            old.chat().left();
             *self.previous.borrow_mut() = Some(old);
+        }
+        if !agent.focused.get() {
+            agent.chat().returned();
         }
         agent.focused.set(true);
         agent.resting.set(false);
@@ -1915,6 +1919,7 @@ impl App {
         self.leave_notes();
         if let Some(old) = self.focused.borrow_mut().take() {
             old.focused.set(false);
+            old.chat().left();
             *self.previous.borrow_mut() = Some(old);
         }
         self.chat_stack.set_visible_child_name("overview");
@@ -1942,6 +1947,7 @@ impl App {
             let had = self.focused.borrow_mut().take();
             if let Some(old) = &had {
                 old.focused.set(false);
+                old.chat().left();
                 *self.previous.borrow_mut() = Some(old.clone());
             }
             *self.agents_side.borrow_mut() = AgentsSide {
@@ -2047,6 +2053,7 @@ impl App {
     pub fn show_notes_history(self: &Rc<Self>) {
         if let Some(old) = self.focused.borrow_mut().take() {
             old.focused.set(false);
+            old.chat().left();
             *self.previous.borrow_mut() = Some(old);
         }
         self.chat_stack.set_visible_child_name("notes");
@@ -2170,6 +2177,7 @@ impl App {
         // No agent has the keyboard while the page shows (the last one is "previous").
         if let Some(old) = self.focused.borrow_mut().take() {
             old.focused.set(false);
+            old.chat().left();
             *self.previous.borrow_mut() = Some(old);
         }
         self.chat_stack.set_visible_child_name("project");

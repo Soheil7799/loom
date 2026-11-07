@@ -162,6 +162,12 @@ pub struct Chat {
     /// The turn going on: your message that opened it, its tool calls so far, and Claude's
     /// last message in it (a finished turn folds to one line of it when the next one opens).
     turn_start: RefCell<Option<gtk::Widget>>,
+    /// Your message pinned over the top while its turn is read, and where its bubble is.
+    pinned_ask: gtk::Button,
+    pinned_at: Cell<f64>,
+    /// What was last when you left this chat, and the "since you last looked" line put after it.
+    seen: RefCell<Option<glib::WeakRef<gtk::Widget>>>,
+    since: RefCell<Option<gtk::Widget>>,
     turn_steps: Cell<usize>,
     turn_result: RefCell<Option<Rc<Message>>>,
     stick: Rc<Cell<bool>>,
@@ -404,7 +410,12 @@ impl Chat {
         latest.set_valign(gtk::Align::End);
         latest.set_margin_bottom(14);
         latest.set_visible(false);
+        // Your message of the turn being read, over the top once its bubble is scrolled away.
+        let pinned_ask = gtk::Button::builder().valign(gtk::Align::Start).halign(gtk::Align::Center).visible(false).tooltip_text("Back to your message").build();
+        pinned_ask.add_css_class("pinned-ask");
+        pinned_ask.set_child(Some(&gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).lines(2).wrap(true).max_width_chars(90).build()));
         let scroll_area = gtk::Overlay::builder().child(&scroller).vexpand(true).build();
+        scroll_area.add_overlay(&pinned_ask);
         scroll_area.add_overlay(&find_bar);
         scroll_area.add_overlay(&latest);
         // The main conversation, or (aside) a subagent's, read-only, with the way back.
@@ -593,6 +604,10 @@ impl Chat {
             last: RefCell::new(Last::None),
             group: RefCell::default(),
             turn_start: RefCell::default(),
+            pinned_ask,
+            pinned_at: Cell::new(0.0),
+            seen: RefCell::default(),
+            since: RefCell::default(),
             turn_steps: Cell::new(0),
             turn_result: RefCell::default(),
             tools: RefCell::default(),
@@ -899,6 +914,19 @@ impl Chat {
     }
 
     fn wire(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.scroller.vadjustment().connect_value_changed(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.update_pinned();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.pinned_ask.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.stick.set(false);
+                chat.scroller.vadjustment().set_value((chat.pinned_at.get() - 12.0).max(0.0));
+            }
+        });
         // Follow the bottom unless the reader moved away from it. Who moved it: the reader
         // (wheel, touchpad, scrollbar, keys, touch) moves it up with the content's size
         // unchanged; loom (a run of tool calls folding, a chat hidden and shown again, the
@@ -1236,6 +1264,63 @@ impl Chat {
         } else if down {
             self.scroll_to_latest();
         }
+    }
+
+    /// The pinned message: the turn read now is the one whose message's top is above the
+    /// view; shown once that whole bubble is out of sight.
+    fn update_pinned(&self) {
+        let now = self.scroller.vadjustment().value();
+        let mut opener: Option<(gtk::Widget, f64)> = None;
+        let mut child = self.list.first_child();
+        while let Some(widget) = child {
+            if widget.has_css_class("msg-wrap-user")
+                && widget.is_visible()
+                && let Some(point) = widget.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0))
+            {
+                let y = f64::from(point.y());
+                if y >= now {
+                    break;
+                }
+                opener = Some((widget.clone(), y));
+            }
+            child = widget.next_sibling();
+        }
+        let shown = opener.filter(|(w, y)| y + f64::from(w.height()) < now).and_then(|(wrap, y)| {
+            let messages = self.messages.borrow();
+            let message = messages.iter().find(|m| m.kind == Kind::User && m.body.parent().as_ref() == Some(&wrap))?;
+            let text = message.text.borrow().split_whitespace().collect::<Vec<_>>().join(" ");
+            Some((text, y))
+        });
+        match shown {
+            Some((text, y)) if !text.is_empty() => {
+                if let Some(label) = self.pinned_ask.child().and_downcast::<gtk::Label>() {
+                    label.set_label(&text);
+                }
+                self.pinned_at.set(y);
+                self.pinned_ask.set_visible(true);
+            }
+            _ => self.pinned_ask.set_visible(false),
+        }
+    }
+
+    /// You leave this chat: what is last now is what you saw (the old line goes).
+    pub fn left(&self) {
+        if let Some(line) = self.since.take() {
+            self.list.remove(&line);
+        }
+        *self.seen.borrow_mut() = self.list.last_child().map(|w| w.downgrade());
+    }
+
+    /// You're back: a line after what you saw, if more came since (as the web page's).
+    pub fn returned(&self) {
+        let Some(seen) = self.seen.take().and_then(|w| w.upgrade()) else { return };
+        if seen.parent().as_ref() != Some(self.list.upcast_ref()) || self.list.last_child().as_ref() == Some(&seen) || self.since.borrow().is_some() {
+            return;
+        }
+        let line = gtk::Label::builder().label("Since you last looked").xalign(0.0).build();
+        line.add_css_class("since-looked");
+        self.list.insert_child_after(&line, Some(&seen));
+        *self.since.borrow_mut() = Some(line.upcast());
     }
 
     /// The next (`down`) or previous question waiting or failed tool call in the conversation.
@@ -2135,6 +2220,8 @@ impl Chat {
         self.group.take();
         self.turn_start.take();
         self.turn_result.take();
+        self.seen.take();
+        self.since.take();
         self.turn_steps.set(0);
         self.messages.borrow_mut().clear();
         self.tools.borrow_mut().clear();
