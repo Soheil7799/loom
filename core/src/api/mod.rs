@@ -14,6 +14,7 @@
 
 pub mod blobs;
 pub mod cli;
+pub mod remote;
 pub mod rpc;
 pub mod shared;
 pub mod spec;

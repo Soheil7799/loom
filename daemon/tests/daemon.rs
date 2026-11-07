@@ -493,3 +493,76 @@ fn page_principal(link: &str) -> String {
 unsafe extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
 }
+
+/// The window as loomd's client (`api::remote`): it follows a resource and does commands over
+/// the socket, and when loomd goes and comes back, it reconnects by itself and its copy starts
+/// over from a fresh snapshot.
+#[test]
+fn a_remote_connection_comes_back_after_loomd_does() {
+    use loom_core::api::{Mirror, remote::Remote};
+    use std::cell::RefCell;
+    use std::rc::Rc;
+    let (mut loomd, _c) = start("Remote", json!({ "idleMinutes": 30 }), &[], &[]);
+    let socket = loom_core::api::socket::socket_path(&loomd.app_id);
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+    let local = tokio::task::LocalSet::new();
+    local.block_on(&runtime, async {
+        loom_core::rt::set_host(
+            |future| {
+                tokio::task::spawn_local(future);
+            },
+            |after, f| {
+                tokio::task::spawn_local(async move {
+                    tokio::time::sleep(after).await;
+                    f();
+                });
+            },
+        );
+        let remote = Remote::connect(socket, "test window");
+        let states: Rc<RefCell<Vec<bool>>> = Rc::default();
+        let said = states.clone();
+        remote.on_state(move |up| said.borrow_mut().push(up));
+        let sub = remote.subscribe("settings", || {});
+        let mirror = RefCell::new(Mirror::default());
+        settle(&sub, &mirror, Duration::from_secs(10), "the snapshot", |m| m.synced && m.items.len() == 1).await;
+        // The test isn't loom's window: the CLI's rights.
+        assert_eq!(remote.hello()["principal"]["kind"], "cli");
+        let answer: Rc<RefCell<Option<bool>>> = Rc::default();
+        let got = answer.clone();
+        remote.command_later("c1", "set_settings", json!({ "changes": { "idle_minutes": 31 } }), move |r| *got.borrow_mut() = Some(r.is_ok()));
+        settle(&sub, &mirror, Duration::from_secs(10), "the change", |m| m.items[0]["idle_minutes"] == 31).await;
+        assert_eq!(*answer.borrow(), Some(true));
+
+        // loomd goes and comes back: the connection follows, the copy starts over.
+        let _ = loomd.child.kill();
+        let _ = loomd.child.wait();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while remote.connected() {
+            assert!(Instant::now() < deadline, "never noticed loomd went");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let failed: Rc<RefCell<Option<bool>>> = Rc::default();
+        let got = failed.clone();
+        remote.command_later("c2", "set_settings", json!({ "changes": { "idle_minutes": 32 } }), move |r| *got.borrow_mut() = Some(r.is_err()));
+        assert_eq!(*failed.borrow(), Some(true), "no loomd: an error at once");
+        loomd.child = spawn(&loomd.app_id, &loomd.root, &[], &[]);
+        settle(&sub, &mirror, Duration::from_secs(20), "a fresh snapshot after reconnecting", |m| remote.connected() && m.synced && m.items.len() == 1).await;
+        assert_eq!(mirror.borrow().items[0]["idle_minutes"], 31, "what loomd saved");
+        assert_eq!(*states.borrow(), vec![true, false, true]);
+    });
+}
+
+/// Applies what came to `sub` until `done` holds (or fails after `within`).
+async fn settle(sub: &loom_core::api::remote::RemoteSub, mirror: &std::cell::RefCell<loom_core::api::Mirror>, within: Duration, what: &str, done: impl Fn(&loom_core::api::Mirror) -> bool) {
+    let deadline = Instant::now() + within;
+    loop {
+        for m in sub.drain() {
+            mirror.borrow_mut().apply(&m);
+        }
+        if done(&mirror.borrow()) {
+            return;
+        }
+        assert!(Instant::now() < deadline, "never: {what}");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+}
