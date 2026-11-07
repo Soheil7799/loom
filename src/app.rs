@@ -152,6 +152,8 @@ pub struct App {
     /// loomd's agent shown beside the one in view (Ctrl+\\), and the one in view before.
     pinned_remote: Cell<Option<u32>>,
     previous_remote: Cell<Option<u32>>,
+    /// A copy was asked of loomd (rewind, fork): the next new agent it lists is shown.
+    expect_copy: Cell<bool>,
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -567,6 +569,7 @@ impl App {
             closed_feed: RefCell::default(),
             pinned_remote: Cell::new(None),
             previous_remote: Cell::new(None),
+            expect_copy: Cell::new(false),
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
@@ -1392,8 +1395,8 @@ impl App {
             act("Copy this conversation (fork)", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.fork(None, String::new());
-                } else {
-                    a.remote_do("fork", json!({}));
+                } else if a.remote_do("fork", json!({})) {
+                    a.expect_copy.set(true);
                 }
             }),
             act("Clear: a fresh conversation here (/clear)", "", |a| {
@@ -1784,6 +1787,12 @@ impl App {
         let agent = self.remote_agents.borrow().get(&id).cloned();
         agent.unwrap_or_else(|| {
             let agent = crate::remote_agent::RemoteAgent::new(id);
+            let weak = self.me.borrow().clone();
+            *agent.on_copy.borrow_mut() = Some(Rc::new(move || {
+                if let Some(app) = weak.upgrade() {
+                    app.expect_copy.set(true);
+                }
+            }));
             self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
             self.remote_agents.borrow_mut().insert(id, agent.clone());
             agent
@@ -4106,8 +4115,9 @@ impl App {
     /// The sidebar drawn from its copies of `agents` and `projects`.
     fn draw_sidebar(self: &Rc<Self>) {
         self.sidebar_due.set(false);
-        // loomd's agents whose status changed (the window as its client)
+        // loomd's agents whose status changed (the window as its client), and a copy asked for
         let mut changed = Vec::new();
+        let mut copy = None;
         let (agents, projects): (Vec<SideAgent>, Vec<SideProject>) = {
             let feeds = self.sidebar_feeds.borrow();
             let Some((agents, projects)) = feeds.as_ref() else { return };
@@ -4120,8 +4130,11 @@ impl App {
                 }
                 if crate::conn::is_remote() {
                     let status = item["status"].as_str().unwrap_or_default().to_owned();
-                    if self.remote_status.borrow_mut().insert(id, status.clone()).is_some_and(|before| before != status) {
-                        changed.push((id, status, item.clone()));
+                    match self.remote_status.borrow_mut().insert(id, status.clone()) {
+                        Some(before) if before != status => changed.push((id, status, item.clone())),
+                        // New in the list: the copy asked for, if one was.
+                        None if self.expect_copy.replace(false) => copy = Some(id),
+                        _ => {}
                     }
                 }
             }
@@ -4133,6 +4146,9 @@ impl App {
         self.drop_closed_remote();
         if crate::conn::is_remote() {
             self.refresh_inbox();
+        }
+        if let Some(id) = copy {
+            self.focus_remote(id);
         }
         self.refresh_title();
         if self.notes_mode.get() {

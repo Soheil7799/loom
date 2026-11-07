@@ -196,6 +196,8 @@ pub struct Chat {
     pub on_rewind: Callback<(Option<String>, bool, String)>,
     /// "Rewind to here, files too": the same, Claude's file changes from there on undone.
     pub on_rewind_files: Callback<(Option<String>, bool, String)>,
+    /// Either, on a message drawn from entries (loomd's agent): its entry, and files too.
+    pub on_rewind_entry: Callback<(String, bool)>,
     /// MCP servers: ("status" | "toggle" | "reconnect", server, on).
     pub on_mcp: Callback<(String, String, bool)>,
     /// What was typed, and the images attached (PNG).
@@ -254,6 +256,8 @@ struct Message {
     scheduled: Cell<bool>,
     /// The agent's id for it (to fork the conversation from here).
     id: RefCell<Option<String>>,
+    /// Its entry in the conversation, when drawn from entries (loomd's: rewound by it).
+    entry: RefCell<Option<String>>,
 }
 
 struct ToolCard {
@@ -622,6 +626,7 @@ impl Chat {
             cwd: RefCell::default(),
             project_files: RefCell::default(),
             on_rewind_files: RefCell::default(),
+            on_rewind_entry: RefCell::default(),
             on_mcp: RefCell::default(),
             mcp_box: RefCell::default(),
             offered: RefCell::default(),
@@ -2414,6 +2419,7 @@ impl Chat {
                 };
                 // Nothing streams onto it but its own entry.
                 *self.last.borrow_mut() = Last::None;
+                *message.entry.borrow_mut() = Some(id.to_owned());
                 self.entries.borrow_mut().insert(id.to_owned(), message.clone());
                 message
             }
@@ -2696,7 +2702,7 @@ impl Chat {
         expander.add_css_class("summary");
         expander.set_child(Some(&body));
         self.list.append(&expander);
-        Rc::new(Message { kind: Kind::Agent, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() })
+        Rc::new(Message { kind: Kind::Agent, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() })
     }
 
     fn message(&self, kind: Kind) -> Rc<Message> {
@@ -2724,7 +2730,7 @@ impl Chat {
                 copy.set_tooltip_text(Some("Copy the message (Markdown)"));
                 wrap.add_overlay(&copy);
                 self.list.append(&wrap);
-                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() });
                 *self.turn_result.borrow_mut() = Some(message.clone());
                 message_menu(&wrap, &message, &self.input, vec![("Copy the whole message", copy.clone())]);
                 let weak = Rc::downgrade(&message);
@@ -2762,7 +2768,7 @@ impl Chat {
                 wrap.add_overlay(&actions);
                 self.list.append(&wrap);
                 *self.turn_start.borrow_mut() = Some(wrap.clone().upcast());
-                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() });
                 message_menu(
                     &wrap,
                     &message,
@@ -2775,10 +2781,16 @@ impl Chat {
                         button.clipboard().set_text(message.text.borrow().trim());
                     }
                 });
-                for (button, callback) in [(&rewind, &self.on_rewind), (&rewind_files, &self.on_rewind_files)] {
-                let (weak, callback) = (Rc::downgrade(&message), callback.borrow().clone());
+                for (button, callback, files) in [(&rewind, &self.on_rewind, false), (&rewind_files, &self.on_rewind_files, true)] {
+                let (weak, callback, by_entry) = (Rc::downgrade(&message), callback.borrow().clone(), self.on_rewind_entry.borrow().clone());
                 let messages = Rc::downgrade(&self.messages);
                 button.connect_clicked(move |_| {
+                    // Drawn from entries: rewound by its entry.
+                    if let (Some(message), Some(by_entry)) = (weak.upgrade(), &by_entry)
+                        && let Some(entry) = message.entry.borrow().clone()
+                    {
+                        return by_entry((entry, files));
+                    }
                     let (Some(message), Some(callback), Some(messages)) = (weak.upgrade(), callback.clone(), messages.upgrade()) else { return };
                     let messages = messages.borrow();
                     let position = messages.iter().position(|m| Rc::ptr_eq(m, &message)).unwrap_or(0);
@@ -2807,7 +2819,7 @@ impl Chat {
                 self.list.append(&expander);
             }
         }
-        Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() })
+        Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() })
     }
 
     /// A block of its own in the conversation, after what is there (a workflow's card).

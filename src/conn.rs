@@ -83,13 +83,18 @@ pub fn command(who: &str, method: &str, params: Value) {
 /// Does command `method` as the window, then `then` with what it answered (a refusal is
 /// logged under `who` too).
 pub fn command_then(who: &str, method: &str, params: Value, then: impl FnOnce(Option<Value>) + 'static) {
+    command_result(who, method, params, move |result| then(result.ok()));
+}
+
+/// Does command `method` as the window, then `then` with its answer or why it was refused
+/// (logged under `who` too).
+pub fn command_result(who: &str, method: &str, params: Value, then: impl FnOnce(Result<Value, loom_core::api::Error>) + 'static) {
     let (who, said) = (who.to_owned(), method.to_owned());
-    let reply = move |result: Result<Value, loom_core::api::Error>| match result {
-        Ok(value) => then(Some(value)),
-        Err(err) => {
+    let reply = move |result: Result<Value, loom_core::api::Error>| {
+        if let Err(err) = &result {
             loom_core::log::debug!(who, "{said} refused: {err}");
-            then(None);
         }
+        then(result);
     };
     match remote() {
         Some(remote) => remote.command_later(&loom_core::rt::uuid(), method, params, reply),

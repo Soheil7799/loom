@@ -3,8 +3,7 @@
 //! `crew/<id>`, `mcp`), its buttons and keys sent back as commands. The window's own agents
 //! (the core in this process) are drawn by `chat_view` instead.
 //!
-//! Not yet: rewinding from a message (the chat says the agent's message before it; the API
-//! takes yours), a subagent's own conversation, workflows' cards, tool cards' buttons.
+//! Not yet: a subagent's own conversation, workflows' cards, tool cards' buttons.
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -31,13 +30,17 @@ pub struct RemoteAgent {
     since: Cell<Option<Instant>>,
     /// What its input held last as `inputs` gave it (a new draft goes in an empty input).
     draft: RefCell<String>,
+    /// Told when it asked loomd for a copy of itself (rewound: the copy is shown once listed).
+    pub on_copy: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 impl RemoteAgent {
     pub fn new(id: u32) -> Rc<RemoteAgent> {
         let chat = Chat::new();
         chat.draw_from_entries(id);
-        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default() });
+        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default() });
+        // Its buttons first: the messages drawn next take their callbacks as they are made.
+        agent.wire();
         let mut follows = Vec::new();
         follows.extend(Follow::start(&loom_core::agent::conversation(id), Of::Conversation, &agent.chat));
         follows.extend(Follow::start("usage", Of::Usage(id.to_string()), &agent.chat));
@@ -56,7 +59,6 @@ impl RemoteAgent {
         for resource in ["inputs".to_owned(), format!("plan/{id}"), format!("crew/{id}"), "mcp".to_owned()] {
             agent.feed_changed(&resource);
         }
-        agent.wire();
         agent
     }
 
@@ -99,9 +101,15 @@ impl RemoteAgent {
         }
     }
 
+    /// Command `method` for it; a refusal is said in its chat.
     fn send(&self, method: &str, mut params: Value) {
         params["agent"] = Value::String(self.id.to_string());
-        crate::conn::command(&format!("agent {}", self.id), method, params);
+        let chat = Rc::downgrade(&self.chat);
+        crate::conn::command_result(&format!("agent {}", self.id), method, params, move |result| {
+            if let (Err(err), Some(chat)) = (result, chat.upgrade()) {
+                chat.notice(&err.to_string(), "error");
+            }
+        });
     }
 
     /// Its `agents` item, drawn: the header (title, where, state, mode, options) and whether
@@ -199,6 +207,16 @@ impl RemoteAgent {
             if let Some(agent) = weak.upgrade() {
                 let images: Vec<String> = images.iter().map(|b| loom_core::api::wire::base64(b)).collect();
                 agent.send("send", json!({ "text": text, "images": images }));
+            }
+        }));
+        let weak = Rc::downgrade(self);
+        *chat.on_rewind_entry.borrow_mut() = Some(Rc::new(move |(entry, files): (String, bool)| {
+            if let Some(agent) = weak.upgrade() {
+                agent.send("rewind", json!({ "entry": entry, "files": files }));
+                let told = agent.on_copy.borrow().clone();
+                if let Some(told) = told {
+                    told();
+                }
             }
         }));
         let weak = Rc::downgrade(self);
