@@ -10,14 +10,13 @@
   import { stateOf } from "./lib/state";
   import Entry_ from "./Entry.svelte";
   import Tube from "./Tube.svelte";
-  import Changes from "./Changes.svelte";
   import Picture from "./Picture.svelte";
   import Plan from "./Plan.svelte";
   import Terminal from "./Terminal.svelte";
   import { prepare } from "./lib/pictures";
   import Icon from "./Icon.svelte";
 
-  let { agent, jobs = [], showJob, expectCopy, active = true, insert = $bindable(null) }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; expectCopy?: (on: boolean) => void; active?: boolean; insert?: string | null } = $props();
+  let { agent, jobs = [], showJob, showChanges, expectCopy, active = true, insert = $bindable(null), note = $bindable(null) }: { agent: AgentsItem; jobs?: JobsItem[]; showJob?: (id: string) => void; showChanges?: () => void; expectCopy?: (on: boolean) => void; active?: boolean; insert?: string | null; note?: { file: string; line: string; note: string } | null } = $props();
   // text put into its box from elsewhere (a file mentioned from Files), taken once
   $effect(() => { if (insert && active) { const add = insert; insert = null; text = `${untrack(() => text)}${untrack(() => text) && !untrack(() => text).endsWith(" ") ? " " : ""}${add}`; } });
   let entries = $state.raw<Entry[]>([]);
@@ -30,11 +29,12 @@
   let box: HTMLElement | undefined = $state();
   let column: HTMLElement | undefined = $state();
   let naming = $state<string | null>(null);
-  let showChanges = $state(false);
   // a job's terminal kept beside the chat (its chip, again to put it away)
   let pinnedJob = $state<string | null>(null);
   // Notes on lines of its changes, sent with the next message
   let comments = $state.raw<{ file: string; line: string; note: string }[]>([]);
+  // a note on a line of its changes, from the right panel
+  $effect(() => { if (note && active) { const add = note; note = null; comments = [...untrack(() => comments), add]; } });
 
   $effect(() => follow(`conversation/${agent.id}`, (f) => {
     entries = [...f.items] as Entry[];
@@ -333,7 +333,7 @@
 
 <svelte:window onkeydown={jump} onclick={() => (menuOpen = false)} />
 
-<div class="convo" class:aside={showChanges}>
+<div class="convo">
 <section class="centre" aria-label={agent.title || "Conversation"}>
   <header class="header">
     <i class="st {st.shape}" role="img" aria-label={st.word}></i>
@@ -359,7 +359,7 @@
     {#if limits.length && agent.status !== "notes"}<span class="ctx" title={limits.map((l) => `${limitName(l.kind)}: ${pct(l.utilization)}% used${l.resets_at ? `, resets ${new Date(l.resets_at).toLocaleString()}` : ""}`).join("\n")}>{limits.slice(0, 2).map((l) => `${limitName(l.kind)} ${pct(l.utilization)}%`).join(" · ")}</span>{/if}
     {#if mcpBad.length}<span class="ctx warnmcp" title={mcpBad.map((m) => `${m.name}: ${m.status}${m.error ? ` (${m.error})` : ""}`).join("\n")}>⚠ {mcpBad.length === 1 ? mcpBad[0].name : `${mcpBad.length} tool servers`}</span>{/if}
     {#if cost?.amount !== undefined}<span class="ctx">{cost.currency === "USD" || !cost.currency ? "$" : cost.currency + " "}{cost.amount.toFixed(2)}</span>{/if}
-    {#if agent.edited}<button class="chip" class:on={showChanges} aria-pressed={showChanges} title="The files it changed" onclick={() => (showChanges = !showChanges)}><Icon name="diff" size={13} /> {agent.edited}</button>{/if}
+    {#if agent.edited}<button class="chip" title="The files it changed" onclick={() => showChanges?.()}><Icon name="diff" size={13} /> {agent.edited}</button>{/if}
     {#if agent.status !== "notes"}
       {#if agent.awake}<span class="awake" title="Kept awake: never suspended while idle"><Icon name="coffee" size={13} /></span>{/if}
       <div class="inbox-wrap amenu">
@@ -461,10 +461,10 @@
   <div class="input-box">
     {#if problem}<p class="error">{problem}</p>{/if}
     {#if agent.status !== "notes"}<Plan agent={agent.id} />{/if}
-    {#if agent.edited && !showChanges && agent.status !== "notes"}
+    {#if agent.edited && agent.status !== "notes"}
       <div class="changes-bar">
         <Icon name="diff" size={13} /> {agent.edited === 1 ? "1 file" : `${agent.edited} files`} changed{#if lastTurnFiles.length}{" · "}{lastTurnFiles.length} in the last turn{/if}
-        <button class="link" onclick={() => (showChanges = true)}>Review</button>
+        <button class="link" onclick={() => showChanges?.()}>Review</button>
       </div>
     {/if}
     {#if comments.length}
@@ -523,5 +523,5 @@
     </div>
   </div>
 </section>
-{#if showChanges}<Changes agent={agent.id} edited={agent.edited} turns={(agent.last_turn as { turns?: number } | undefined)?.turns ?? 0} lastTurn={lastTurnFiles} comment={(file, line, note) => (comments = [...comments, { file, line, note }])} close={() => (showChanges = false)} />{/if}
+
 </div>

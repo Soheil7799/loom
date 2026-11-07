@@ -9,7 +9,9 @@
   import Notes from "./Notes.svelte";
   import Settings from "./Settings.svelte";
   import Overview from "./Overview.svelte";
-  import Files from "./Files.svelte";
+  import Panel from "./Panel.svelte";
+  import Editor from "./Editor.svelte";
+  import Finder from "./Finder.svelte";
   import Project from "./Project.svelte";
   import Palette, { type Action } from "./Palette.svelte";
   import Scratch from "./Scratch.svelte";
@@ -24,10 +26,15 @@
   let jobs = $state.raw<JobsItem[]>([]);
   let job = $state<string | null>(null);
   let chat = $state<{ agent: string; title: string } | null>(null);
-  let filesProject = $state("");
-  let findAsked = $state(false);
+  // The right panel (Ctrl+E) and its tab; the file open beside the chat; Ctrl+P's finder
+  let panel = $state(false);
+  let panelTab = $state<"agent" | "project" | "changes" | "graph" | "notes">("agent");
+  let openPath = $state<string | null>(null);
+  let finding = $state(false);
   // text put into the open conversation's box from elsewhere (a file mentioned from Files)
   let insert = $state<string | null>(null);
+  // a note on a line of the agent's changes, for its next message
+  let note = $state<{ file: string; line: string; note: string } | null>(null);
   let projectPage = $state<string | null>(null);
   let palette = $state(false);
   let about = $state(false);
@@ -62,7 +69,9 @@
   let runAsked = $state(false);
 
   const pick = (id: string) => { if (id !== selected) previous = selected; selected = id; view = "chat"; };
-  const files = (find = false) => { if (current) filesProject = current.project_id; view = "files"; if (find) (findAsked = true); };
+  const togglePanel = () => (panel = !panel);
+  const find = () => { if (current || projects.length) finding = true; };
+  const mention = (rel: string) => { if (current) { insert = `@${rel} `; view = "chat"; } };
   const newestJob = () => { const j = jobs.at(-1); if (j) { job = j.id; view = "jobs"; } };
   const nextMode = () => {
     const modes = (current?.modes ?? []) as string[];
@@ -82,8 +91,8 @@
     { name: "Show the previous agent beside", keys: "Ctrl+\\", when: has, run: () => toggleBeside() },
     { name: "Swap the two agents", keys: "Alt+←", when: () => !!beside, run: () => swap() },
     { name: "Toggle the sidebar", keys: "Ctrl+B", run: () => (noSidebar = !noSidebar) },
-    { name: "Files and git", keys: "Ctrl+E", run: () => files() },
-    { name: "Find a file in the project", keys: "Ctrl+P", run: () => files(true) },
+    { name: "Files and git: the right panel", keys: "Ctrl+E", run: togglePanel },
+    { name: "Find a file in the project", keys: "Ctrl+P", run: find },
     { name: "Scratch terminal", keys: "Ctrl+`", run: () => (scratch = !scratch) },
     { name: "Run a command in the tray…", keys: "Ctrl+J", run: () => { view = "jobs"; (runAsked = true); } },
     { name: "Peek the newest job", keys: "Ctrl+Shift+J", run: newestJob },
@@ -118,8 +127,8 @@
     const take = (f: () => void) => { e.preventDefault(); f(); };
     if (ctrl && !e.altKey && !e.shiftKey) {
       if (k === "k" || k === "/") return take(() => (palette = !palette));
-      if (k === "e") return take(() => (view === "files" ? (view = "chat") : files()));
-      if (k === "p") return take(() => files(true));
+      if (k === "e") return take(togglePanel);
+      if (k === "p") return take(find);
       if (k === "`") return take(() => (scratch = !scratch));
       if (k === "j") return take(() => { view = "jobs"; (runAsked = true); });
       if (k === "b") return take(() => (noSidebar = !noSidebar));
@@ -219,15 +228,14 @@
     <p>This page isn't connected to loom. Open a new link from loom: <code>loom api web --open</code>, or <code>loomd --web</code>.</p>
   </main>
 {:else}
-  <div class="app" class:no-sidebar={noSidebar}>
-    {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting openProject={(id) => { projectPage = id; view = "project"; }} show={(v) => { if (v === "files" && current) filesProject = current.project_id; view = v; }} {act} />{/if}
+  <div class="app" class:no-sidebar={noSidebar} class:with-panel={panel}>
+    {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting openProject={(id) => { projectPage = id; view = "project"; }} show={(v) => (v === "files" ? togglePanel() : (view = v))} {act} />{/if}
+    <div class="middle">
     <main class="main" class:with-scratch={scratch && !!current}>
       {#if conn.state !== "open"}<p class="banner">{conn.state === "closed" ? "loom isn't answering: trying again…" : "Connecting to loom…"}</p>{/if}
       {#if problem}<p class="banner error">{problem}</p>{/if}
       {#if view === "project" && projects.find((p) => p.id === projectPage)}
         <Project project={projects.find((p) => p.id === projectPage)!} {act} />
-      {:else if view === "files"}
-        <Files {projects} bind:project={filesProject} bind:findAsked mention={(path) => { if (current) { insert = `@${path} `; view = "chat"; } }} />
       {:else if view === "overview"}
         <Overview {agents} {pick} />
       {:else if view === "settings"}
@@ -240,7 +248,7 @@
         <Jobs {jobs} {projects} bind:open={job} bind:runAsked />
       {:else if current}
         <div class="pair" class:two={!!besideAgent}>
-          {#key current.id}<Conversation agent={current} active bind:insert jobs={jobs.filter((j) => j.project_id === current.project_id && j.name !== "scratch")} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
+          {#key current.id}<Conversation agent={current} active bind:insert bind:note showChanges={() => { panel = true; panelTab = "agent"; }} jobs={jobs.filter((j) => j.project_id === current.project_id && j.name !== "scratch")} showJob={(id) => { job = id; view = "jobs"; }} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}
           {#if besideAgent}{#key besideAgent.id}<Conversation agent={besideAgent} active={false} expectCopy={(on) => (copyAfter = on ? Date.now() : 0)} />{/key}{/if}
         </div>
       {:else}
@@ -248,8 +256,12 @@
       {/if}
       {#if scratch && current}<Scratch project={current.project_id} {jobs} close={() => (scratch = false)} />{/if}
     </main>
+    <Editor bind:path={openPath} project={current?.project_id ?? ""} {mention} />
+    </div>
+    {#if panel}<Panel agent={current} {projects} bind:tab={panelTab} open={(p) => (openPath = p)} {mention} comment={(file, line, said) => (note = { file, line, note: said })} />{/if}
   </div>
 {/if}
+{#if finding}<Finder project={current?.project_id ?? projects[0]?.id ?? ""} pick={(p) => (openPath = p)} close={() => (finding = false)} />{/if}
 {#if palette}<Palette {actions} close={() => (palette = false)} />{/if}
 {#if about}
   <div class="scrim" role="presentation" onclick={() => (about = false)}></div>
