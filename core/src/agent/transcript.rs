@@ -1152,7 +1152,7 @@ impl RecordedWorkflow {
         };
         let members: Vec<Value> = p.members.iter().map(|m| json!({ "label": m.label, "phase": m.phase, "done": m.result.is_some() })).collect();
         let (done, all) = p.counts();
-        store.upsert(json!({ "id": self.inner.tool_id(), "name": self.launch.name, "summary": self.launch.summary, "running": !p.done(), "state": state, "done": done, "agents": all, "members": members }));
+        store.upsert(json!({ "id": self.inner.tool_id(), "name": self.launch.name, "summary": self.launch.summary, "task": self.launch.task, "dir": self.launch.dir.to_string_lossy(), "running": !p.done(), "state": state, "done": done, "agents": all, "members": members }));
     }
 }
 

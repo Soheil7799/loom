@@ -981,6 +981,14 @@
           "members": {
             "type": "array",
             "description": "{label, phase, done}"
+          },
+          "task": {
+            "type": "string",
+            "description": "its task's id"
+          },
+          "dir": {
+            "type": "string",
+            "description": "the folder of its agents' transcripts (on loomd's computer)"
           }
         },
         "required": [
@@ -990,7 +998,9 @@
           "state",
           "done",
           "agents",
-          "members"
+          "members",
+          "task",
+          "dir"
         ]
       }
     },

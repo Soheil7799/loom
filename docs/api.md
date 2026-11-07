@@ -275,6 +275,8 @@ Who: window, cli, bridge.
 | `done` | integer | agents done |
 | `agents` | integer | agents in all |
 | `members` | array | {label, phase, done} |
+| `task` | string | its task's id |
+| `dir` | string | the folder of its agents' transcripts (on loomd's computer) |
 
 ### `mcp`
 

@@ -3,7 +3,7 @@
 //! `crew/<id>`, `mcp`), its buttons and keys sent back as commands. The window's own agents
 //! (the core in this process) are drawn by `chat_view` instead.
 //!
-//! Not yet: a subagent's own conversation, workflows' cards, tool cards' buttons.
+//! Not yet: a subagent's own conversation (and its card's "open").
 
 use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
@@ -32,13 +32,26 @@ pub struct RemoteAgent {
     draft: RefCell<String>,
     /// Told when it asked loomd for a copy of itself (rewound: the copy is shown once listed).
     pub on_copy: RefCell<Option<Rc<dyn Fn()>>>,
+    /// Its workflows' cards, by tool call, each with whether loomd says it still runs.
+    runs: RefCell<Vec<WorkflowCard>>,
+    me: RefCell<Weak<RemoteAgent>>,
+}
+
+/// A workflow's card: its tool call, the card, and whether loomd says it still runs.
+type WorkflowCard = (String, Rc<crate::workflow::Run>, Rc<Cell<bool>>);
+
+/// The resources of agent `id`'s that it follows besides its conversation and usage, in the
+/// order `feed_changed` knows them.
+fn resources(id: u32) -> [String; 5] {
+    ["inputs".to_owned(), format!("plan/{id}"), format!("crew/{id}"), "mcp".to_owned(), format!("workflows/{id}")]
 }
 
 impl RemoteAgent {
     pub fn new(id: u32) -> Rc<RemoteAgent> {
         let chat = Chat::new();
         chat.draw_from_entries(id);
-        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default() });
+        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default(), runs: RefCell::default(), me: RefCell::default() });
+        *agent.me.borrow_mut() = Rc::downgrade(&agent);
         // Its buttons first: the messages drawn next take their callbacks as they are made.
         agent.wire();
         let mut follows = Vec::new();
@@ -46,7 +59,7 @@ impl RemoteAgent {
         follows.extend(Follow::start("usage", Of::Usage(id.to_string()), &agent.chat));
         *agent.follows.borrow_mut() = follows;
         let mut feeds = Vec::new();
-        for resource in ["inputs".to_owned(), format!("plan/{id}"), format!("crew/{id}"), "mcp".to_owned()] {
+        for resource in resources(id) {
             let weak = Rc::downgrade(&agent);
             let name = resource.clone();
             feeds.extend(Feed::new(&resource, move || {
@@ -56,7 +69,7 @@ impl RemoteAgent {
             }));
         }
         *agent.feeds.borrow_mut() = feeds;
-        for resource in ["inputs".to_owned(), format!("plan/{id}"), format!("crew/{id}"), "mcp".to_owned()] {
+        for resource in resources(id) {
             agent.feed_changed(&resource);
         }
         agent
@@ -144,7 +157,7 @@ impl RemoteAgent {
     fn feed_changed(&self, name: &str) {
         let feeds = self.feeds.borrow();
         let id = self.id.to_string();
-        let index = ["inputs".to_owned(), format!("plan/{id}"), format!("crew/{id}"), "mcp".to_owned()].iter().position(|r| r == name);
+        let index = resources(self.id).iter().position(|r| r == name);
         let Some(feed) = index.and_then(|i| feeds.get(i)) else { return };
         feed.update();
         let items = feed.items();
@@ -180,12 +193,87 @@ impl RemoteAgent {
                     });
                 }
             }
+            Some(4) => self.workflows_changed(&items),
             _ => {
                 let mine = items.iter().find(|i| i["id"] == id.as_str());
                 let servers = mine.map(|m| m["servers"].as_array().into_iter().flatten().map(|s| (s["name"].as_str().unwrap_or_default().to_owned(), s["status"].as_str().unwrap_or_default().to_owned(), s["error"].as_str().map(str::to_owned))).collect());
                 self.chat.show_mcp(servers);
             }
         }
+    }
+
+    /// Its `workflows`: each a card as the window's own agents' (read from the workflow's
+    /// files, on this computer), Stop as stop_workflow; the note under the conversation.
+    fn workflows_changed(&self, items: &[Value]) {
+        for item in items {
+            let Some(tool_id) = item["id"].as_str() else { continue };
+            let running = item["running"] == true;
+            let known = self.runs.borrow().iter().find(|(id, _, _)| id == tool_id).map(|(_, run, alive)| (run.clone(), alive.clone()));
+            let run = match known {
+                Some((run, alive)) => {
+                    alive.set(running);
+                    run
+                }
+                None => {
+                    let alive = Rc::new(Cell::new(running));
+                    let launch = crate::workflow::Launch {
+                        task: item["task"].as_str().unwrap_or_default().to_owned(),
+                        dir: std::path::PathBuf::from(item["dir"].as_str().unwrap_or_default()),
+                        name: item["name"].as_str().unwrap_or_default().to_owned(),
+                        summary: item["summary"].as_str().unwrap_or_default().to_owned(),
+                    };
+                    let still = alive.clone();
+                    let run = crate::workflow::Run::new(tool_id, launch, running, move || still.get());
+                    let chat = Rc::downgrade(&self.chat);
+                    *run.on_open.borrow_mut() = Some(Rc::new(move |path: std::path::PathBuf, label: String| {
+                        let Some(chat) = chat.upgrade() else { return };
+                        let viewer = Chat::viewer();
+                        viewer.set_show_thinking(loom_core::settings::get().show_thinking);
+                        crate::workflow::fill_transcript(&viewer, &path);
+                        chat.show_aside(viewer.root.upcast_ref(), &format!("Workflow agent · {label}"));
+                    }));
+                    let (me, workflow) = (self.me.borrow().clone(), tool_id.to_owned());
+                    *run.on_stop.borrow_mut() = Some(Rc::new(move || {
+                        if let Some(agent) = me.upgrade() {
+                            agent.send("stop_workflow", json!({ "workflow": workflow }));
+                        }
+                    }));
+                    let me = self.me.borrow().clone();
+                    *run.on_changed.borrow_mut() = Some(Rc::new(move || {
+                        if let Some(agent) = me.upgrade() {
+                            agent.workflow_note();
+                        }
+                    }));
+                    self.chat.block(&run.root);
+                    self.runs.borrow_mut().push((tool_id.to_owned(), run.clone(), alive));
+                    run
+                }
+            };
+            // Over, as loomd says (its files may not say so yet).
+            if !running && !run.done() {
+                match item["state"].as_str() {
+                    Some("stopped") => run.stopped(),
+                    Some("failed") => run.ended("failed", None),
+                    _ => run.ended("completed", None),
+                }
+            }
+        }
+        self.workflow_note();
+    }
+
+    /// "Workflow x: 12 of 30 agents done", where "Working…" is between turns, while any runs.
+    fn workflow_note(&self) {
+        let runs = self.runs.borrow();
+        let live: Vec<&Rc<crate::workflow::Run>> = runs.iter().filter(|(_, run, _)| !run.done()).map(|(_, run, _)| run).collect();
+        let (done, all) = live.iter().fold((0, 0), |(d, a), run| {
+            let (rd, ra) = run.counts();
+            (d + rd, a + ra)
+        });
+        self.chat.set_workflow_note(match live.as_slice() {
+            [] => None,
+            [one] => Some(format!("Workflow {}: {done} of {all} agents done", one.name)),
+            more => Some(format!("{} workflows: {done} of {all} agents done", more.len())),
+        });
     }
 
     /// The chat's buttons and keys, as commands to loomd.

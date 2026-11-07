@@ -52,7 +52,6 @@ use std::time::Duration;
 
 use gtk::{glib, prelude::*};
 
-use crate::chat_view::AgentChat;
 use crate::app::App;
 
 pub fn watch(app: &Rc<App>) {
@@ -83,7 +82,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "prompt" => app.chat_in_view().ok_or("no agent")?.send_text(&argument.replace("\\n", "\n")),
         // A message sent without the input (a "/command" typed there opens its popup, which an
         // unseen test window can hang on).
-        "submit" => app.active_agent().ok_or("no agent")?.chat().submit_direct(argument),
+        "submit" => app.chat_in_view().ok_or("no agent")?.submit_direct(argument),
         // loom's Claude folder changed (as when an item is switched in Settings).
         "pluginchanged" => crate::plugin::changed(),
         // Ctrl+Enter: what waits goes into the running turn.
@@ -100,12 +99,12 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "attach" => {
             let texture = gtk::gdk::Texture::from_filename(argument).map_err(|e| e.to_string())?;
-            app.active_agent().ok_or("no agent")?.chat().attach(&texture);
+            app.chat_in_view().ok_or("no agent")?.attach(&texture);
         }
-        "usage" => print_labels(&app.active_agent().ok_or("no agent")?.chat().usage_content(argument != "read")),
+        "usage" => print_labels(&app.chat_in_view().ok_or("no agent")?.usage_content(argument != "read")),
         // Two subagents at work (for the strip over the input).
         "fakecrew" => {
-            let chat = app.active_agent().ok_or("no agent")?.chat().clone();
+            let chat = app.chat_in_view().ok_or("no agent")?.clone();
             chat.set_working(Some(std::time::Instant::now()));
             for (id, name, step) in [("t1", "Convert batch 1", "Edit HandoverPage.tsx"), ("t2", "Convert batch 2", "grep -rn \"آزاد\" web/src")] {
                 chat.tool(&serde_json::json!({ "toolCallId": id, "title": name, "kind": "think", "status": "completed" }));
@@ -117,7 +116,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // A subagent left running in the background after the turn (a reported one).
         "fakebg" => {
-            let chat = app.active_agent().ok_or("no agent")?.chat().clone();
+            let chat = app.chat_in_view().ok_or("no agent")?.clone();
             chat.set_working(None);
             let now = std::time::Instant::now();
             chat.crew_set(crate::chat::Crew {
@@ -199,7 +198,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // A plan to review: "fakeplan", then "plancomment:<text>" (on its first part) and
         // "planchanges" (Request changes).
         "fakeplan" => {
-            let chat = app.active_agent().ok_or("no agent")?.chat().clone();
+            let chat = app.chat_in_view().ok_or("no agent")?.clone();
             let plan = "## Plan\n\nAdd a **price estimate** column to the purchase form.\n\n```sql\nALTER TABLE items ADD estimate numeric;\n```\n\nThen show the sum under the table.";
             let options = [("go".to_owned(), "Yes, start".to_owned(), "allow_once".to_owned()), ("keep".to_owned(), "No, keep planning".to_owned(), "reject_once".to_owned())];
             chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
@@ -258,7 +257,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // The remote bridge as Settings sees it (its pairing ticket…), into a file.
         "remotestate" => std::fs::write(&argument, crate::bridges::state_of("remote").to_string()).map_err(|_| "not written")?,
         // "\n" in it: a line break (the control file is a line each).
-        "type" => app.active_agent().ok_or("no agent")?.chat().input.buffer().set_text(&argument.replace("\\n", "\n")),
+        "type" => app.chat_in_view().ok_or("no agent")?.input.buffer().set_text(&argument.replace("\\n", "\n")),
         "plancomment" => {
             let entry = find(app.window.upcast_ref(), &|w| w.has_css_class("plan-comment")).and_downcast::<gtk::Entry>().ok_or("no comment field")?;
             entry.set_text(argument);
@@ -271,7 +270,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             button.emit_clicked();
         }
         // Scrolls the chat by <px> as a reader would (negative: up).
-        "scrollby" => app.active_agent().ok_or("no agent")?.chat().scroll_by_for_tests(argument.parse().map_err(|_| "scrollby:<px>")?),
+        "scrollby" => app.chat_in_view().ok_or("no agent")?.scroll_by_for_tests(argument.parse().map_err(|_| "scrollby:<px>")?),
         // Labels whose text is taller than the room they were given (drawn past their end).
         "overflow" => {
             let list = app.chat_in_view().ok_or("no agent")?.messages();
@@ -297,7 +296,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // The last items of the conversation: where each sits and how tall it is.
         "tail" => {
-            let list = app.active_agent().ok_or("no agent")?.chat().messages();
+            let list = app.chat_in_view().ok_or("no agent")?.messages();
             let mut items = Vec::new();
             let mut child = list.last_child();
             while let Some(w) = child {
@@ -326,11 +325,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             }
         }
         "maximize" => app.window.maximize(),
-        "scrollinfo" => eprintln!("SCROLL {}", app.active_agent().ok_or("no agent")?.chat().scroll_info()),
+        "scrollinfo" => eprintln!("SCROLL {}", app.chat_in_view().ok_or("no agent")?.scroll_info()),
         "toast" => app.show_toast(&app.active_agent().ok_or("no agent")?, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
         "snapchat" => {
-            let list = app.active_agent().ok_or("no agent")?.chat().messages();
+            let list = app.chat_in_view().ok_or("no agent")?.messages();
             lay_out(app.window.upcast_ref())?;
             let snap = gtk::Snapshot::new();
             list.parent().ok_or("no parent")?.snapshot_child(&list, &snap);
@@ -374,11 +373,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // What Esc does: stops the turn, or a ! command.
         "cancel" => app.active_agent().ok_or("no agent")?.cancel(),
-        "stop" => app.active_agent().ok_or("no agent")?.chat().press_stop(),
+        "stop" => app.chat_in_view().ok_or("no agent")?.press_stop(),
         // A view over the focused conversation (as a subagent's), and back.
-        "aside" => app.active_agent().ok_or("no agent")?.chat().show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
+        "aside" => app.chat_in_view().ok_or("no agent")?.show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
         "main" => {
-            app.active_agent().ok_or("no agent")?.chat().show_main();
+            app.chat_in_view().ok_or("no agent")?.show_main();
         }
         // Widgets given less room than they need (with their ancestors), and every paned.
         "squeezed" => squeezed(app.window.upcast_ref(), 0),
