@@ -241,6 +241,28 @@ fn handle() {
         }
         Ok(json!({}))
     });
+    hub.handle("stop_subagent", |who, params| {
+        let agent = person(who, params, "stop subagents")?;
+        let key = params["subagent"].as_str().ok_or_else(|| Error::Invalid("which subagent (a `crew/<agent>` item's id)?".into()))?;
+        agent.stop_crew(key);
+        Ok(json!({}))
+    });
+    hub.handle("mcp_server", |who, params| {
+        let agent = person(who, params, "change agents' tool servers")?;
+        let server = params["server"].as_str().ok_or_else(|| Error::Invalid("which server (an `mcp` item's server name)?".into()))?;
+        match params["act"].as_str() {
+            Some("reconnect") => agent.mcp("reconnect", server, true),
+            Some("on") => agent.mcp("toggle", server, true),
+            Some("off") => agent.mcp("toggle", server, false),
+            _ => return Err(Error::Invalid("act: reconnect, on or off".into())),
+        }
+        Ok(json!({}))
+    });
+    hub.handle("reload_extensions", |who, params| {
+        let agent = person(who, params, "reload agents' skills")?;
+        agent.reload_extensions();
+        Ok(json!({}))
+    });
     hub.handle("press", |who, params| {
         let agent = person(who, params, "press agents' buttons")?;
         let entry = params["entry"].as_str().ok_or_else(|| Error::Invalid("which notice (its entry)?".into()))?;

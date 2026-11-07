@@ -571,6 +571,30 @@ export type StopWorkflowParams = {
   workflow: string;
 };
 
+/** Stops one subagent (or background task) of the agent's, the rest going on. Result: {} */
+export type StopSubagentParams = {
+  /** the agent's id */
+  agent: string;
+  /** a `crew/<agent>` item's id */
+  subagent: string;
+};
+
+/** Connects one of the agent's tool servers (MCP) again, or switches it on or off; `mcp` shows how it went. Result: {} */
+export type McpServerParams = {
+  /** the agent's id */
+  agent: string;
+  /** a tool server's name (`mcp`) */
+  server: string;
+  /** reconnect, on or off */
+  act: string;
+};
+
+/** The agent's session reads its skills and plugins again (changed in loom's Claude folder). Result: {} */
+export type ReloadExtensionsParams = {
+  /** the agent's id */
+  agent: string;
+};
+
 /** Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed. Result: {} */
 export type PressParams = {
   /** the agent's id */
@@ -1106,6 +1130,9 @@ export interface Commands {
   "mark_seen": MarkSeenParams;
   "send_now": SendNowParams;
   "stop_workflow": StopWorkflowParams;
+  "stop_subagent": StopSubagentParams;
+  "mcp_server": McpServerParams;
+  "reload_extensions": ReloadExtensionsParams;
   "press": PressParams;
   "rewind": RewindParams;
   "set_option": SetOptionParams;

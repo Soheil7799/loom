@@ -1738,6 +1738,84 @@
       },
       "result": "{}"
     },
+    "stop_subagent": {
+      "description": "Stops one subagent (or background task) of the agent's, the rest going on.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "subagent": {
+            "type": "string",
+            "description": "a `crew/<agent>` item's id"
+          }
+        },
+        "required": [
+          "agent",
+          "subagent"
+        ]
+      },
+      "result": "{}"
+    },
+    "mcp_server": {
+      "description": "Connects one of the agent's tool servers (MCP) again, or switches it on or off; `mcp` shows how it went.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "server": {
+            "type": "string",
+            "description": "a tool server's name (`mcp`)"
+          },
+          "act": {
+            "type": "string",
+            "description": "reconnect, on or off"
+          }
+        },
+        "required": [
+          "agent",
+          "server",
+          "act"
+        ]
+      },
+      "result": "{}"
+    },
+    "reload_extensions": {
+      "description": "The agent's session reads its skills and plugins again (changed in loom's Claude folder).",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
     "press": {
       "description": "Presses a notice's button (\"Rewind\" with the files…). A choice's button goes once pressed.",
       "who": [

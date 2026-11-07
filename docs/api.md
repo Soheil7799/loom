@@ -583,6 +583,39 @@ Who: window, cli. Result: `{}`.
 | `agent` | string | the agent's id |
 | `workflow` | string | a `workflows/<agent>` item's id |
 
+### `stop_subagent`
+
+Stops one subagent (or background task) of the agent's, the rest going on.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `subagent` | string | a `crew/<agent>` item's id |
+
+### `mcp_server`
+
+Connects one of the agent's tool servers (MCP) again, or switches it on or off; `mcp` shows how it went.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `server` | string | a tool server's name (`mcp`) |
+| `act` | string | reconnect, on or off |
+
+### `reload_extensions`
+
+The agent's session reads its skills and plugins again (changed in loom's Claude folder).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
 ### `press`
 
 Presses a notice's button ("Rewind" with the files…). A choice's button goes once pressed.
