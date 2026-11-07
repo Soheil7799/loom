@@ -1886,6 +1886,7 @@ impl App {
             move || {
                 if let Some(app) = weak.upgrade() {
                     app.refresh_overview();
+                    app.refresh_inbox();
                 }
             }
         };
@@ -1897,6 +1898,60 @@ impl App {
                 app.asks_changed();
             }
         });
+    }
+
+    /// The questions loomd's agents wait on (`overview` titles them): each agent's, with a way
+    /// to it (they are answered in its chat).
+    // shortcut: no answer buttons here for loomd's agents (that needs each one's conversation followed); add them if the inbox is used to answer
+    fn refresh_remote_inbox(self: &Rc<Self>) {
+        let waiting: Vec<(u32, String, Vec<String>)> = {
+            let feeds = self.overview_feeds.borrow();
+            let overview = feeds.as_ref().map(|(o, _)| o.items().clone()).unwrap_or_default();
+            self.remote_items()
+                .iter()
+                .filter_map(|a| {
+                    let id: u32 = a["id"].as_str()?.parse().ok()?;
+                    let titles: Vec<String> = overview.iter().find(|o| o["id"] == a["id"]).and_then(|o| o["waiting"].as_array().cloned()).into_iter().flatten().filter_map(|t| t.as_str().map(str::to_owned)).collect();
+                    (!titles.is_empty()).then(|| (id, a["title"].as_str().unwrap_or_default().to_owned(), titles))
+                })
+                .collect()
+        };
+        let count: usize = waiting.iter().map(|(_, _, t)| t.len()).sum();
+        self.inbox.set_label(&format!("⚑  {count} waiting for you  ·  Ctrl+I"));
+        self.inbox.set_visible(count > 0);
+        if count == 0 {
+            self.inbox.popdown();
+        }
+        while let Some(child) = self.inbox_list.first_child() {
+            self.inbox_list.remove(&child);
+        }
+        for (id, title, titles) in waiting {
+            let go = gtk::Button::with_label(&title);
+            go.add_css_class("flat");
+            go.add_css_class("inbox-agent");
+            let weak = Rc::downgrade(self);
+            go.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.inbox.popdown();
+                    app.focus_remote(id);
+                }
+            });
+            self.inbox_list.append(&go);
+            for question in titles {
+                self.inbox_list.append(&gtk::Label::builder().label(&question).xalign(0.0).wrap(true).max_width_chars(50).build());
+            }
+            let open = gtk::Button::with_label("Answer in the chat");
+            open.add_css_class("suggested");
+            open.set_halign(gtk::Align::Start);
+            let weak = Rc::downgrade(self);
+            open.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.inbox.popdown();
+                    app.focus_remote(id);
+                }
+            });
+            self.inbox_list.append(&open);
+        }
     }
 
     /// loomd's agents no longer in its `agents` (closed there): their chats go; the one in
@@ -1911,7 +1966,10 @@ impl App {
             return;
         }
         let live: Vec<u32> = self.ids_in_order();
-        let gone: Vec<u32> = self.remote_agents.borrow().keys().copied().filter(|id| !live.contains(id)).collect();
+        // Gone: listed before (its status seen), not now. One just opened (resumed, reopened)
+        // may not be listed yet.
+        let seen = self.remote_status.borrow().keys().copied().collect::<Vec<u32>>();
+        let gone: Vec<u32> = self.remote_agents.borrow().keys().copied().filter(|id| seen.contains(id) && !live.contains(id)).collect();
         for id in gone {
             let in_view = self.remote_in_view() == Some(id);
             if self.pinned_remote.get() == Some(id) {
@@ -2363,6 +2421,42 @@ impl App {
         self.sidebar_feeds.borrow().as_ref().map(|(agents, _)| agents.items().clone()).unwrap_or_default()
     }
 
+    /// The conversations loomd's agents have open (`overview` says them).
+    fn remote_sessions(&self) -> Vec<String> {
+        self.overview_feeds.borrow().as_ref().map(|(overview, _)| overview.items().iter().filter_map(|o| o["session"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    }
+
+    /// Takes loomd's project at `path` out of the sidebar, closing its agents there (asks
+    /// first if any works).
+    fn remove_remote_project(self: &Rc<Self>, path: &Path) {
+        let mine: Vec<Value> = self.remote_items().into_iter().filter(|a| a["project_id"].as_str() == Some(&*path.to_string_lossy())).collect();
+        let busy = mine.iter().filter(|a| a["busy"] == true).count();
+        let ids: Vec<String> = mine.iter().filter_map(|a| a["id"].as_str().map(str::to_owned)).collect();
+        let project = path.to_owned();
+        let go = move || {
+            // Its agents closed first (remove_project refuses while one works).
+            for id in &ids {
+                crate::conn::command("window", "close_agent", json!({ "agent": id }));
+            }
+            crate::conn::command("window", "remove_project", json!({ "project": project }));
+        };
+        if busy == 0 {
+            return go();
+        }
+        let dialog = gtk::AlertDialog::builder()
+            .message(format!("{busy} of its agents {} working", if busy == 1 { "is" } else { "are" }))
+            .detail("Removing the project closes its agents and stops what they are doing. Their conversations are kept.")
+            .buttons(["Keep it", "Remove"])
+            .cancel_button(0)
+            .default_button(0)
+            .build();
+        dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |choice| {
+            if let Ok(1) = choice {
+                go();
+            }
+        });
+    }
+
     /// loomd's agent `id`'s item in `agents`.
     fn remote_item(&self, id: u32) -> Option<Value> {
         let id = id.to_string();
@@ -2496,6 +2590,13 @@ impl App {
 
     /// Moves the project in view up or down the sidebar.
     fn move_project(self: &Rc<Self>, by: i32) {
+        if crate::conn::is_remote() {
+            let project = self.remote_in_view().and_then(|id| self.remote_item(id)).and_then(|i| i["project_id"].as_str().map(PathBuf::from)).or_else(|| self.showing_project());
+            if let Some(project) = project {
+                crate::conn::command("window", "move_project", json!({ "project": project, "by": by }));
+            }
+            return;
+        }
         let project = self.focused_agent().map(|a| a.project.clone()).or_else(|| self.showing_project());
         if project.is_some_and(|p| self.ws.move_project(&p, by)) {
             self.refresh_sidebar();
@@ -2546,7 +2647,7 @@ impl App {
         }));
         let weak = Rc::downgrade(self);
         *self.history.is_open.borrow_mut() = Some(Rc::new(move |id: &str| {
-            weak.upgrade().is_some_and(|app| app.agent_with_session(id).is_some())
+            weak.upgrade().is_some_and(|app| app.agent_with_session(id).is_some() || app.remote_sessions().iter().any(|s| s == id))
         }));
     }
 
@@ -2563,11 +2664,29 @@ impl App {
 
     /// The project's name: given by hand, else its folder's.
     pub fn project_label(&self, path: &Path) -> String {
+        // loomd's: its `projects` name it (empty: the folder's name).
+        if crate::conn::is_remote() {
+            let named = self.remote_projects().into_iter().find(|p| p["id"].as_str() == Some(&*path.to_string_lossy())).and_then(|p| p["name"].as_str().filter(|n| !n.is_empty()).map(str::to_owned));
+            return named.unwrap_or_else(|| path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default());
+        }
         self.ws.project_label(path)
+    }
+
+    /// loomd's `projects` items, in the sidebar's order.
+    fn remote_projects(&self) -> Vec<Value> {
+        self.sidebar_feeds.borrow().as_ref().map(|(_, projects)| projects.items().clone()).unwrap_or_default()
     }
 
     /// Names a project (empty: back to its folder's name).
     fn rename_project(self: &Rc<Self>, path: &Path, name: &str) {
+        if crate::conn::is_remote() {
+            crate::conn::command("window", "rename_project", json!({ "project": path, "name": name }));
+            if self.showing_project().is_some_and(|p| p == path) {
+                let shown = if name.is_empty() { path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { name.to_owned() };
+                self.history.set_name(&shown);
+            }
+            return;
+        }
         if let Some(project) = self.ws.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
             project.name = name.to_owned();
         }
@@ -2965,6 +3084,18 @@ impl App {
 
     /// Picks up a past conversation (or goes to it, when it is open already).
     fn resume(self: &Rc<Self>, past: crate::history::Past) {
+        // loomd's: picked up there (the one open, if it is), then shown here.
+        if crate::conn::is_remote() {
+            let weak = Rc::downgrade(self);
+            let params = json!({ "session": past.session_id, "folder": past.cwd, "title": past.title.unwrap_or_default() });
+            crate::conn::command_then("window", "resume", params, move |answer| {
+                let id = answer.and_then(|a| a["agent"].as_str().and_then(|a| a.parse::<u32>().ok()));
+                if let (Some(app), Some(id)) = (weak.upgrade(), id) {
+                    app.focus_remote(id);
+                }
+            });
+            return;
+        }
         if let Some(agent) = self.agent_with_session(&past.session_id) {
             self.focus(&agent);
             return;
@@ -3126,6 +3257,11 @@ impl App {
     }
 
     fn toggle_collapsed(self: &Rc<Self>, path: &Path) {
+        if crate::conn::is_remote() {
+            let collapsed = self.remote_projects().iter().any(|p| p["id"].as_str() == Some(&*path.to_string_lossy()) && p["collapsed"] == true);
+            crate::conn::command("window", "set_collapsed", json!({ "project": path, "collapsed": !collapsed }));
+            return;
+        }
         if let Some(project) = self.ws.projects.borrow_mut().iter_mut().find(|p| p.path == path) {
             project.collapsed = !project.collapsed;
         }
@@ -3135,6 +3271,9 @@ impl App {
 
     /// Takes a project out of the sidebar, closing its agents (asks first if any is busy).
     fn remove_project(self: &Rc<Self>, path: &Path) {
+        if crate::conn::is_remote() {
+            return self.remove_remote_project(path);
+        }
         let agents: Vec<Rc<Agent>> = self.ws.agents.borrow().iter().filter(|a| a.project == path).cloned().collect();
         let busy = agents.iter().filter(|a| a.is_busy() || a.background_running()).count();
         let path = path.to_owned();
@@ -3757,7 +3896,8 @@ impl App {
         let menu = match row {
             Some(Row::Project(path)) => {
                 let p = || path.clone();
-                let collapsed = self.ws.projects.borrow().iter().any(|e| e.path == path && e.collapsed);
+                let collapsed = self.ws.projects.borrow().iter().any(|e| e.path == path && e.collapsed)
+                    || self.remote_projects().iter().any(|p| p["id"].as_str() == Some(&*path.to_string_lossy()) && p["collapsed"] == true);
                 let (p1, p2, p3, p4, p5, p6, p7) = (p(), p(), p(), p(), p(), p(), p());
                 let list = self.list.clone();
                 Menu::new()
@@ -3991,6 +4131,9 @@ impl App {
             self.remote_changed(id, &status, &item);
         }
         self.drop_closed_remote();
+        if crate::conn::is_remote() {
+            self.refresh_inbox();
+        }
         self.refresh_title();
         if self.notes_mode.get() {
             let (mut working, mut waiting) = (0, 0);
@@ -4273,13 +4416,17 @@ impl App {
         }
         awake.set_tooltip_text(Some(if agent.awake { "Kept awake: never suspended while idle (click to allow it)" } else { "Keep it awake: never suspended while idle" }));
         let (weak, target) = (Rc::downgrade(self), agent.id);
+        let was_awake = agent.awake;
         awake.connect_clicked(move |_| {
-            if let Some(app) = weak.upgrade()
-                && let Some(agent) = app.ws.agent(target)
-            {
-                agent.awake.set(!agent.awake.get());
-                app.save();
-                app.refresh_sidebar();
+            let Some(app) = weak.upgrade() else { return };
+            match app.ws.agent(target) {
+                Some(agent) => {
+                    agent.awake.set(!agent.awake.get());
+                    app.save();
+                    app.refresh_sidebar();
+                }
+                None if crate::conn::is_remote() => crate::conn::command("window", "set_awake", json!({ "agent": target.to_string(), "awake": !was_awake })),
+                None => {}
             }
         });
         line.append(&number);
@@ -4387,6 +4534,18 @@ impl App {
         if from == onto {
             return;
         }
+        // loomd's: moved there a step at a time (move_project goes by one).
+        if crate::conn::is_remote() {
+            let order: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
+            let (Some(at), Some(to)) = (order.iter().position(|p| p == from), order.iter().position(|p| p == onto)) else { return };
+            // Where it lands once taken out of the list.
+            let target = if to > at { if before { to - 1 } else { to } } else if before { to } else { to + 1 };
+            let by: i64 = if target > at { 1 } else { -1 };
+            for _ in 0..target.abs_diff(at) {
+                crate::conn::command("window", "move_project", json!({ "project": from, "by": by }));
+            }
+            return;
+        }
         {
             let mut projects = self.ws.projects.borrow_mut();
             let Some(at) = projects.iter().position(|p| p.path == from) else { return };
@@ -4402,6 +4561,9 @@ impl App {
     }
 
     fn refresh_inbox(self: &Rc<Self>) {
+        if crate::conn::is_remote() {
+            return self.refresh_remote_inbox();
+        }
         let agents = self.ws.agents.borrow().clone();
         let count: usize = agents.iter().map(|a| a.questions().len()).sum();
         self.inbox.set_label(&format!("⚑  {count} waiting for you  ·  Ctrl+I"));
