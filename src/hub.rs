@@ -197,8 +197,7 @@ impl Hub {
         // Scribe in the core API (warp): the panel's lists draw from it.
         hub.core.serve();
         let weak = Rc::downgrade(&hub);
-        let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
-        *hub.feed.borrow_mut() = crate::feed::Feed::new(&client, "scribe", move || {
+        *hub.feed.borrow_mut() = crate::feed::Feed::new("scribe", move || {
             let Some(hub) = weak.upgrade() else { return };
             if !hub.due.replace(true) {
                 let weak = Rc::downgrade(&hub);
@@ -864,8 +863,5 @@ impl HubView for Hub {
 
 /// Scribe told through the core API, as every client tells it (warp).
 fn scribe(method: &str, params: Value) {
-    let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
-    if let Err(err) = client.command(&loom_core::rt::uuid(), method, params) {
-        loom_core::log::debug!("scribe", "{method} refused: {err}");
-    }
+    crate::conn::command("scribe", method, params);
 }

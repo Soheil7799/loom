@@ -6,18 +6,20 @@ use std::rc::{Rc, Weak};
 use std::path::PathBuf;
 
 use loom_core::agent::Status;
-use loom_core::api::{Applied, Client, Mirror, Subscription};
+use loom_core::api::{Applied, Mirror};
+
+use crate::conn::Sub;
 use serde_json::Value;
 
 pub struct Feed {
-    sub: Rc<Subscription>,
+    sub: Rc<Sub>,
     mirror: Rc<RefCell<Mirror>>,
 }
 
 /// A feed as the self-check sees it (dev builds).
 struct Watched {
     resource: String,
-    sub: Weak<Subscription>,
+    sub: Weak<Sub>,
     mirror: Weak<RefCell<Mirror>>,
 }
 
@@ -27,8 +29,8 @@ thread_local! {
 
 impl Feed {
     /// Follows `resource`; `ready` is called when something new waits (call `update` then).
-    pub fn new(client: &Client, resource: &str, ready: impl Fn() + 'static) -> Option<Feed> {
-        let sub = Rc::new(client.subscribe(resource, ready).ok()?);
+    pub fn new(resource: &str, ready: impl Fn() + 'static) -> Option<Feed> {
+        let sub = Rc::new(crate::conn::subscribe(resource, ready)?);
         let feed = Feed { sub, mirror: Rc::default() };
         feed.update();
         if cfg!(debug_assertions) {

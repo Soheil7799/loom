@@ -128,8 +128,7 @@ impl NotesChat {
         // draws from it too.
         // (The list's own subscription first: it reads nothing anew when the window starts.)
         let store = loom_core::api::hub().store("notes_chats");
-        let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
-        *chat.feed.borrow_mut() = crate::feed::Feed::new(&client, "notes_chats", || {});
+        *chat.feed.borrow_mut() = crate::feed::Feed::new("notes_chats", || {});
         let weak = Rc::downgrade(&chat);
         store.on_subscribe(move |_| {
             if let Some(chat) = weak.upgrade() {

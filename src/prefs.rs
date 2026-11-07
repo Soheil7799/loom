@@ -26,10 +26,7 @@ fn update(change: impl FnOnce(&mut Settings)) {
     if changes.as_object().is_none_or(|c| c.is_empty()) {
         return;
     }
-    let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
-    if let Err(err) = client.command(&loom_core::rt::uuid(), "set_settings", serde_json::json!({ "changes": changes })) {
-        loom_core::log::write("settings", &format!("not changed: {err}"));
-    }
+    crate::conn::command("settings", "set_settings", serde_json::json!({ "changes": changes }));
 }
 
 const MODES: &[(&str, &str)] = &[

@@ -10,7 +10,7 @@ use std::time::Instant;
 use gtk::{gio, glib, prelude::*};
 use loom_core::agent::Agent;
 use loom_core::agent::view::{Card, Crew, Form, Png, View, Workflow};
-use loom_core::api::{Body, Op, Principal, Store, Subscription};
+use loom_core::api::{Body, Op, Store};
 use loom_core::jobs::Id;
 use serde_json::Value;
 
@@ -76,7 +76,7 @@ pub fn self_check() -> (Vec<String>, Vec<String>) {
             let Some(follow) = follow.upgrade() else { continue };
             let Some(chat) = follow.chat.upgrade() else { continue };
             checked.push(resource.clone());
-            let behind = follow.sub.borrow().as_ref().is_none_or(Subscription::waiting) || follow.store.unsent();
+            let behind = follow.sub.borrow().as_ref().is_none_or(crate::conn::Sub::waiting) || follow.store.unsent();
             if behind {
                 continue;
             }
@@ -96,7 +96,7 @@ enum Of {
 
 /// A chat following one of the core's resources.
 struct Follow {
-    sub: RefCell<Option<Subscription>>,
+    sub: RefCell<Option<crate::conn::Sub>>,
     store: Store,
     chat: Weak<Chat>,
     of: Of,
@@ -105,16 +105,13 @@ struct Follow {
 impl Follow {
     /// Follows `resource` for `chat` (None: no such resource).
     fn start(resource: &str, of: Of, chat: &Rc<Chat>) -> Option<Rc<Follow>> {
-        let client = loom_core::api::hub().connect(Principal::Window);
         let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(resource), chat: Rc::downgrade(chat), of });
         let weak = Rc::downgrade(&follow);
-        let sub = client
-            .subscribe(resource, move || {
-                if let Some(follow) = weak.upgrade() {
-                    follow.update();
-                }
-            })
-            .ok()?;
+        let sub = crate::conn::subscribe(resource, move || {
+            if let Some(follow) = weak.upgrade() {
+                follow.update();
+            }
+        })?;
         *follow.sub.borrow_mut() = Some(sub);
         follow.update();
         if cfg!(debug_assertions) && matches!(follow.of, Of::Conversation) {
@@ -197,10 +194,7 @@ fn command(agent: &Agent, method: &str, params: Value) {
 
 fn command_for(agent: u32, method: &str, mut params: Value) {
     params["agent"] = Value::String(agent.to_string());
-    let client = loom_core::api::hub().connect(Principal::Window);
-    if let Err(err) = client.command(&loom_core::rt::uuid(), method, params) {
-        loom_core::log::debug!(format!("agent {agent}"), "{method} refused: {err}");
-    }
+    crate::conn::command(&format!("agent {agent}"), method, params);
 }
 
 /// The chat's buttons and keys, to `agent`.

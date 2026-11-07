@@ -13,6 +13,7 @@ mod cheatsheet;
 mod column;
 #[cfg_attr(not(debug_assertions), allow(dead_code))]
 mod devhooks;
+mod conn;
 mod feed;
 mod files;
 mod history;

@@ -3003,7 +3003,6 @@ impl App {
     /// drawn once the window is idle.
     fn follow_sidebar(self: &Rc<Self>) {
         self.ws.publish_agents();
-        let client = loom_core::api::hub().connect(loom_core::api::Principal::Window);
         let ready = || {
             let weak = Rc::downgrade(self);
             move || {
@@ -3020,8 +3019,8 @@ impl App {
                 }
             }
         };
-        let agents = Feed::new(&client, "agents", ready());
-        let projects = Feed::new(&client, "projects", ready());
+        let agents = Feed::new("agents", ready());
+        let projects = Feed::new("projects", ready());
         *self.sidebar_feeds.borrow_mut() = agents.zip(projects);
     }
 

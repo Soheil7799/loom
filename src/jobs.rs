@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use std::rc::{Rc, Weak};
 
 use gtk::{glib, prelude::*};
-use loom_core::api::{Body, Op, Principal, Subscription, wire};
+use loom_core::api::{Body, Op, wire};
 use loom_core::jobs::{Id, Jobs};
 use serde_json::Value;
 use vte::prelude::*;
@@ -34,7 +34,7 @@ pub struct Job {
     docked: RefCell<Option<gtk::Box>>,
     tray: Weak<Tray>,
     /// Its `job/<id>` in the core, once followed, and the byte offset its terminal is at.
-    output: RefCell<Option<Subscription>>,
+    output: RefCell<Option<crate::conn::Sub>>,
     offset: Cell<u64>,
     /// Its status in `jobs` as last drawn ("" before it was seen there).
     state: RefCell<String>,
@@ -85,8 +85,7 @@ impl Tray {
         drop(loom_core::jobs_api::published(&core, events));
         let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default() });
         let weak = Rc::downgrade(&tray);
-        let client = loom_core::api::hub().connect(Principal::Window);
-        *tray.feed.borrow_mut() = crate::feed::Feed::new(&client, "jobs", move || {
+        *tray.feed.borrow_mut() = crate::feed::Feed::new("jobs", move || {
             if let Some(tray) = weak.upgrade() {
                 tray.sync();
             }
@@ -423,9 +422,8 @@ impl Job {
 
     /// Its terminal follows `job/<id>` from now on.
     fn follow(self: &Rc<Self>) {
-        let client = loom_core::api::hub().connect(Principal::Window);
         let weak = Rc::downgrade(self);
-        let Ok(sub) = client.subscribe(&format!("job/{}", self.id), move || {
+        let Some(sub) = crate::conn::subscribe(&format!("job/{}", self.id), move || {
             if let Some(job) = weak.upgrade() {
                 job.draw();
             }
