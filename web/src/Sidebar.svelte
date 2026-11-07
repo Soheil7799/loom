@@ -1,4 +1,5 @@
 <script lang="ts">
+  import type { Snippet } from "svelte";
   // The sidebar, as the GTK window's: the wordmark, what waits for you, the open agents
   // (numbered: Ctrl+1-9), the projects with their agents (a new one with each's +, closed
   // with ×), and the bottom bar. The + there opens Start: a project, a folder, a
@@ -21,6 +22,7 @@
     act,
     starting = $bindable(false),
     openProject,
+    notesPage,
   }: {
     agents: AgentsItem[];
     projects: ProjectsItem[];
@@ -28,6 +30,7 @@
     pick: (id: string) => void;
     view: string;
     show: (view: string) => void;
+    notesPage?: Snippet;
     /** a command from here: its errors shown, an agent it starts (`{agent}`) opened */
     act: (p: Promise<{ agent?: string }>) => Promise<void>;
     starting?: boolean;
@@ -98,6 +101,7 @@
     </div>
   {/if}
 
+  {#if view === "notes" && notesPage}{@render notesPage()}{:else}
   <div class="list">
     {#if open.length}
       <h2 class="heading">Open · {open.length}{#if agents.some((a) => a.unseen)}<button class="link" title="Nothing new in any of them any more" onclick={() => act(command("mark_seen", { all: true }))}>Mark all seen</button>{/if}</h2>
@@ -148,6 +152,7 @@
     {/each}
     {#if !grouped.length}<p class="empty">No agents yet. Start one with the + below.</p>{/if}
   </div>
+  {/if}
 
   {#if starting}<Start {projects} close={() => (starting = false)} act={(p) => { starting = false; return act(p); }} />{/if}
   <div class="bottom">

@@ -265,13 +265,6 @@ fieldset { border: 0; margin: 0; padding: 0; display: flex; flex-direction: colu
 .asks-list .qh .quiet { margin-left: 8px; font-size: 13px; }
 
 /* ---- notes: the chat, Scribe beside it ---- */
-.notes { display: grid; grid-template-columns: 1fr 340px; height: 100%; min-height: 0; }
-.notes-chat { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
-.notes-chat .centre { flex: 1; min-height: 0; height: auto; }
-.notes-bar { display: flex; align-items: center; gap: 8px; padding: 8px 20px; border-bottom: 1px solid var(--line); }
-.notes-bar .inbox-wrap { margin: 0; }
-.notes-bar .menu { right: auto; min-width: 280px; }
-.notes-bar .btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 12px; }
 .scribe { overflow: auto; padding: 12px 14px 20px; border-left: 1px solid var(--line); background: var(--sidebar); }
 .scribe-head { display: flex; flex-direction: column; gap: 2px; padding: 0 2px 4px; }
 .scribe-head .quiet { font-size: 12.5px; }
@@ -465,19 +458,12 @@ kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radi
 .heading .link:hover, .heading .link:focus-visible { color: var(--accent); }
 
 /* ---- the vault, Scribe's history ---- */
-.notes-bar .tabs { margin-right: 6px; }
-.vault { display: grid; grid-template-columns: 280px 1fr; flex: 1; min-height: 0; }
-.vault-list { overflow: auto; padding: 8px 0; border-right: 1px solid var(--line); }
-.vault-list .trow small { margin-left: auto; }
-.crumbs { margin: 0 10px 6px; font-size: 13px; color: var(--quiet); }
 .link { padding: 0; border: 0; background: none; color: var(--accent); cursor: pointer; }
 .note { overflow: auto; padding: 12px 24px 24px; max-width: 820px; }
 .note h3 { margin: 22px 0 6px; font-size: 12px; font-weight: 400; letter-spacing: 0.07em; color: var(--quiet); text-transform: uppercase; }
 .note .links { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 0; }
 .tags { display: flex; gap: 6px; margin: 4px 0; }
 .tags span { font-size: 12.5px; padding: 0 6px; border-radius: 5px; background: color-mix(in srgb, var(--accent) 14%, transparent); }
-.nhistory { overflow: auto; padding: 8px 24px 24px; }
-.nhistory .change-row.undone { opacity: 0.55; }
 
 /* ---- last turn, line notes, the changes bar ---- */
 .small-tabs { margin-left: 10px; }
@@ -512,7 +498,6 @@ kbd { font-family: var(--mono); font-size: 11.5px; padding: 1px 6px; border-radi
 
 /* ---- one look for section headings, page headers ---- */
 .heading, .start h3, .git h3, .scribe h3, .cards h3, .scheduled h3, .note h3, .settings-section h3 { text-transform: uppercase; }
-.notes-bar.header { padding: 12px 20px; }
 .calm { margin: 18px 0 0; color: var(--ok); }
 
 /* dropdowns drawn as the chips are: the theme's colours and a line chevron, not the system's */
@@ -581,3 +566,18 @@ select.chip option { color: var(--fg); background: var(--pane); }
 .note h3.tname { text-transform: none; }
 .panel .grow-row { padding-right: 8px; }
 .docked .term, .peek-frame .term { margin: 0; padding: 4px; }
+/* the Notes view: its chats in the sidebar, its note beside the chat, its panel on the right */
+.notes-side { display: flex; flex-direction: column; flex: 1; min-height: 0; padding: 0 10px; }
+.notes-side .heading { margin: 8px 6px 6px; font-size: 12px; letter-spacing: 0.07em; color: var(--quiet); }
+.notes-side .list { flex: 1; overflow: auto; min-height: 0; }
+.notes-side .new-chat { display: flex; align-items: center; gap: 8px; }
+.notes-day { margin: 12px 8px 4px; font-size: 12px; color: var(--quiet); }
+.notes-back { margin: 6px 0; padding: 8px 10px; border: 0; border-radius: var(--r-control); background: none; color: var(--fg); font-size: 14px; text-align: left; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.notes-back:hover { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.note-pane .ebar code { flex: 1 1 0; }
+.note-pane .note { padding: 4px 4px 24px; max-width: none; }
+.panel .scribe { overflow: visible; padding: 0 12px 12px; border-left: 0; background: none; }
+.panel .change-row { margin: 0 12px; }
+.panel .change-row.undone { opacity: 0.55; }
+.topic-open { margin: 2px 12px 10px 30px; }
+.topic-open .controls { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
