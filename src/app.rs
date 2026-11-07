@@ -163,6 +163,18 @@ struct AgentsSide {
     tabs: Vec<PathBuf>,
 }
 
+/// loomd at `socket` stopped now, before the window goes (a blocking call: one sent the
+/// usual way could still wait to be written when the process ends).
+fn stop_loomd_now(socket: &Path) -> Result<(), String> {
+    let mut connection = loom_core::api::cli::Connection::open(socket).map_err(|e| e.message)?;
+    let asks = connection.hello["capabilities"]["commands"].as_array().is_some_and(|c| c.iter().any(|c| c == "loomd_stop"));
+    if asks {
+        return connection.command(&loom_core::rt::uuid(), "loomd_stop", json!({})).map(|_| ()).map_err(|e| e.message);
+    }
+    let pid = loom_core::api::socket::server_pid(socket).ok_or("loomd's process not found")?;
+    stop_old_loomd(pid)
+}
+
 /// loomd process `pid` (one older than `loomd_stop`) told to stop, as SIGTERM does: only if
 /// it is a loomd (the socket's other end could be loom's own window, which isn't stopped so).
 fn stop_old_loomd(pid: u32) -> Result<(), String> {
@@ -1800,7 +1812,8 @@ impl App {
             let lacks = if missing > 0 { format!(", and lacks {missing} of the commands this window uses") } else { String::new() };
             return ("blocked", format!("loomd {version}"), format!("loomd is {version}, this window {mine}{lacks}. Click to restart it as this window's version."));
         }
-        ("done", "loomd".to_owned(), format!("loomd {version} runs your agents, jobs and bridges. Closing this window leaves them working."))
+        let closing = if settings::get().keep_working { "Closing this window leaves them working." } else { "Closing this window stops it (Settings → General: keep agents working)." };
+        ("done", "loomd".to_owned(), format!("loomd {version} runs your agents, jobs and bridges. {closing}"))
     }
 
     fn draw_loomd_sign(&self) {
@@ -3236,10 +3249,17 @@ impl App {
     }
 
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
+        // loomd's client: closing stops loomd unless its agents are to keep working.
+        let remote = crate::conn::is_remote();
+        let stops_loomd = remote && !settings::get().keep_working;
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
-        let busy: Vec<String> =
+        let mut busy: Vec<String> =
             self.ws.agents.borrow().iter().chain(self.notes_chat.agents().iter()).filter(|a| matches!(a.status(), Status::Working | Status::Blocked) || a.background_running()).map(|a| a.title()).collect();
-        let jobs: usize = self.trays.borrow().values().map(|t| t.running()).sum();
+        if stops_loomd {
+            busy.extend(self.sidebar_feeds.borrow().as_ref().map(|(agents, _)| agents.items().iter().filter(|a| a["busy"] == true || a["status"] == "blocked").filter_map(|a| a["title"].as_str().map(str::to_owned)).collect::<Vec<_>>()).unwrap_or_default());
+        }
+        // loomd's jobs go on with it, unless it stops.
+        let jobs: usize = if remote && !stops_loomd { 0 } else { self.trays.borrow().values().map(|t| t.running()).sum() };
         let ask = ((!busy.is_empty() || jobs > 0) && settings::get().confirm_quit) || self.files.has_unsaved();
         if !self.quitting.get() && ask {
             let mut what = Vec::new();
@@ -3269,9 +3289,13 @@ impl App {
             });
             return glib::Propagation::Stop;
         }
-        // loomd's client: loomd's agents go on; it may say things on the desktop again at
-        // once (else a minute after the window's last word).
-        if crate::conn::is_remote() {
+        // loomd's client: loomd stopped (its agents with it), or told at once that nobody
+        // looks (it says things on the desktop again; else a minute after the last word).
+        if stops_loomd {
+            if let Err(err) = stop_loomd_now(&loom_core::api::socket::socket_path(&self.app_id)) {
+                crate::log::write("loomd", &err);
+            }
+        } else if remote {
             crate::conn::command("window", "set_looking", json!({ "active": false, "agents": [] }));
         }
         // Stopped first: what was waiting to be sent goes back in the input, and is saved

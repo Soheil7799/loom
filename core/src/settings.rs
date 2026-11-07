@@ -18,6 +18,8 @@ pub struct Settings {
     pub notify_done: bool,
     /// Ask before quitting while agents work.
     pub confirm_quit: bool,
+    /// loomd's agents keep working when loom's window closes (off: closing it stops loomd).
+    pub keep_working: bool,
     /// The agent program (empty: the one loom installs, else claude-agent-acp on PATH).
     pub adapter: String,
     /// Permission mode new agents start in (empty: Claude Code's own default).
@@ -85,6 +87,7 @@ impl Default for Settings {
             notify_questions: true,
             notify_done: true,
             confirm_quit: true,
+            keep_working: false,
             adapter: String::new(),
             default_mode: String::new(),
             show_thinking: true,
@@ -348,6 +351,7 @@ fn parse(text: &str) -> Settings {
         notify_questions: flag("notifyQuestions", d.notify_questions),
         notify_done: flag("notifyDone", d.notify_done),
         confirm_quit: flag("confirmQuit", d.confirm_quit),
+        keep_working: flag("keepWorking", d.keep_working),
         adapter: string("adapter", &d.adapter),
         default_mode: string("defaultMode", &d.default_mode),
         show_thinking: flag("showThinking", d.show_thinking),
@@ -396,6 +400,7 @@ fn render(s: &Settings) -> String {
         "notifyQuestions": s.notify_questions,
         "notifyDone": s.notify_done,
         "confirmQuit": s.confirm_quit,
+        "keepWorking": s.keep_working,
         "adapter": s.adapter,
         "defaultMode": s.default_mode,
         "showThinking": s.show_thinking,

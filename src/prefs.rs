@@ -354,6 +354,15 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
         &switch(s.cycle_running, |s, on| s.cycle_running = on),
     );
     row(&behaviour, "Confirm quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
+    // loomd's client: what closing the window does to loomd's agents.
+    if crate::conn::is_remote() {
+        row(
+            &behaviour,
+            "Keep agents working when the window closes",
+            "loomd goes on running them, with your jobs, bridges and scheduled prompts. Off: closing the window stops loomd; conversations go on next time.",
+            &switch(s.keep_working, |s, on| s.keep_working = on),
+        );
+    }
     row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
     content.append(&behaviour);
 
