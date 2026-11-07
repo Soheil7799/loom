@@ -34,6 +34,12 @@ impl Drop for Loomd {
 /// A loomd of app id `dev.shirvani.LoomD<name>`, its settings file `settings` (camelCase, as
 /// loom writes it), with `env` and `args`.
 fn start(name: &str, settings: Value, env: &[(&str, String)], args: &[&str]) -> (Loomd, Connection) {
+    // Each test its own loomd (app id, socket, folder): tests run side by side.
+    static TAKEN: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    let mut taken = TAKEN.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(!taken.iter().any(|t| t == name), "two tests start a loomd named {name}");
+    taken.push(name.to_owned());
+    drop(taken);
     let app_id = format!("dev.shirvani.LoomD{name}");
     let root = std::env::temp_dir().join(format!("loomd-test-{}-{name}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -510,7 +516,7 @@ fn a_remote_connection_comes_back_after_loomd_does() {
     use loom_core::api::{Mirror, remote::Remote};
     use std::cell::RefCell;
     use std::rc::Rc;
-    let (mut loomd, _c) = start("Remote", json!({ "idleMinutes": 30 }), &[], &[]);
+    let (mut loomd, _c) = start("Reconnect", json!({ "idleMinutes": 30 }), &[], &[]);
     let socket = loom_core::api::socket::socket_path(&loomd.app_id);
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     let local = tokio::task::LocalSet::new();
