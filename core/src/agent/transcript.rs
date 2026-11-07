@@ -169,6 +169,12 @@ impl Transcript {
     /// The turn ended with nothing after it (the agent went to rest): what streamed is whole.
     pub fn settle(&mut self) {
         self.close_open();
+        // A tool call read back with no result (stopped before it gave one) ran no more: it
+        // is over, not pending for ever.
+        let open: Vec<usize> = (0..self.entries.len()).filter(|&i| matches!(self.entries[i].1["status"].as_str(), Some("pending" | "in_progress")) && self.entries[i].1["kind"] == "tool").collect();
+        for i in open {
+            self.change(i, |e| e["status"] = json!("completed"));
+        }
     }
 
     /// The entry text was streaming into is whole.
@@ -985,6 +991,16 @@ mod tests {
         assert_eq!(tool["output"].as_str().unwrap().len(), BRIDGE_OUTPUT);
         assert_eq!(t.item(3).unwrap()["output"].as_str().unwrap().len(), OUTPUT);
         assert!(t.since("", t.since("", 0)["rev"].as_u64().unwrap())["entries"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tool_left_without_a_result_is_over_once_settled() {
+        let mut t = Transcript::default();
+        t.push(json!({ "kind": "user", "text": "hi" }));
+        t.tool(&json!({ "toolCallId": "t1", "title": "note search", "kind": "other", "status": "pending" }));
+        assert_eq!(t.item(1).unwrap()["status"], "pending");
+        t.settle();
+        assert_eq!(t.item(1).unwrap()["status"], "done");
     }
 
     /// A conversation as the API's subscriber sees it, after each flush.

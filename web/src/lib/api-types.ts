@@ -815,6 +815,14 @@ export type ScribeDropParams = {
   id: string;
 };
 
+/** Scribe changes a note it wrote as you say. Result: {} */
+export type ScribeFixParams = {
+  /** a `scribe` change it wrote */
+  id: string;
+  /** what's wrong or missing ("it's net, not gross") */
+  said: string;
+};
+
 /** Tells Scribe why it was wrong. Result: {} */
 export type ScribeTeachParams = {
   /** a `scribe` item */
@@ -1127,6 +1135,7 @@ export interface Commands {
   "scribe_decide": ScribeDecideParams;
   "scribe_undo": ScribeUndoParams;
   "scribe_drop": ScribeDropParams;
+  "scribe_fix": ScribeFixParams;
   "scribe_teach": ScribeTeachParams;
   "scribe_keep_rule": ScribeKeepRuleParams;
   "scribe_history": ScribeHistoryParams;

@@ -29,5 +29,5 @@ export function ago(when?: string | number, now = Date.now()): string {
   if (s < 60) return "just now";
   if (s < 3600) return `${Math.floor(s / 60)} min ago`;
   if (s < 86400) return `${Math.floor(s / 3600)} h ago`;
-  return s < 172800 ? "yesterday" : new Date(when).toLocaleDateString();
+  return s < 172800 ? "yesterday" : new Date(typeof when === "number" ? when * 1000 : when).toLocaleDateString();
 }

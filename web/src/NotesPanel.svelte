@@ -3,12 +3,11 @@
   // first; its description and a chat about it a click away) and History (Scribe: its
   // questions, what waits for your OK, and what it wrote, to undo).
   import { command } from "./lib/api";
-  import { ago } from "./lib/state";
   import Icon from "./Icon.svelte";
   import Scribe from "./Scribe.svelte";
   import TopicView from "./TopicView.svelte";
 
-  let { openNote, chatAbout }: { openNote: (path: string) => void; chatAbout: (topic: string) => void } = $props();
+  let { openNote, chatAbout, history }: { openNote: (path: string) => void; chatAbout: (topic: string) => void; history: () => void } = $props();
   let tab = $state<"topics" | "history">("topics");
   let problem = $state("");
   type Topic = { name: string; path: string; folder: string; listens_for: string[]; enabled: boolean };
@@ -18,18 +17,7 @@
   async function loadTopics() {
     try { const got = await command("topics", {}); topics = got.topics; vault = got.vault; problem = ""; } catch (e) { problem = (e as Error).message; topics = []; }
   }
-  type Change = { id: string | null; kind: string; topic: string; reason: string; change: { op?: string; note?: string } | null; title: string; at: number; undone: boolean };
-  let history = $state.raw<Change[] | null>(null);
-  async function loadHistory() {
-    try { history = (await command("scribe_history", { limit: 300 })).changes; } catch (e) { problem = (e as Error).message; history = []; }
-  }
-  async function undo(c: Change) {
-    if (c.id && confirm(`Undo Scribe's change to ${c.change?.note ?? "the note"}?`)) {
-      try { await command("scribe_undo", { id: c.id }); } catch (e) { problem = (e as Error).message; }
-      loadHistory();
-    }
-  }
-  $effect(() => { if (tab === "topics") loadTopics(); else loadHistory(); });
+  $effect(() => { if (tab === "topics") loadTopics(); });
 </script>
 
 <aside class="panel" aria-label="Your notes">
@@ -54,14 +42,7 @@
         <p class="empty small">{topics === null ? "Reading…" : "No topics yet (Settings → Notes)."}</p>
       {/each}
     {:else}
-      <Scribe />
-      <p class="caption">Written</p>
-      {#each history ?? [] as c, i (c.id ?? i)}
-        <div class="change-row" class:undone={c.undone}>
-          <span><b>{c.kind === "dropped" ? "Not written" : c.undone ? "Undone" : "Wrote"}: {c.change?.note ?? c.topic}</b><small class="quiet">{c.topic} · {c.reason}{#if c.title}{" · from "}{c.title}{/if} · {ago(c.at)}</small></span>
-          {#if c.kind === "written" && !c.undone && c.id}<button class="btn small" onclick={() => undo(c)}>Undo</button>{/if}
-        </div>
-      {:else}<p class="empty small">{history === null ? "Reading…" : "Scribe hasn't written anything yet."}</p>{/each}
+      <Scribe {history} />
     {/if}
   </div>
 </aside>

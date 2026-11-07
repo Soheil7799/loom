@@ -17,4 +17,5 @@ test("ago reads RFC 3339 and Unix seconds alike", () => {
   expect(ago("2026-11-06T11:58:00Z", now)).toBe("2 min ago");
   expect(ago(now / 1000 - 7200, now)).toBe("2 h ago");
   expect(ago(undefined, now)).toBe("");
+  expect(ago(now / 1000 - 5 * 86400, now)).toBe(new Date(now - 5 * 86400000).toLocaleDateString());
 });

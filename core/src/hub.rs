@@ -294,6 +294,14 @@ impl Hub {
             Ok(json!({}))
         });
         let weak = Rc::downgrade(self);
+        hub.handle("scribe_fix", move |who, params| {
+            let (scribe, id) = scribe_target(&weak, who, params)?;
+            let said = params["said"].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| crate::api::Error::Invalid("what to change? (said)".into()))?;
+            let change = scribe.store.borrow().recent.iter().find(|v| v["id"].as_u64() == Some(id)).cloned().ok_or_else(|| crate::api::Error::NotFound(format!("change {id}")))?;
+            scribe.fix(change, said.trim().to_owned());
+            Ok(json!({}))
+        });
+        let weak = Rc::downgrade(self);
         hub.handle("scribe_teach", move |who, params| {
             let (scribe, id) = scribe_target(&weak, who, params)?;
             let said = params["said"].as_str().filter(|s| !s.trim().is_empty()).ok_or_else(|| crate::api::Error::Invalid("why not? (said)".into()))?;

@@ -9,6 +9,7 @@
   import NotesChats from "./NotesChats.svelte";
   import NotesPanel from "./NotesPanel.svelte";
   import NoteView from "./NoteView.svelte";
+  import NotesHistory from "./NotesHistory.svelte";
   import Settings from "./Settings.svelte";
   import Overview from "./Overview.svelte";
   import Panel from "./Panel.svelte";
@@ -33,10 +34,12 @@
   // The Notes view (Alt+M): its chat open, the note open beside it
   let chat = $state<{ agent: string; title: string } | null>(null);
   let notePath = $state<string | null>(null);
+  let notesHistory = $state(false);
   async function openChat(session?: string, title = "Notes", topic?: string) {
     try {
       const answer = await command("notes_open", topic ? { topic } : session ? { session } : {});
       chat = { agent: answer.agent, title: topic ?? title };
+      notesHistory = false;
     } catch (e) { problem = (e as Error).message; }
   }
   // the chat as Conversation draws an agent: a Notes chat isn't among the agents
@@ -265,7 +268,7 @@
       {:else if view === "settings"}
         <Settings />
       {:else if notes}
-        {#if chatAgent}{#key chatAgent.id}<Conversation agent={chatAgent} />{/key}{:else}<p class="empty centre-note">Ask your notes anything, or tell them something worth keeping. Start with New chat.</p>{/if}
+        {#if notesHistory}<NotesHistory close={() => (notesHistory = false)} />{:else if chatAgent}{#key chatAgent.id}<Conversation agent={chatAgent} />{/key}{:else}<p class="empty centre-note">Ask your notes anything, or tell them something worth keeping. Start with New chat.</p>{/if}
       {:else if view === "asks"}
         <Asks {asks} {agents} {pick} {showJob} />
       {:else if current}
@@ -282,7 +285,7 @@
     </div>
     {#if trayProject && !notes}<Tray project={trayProject} jobs={trayJobs} bind:peek={peekJob} bind:runAsked />{/if}
     </div>
-    {#if notes}<NotesPanel openNote={(p) => (notePath = p)} chatAbout={(t) => openChat(undefined, t, t)} />{:else if panel}<Panel agent={current} {projects} bind:tab={panelTab} open={(p) => (openPath = p)} {mention} comment={(file, line, said) => (note = { file, line, note: said })} />{/if}
+    {#if notes}<NotesPanel openNote={(p) => (notePath = p)} chatAbout={(t) => openChat(undefined, t, t)} history={() => (notesHistory = true)} />{:else if panel}<Panel agent={current} {projects} bind:tab={panelTab} open={(p) => (openPath = p)} {mention} comment={(file, line, said) => (note = { file, line, note: said })} />{/if}
   </div>
 {/if}
 {#if finding}<Finder project={current?.project_id ?? projects[0]?.id ?? ""} pick={(p) => (openPath = p)} close={() => (finding = false)} />{/if}

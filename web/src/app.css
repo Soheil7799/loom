@@ -46,7 +46,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* the right panel: on the sidebars' colour, as the left one */
 .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 10px 0 0; background: var(--sidebar); }
 .panel-head { display: flex; align-items: center; gap: 4px; padding: 0 10px 8px; }
-.panel-head .tabs button { padding: 4px 7px; font-size: 12.5px; }
+.panel-head .tabs button { padding: 3px 8px; }
 .editor-pane .ebar { flex-wrap: wrap; }
 .editor-pane .ebar code { flex: 1 1 100%; }
 .editor-pane .ebar .btn { white-space: nowrap; }
@@ -399,9 +399,11 @@ dialog.whole img { display: block; max-width: 92vw; max-height: 92vh; }
 @media (max-width: 1000px) { .overview-split { grid-template-columns: 1fr; } .scheduled { border-left: 0; border-top: 1px solid var(--line); } }
 
 /* ---- files and git ---- */
-.tabs { display: inline-flex; border: 1px solid var(--line); border-radius: var(--r-control); overflow: hidden; }
-.tabs button { padding: 4px 14px; border: 0; background: none; color: var(--quiet); }
-.tabs button.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--fg); }
+/* tabs as one segmented control, as the window's: a soft track, the chosen one raised */
+.tabs { display: inline-flex; gap: 2px; padding: 2px; border-radius: 10px; background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.tabs button { padding: 3px 12px; border: 0; border-radius: 6px; background: none; color: var(--fg); opacity: 0.7; font-weight: 500; font-size: 0.9em; }
+.tabs button:hover { opacity: 0.9; }
+.tabs button.on { background: color-mix(in srgb, var(--fg) 14%, transparent); opacity: 1; font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / 0.3); }
 .tree, .git { overflow: auto; padding: 8px 0; border-right: 1px solid var(--line); }
 .git { padding: 8px 10px; }
 .trow { display: flex; align-items: center; gap: 6px; width: 100%; padding: 3px 10px; border: 0; background: none; text-align: left; font-size: 13.5px; white-space: nowrap; }
@@ -582,3 +584,18 @@ select.chip option { color: var(--fg); background: var(--pane); }
 .panel .change-row.undone { opacity: 0.55; }
 .topic-open { margin: 2px 12px 10px 30px; }
 .topic-open .controls { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.notes-side .list .arow { grid-template-columns: minmax(0, 1fr); }
+.notes-side .list .arow .s { grid-column: 1; }
+.scribe details.written { margin: 0 0 4px; }
+.scribe details.written > summary { display: flex; flex-direction: column; gap: 1px; padding: 6px 8px; border-radius: var(--r-control); cursor: pointer; list-style: none; }
+.scribe details.written > summary::-webkit-details-marker { display: none; }
+.scribe details.written > summary:hover { background: color-mix(in srgb, var(--fg) 5%, transparent); }
+.scribe details.written > summary b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scribe details.written.gone { opacity: 0.55; }
+.scribe details.written .permission-card { margin: 4px 0 8px; }
+.scribe .full-history { margin-top: 10px; }
+.notes-history { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.history-body { flex: 1; overflow: auto; padding: 12px 24px 24px; }
+.history-body .controls { display: flex; align-items: center; gap: 14px; margin: 8px 0 12px; }
+.history-body .find { flex: 1; max-width: 360px; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--window); padding: 5px 9px; }
+.history-body .change-row.undone { opacity: 0.55; }

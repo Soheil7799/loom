@@ -5,6 +5,7 @@
   import { command, follow, type Item } from "./lib/api";
   import { ago } from "./lib/state";
 
+  let { history }: { history?: () => void } = $props();
   let items = $state.raw<Item[]>([]);
   let said = $state<Record<string, string>>({});
   let problem = $state("");
@@ -33,6 +34,14 @@
   const body = (c: Item["change"]) => (c?.op === "replace" ? null : (c?.text ?? c?.value ?? ""));
 </script>
 
+{#snippet shown(change: { op?: string; old?: string; new?: string } | undefined)}
+  {#if change?.op === "replace"}
+    <div class="diff"><pre><span class="del">-{change.old}
+</span><span class="add">+{change.new}
+</span></pre></div>
+  {:else if body(change)}<pre class="code-block">{body(change)}</pre>{/if}
+{/snippet}
+
 <aside class="scribe" aria-label="Scribe">
   <div class="scribe-head">
     <b>Scribe</b>
@@ -41,7 +50,7 @@
   {#if problem}<p class="error">{problem}</p>{/if}
 
   {#if questions.length}
-    <h3>Asks you</h3>
+    <h3>Questions</h3>
     {#each questions as q (q.id)}
       <div class="permission-card">
         <div class="qh"><span class="needs">{q.topic}</span><b>{q.question}</b></div>
@@ -59,16 +68,12 @@
   {/if}
 
   {#if proposals.length}
-    <h3>Waits for your OK</h3>
+    <h3>Waiting for your OK</h3>
     {#each proposals as p (p.id)}
       <div class="permission-card">
         <div class="qh"><span class="needs">{p.topic}</span><b>{what(p.change)}</b></div>
         {#if p.reason || p.why}<p class="quiet">{p.reason}{#if p.why}{" · held: "}{p.why}{/if}</p>{/if}
-        {#if p.change?.op === "replace"}
-          <div class="diff"><pre><span class="del">-{p.change.old}
-</span><span class="add">+{p.change.new}
-</span></pre></div>
-        {:else if body(p.change)}<pre class="code-block">{body(p.change)}</pre>{/if}
+        {@render shown(p.change)}
         <div class="controls">
           <button class="btn suggested" onclick={() => run(command("scribe_decide", { id: p.id, write: true }))}>Write it</button>
           <button class="btn deny" onclick={() => run(command("scribe_decide", { id: p.id, write: false }))}>No</button>
@@ -78,7 +83,7 @@
   {/if}
 
   {#if teach.length}
-    <h3>Tell Scribe why not</h3>
+    <h3>Why not?</h3>
     {#each teach as t (t.id)}
       <div class="permission-card answered">
         <div class="qh"><b>{t.kind === "answer" ? t.question : what(t.change)}</b></div>
@@ -102,14 +107,24 @@
   {/if}
 
   {#if changes.length}
-    <h3>Wrote lately</h3>
+    <h3>Written</h3>
     {#each changes as c (c.id)}
-      <div class="change-row">
-        <span><b>{what(c.change)}</b><small class="quiet">{c.topic} · {ago(c.at)}</small></span>
-        {#if c.undoable}<button class="btn small" onclick={() => run(command("scribe_undo", { id: c.id }))}>Undo</button>{/if}
-      </div>
+      <details class="written" class:gone={c.undone || c.kind === "dropped"} open={!!c.unseen}>
+        <summary><b>{c.change?.note ?? c.topic}</b><small class="quiet">{what(c.change)}{c.undone ? " · undone" : c.kind === "dropped" ? " · not written" : ""} · {ago(c.at)}</small></summary>
+        <div class="permission-card">
+          {#if c.reason}<p class="quiet">{c.reason}</p>{/if}
+          {@render shown(c.change)}
+          {#if c.undoable && !c.undone}
+            <div class="controls"><button class="btn small" title="Put the note back as it was before this change" onclick={() => run(command("scribe_undo", { id: c.id }))}>Undo</button></div>
+            <form class="adding" onsubmit={(e) => { e.preventDefault(); if (said[c.id]?.trim()) run(command("scribe_fix", { id: c.id, said: said[c.id].trim() })).then((ok) => ok && (said = { ...said, [c.id]: "" })); }}>
+              <input aria-label="Ask Scribe to change it" title={'What\'s wrong or missing in this change ("it\'s net, not gross"): Scribe changes the note that way at once'} placeholder="Ask Scribe to change it… Enter" bind:value={said[c.id]} />
+            </form>
+          {/if}
+        </div>
+      </details>
     {/each}
   {/if}
 
-  {#if !questions.length && !proposals.length && !teach.length && !changes.length}<p class="empty">Nothing from Scribe yet. It reads your chats and keeps your notes.</p>{/if}
+  {#if !questions.length && !proposals.length && !teach.length && !changes.length}<p class="empty">Questions Scribe has, changes waiting for your OK, and what it wrote in your notes show up here.</p>{/if}
+  {#if history}<button class="btn small full-history" title="Everything Scribe and the Notes chat wrote, searched and undone, in the main area" onclick={history}>Full history</button>{/if}
 </aside>

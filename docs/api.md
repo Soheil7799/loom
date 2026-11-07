@@ -938,6 +938,17 @@ Who: window. Result: `{}`.
 |---|---|---|
 | `id` | string | a `scribe` item |
 
+### `scribe_fix`
+
+Scribe changes a note it wrote as you say.
+
+Who: window. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string | a `scribe` change it wrote |
+| `said` | string | what's wrong or missing ("it's net, not gross") |
+
 ### `scribe_teach`
 
 Tells Scribe why it was wrong.

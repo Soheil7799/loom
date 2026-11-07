@@ -79,7 +79,8 @@
   // a Notes chat isn't among the agents: it works while an entry is still coming
   // The files the last turn edited (its tools' diffs): the Changes panel's "Last turn".
   const lastTurnFiles = $derived([...new Set((all.at(-1)?.rows ?? []).flatMap((r) => (r.kind === "run" ? r.tools : [r.entry])).flatMap((e) => (e.kind === "tool" ? ((e.content ?? []) as { type?: string; path?: string }[]).filter((c) => c.type === "diff" && c.path).map((c) => c.path!) : [])))]);
-  const busy = $derived(agent.busy || (agent.status === "notes" && entries.some((e) => e.status === "pending" || e.status === "streaming")));
+  // a Notes chat isn't among the agents: working while its last turn is
+  const busy = $derived(agent.busy || (agent.status === "notes" && entries.slice(entries.map((e) => e.kind).lastIndexOf("user") + 1).some((e) => e.status === "pending" || e.status === "streaming")));
   const st = $derived(stateOf({ ...agent, busy }));
   const context = $derived(usage?.used && usage?.size ? Math.round((usage.used / usage.size) * 100) : null);
   const cost = $derived(usage?.cost as { amount?: number; currency?: string } | undefined);

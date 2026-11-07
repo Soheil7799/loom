@@ -2547,6 +2547,31 @@
       },
       "result": "{}"
     },
+    "scribe_fix": {
+      "description": "Scribe changes a note it wrote as you say.",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "a `scribe` change it wrote"
+          },
+          "said": {
+            "type": "string",
+            "description": "what's wrong or missing (\"it's net, not gross\")"
+          }
+        },
+        "required": [
+          "id",
+          "said"
+        ]
+      },
+      "result": "{}"
+    },
     "scribe_teach": {
       "description": "Tells Scribe why it was wrong.",
       "who": [
