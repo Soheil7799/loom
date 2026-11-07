@@ -54,6 +54,7 @@ impl RemoteAgent {
     pub fn new(id: u32) -> Rc<RemoteAgent> {
         let chat = Chat::new();
         chat.draw_from_entries(id);
+        chat.set_show_thinking(loom_core::settings::get().show_thinking);
         let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default(), runs: RefCell::default(), me: RefCell::default(), sub: RefCell::default() });
         *agent.me.borrow_mut() = Rc::downgrade(&agent);
         // Its buttons first: the messages drawn next take their callbacks as they are made.
@@ -144,6 +145,9 @@ impl RemoteAgent {
         self.chat.set_mode(text("mode"));
         if let Some(options) = item.get("options") {
             self.chat.set_options(options);
+        }
+        if let Some(cwd) = item["cwd"].as_str() {
+            self.chat.set_cwd(std::path::Path::new(cwd));
         }
         let busy = item["busy"].as_bool() == Some(true);
         if busy != self.since.get().is_some() {

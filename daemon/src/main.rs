@@ -363,6 +363,18 @@ async fn run() -> u8 {
     notes.refresh();
     let bridges = daemon.bridges.clone();
     loom_core::settings::on_change(move |s| bridges.apply(s));
+    // Next-message suggestions switched on or off: the agents running are told (as the
+    // window tells its own).
+    let (agents, suggesting) = (Rc::downgrade(&ws), std::cell::Cell::new(loom_core::settings::get().suggest_prompts));
+    loom_core::settings::on_change(move |s| {
+        if suggesting.replace(s.suggest_prompts) != s.suggest_prompts
+            && let Some(ws) = agents.upgrade()
+        {
+            for agent in ws.agents.borrow().iter() {
+                agent.set_suggestions(s.suggest_prompts);
+            }
+        }
+    });
     eprintln!("loomd: {} agents, API at {}", ws.agents.borrow().len(), socket.display());
     // `--web`: a link to the web page with the window's rights (it answers agents' questions),
     // said here only, to whoever started loomd (not through the API: what passes for the CLI

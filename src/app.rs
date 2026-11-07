@@ -949,6 +949,11 @@ impl App {
                 agent.set_suggestions(s.suggest_prompts);
             }
         }
+        // loomd's agents' chats (loomd tells its agents of a change of suggestions itself).
+        for agent in self.remote_agents.borrow().values() {
+            agent.chat.set_show_thinking(s.show_thinking);
+            agent.chat.set_mic_visible(mic);
+        }
         crate::theme::refont(&s.terminal_font);
     }
 
