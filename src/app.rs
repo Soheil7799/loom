@@ -149,6 +149,9 @@ pub struct App {
     loomd_sign: (gtk::Button, gtk::Box, gtk::Label),
     /// loomd's `closed` (Ctrl+Shift+T reopens the newest).
     closed_feed: RefCell<Option<Feed>>,
+    /// loomd's agent shown beside the one in view (Ctrl+\\), and the one in view before.
+    pinned_remote: Cell<Option<u32>>,
+    previous_remote: Cell<Option<u32>>,
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -562,6 +565,8 @@ impl App {
             overview_feeds: RefCell::default(),
             loomd_sign: (loomd_sign, loomd_dot, loomd_label),
             closed_feed: RefCell::default(),
+            pinned_remote: Cell::new(None),
+            previous_remote: Cell::new(None),
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
@@ -1285,6 +1290,7 @@ impl App {
             "run" => self.current_tray().run(argument),
             "loomdrestart" => self.restart_loomd(),
             "loomdclick" => self.loomd_clicked(),
+            "swap" => self.swap(),
             "notesstep" => self.notes_chat.step(argument.parse().unwrap_or(1)),
             "jobkeys" => self.current_tray().keys_to_latest(&argument.replace("\\n", "\r")),
             other => eprintln!("loom control: unknown command {other}"),
@@ -1743,15 +1749,22 @@ impl App {
     /// One of loomd's agents in view (the window as its client): its chat made the first time.
     fn focus_remote(self: &Rc<Self>, id: u32) {
         self.leave_notes();
-        let agent = self.remote_agents.borrow().get(&id).cloned();
-        let agent = agent.unwrap_or_else(|| {
-            let agent = crate::remote_agent::RemoteAgent::new(id);
-            self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
-            self.remote_agents.borrow_mut().insert(id, agent.clone());
-            agent
-        });
-        if let Some(old) = self.remote_focused.replace(Some(id)).filter(|old| *old != id).and_then(|old| self.remote_agents.borrow().get(&old).cloned()) {
-            old.chat.left();
+        // The one beside, opened: the two change places.
+        if self.pinned_remote.get() == Some(id) {
+            let current = self.remote_in_view();
+            self.unpin_remote();
+            self.focus_remote(id);
+            if let Some(current) = current.filter(|c| *c != id) {
+                self.pin_remote(current);
+            }
+            return;
+        }
+        let agent = self.remote_agent(id);
+        if let Some(old) = self.remote_focused.replace(Some(id)).filter(|old| *old != id) {
+            self.previous_remote.set(Some(old));
+            if let Some(old) = self.remote_agents.borrow().get(&old).cloned() {
+                old.chat.left();
+            }
         }
         agent.chat.returned();
         self.chat_stack.set_visible_child(&agent.chat.root);
@@ -1766,6 +1779,46 @@ impl App {
         agent.chat.input.grab_focus();
     }
 
+    /// loomd's agent `id`'s chat here (made, in the stack, the first time).
+    fn remote_agent(&self, id: u32) -> Rc<crate::remote_agent::RemoteAgent> {
+        let agent = self.remote_agents.borrow().get(&id).cloned();
+        agent.unwrap_or_else(|| {
+            let agent = crate::remote_agent::RemoteAgent::new(id);
+            self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
+            self.remote_agents.borrow_mut().insert(id, agent.clone());
+            agent
+        })
+    }
+
+    /// loomd's agent `id` shown beside the one in view (in place of any there before).
+    fn pin_remote(self: &Rc<Self>, id: u32) {
+        if self.remote_in_view() == Some(id) || self.pinned_remote.get() == Some(id) {
+            return;
+        }
+        self.unpin();
+        self.unpin_remote();
+        let agent = self.remote_agent(id);
+        self.chat_stack.remove(&agent.chat.root);
+        self.pinned_box.append(&agent.chat.root);
+        self.pinned_box.set_visible(true);
+        self.pinned_remote.set(Some(id));
+        // its header from `agents`
+        self.draw_sidebar();
+        self.tell_looking();
+    }
+
+    /// loomd's agent beside put back with the others; its id.
+    fn unpin_remote(&self) -> Option<u32> {
+        let id = self.pinned_remote.take()?;
+        if let Some(agent) = self.remote_agents.borrow().get(&id).cloned() {
+            self.pinned_box.remove(&agent.chat.root);
+            self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
+        }
+        self.pinned_box.set_visible(false);
+        self.tell_looking();
+        Some(id)
+    }
+
     /// loomd's agent in view, if the window is in use and shows one.
     fn remote_looked_at(&self) -> Option<u32> {
         let id = self.remote_focused.get()?;
@@ -1776,7 +1829,8 @@ impl App {
     /// leaves questions to the window while it is in use). Said again every 20 s: loomd
     /// forgets it after a minute (a window that crashed silences nothing for long).
     fn tell_looking(&self) {
-        let agents: Vec<String> = self.remote_looked_at().map(|id| id.to_string()).into_iter().collect();
+        let beside = self.pinned_remote.get().filter(|_| self.window.is_active());
+        let agents: Vec<String> = self.remote_looked_at().into_iter().chain(beside).map(|id| id.to_string()).collect();
         crate::conn::command("window", "set_looking", json!({ "active": self.window.is_active(), "agents": agents }));
     }
 
@@ -1860,6 +1914,9 @@ impl App {
         let gone: Vec<u32> = self.remote_agents.borrow().keys().copied().filter(|id| !live.contains(id)).collect();
         for id in gone {
             let in_view = self.remote_in_view() == Some(id);
+            if self.pinned_remote.get() == Some(id) {
+                self.unpin_remote();
+            }
             if let Some(agent) = self.remote_agents.borrow_mut().remove(&id) {
                 self.chat_stack.remove(&agent.chat.root);
             }
@@ -2124,6 +2181,20 @@ impl App {
 
     /// Shows the previous agent beside the focused one, or puts it back.
     fn toggle_split(self: &Rc<Self>) {
+        // loomd's: the one before (else the next in the sidebar) beside the one in view.
+        if crate::conn::is_remote() {
+            if self.unpin_remote().is_some() {
+                return;
+            }
+            let Some(current) = self.remote_in_view() else { return };
+            let ids = self.ids_in_order();
+            let next = ids.iter().position(|i| *i == current).and_then(|at| ids.get((at + 1) % ids.len())).copied();
+            let candidate = self.previous_remote.get().filter(|p| *p != current && ids.contains(p)).or(next).filter(|c| *c != current);
+            if let Some(id) = candidate {
+                self.pin_remote(id);
+            }
+            return;
+        }
         if self.unpin().is_some() {
             self.save();
             return;
@@ -2181,6 +2252,12 @@ impl App {
 
     /// The pinned agent and the focused one change places (focus moves across the split).
     fn swap(self: &Rc<Self>) {
+        if let (Some(beside), Some(current)) = (self.pinned_remote.get(), self.remote_in_view()) {
+            self.unpin_remote();
+            self.focus_remote(beside);
+            self.pin_remote(current);
+            return;
+        }
         let Some(other) = self.unpin() else { return };
         let Some(current) = self.focused.borrow().clone() else { return };
         self.focus(&other);
@@ -3760,6 +3837,8 @@ impl App {
         Some(
             Menu::new()
                 .item("Open", with(|app, id| app.focus_remote(id)))
+                .enabled(!focused)
+                .item("Show beside the focused one", with(|app, id| app.pin_remote(id)))
                 .enabled(!focused)
                 .item(if awake { "Allow suspending when idle" } else { "Keep awake" }, say("set_awake", json!({ "awake": !awake })))
                 .section()
