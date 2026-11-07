@@ -250,7 +250,7 @@
   </main>
 {:else}
   <div class="app" class:no-sidebar={noSidebar} class:with-panel={panel || notes}>
-    {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting openProject={(id) => { projectPage = id; view = "project"; }} show={(v) => (v === "files" ? togglePanel() : (view = v))} {act}>
+    {#if !noSidebar}<Sidebar {agents} {projects} {selected} {view} {pick} bind:starting openProject={(id) => { projectPage = id; view = "project"; }} show={(v) => { if (v === "about") about = true; else if (v === "scratch") scratch = !scratch; else if (v === "run") runAsked = true; else if (v === "palette") palette = true; else view = v; }} asks={asks.length} {act}>
       {#snippet notesPage()}<NotesChats {agents} {chat} open={(session, title) => openChat(session, title)} back={() => (view = "chat")} />{/snippet}
     </Sidebar>{/if}
     <div class="middle">

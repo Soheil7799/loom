@@ -23,6 +23,7 @@
     starting = $bindable(false),
     openProject,
     notesPage,
+    asks = 0,
   }: {
     agents: AgentsItem[];
     projects: ProjectsItem[];
@@ -31,6 +32,7 @@
     view: string;
     show: (view: string) => void;
     notesPage?: Snippet;
+    asks?: number;
     /** a command from here: its errors shown, an agent it starts (`{agent}`) opened */
     act: (p: Promise<{ agent?: string }>) => Promise<void>;
     starting?: boolean;
@@ -77,11 +79,13 @@
 
 <nav class="sidebar" aria-label="Agents">
   <div class="top">
-    <span class="lock">
+    <button class="lock" title="About loom" onclick={() => show("about")}>
       <img class="wm on-dark" src={wordmarkDark} alt="loom" />
       <img class="wm on-light" src={wordmarkLight} alt="loom" />
       <span class="by">by shirvani.dev</span>
-    </span>
+    </button>
+    <button class="icon" class:on={view === "notes"} aria-label="Notes" aria-pressed={view === "notes"} title="Notes: chat with your notes, their topics and history (Alt+M)" onclick={() => show(view === "notes" ? "chat" : "notes")}><Icon name="notes" /></button>
+    <button class="icon" class:on={view === "overview"} aria-label="Overview" aria-pressed={view === "overview"} title="Overview: every agent, and scheduled prompts (Alt+O)" onclick={() => show(view === "overview" ? "chat" : "overview")}><Icon name="grid" /></button>
   </div>
 
   {#if waiting.length}
@@ -156,13 +160,12 @@
 
   {#if starting}<Start {projects} close={() => (starting = false)} act={(p) => { starting = false; return act(p); }} />{/if}
   <div class="bottom">
-    <button class="icon" class:on={starting} aria-label="New agent" title="New agent" onclick={(e) => { e.stopPropagation(); starting = !starting; }}><Icon name="plus" /></button>
-    <button class="icon" class:on={view === "overview"} aria-label="Overview" title="Overview: every agent, and scheduled prompts" onclick={() => show(view === "overview" ? "chat" : "overview")}><Icon name="grid" /></button>
-    <button class="icon" class:on={view === "files"} aria-label="Files" title="Files and git (Ctrl+E; Ctrl+P finds one)" onclick={() => show(view === "files" ? "chat" : "files")}><Icon name="folder" /></button>
-    <button class="icon" class:on={view === "jobs"} aria-label="Jobs" title="Jobs" onclick={() => show(view === "jobs" ? "chat" : "jobs")}><Icon name="terminal" /></button>
-    <button class="icon" class:on={view === "notes"} aria-label="Notes" title="Notes: chat with your notes, and Scribe" onclick={() => show(view === "notes" ? "chat" : "notes")}><Icon name="notes" /></button>
+    <button class="icon" class:on={starting} aria-label="New agent" title="New agent: in a project, another folder, or one closed lately (Alt+N)" onclick={(e) => { e.stopPropagation(); starting = !starting; }}><Icon name="plus" /></button>
+    <button class="icon" aria-label="Scratch terminal" title="Scratch terminal (Ctrl+`)" onclick={() => show("scratch")}><Icon name="terminal" /></button>
+    <button class="icon" aria-label="Run a command" title="Run a command in the tray (Ctrl+J)" onclick={() => show("run")}><Icon name="play" /></button>
     <span class="grow"></span>
-    <button class="icon" class:on={view === "settings"} aria-label="Settings" title="Settings" onclick={() => show(view === "settings" ? "chat" : "settings")}><Icon name="gear" /></button>
-    <button class="icon" class:on={view === "asks"} aria-label="Asks" title="Asks" onclick={() => show(view === "asks" ? "chat" : "asks")}><Icon name="inbox" /></button>
+    {#if asks}<button class="icon" class:on={view === "asks"} aria-label="Asks: {asks}" title="Files an agent asks you to fill in" onclick={() => show(view === "asks" ? "chat" : "asks")}><Icon name="inbox" /></button>{/if}
+    <button class="icon" class:on={view === "settings"} aria-label="Settings" title="Settings (Ctrl+,)" onclick={() => show(view === "settings" ? "chat" : "settings")}><Icon name="gear" /></button>
+    <button class="icon" aria-label="Keyboard shortcuts" title="Keyboard shortcuts and actions (Ctrl+/)" onclick={() => show("palette")}><Icon name="help" /></button>
   </div>
 </nav>

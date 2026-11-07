@@ -88,7 +88,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* ---- the sidebar ---- */
 .sidebar { display: flex; flex-direction: column; min-height: 0; padding-top: 8px; }
 .sidebar .top { display: flex; align-items: center; padding: 8px 14px 8px 16px; }
-.sidebar .lock { display: flex; flex-direction: column; flex: 1; }
+.sidebar .lock { display: flex; flex-direction: column; align-items: flex-start; flex: 1; padding: 0; border: 0; background: none; color: inherit; text-align: left; cursor: pointer; }
+.sidebar .top .icon { flex: none; }
 .sidebar .wm { height: 40px; width: auto; align-self: flex-start; }
 .sidebar .wm.on-light { display: none; }
 @media (prefers-color-scheme: light) { .sidebar .wm.on-dark { display: none; } .sidebar .wm.on-light { display: block; } }
