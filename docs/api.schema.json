@@ -2180,6 +2180,31 @@
       },
       "result": "{}"
     },
+    "set_looking": {
+      "description": "What loom's window shows (loomd: no desktop notice about those agents, none of a question while the window is in use). Said again within a minute, else forgotten.",
+      "who": [
+        "window"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "active": {
+            "type": "boolean",
+            "description": "the window is in use"
+          },
+          "agents": {
+            "type": "array",
+            "description": "the agents' ids in view"
+          }
+        },
+        "required": [
+          "active",
+          "agents"
+        ]
+      },
+      "result": "{}"
+    },
     "new_agent": {
       "description": "Starts an agent in a folder.",
       "who": [
@@ -3403,6 +3428,27 @@
           "id": {
             "type": "string",
             "description": "an `asks` item"
+          }
+        },
+        "required": [
+          "id"
+        ]
+      },
+      "result": "{}"
+    },
+    "ask_cancel": {
+      "description": "A file the user won't fill in: the agent hears they cancelled; the ask goes.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an `edit` item of `asks`"
           }
         },
         "required": [

@@ -127,9 +127,17 @@ fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
     command(&mut c, "mark_seen", json!({ "agent": agent }));
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(agent_item(&mut c, &agent)["unseen"], false, "done only once");
+    // The window says the user looks at it: `looking`, and no desktop notice of it done.
+    command(&mut c, "set_looking", json!({ "active": true, "agents": [agent] }));
+    until(&mut c, "agents", Duration::from_secs(5), "looked at", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["looking"] == true));
+    while d.said.try_recv().is_ok() {}
     // A turn that leaves a dev server running is done at once: it never ends by itself.
     command(&mut c, "send", json!({ "agent": agent, "text": "server" }));
     until(&mut c, "agents", Duration::from_secs(20), "done beside a dev server", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["unseen"] == true && a["busy"] == false));
+    let said: Vec<String> = d.said.try_iter().collect();
+    assert!(!said.iter().any(|l| l.ends_with(": Finished")), "no desktop notice of what the user looks at: {said:?}");
+    command(&mut c, "set_looking", json!({ "active": false, "agents": [] }));
+    until(&mut c, "agents", Duration::from_secs(5), "no longer looked at", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["looking"] == false));
     // Its plan, as a client sees it.
     command(&mut c, "send", json!({ "agent": agent, "text": "plan" }));
     let plan = until(&mut c, &format!("plan/{agent}"), Duration::from_secs(20), "the plan", |p| p.len() == 2);

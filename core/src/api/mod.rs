@@ -121,11 +121,12 @@ pub fn test_instance() -> bool {
     *TEST.get_or_init(|| std::env::var("LOOM_TEST_INSTANCE").as_deref() == Ok("1"))
 }
 
-/// Whether command `method` only reads (asked again and again, as `loom_wait` does): such
-/// a command is neither kept for a replay nor written to the audit log.
+/// Whether command `method` only reads (asked again and again, as `loom_wait` does), or only
+/// says what the window shows (`set_looking`, every 20 s): such a command is neither kept
+/// for a replay nor written to the audit log.
 pub fn reads_only(method: &str, params: &Value) -> bool {
     match method {
-        "blob" | "search_notes" => true,
+        "blob" | "search_notes" | "set_looking" => true,
         "tool" => matches!(params["name"].as_str(), Some("job_output" | "list_jobs" | "list_agents" | "notes_info" | "edit_state")),
         "bridge" => matches!(
             params["method"].as_str(),

@@ -10,8 +10,9 @@
 //!   `input`: a password, a y/n), its id in `job`; a UI opens it.
 //!
 //! Commands, for people (loom's window, the CLI, a web page): `ask_done {id}` (an edit filled
-//! in; an open or a notify seen, and gone), `ask_open {id}` (the file opened in the user's
-//! editor, on this computer).
+//! in; an open or a notify seen, and gone), `ask_cancel {id}` (an edit the user won't fill
+//! in: the agent hears so), `ask_open {id}` (the file opened in the user's editor, on this
+//! computer).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -167,32 +168,37 @@ pub fn tool(agent: &Agent, name: &str, params: &Value) -> Option<Result<Value, S
     })
 }
 
-/// Registers `ask_done` and `ask_open`.
+/// Ask `params.id` answered by a person: an edit's agent hears `state` (done or cancelled);
+/// the ask goes.
+fn settle(who: &Principal, params: &Value, state: &'static str) -> Result<Value, Error> {
+    if !matches!(who, Principal::Window | Principal::Cli) {
+        return Err(Error::Forbidden("asks, but for people".into()));
+    }
+    let id = params["id"].as_str().ok_or_else(|| Error::Invalid("which ask?".into()))?;
+    let store = store();
+    let item = store.get(id).ok_or_else(|| Error::NotFound(format!("ask {id}")))?;
+    if item["kind"] == "edit"
+        && let Some(n) = id.strip_prefix('a').and_then(|n| n.parse::<u64>().ok())
+    {
+        EDITS.with_borrow_mut(|e| {
+            if let Some(edit) = e.get_mut(&n) {
+                edit.1 = state;
+            }
+        });
+    }
+    store.remove(id);
+    PATHS.with_borrow_mut(|p| p.remove(id));
+    Ok(json!({}))
+}
+
+/// Registers `ask_done`, `ask_cancel` and `ask_open`.
 pub fn serve() {
     let hub = crate::api::hub();
     // There from the start (a UI follows it before anything is asked).
     hub.store("asks");
     let people = |who: &Principal| matches!(who, Principal::Window | Principal::Cli);
-    hub.handle("ask_done", move |who, params| {
-        if !people(who) {
-            return Err(Error::Forbidden("asks, but for people".into()));
-        }
-        let id = params["id"].as_str().ok_or_else(|| Error::Invalid("which ask?".into()))?;
-        let store = store();
-        let item = store.get(id).ok_or_else(|| Error::NotFound(format!("ask {id}")))?;
-        if item["kind"] == "edit"
-            && let Some(n) = id.strip_prefix('a').and_then(|n| n.parse::<u64>().ok())
-        {
-            EDITS.with_borrow_mut(|e| {
-                if let Some(edit) = e.get_mut(&n) {
-                    edit.1 = "done";
-                }
-            });
-        }
-        store.remove(id);
-        PATHS.with_borrow_mut(|p| p.remove(id));
-        Ok(json!({}))
-    });
+    hub.handle("ask_done", |who, params| settle(who, params, "done"));
+    hub.handle("ask_cancel", |who, params| settle(who, params, "cancelled"));
     hub.handle("ask_open", move |who, params| {
         if !people(who) {
             return Err(Error::Forbidden("asks, but for people".into()));
@@ -242,6 +248,12 @@ mod tests {
         let window = crate::api::hub().connect(Principal::Window);
         window.command("d1", "ask_done", json!({ "id": format!("a{id}") })).unwrap();
         assert_eq!(edit_state(1, &asked).unwrap()["state"], "done");
+        // Cancelled by a person: the agent hears that instead.
+        let refused = add_for(1, "one", "edit", Some(Path::new("/tmp/z.env")), "fill it");
+        EDITS.with_borrow_mut(|e| e.insert(refused, (1, "waiting")));
+        window.command("d2", "ask_cancel", json!({ "id": format!("a{refused}") })).unwrap();
+        assert_eq!(edit_state(1, &json!({ "id": refused })).unwrap()["state"], "cancelled");
+        assert!(store().get(&format!("a{refused}")).is_none(), "the ask gone");
         // Cancelled by its own agent: gone, path and all.
         let other = add_for(1, "one", "edit", Some(Path::new("/tmp/y.env")), "fill it");
         EDITS.with_borrow_mut(|e| e.insert(other, (1, "waiting")));

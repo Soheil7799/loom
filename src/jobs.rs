@@ -60,6 +60,8 @@ pub struct Tray {
     feed: RefCell<Option<crate::feed::Feed>>,
     /// Jobs removed while running: stopped, out of sight, taken out once they exit.
     removing: RefCell<Vec<Id>>,
+    /// A job to peek once its chip comes (asked for before `jobs` had it).
+    peek_due: Cell<Option<Id>>,
 }
 
 impl Tray {
@@ -88,7 +90,7 @@ impl Tray {
         let (core, events) = Jobs::new(cwd);
         // The core API publishes its jobs; the tray draws from what it publishes.
         drop(loom_core::jobs_api::published(&core, events));
-        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default(), removing: RefCell::default() });
+        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default(), removing: RefCell::default(), peek_due: Cell::new(None) });
         let weak = Rc::downgrade(&tray);
         *tray.feed.borrow_mut() = crate::feed::Feed::new("jobs", move || {
             if let Some(tray) = weak.upgrade() {
@@ -137,6 +139,10 @@ impl Tray {
                 None => self.add(id, item["name"].as_str().unwrap_or_default(), item["command"].as_str().unwrap_or_default()),
             };
             job.show(item);
+            if self.peek_due.get() == Some(id) {
+                self.peek_due.set(None);
+                self.peek(&job);
+            }
         }
         // Removed elsewhere (seen there once, gone now): its chip goes too.
         let gone: Vec<Rc<Job>> = self.jobs.borrow().iter().filter(|job| !job.state.borrow().is_empty() && !mine.iter().any(|item| item["id"].as_str() == Some(job.id.to_string().as_str()))).cloned().collect();
@@ -302,8 +308,9 @@ impl Tray {
     /// Peeks job `id` (an agent's that waits for the user to type).
     pub fn peek_id(&self, id: Id) {
         let job = self.jobs.borrow().iter().find(|j| j.id == id).cloned();
-        if let Some(job) = job {
-            self.peek(&job);
+        match job {
+            Some(job) => self.peek(&job),
+            None => self.peek_due.set(Some(id)),
         }
     }
 

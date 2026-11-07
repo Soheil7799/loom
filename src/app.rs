@@ -133,6 +133,16 @@ pub struct App {
     /// loomd's agents opened in the window (its client), and the one in view.
     remote_agents: RefCell<HashMap<u32, Rc<crate::remote_agent::RemoteAgent>>>,
     remote_focused: Cell<Option<u32>>,
+    /// loomd's agents' statuses as last drawn (a change may be worth a toast), and the agent
+    /// of loomd's the toast is about.
+    remote_status: RefCell<HashMap<u32, String>>,
+    toast_remote: Cell<Option<u32>>,
+    /// loomd's `asks`, followed: the ones acted on, whether the first came, and the edit the
+    /// files panel waits on (its number).
+    asks_feed: RefCell<Option<Feed>>,
+    asks_seen: RefCell<std::collections::HashSet<String>>,
+    asks_started: Cell<bool>,
+    asking_edit: Cell<Option<u64>>,
 }
 
 /// What the agents' side showed when the Notes view opened.
@@ -491,15 +501,27 @@ impl App {
             sidebar_due: Cell::new(false),
             remote_agents: RefCell::default(),
             remote_focused: Cell::new(None),
+            remote_status: RefCell::default(),
+            toast_remote: Cell::new(None),
+            asks_feed: RefCell::default(),
+            asks_seen: RefCell::default(),
+            asks_started: Cell::new(false),
+            asking_edit: Cell::new(None),
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
         this.wire_hub();
         let weak = Rc::downgrade(&this);
         *this.files.on_request.borrow_mut() = Some(Rc::new(move |id, done| {
-            if let Some(app) = weak.upgrade() {
-                app.edits.borrow_mut().insert(id, if done { "done" } else { "cancelled" });
+            let Some(app) = weak.upgrade() else { return };
+            // loomd's ask: answered there, then the next edit waiting, if any.
+            if crate::conn::is_remote() {
+                app.asking_edit.set(None);
+                crate::conn::command("asks", if done { "ask_done" } else { "ask_cancel" }, json!({ "id": format!("a{id}") }));
+                app.asks_changed();
+                return;
             }
+            app.edits.borrow_mut().insert(id, if done { "done" } else { "cancelled" });
         }));
         this.wire_history();
         this.wire_links();
@@ -566,6 +588,8 @@ impl App {
             this.restore();
             this.ws.serve_schedules();
             this.ws.serve_conversations();
+        } else {
+            this.wire_remote();
         }
         this
     }
@@ -1621,12 +1645,190 @@ impl App {
         }
         agent.chat.returned();
         self.chat_stack.set_visible_child(&agent.chat.root);
+        if self.toast_remote.get() == Some(id) {
+            self.hide_toast();
+        }
         // its header from the `agents` item, and the row marked
         self.draw_sidebar();
         if let Some(project) = agent.project() {
             self.show_tray(&project, &self.tray_for(&project));
         }
         agent.chat.input.grab_focus();
+    }
+
+    /// loomd's agent in view, if the window is in use and shows one.
+    fn remote_looked_at(&self) -> Option<u32> {
+        let id = self.remote_focused.get()?;
+        (self.window.is_active() && self.chat_stack.visible_child_name().as_deref() == Some(format!("remote-{id}").as_str())).then_some(id)
+    }
+
+    /// loomd is told what the window shows (it says nothing on the desktop about that, and
+    /// leaves questions to the window while it is in use). Said again every 20 s: loomd
+    /// forgets it after a minute (a window that crashed silences nothing for long).
+    fn tell_looking(&self) {
+        let agents: Vec<String> = self.remote_looked_at().map(|id| id.to_string()).into_iter().collect();
+        crate::conn::command("window", "set_looking", json!({ "active": self.window.is_active(), "agents": agents }));
+    }
+
+    /// The window as loomd's client: what it shows told to loomd, and loomd's `asks` acted on.
+    fn wire_remote(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        self.window.connect_is_active_notify(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.tell_looking();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.chat_stack.connect_visible_child_name_notify(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.tell_looking();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        glib::timeout_add_seconds_local(20, move || match weak.upgrade() {
+            Some(app) => {
+                app.tell_looking();
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        });
+        self.tell_looking();
+        let weak = Rc::downgrade(self);
+        *self.asks_feed.borrow_mut() = Feed::new("asks", move || {
+            if let Some(app) = weak.upgrade() {
+                app.asks_changed();
+            }
+        });
+    }
+
+    /// loomd's agent `id` went to `status`: a toast about it settled, or one shown (the window
+    /// in use, the agent out of view; else loomd says it on the desktop).
+    fn remote_changed(self: &Rc<Self>, id: u32, status: &str, item: &Value) {
+        let looking = self.remote_looked_at() == Some(id);
+        if self.toast_remote.get() == Some(id) && (looking || (self.toast_question.get() && status != "blocked")) {
+            self.hide_toast();
+        }
+        if !self.window.is_active() || looking {
+            return;
+        }
+        let title = item["title"].as_str().unwrap_or("An agent");
+        match status {
+            "blocked" if settings::get().notify_questions => self.show_remote_toast(id, &format!("{title} needs you"), true),
+            "failed" => self.show_remote_toast(id, &format!("{title} stopped: {}", item["failed"]["why"].as_str().unwrap_or("it failed")), false),
+            _ => {}
+        }
+    }
+
+    /// loomd's `asks` changed: the new ones done here (a file opened or to fill in, a job's
+    /// terminal shown, a toast), one edit at a time. Those there when the window came were
+    /// for then, but an edit an agent still waits for.
+    fn asks_changed(self: &Rc<Self>) {
+        let items: Vec<Value> = {
+            let feed = self.asks_feed.borrow();
+            let Some(feed) = feed.as_ref() else { return };
+            feed.update();
+            feed.items().clone()
+        };
+        // Known by id and time: a loomd started again counts its asks from a1 again.
+        let key = |item: &Value| format!("{}@{}", item["id"].as_str().unwrap_or_default(), item["at"]);
+        let keys: std::collections::HashSet<String> = items.iter().map(key).collect();
+        // The edit in the files panel, given up by its agent: its bar goes.
+        if let Some(n) = self.asking_edit.get()
+            && !items.iter().any(|i| i["id"].as_str() == Some(format!("a{n}").as_str()))
+        {
+            self.asking_edit.set(None);
+            self.files.end_request(n);
+        }
+        let first = !self.asks_started.replace(true);
+        let mut due: Vec<Value> = Vec::new();
+        {
+            let mut seen = self.asks_seen.borrow_mut();
+            seen.retain(|k| keys.contains(k));
+            for item in &items {
+                let id = key(item);
+                if seen.contains(&id) || item["state"] != "waiting" {
+                    continue;
+                }
+                let edit = item["kind"] == "edit";
+                if first && !edit {
+                    seen.insert(id);
+                    continue;
+                }
+                if edit && (self.files.requesting() || due.iter().any(|d| d["kind"] == "edit")) {
+                    continue;
+                }
+                seen.insert(id);
+                due.push(item.clone());
+            }
+        }
+        for item in due {
+            self.act_on_ask(&item);
+        }
+    }
+
+    /// One of loomd's asks, done here.
+    fn act_on_ask(self: &Rc<Self>, item: &Value) {
+        let id = item["id"].as_str().unwrap_or_default().to_owned();
+        let agent: Option<u32> = item["agent"].as_str().and_then(|a| a.parse().ok());
+        let title = item["title"].as_str().unwrap_or("An agent");
+        let message = item["message"].as_str().unwrap_or_default();
+        let path = item["path"].as_str().map(PathBuf::from);
+        let out_of_view = self.window.is_active() && agent.is_some() && self.remote_looked_at() != agent;
+        let done = |id: &str| crate::conn::command("asks", "ask_done", json!({ "id": id }));
+        // Shown without taking the keyboard from what the user is doing.
+        let focus = GtkWindowExt::focus(&self.window);
+        match item["kind"].as_str().unwrap_or_default() {
+            "open" => {
+                if let Some(path) = path
+                    && let Err(err) = self.files.open_for_agent(&path)
+                {
+                    crate::log::write("asks", &format!("{id}: {err}"));
+                }
+                done(&id);
+            }
+            "edit" => {
+                let (Some(path), Some(n)) = (path, id.strip_prefix('a').and_then(|n| n.parse::<u64>().ok())) else { return };
+                match self.files.request_edit(n, &path, &format!("{title} is waiting: {message}")) {
+                    Ok(()) => {
+                        self.asking_edit.set(Some(n));
+                        if out_of_view && let Some(agent) = agent {
+                            self.show_remote_toast(agent, &format!("{title} waits for you to fill in a file"), true);
+                        }
+                    }
+                    // Tried again when `asks` changes next (unsaved changes in the editor…).
+                    Err(err) => {
+                        crate::log::write("asks", &format!("{id}: {err}"));
+                        self.asks_seen.borrow_mut().remove(&format!("{id}@{}", item["at"]));
+                    }
+                }
+            }
+            "notify" => {
+                if out_of_view && let Some(agent) = agent {
+                    self.show_remote_toast(agent, &format!("{title}: {message}"), false);
+                }
+                done(&id);
+            }
+            "input" => {
+                let job = item["job"].as_str().and_then(|j| j.parse().ok());
+                let project = agent.and_then(|a| self.remote_project(a));
+                if let (Some(job), Some(project)) = (job, project) {
+                    self.tray_for(&project).peek_id(job);
+                }
+                done(&id);
+            }
+            _ => {}
+        }
+        if let Some(widget) = focus {
+            widget.grab_focus();
+        }
+    }
+
+    /// loomd's agent `id`'s project, as `agents` says.
+    fn remote_project(&self, id: u32) -> Option<PathBuf> {
+        let feeds = self.sidebar_feeds.borrow();
+        let (agents, _) = feeds.as_ref()?;
+        let id = id.to_string();
+        agents.items().iter().find(|a| a["id"].as_str() == Some(id.as_str()))?["project_id"].as_str().map(PathBuf::from)
     }
 
     fn show_files(&self, agent: &Rc<Agent>) {
@@ -2663,9 +2865,12 @@ impl App {
         go.connect_clicked(move |_| {
             let Some(app) = weak.upgrade() else { return };
             let agent = app.toast_agent.borrow().upgrade();
+            let remote = app.toast_remote.get();
             app.hide_toast();
             if let Some(agent) = agent {
                 app.focus(&agent);
+            } else if let Some(id) = remote {
+                app.focus_remote(id);
             }
         });
         let weak = Rc::downgrade(self);
@@ -2678,15 +2883,33 @@ impl App {
 
     /// The window is in use but `agent` is out of view: say it is waiting, here.
     pub fn show_toast(self: &Rc<Self>, agent: &Rc<Agent>, text: &str, question: bool) {
-        let waiting = self.toast_question.get()
-            && self.toast.reveals_child()
-            && self.toast_agent.borrow().upgrade().is_some_and(|a| a.status() == Status::Blocked);
-        if waiting && !question {
+        if self.toast_waits() && !question {
             return;
         }
+        *self.toast_agent.borrow_mut() = Rc::downgrade(agent);
+        self.toast_remote.set(None);
+        self.reveal_toast(text, question);
+    }
+
+    /// The same, about one of loomd's agents (the window as its client).
+    fn show_remote_toast(self: &Rc<Self>, id: u32, text: &str, question: bool) {
+        if self.toast_waits() && !question {
+            return;
+        }
+        *self.toast_agent.borrow_mut() = std::rc::Weak::new();
+        self.toast_remote.set(Some(id));
+        self.reveal_toast(text, question);
+    }
+
+    /// The toast shows a question still waiting (a lesser word doesn't replace it).
+    fn toast_waits(&self) -> bool {
+        let remote = self.toast_remote.get().is_some_and(|id| self.remote_status.borrow().get(&id).is_some_and(|s| s == "blocked"));
+        self.toast_question.get() && self.toast.reveals_child() && (remote || self.toast_agent.borrow().upgrade().is_some_and(|a| a.status() == Status::Blocked))
+    }
+
+    fn reveal_toast(self: &Rc<Self>, text: &str, question: bool) {
         self.toast_label.set_label(text);
         self.toast_question.set(question);
-        *self.toast_agent.borrow_mut() = Rc::downgrade(agent);
         self.toast.set_reveal_child(true);
         if let Some(old) = self.toast_timeout.take() {
             old.remove();
@@ -2704,6 +2927,7 @@ impl App {
     fn hide_toast(&self) {
         self.toast.set_reveal_child(false);
         *self.toast_agent.borrow_mut() = std::rc::Weak::new();
+        self.toast_remote.set(None);
         if let Some(source) = self.toast_timeout.take() {
             source.remove();
         }
@@ -3098,18 +3322,30 @@ impl App {
     /// The sidebar drawn from its copies of `agents` and `projects`.
     fn draw_sidebar(self: &Rc<Self>) {
         self.sidebar_due.set(false);
+        // loomd's agents whose status changed (the window as its client)
+        let mut changed = Vec::new();
         let (agents, projects): (Vec<SideAgent>, Vec<SideProject>) = {
             let feeds = self.sidebar_feeds.borrow();
             let Some((agents, projects)) = feeds.as_ref() else { return };
             agents.update();
             projects.update();
             for item in agents.items().iter() {
-                if let Some(agent) = item["id"].as_str().and_then(|id| id.parse().ok()).and_then(|id: u32| self.remote_agents.borrow().get(&id).cloned()) {
+                let Some(id) = item["id"].as_str().and_then(|id| id.parse::<u32>().ok()) else { continue };
+                if let Some(agent) = self.remote_agents.borrow().get(&id).cloned() {
                     agent.update(item);
+                }
+                if crate::conn::is_remote() {
+                    let status = item["status"].as_str().unwrap_or_default().to_owned();
+                    if self.remote_status.borrow_mut().insert(id, status.clone()).is_some_and(|before| before != status) {
+                        changed.push((id, status, item.clone()));
+                    }
                 }
             }
             (agents.items().iter().filter_map(SideAgent::from).collect(), projects.items().iter().filter_map(SideProject::from).collect())
         };
+        for (id, status, item) in changed {
+            self.remote_changed(id, &status, &item);
+        }
         self.refresh_title();
         if self.notes_mode.get() {
             let (mut working, mut waiting) = (0, 0);

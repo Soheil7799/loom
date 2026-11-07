@@ -771,6 +771,17 @@ Who: window, cli, bridge. Result: `{}`.
 |---|---|---|
 | `agent` | string | the agent's id |
 
+### `set_looking`
+
+What loom's window shows (loomd: no desktop notice about those agents, none of a question while the window is in use). Said again within a minute, else forgotten.
+
+Who: window. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `active` | boolean | the window is in use |
+| `agents` | array | the agents' ids in view |
+
 ### `new_agent`
 
 Starts an agent in a folder.
@@ -1314,6 +1325,16 @@ Who: window, cli. Result: `{}`.
 | Param | Type | |
 |---|---|---|
 | `id` | string | an `asks` item |
+
+### `ask_cancel`
+
+A file the user won't fill in: the agent hears they cancelled; the ask goes.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `id` | string | an `edit` item of `asks` |
 
 ### `ask_open`
 

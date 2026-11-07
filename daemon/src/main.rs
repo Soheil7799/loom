@@ -47,10 +47,28 @@ struct Daemon {
     saving: std::cell::Cell<bool>,
     /// `agents` is due to be published again, once the core's thread is idle.
     publishing: std::cell::Cell<bool>,
+    /// What loom's window last said it shows (`set_looking`): whether it is in use, the agents
+    /// in view, and when it said so.
+    looking: RefCell<(bool, Vec<u32>, std::time::Instant)>,
     me: Weak<Daemon>,
 }
 
+/// How long the window's `set_looking` holds: it says it again more often, so a window that
+/// crashed keeps nothing quiet for longer than this.
+const LOOKING_FOR: std::time::Duration = std::time::Duration::from_secs(60);
+
 impl Daemon {
+    /// Loom's window is in use (it shows its own notices then, not the desktop's).
+    fn window_active(&self) -> bool {
+        let looking = self.looking.borrow();
+        looking.0 && looking.2.elapsed() < LOOKING_FOR
+    }
+
+    /// The user has agent `id` in front of them, in loom's window.
+    fn looking_at(&self, id: u32) -> bool {
+        self.window_active() && self.looking.borrow().1.contains(&id)
+    }
+
     fn save(&self) {
         state::save(&self.app_id, &self.ws.layout(None, None, self.size));
     }
@@ -102,7 +120,7 @@ impl Daemon {
         let found = self.ws.agent(agent).or_else(|| self.notes.agents().into_iter().find(|a| a.id == agent));
         let found = found.ok_or("this agent is no longer open in loom")?;
         let asked = loom_core::asks::tool(&found, name, params).ok_or_else(|| format!("unknown request {name}"))?;
-        if asked.is_ok() && matches!(name, "request_edit" | "notify" | "open_file" | "show_job") {
+        if asked.is_ok() && matches!(name, "request_edit" | "notify" | "open_file" | "show_job") && !self.window_active() {
             let what = match name {
                 "request_edit" => "waits for you to fill in a file",
                 "show_job" => "waits for you to type in a job's terminal",
@@ -138,8 +156,8 @@ impl Host for Daemon {
     }
 
     fn agent_event(&self, agent: &Rc<Agent>, event: Event) {
-        // Nobody looks at it in a window: the bridges always may tell.
-        self.bridges.agent_event(agent, &event, false);
+        let looking = self.looking_at(agent.id);
+        self.bridges.agent_event(agent, &event, looking);
         // A copy (rewind, fork) opens beside it, as in the window.
         if let Event::Forked(saved) = &event {
             self.ws.add_agent(saved.clone());
@@ -152,12 +170,15 @@ impl Host for Daemon {
                 _ => {}
             }
         }
+        // As the window does: nothing about what the user looks at; a question the window
+        // shows itself while in use.
         if let Event::Asked(title) = &event
             && loom_core::settings::get().notify_questions
+            && !self.window_active()
         {
             desktop(&agent.title(), &format!("Wants to: {title}"));
         }
-        if matches!(event, Event::Done) && loom_core::settings::get().notify_done {
+        if matches!(event, Event::Done) && loom_core::settings::get().notify_done && !looking {
             desktop(&agent.title(), "Finished");
         }
         self.publish_soon();
@@ -307,8 +328,11 @@ async fn run() -> u8 {
         size,
         saving: std::cell::Cell::new(false),
         publishing: std::cell::Cell::new(false),
+        looking: RefCell::new((false, Vec::new(), std::time::Instant::now())),
         me: me.clone(),
     });
+    let weak = Rc::downgrade(&daemon);
+    *ws.looking.borrow_mut() = Some(Rc::new(move |agent| weak.upgrade().is_some_and(|d| d.looking_at(agent.id))));
     let host: Rc<dyn Host> = daemon.clone();
     ws.set_host(Rc::downgrade(&host));
     commands(&daemon);
@@ -388,6 +412,19 @@ async fn run() -> u8 {
 fn commands(daemon: &Rc<Daemon>) {
     let hub = loom_core::api::hub();
     let human = |who: &Principal| matches!(who, Principal::Window | Principal::Cli);
+    let weak = Rc::downgrade(daemon);
+    hub.handle("set_looking", move |who, params| {
+        // (the CLI too in a test instance, so the end-to-end tests can say it)
+        if !matches!(who, Principal::Window) && !(*who == Principal::Cli && loom_core::api::test_instance()) {
+            return Err(Error::Forbidden("set_looking: loom's window only".into()));
+        }
+        let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+        let active = params["active"].as_bool().ok_or_else(|| Error::Invalid("set_looking needs active".into()))?;
+        let agents = params["agents"].as_array().into_iter().flatten().filter_map(|a| a.as_str()?.parse().ok()).collect();
+        *daemon.looking.borrow_mut() = (active, agents, std::time::Instant::now());
+        daemon.publish_soon();
+        Ok(serde_json::json!({}))
+    });
     let weak = Rc::downgrade(daemon);
     hub.handle("new_agent", move |who, params| {
         if !human(who) {
