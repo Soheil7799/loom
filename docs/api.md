@@ -1261,13 +1261,15 @@ Who: window, cli. Result: `{text}`, once done.
 
 The newest commits.
 
-Who: window, cli. Result: `{commits: [{graph, hash, refs, subject, author, when}]}`, once done.
+Who: window, cli. Result: `{commits: [{graph, hash, refs, subject, author, when, parents}]}`, once done.
 
 | Param | Type | |
 |---|---|---|
 | `repo` | string |  |
 | `limit` | integer? | 200; 2000 tops |
 | `graph` | boolean? | every branch, with the graph drawn before each line |
+| `all` | boolean? | every branch (no graph drawn) |
+| `skip` | integer? | the newest ones left out: the next page |
 
 ### `ask_done`
 

@@ -1040,13 +1040,17 @@ export type GitShowParams = {
   hash: string;
 };
 
-/** The newest commits. Result: {commits: [{graph, hash, refs, subject, author, when}]} */
+/** The newest commits. Result: {commits: [{graph, hash, refs, subject, author, when, parents}]} */
 export type GitLogParams = {
   repo: string;
   /** 200; 2000 tops */
   limit?: number;
   /** every branch, with the graph drawn before each line */
   graph?: boolean;
+  /** every branch (no graph drawn) */
+  all?: boolean;
+  /** the newest ones left out: the next page */
+  skip?: number;
 };
 
 /** An ask answered: a file filled in (the agent goes on), or one seen (it goes). Result: {} */

@@ -46,7 +46,7 @@ button { font: inherit; color: inherit; cursor: pointer; }
 /* the right panel: on the sidebars' colour, as the left one */
 .panel { display: flex; flex-direction: column; min-width: 0; min-height: 0; padding: 10px 0 0; background: var(--sidebar); }
 .panel-head { display: flex; align-items: center; gap: 4px; padding: 0 10px 8px; }
-.panel-head .tabs button { padding: 3px 8px; }
+.panel-head .tabs button { padding: 3px 6px; }
 .editor-pane .ebar { flex-wrap: wrap; }
 .editor-pane .ebar code { flex: 1 1 100%; }
 .editor-pane .ebar .btn { white-space: nowrap; }
@@ -599,3 +599,27 @@ select.chip option { color: var(--fg); background: var(--pane); }
 .history-body .controls { display: flex; align-items: center; gap: 14px; margin: 8px 0 12px; }
 .history-body .find { flex: 1; max-width: 360px; border: 1px solid var(--control-line); border-radius: var(--r-control); background: var(--window); padding: 5px 9px; }
 .history-body .change-row.undone { opacity: 0.55; }
+/* the commit graph: the lanes drawn behind the rows */
+.panel-body.fill { display: flex; flex-direction: column; overflow: hidden; }
+.graph-bar { display: flex; align-items: center; gap: 8px; padding: 0 12px 6px; }
+.ggraph { flex: 1; min-height: 0; overflow: auto; position: relative; }
+.ggraph.wide { cursor: grab; user-select: none; }
+.ggraph.wide:active { cursor: grabbing; }
+.gcanvas { position: relative; margin: 0 6px; }
+.ggraph.wide .gcanvas { min-width: 900px; }
+.glines { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.glines path { fill: none; stroke-width: 2; opacity: 0.85; }
+.glines path.near { stroke-width: 3.2; opacity: 1; }
+.gitrow { position: absolute; left: 0; right: 0; height: var(--row); display: flex; align-items: center; gap: 6px; padding: 0 8px 0 calc(var(--lanes) + 8px); border: 0; border-radius: 6px; background: none; color: var(--fg); font-size: 13px; text-align: left; white-space: nowrap; }
+.gitrow:hover, .gitrow.on { background: color-mix(in srgb, var(--fg) 6%, transparent); }
+.gsubject { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.ghash { flex: none; font-family: var(--mono); font-size: 11.5px; color: var(--quiet); }
+.gwho { flex: none; width: 140px; overflow: hidden; text-overflow: ellipsis; color: var(--quiet); font-size: 12.5px; }
+.gwhen { flex: none; width: 110px; color: var(--quiet); font-size: 12.5px; }
+.gref { flex: none; padding: 0 6px; border-radius: 5px; font-size: 11.5px; line-height: 18px; border: 1px solid color-mix(in srgb, var(--c) 60%, transparent); background: color-mix(in srgb, var(--c) 18%, transparent); }
+.gref.head { font-weight: 600; background: color-mix(in srgb, var(--c) 35%, transparent); }
+.gref.remote { border-style: dashed; background: none; }
+.gref.tag { border-radius: 9px; }
+.gmore { padding: 6px 14px; }
+.graph-window { display: flex; flex-direction: column; }
+.graph-window .ggraph { flex: 1; }

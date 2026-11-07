@@ -3292,13 +3292,21 @@
           "graph": {
             "type": "boolean",
             "description": "every branch, with the graph drawn before each line"
+          },
+          "all": {
+            "type": "boolean",
+            "description": "every branch (no graph drawn)"
+          },
+          "skip": {
+            "type": "integer",
+            "description": "the newest ones left out: the next page"
           }
         },
         "required": [
           "repo"
         ]
       },
-      "result": "{commits: [{graph, hash, refs, subject, author, when}]}"
+      "result": "{commits: [{graph, hash, refs, subject, author, when, parents}]}"
     },
     "ask_done": {
       "description": "An ask answered: a file filled in (the agent goes on), or one seen (it goes).",

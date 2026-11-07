@@ -9,6 +9,7 @@
   import Icon from "./Icon.svelte";
   import Scribe from "./Scribe.svelte";
   import DiffDialog from "./DiffDialog.svelte";
+  import GitGraph from "./GitGraph.svelte";
 
   type Tab = "agent" | "project" | "changes" | "graph" | "notes";
   let { agent, projects, tab = $bindable("agent"), open, mention, comment }: {
@@ -83,12 +84,11 @@
   let repos = $state.raw<Repo[]>([]);
   let repo = $state("");
   let message = $state("");
-  let commits = $state.raw<{ graph?: string; hash: string | null; refs: string; subject: string; author: string; when: string }[]>([]);
+  let bigGraph = $state(false);
   async function loadGit() {
     const got = await call(command("git_repos", { project }));
     repos = got?.repos ?? [];
     if (!repos.some((r) => r.path === repo)) repo = repos[0]?.path ?? "";
-    if (tab === "graph" && repo) commits = (await call(command("git_log", { repo, limit: 200, graph: true })))?.commits ?? [];
   }
   $effect(() => { if ((tab === "changes" || tab === "graph") && project) untrack(loadGit); });
   const current = $derived(repos.find((r) => r.path === repo));
@@ -128,7 +128,7 @@
   {/if}
   {#if problem}<p class="error" role="alert">{problem}</p>{/if}
 
-  <div class="panel-body">
+  <div class="panel-body" class:fill={tab === "graph"}>
     {#if tab === "agent"}
       <p class="caption">Written by this agent</p>
       {#each written ?? [] as f (f.path)}
@@ -178,13 +178,12 @@
         {/if}
       </div>
     {:else if tab === "graph"}
-      <div class="git">
-        {#each commits as c, i (i)}
-          <p class="commitrow"><span class="graph">{c.graph}</span>{#if c.hash}<button class="trow commitbtn" title="See this commit" onclick={() => showCommit(c.hash!)}><code>{c.hash}</code>{#each (c.refs ?? "").split(", ").filter(Boolean) as r (r)}<span class="refs" class:head={r.startsWith("HEAD")} class:tag={r.startsWith("tag:")}>{r.replace("HEAD -> ", "")}</span>{/each} {c.subject} <span class="quiet">· {c.author}, {c.when}</span></button>{/if}</p>
-        {:else}
-          <p class="empty small">{current ? "Reading…" : "No git repository in this project."}</p>
-        {/each}
-      </div>
+      {#if repo}
+        <div class="graph-bar"><span class="quiet small">{current ? `⎇ ${current.branch}` : ""}</span><span class="grow"></span><button class="btn small" title="The whole graph, big: drag it around" onclick={() => (bigGraph = true)}>Expand</button></div>
+        {#key repo}<GitGraph {repo} open={showCommit} />{/key}
+      {:else}
+        <p class="empty small">No git repository in this project.</p>
+      {/if}
     {:else}
       <Scribe />
     {/if}
@@ -203,6 +202,14 @@
   {/if}
 </aside>
 
+{#if bigGraph && repo}
+  <div class="scrim top" role="presentation" onclick={() => (bigGraph = false)}></div>
+  <!-- svelte-ignore a11y_autofocus -->
+  <div class="diff-window graph-window" role="dialog" aria-modal="true" aria-label="Commit graph" tabindex="-1" autofocus onkeydown={(e) => e.key === "Escape" && !dialog && (bigGraph = false)}>
+    <div class="ebar"><code>{current?.name ?? ""} · every branch</code><span class="quiet small">drag to move around · click a commit to open it</span><span class="grow"></span><button class="btn small" onclick={() => (bigGraph = false)}>Close</button></div>
+    <GitGraph {repo} wide open={showCommit} />
+  </div>
+{/if}
 {#if dialog}
   {@const f = dialog.file}
   <DiffDialog title={dialog.title} text={dialog.text} about={dialog.about}

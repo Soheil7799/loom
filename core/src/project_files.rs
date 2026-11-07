@@ -175,11 +175,15 @@ fn act(repo: &Path, act: &str, files: &[String], message: &str) -> Result<Value,
     git(repo, &args).map(|_| json!({})).map_err(Error::Failed)
 }
 
-fn log(repo: &Path, limit: usize, graph: bool) -> Result<Value, Error> {
-    let n = limit.to_string();
-    let mut args = vec!["-c", "core.quotePath=false", "log", "--date-order", "-n", &n, "--format=%x1e%h%x1f%D%x1f%s%x1f%an%x1f%ar"];
+fn log(repo: &Path, limit: usize, skip: usize, graph: bool, all: bool) -> Result<Value, Error> {
+    let (n, skip) = (limit.to_string(), format!("--skip={skip}"));
+    // --date-order: never a parent before all its children (a page draws the lanes from it)
+    let mut args = vec!["-c", "core.quotePath=false", "log", "--date-order", "-n", &n, &skip, "--format=%x1e%h%x1f%D%x1f%s%x1f%an%x1f%ar%x1f%p"];
     if graph {
-        args.extend(["--graph", "--all"]);
+        args.push("--graph");
+    }
+    if graph || all {
+        args.push("--all");
     }
     let out = git(repo, &args).map_err(Error::Failed)?;
     Ok(json!({ "commits": log_lines(&out) }))
@@ -192,7 +196,8 @@ fn log_lines(out: &str) -> Vec<Value> {
         .map(|l| match l.split_once('\u{1e}') {
             Some((graph, rest)) => {
                 let f: Vec<&str> = rest.split('\u{1f}').collect();
-                json!({ "graph": graph, "hash": f.first(), "refs": f.get(1), "subject": f.get(2), "author": f.get(3), "when": f.get(4) })
+                let parents: Vec<&str> = f.get(5).map(|p| p.split_whitespace().collect()).unwrap_or_default();
+                json!({ "graph": graph, "hash": f.first(), "refs": f.get(1), "subject": f.get(2), "author": f.get(3), "when": f.get(4), "parents": parents })
             }
             None => json!({ "graph": l, "hash": null }),
         })
@@ -276,8 +281,9 @@ pub fn serve() {
         ("git_log", |p, ps| {
             let repo = inside(string(p, "repo")?, ps)?;
             let limit = p["limit"].as_u64().unwrap_or(200).min(2000) as usize;
-            let graph = p["graph"].as_bool() == Some(true);
-            Ok(Box::new(move || log(&repo, limit, graph)))
+            let (graph, all) = (p["graph"].as_bool() == Some(true), p["all"].as_bool() == Some(true));
+            let skip = p["skip"].as_u64().unwrap_or(0) as usize;
+            Ok(Box::new(move || log(&repo, limit, skip, graph, all)))
         }),
     ];
     for (name, check) in commands {
@@ -328,7 +334,8 @@ mod tests {
         write(&file, "two", Some(first)).unwrap();
         assert_eq!(list(&project).unwrap()["entries"][0]["name"], "src", "folders first");
         assert_eq!(score("src/main.rs", "main"), Some("src/main.rs".len()));
-        let lines = log_lines("* \u{1e}abc\u{1f}HEAD -> main\u{1f}two\u{1f}me\u{1f}now\n|\\\n");
+        let lines = log_lines("* \u{1e}abc\u{1f}HEAD -> main\u{1f}two\u{1f}me\u{1f}now\u{1f}a1 b2\n|\\\n");
+        assert_eq!(lines[0]["parents"], json!(["a1", "b2"]), "a merge's parents");
         assert_eq!((lines[0]["graph"].as_str(), lines[0]["hash"].as_str(), lines[0]["subject"].as_str()), (Some("* "), Some("abc"), Some("two")));
         assert!(lines[1]["hash"].is_null(), "a line of graph alone");
         assert_eq!(bytes(&file).unwrap()["data"], crate::api::wire::base64(b"two"));
