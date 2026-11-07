@@ -41,6 +41,7 @@ pub const SECTIONS: &[(&str, &[(&str, &str)])] = &[
             ("Ctrl+F", "Find in the conversation"),
             ("Page Up / Page Down", "Scroll the conversation"),
             ("Ctrl+↑ / Ctrl+↓", "Your previous / next message"),
+            ("F8 / Shift+F8", "The next / previous question or failure"),
             ("Ctrl+Home / Ctrl+End", "Top / latest"),
             ("Ctrl+V", "Paste an image"),
             ("/clear", "A fresh conversation here"),

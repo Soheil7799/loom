@@ -321,10 +321,13 @@
     if (!active) return;
     if (e.key === "F2" && naming === null && agent.status !== "notes") { e.preventDefault(); naming = agent.title; return; }
     if ((e.ctrlKey || e.metaKey) && e.key === "f" && !e.altKey && !e.shiftKey) { e.preventDefault(); finding = true; queueMicrotask(() => findEl?.focus()); return; }
-    if (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown") || !box) return;
+    // Alt+Up/Down, or F8 / Shift+F8 as the window has it: the previous or next question or failure
+    const f8 = e.key === "F8" && !e.altKey && !e.ctrlKey;
+    if ((!f8 && (!e.altKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown"))) || !box) return;
+    const down = f8 ? !e.shiftKey : e.key === "ArrowDown";
     const top = box.getBoundingClientRect().top, at = box.scrollTop + 120;
     const marks = [...box.querySelectorAll<HTMLElement>('[data-bead="wait"], [data-bead="fail"]')].map((m) => m.getBoundingClientRect().top - top + box!.scrollTop);
-    const to = e.key === "ArrowDown" ? marks.find((y) => y > at + 4) : marks.reverse().find((y) => y < at - 4);
+    const to = down ? marks.find((y) => y > at + 4) : marks.reverse().find((y) => y < at - 4);
     if (to !== undefined) { box.scrollTo({ top: to - 120, behavior: "smooth" }); e.preventDefault(); }
   }
 </script>

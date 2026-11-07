@@ -38,6 +38,21 @@ thread_local! {
     static LIMITS: RefCell<serde_json::Value> = const { RefCell::new(serde_json::Value::Null) };
 }
 
+/// Whether `widget` or a widget inside it has the CSS class.
+fn has_class_inside(widget: &gtk::Widget, class: &str) -> bool {
+    if widget.has_css_class(class) {
+        return true;
+    }
+    let mut child = widget.first_child();
+    while let Some(c) = child {
+        if has_class_inside(&c, class) {
+            return true;
+        }
+        child = c.next_sibling();
+    }
+    false
+}
+
 /// A link clicked in chat text: files go to the app, the web to the browser (GTK's default).
 fn link_clicked(label: &gtk::Label, uri: &str) -> glib::Propagation {
     let web = ["http://", "https://", "mailto:"].iter().any(|p| uri.starts_with(p));
@@ -144,6 +159,11 @@ pub struct Chat {
     input_column: gtk::Box,
     /// Where the next tool call goes, until something else is said.
     group: RefCell<Option<Rc<ToolGroup>>>,
+    /// The turn going on: your message that opened it, its tool calls so far, and Claude's
+    /// last message in it (a finished turn folds to one line of it when the next one opens).
+    turn_start: RefCell<Option<gtk::Widget>>,
+    turn_steps: Cell<usize>,
+    turn_result: RefCell<Option<Rc<Message>>>,
     stick: Rc<Cell<bool>>,
     /// A follow is due once the layout settles.
     follow_pending: Cell<bool>,
@@ -572,6 +592,9 @@ impl Chat {
             input,
             last: RefCell::new(Last::None),
             group: RefCell::default(),
+            turn_start: RefCell::default(),
+            turn_steps: Cell::new(0),
+            turn_result: RefCell::default(),
             tools: RefCell::default(),
             entries: RefCell::default(),
             entry_images: RefCell::default(),
@@ -1127,6 +1150,8 @@ impl Chat {
                 }
             }
             gdk::Key::Up | gdk::Key::Down if ctrl => self.jump_message(key == gdk::Key::Down),
+            // F8, Shift+F8: the next or previous question or failure
+            gdk::Key::F8 => self.jump_attention(!shift),
             // Earlier messages, from the first line up (and back down from the last).
             gdk::Key::Up if self.cursor_on_edge(true) && self.recall(true) => {}
             gdk::Key::Down if self.history_at.get().is_some() && self.cursor_on_edge(false) && self.recall(false) => {}
@@ -1211,6 +1236,79 @@ impl Chat {
         } else if down {
             self.scroll_to_latest();
         }
+    }
+
+    /// The next (`down`) or previous question waiting or failed tool call in the conversation.
+    fn jump_attention(&self, down: bool) {
+        let adj = self.scroller.vadjustment();
+        let now = adj.value();
+        let mut tops = Vec::new();
+        let mut child = self.list.first_child();
+        while let Some(widget) = child {
+            if widget.is_visible()
+                && (widget.has_css_class("permission-card") || has_class_inside(&widget, "failed"))
+                && let Some(point) = widget.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0))
+            {
+                tops.push(f64::from(point.y()) - 12.0);
+            }
+            child = widget.next_sibling();
+        }
+        let target = if down { tops.into_iter().find(|y| *y > now + 4.0) } else { tops.into_iter().rev().find(|y| *y < now - 4.0) };
+        if let Some(y) = target {
+            self.stick.set(false);
+            adj.set_value(y.clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
+        }
+    }
+
+    /// The turn that went on, folded now another opens (as the web page's): your message
+    /// stays, then one line ("✓ how it ended · N steps"); a click opens it again. Not while
+    /// Claude still works on it (a message sent into the running turn), nor one that holds a
+    /// question or a failure: those stay open.
+    fn fold_turn(&self) {
+        let Some(start) = self.turn_start.take() else { return };
+        let (steps, result) = (self.turn_steps.replace(0), self.turn_result.take());
+        if self.working_since.get().is_some() || start.parent().as_ref() != Some(self.list.upcast_ref()) {
+            return;
+        }
+        let mut body = Vec::new();
+        let mut child = start.next_sibling();
+        while let Some(widget) = child {
+            if widget.has_css_class("permission-card") || has_class_inside(&widget, "failed") {
+                return;
+            }
+            child = widget.next_sibling();
+            if widget.is_visible() {
+                body.push(widget);
+            }
+        }
+        if body.is_empty() || (steps == 0 && body.len() <= 2) {
+            return;
+        }
+        let said = result.map(|m| m.text.borrow().lines().map(|l| l.trim().trim_start_matches(['#', '*', '>', '-', ' '])).find(|l| !l.is_empty()).unwrap_or("").replace(['`', '*'], "")).unwrap_or_default();
+        let said: String = if said.chars().count() > 110 { format!("{}…", said.chars().take(110).collect::<String>()) } else { said };
+        let steps = match steps {
+            0 => String::new(),
+            1 => " · 1 step".to_owned(),
+            n => format!(" · {n} steps"),
+        };
+        let line = gtk::Button::builder().tooltip_text("The whole turn (a click opens or folds it)").build();
+        line.add_css_class("flat");
+        line.add_css_class("turn-fold");
+        let label = gtk::Label::builder().label(format!("✓ {said}{steps}  ›")).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        line.set_child(Some(&label));
+        self.list.insert_child_after(&line, Some(&start));
+        for widget in &body {
+            widget.set_visible(false);
+        }
+        let open = Cell::new(false);
+        line.connect_clicked(move |_| {
+            let now = !open.get();
+            open.set(now);
+            for widget in &body {
+                widget.set_visible(now);
+            }
+            label.set_label(&format!("✓ {said}{steps}  {}", if now { "⌄" } else { "›" }));
+        });
     }
 
     /// The messages waiting for the turn to end (an empty one: a `!command`'s output), each
@@ -2035,6 +2133,9 @@ impl Chat {
         }
         *self.last.borrow_mut() = Last::None;
         self.group.take();
+        self.turn_start.take();
+        self.turn_result.take();
+        self.turn_steps.set(0);
         self.messages.borrow_mut().clear();
         self.tools.borrow_mut().clear();
         self.entries.borrow_mut().clear();
@@ -2327,6 +2428,7 @@ impl Chat {
                 wrap.add_overlay(&copy);
                 self.list.append(&wrap);
                 let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
+                *self.turn_result.borrow_mut() = Some(message.clone());
                 message_menu(&wrap, &message, &self.input, vec![("Copy the whole message", copy.clone())]);
                 let weak = Rc::downgrade(&message);
                 copy.connect_clicked(move |button| {
@@ -2340,6 +2442,7 @@ impl Chat {
                 return message;
             }
             Kind::User => {
+                self.fold_turn();
                 body.add_css_class("msg-user");
                 let wrap = gtk::Overlay::builder().child(&body).build();
                 wrap.add_css_class("msg-wrap");
@@ -2361,6 +2464,7 @@ impl Chat {
                 }
                 wrap.add_overlay(&actions);
                 self.list.append(&wrap);
+                *self.turn_start.borrow_mut() = Some(wrap.clone().upcast());
                 let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default() });
                 message_menu(
                     &wrap,
@@ -2503,6 +2607,7 @@ impl Chat {
             });
             group.cards_box.append(&card.root);
             group.cards.borrow_mut().push(card.clone());
+            self.turn_steps.set(self.turn_steps.get() + 1);
             *card.group.borrow_mut() = Rc::downgrade(&group);
             self.tools.borrow_mut().insert(id.to_owned(), card.clone());
             card
