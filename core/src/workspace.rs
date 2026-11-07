@@ -290,6 +290,7 @@ impl Workspace {
                     "questions": agent.open_questions().len(),
                     "used": crate::api::time(agent.used.get() as i64),
                     "project_id": agent.project.to_string_lossy(),
+                    "cwd": agent.cwd.to_string_lossy(),
                     "place": agent.place(),
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),

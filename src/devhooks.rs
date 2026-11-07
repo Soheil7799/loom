@@ -208,7 +208,16 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "click" => {
             let mut found = Vec::new();
             // In any window (settings…), the main one last so its buttons win.
-            let test = |w: &gtk::Widget| w.downcast_ref::<gtk::Button>().and_then(|b| b.label()).is_some_and(|l| l == argument);
+            // By its label, or the first text inside it (a menu's rows).
+            let test = |w: &gtk::Widget| {
+                let Some(button) = w.downcast_ref::<gtk::Button>() else { return false };
+                if button.label().is_some_and(|l| l == argument) {
+                    return true;
+                }
+                let mut texts = Vec::new();
+                collect_text(w, &mut texts);
+                texts.first().is_some_and(|t| t == argument)
+            };
             for window in gtk::Window::list_toplevels().into_iter().filter(|w| w != app.window.upcast_ref::<gtk::Widget>()) {
                 collect(&window, &test, &mut found);
             }

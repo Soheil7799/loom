@@ -266,6 +266,10 @@
             "type": "string",
             "description": "its project's id (folder)"
           },
+          "cwd": {
+            "type": "string",
+            "description": "the folder it works in (its project's, or a worktree of it)"
+          },
           "status": {
             "type": "string",
             "description": "idle, working, asking, suspended, …"
@@ -336,6 +340,7 @@
           "title",
           "project",
           "project_id",
+          "cwd",
           "status",
           "unseen",
           "busy",

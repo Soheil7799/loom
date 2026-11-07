@@ -35,6 +35,7 @@ Who: window, cli, bridge, agent.
 | `title` | string |  |
 | `project` | string | its project's name |
 | `project_id` | string | its project's id (folder) |
+| `cwd` | string | the folder it works in (its project's, or a worktree of it) |
 | `status` | string | idle, working, asking, suspended, … |
 | `unseen` | boolean | something new the user hasn't seen |
 | `busy` | boolean | a turn under way |

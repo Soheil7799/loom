@@ -65,6 +65,11 @@ impl Feed {
         }
     }
 
+    /// Whether its copy is whole (a snapshot came in full, no resync since).
+    pub fn synced(&self) -> bool {
+        self.mirror.borrow().synced
+    }
+
     pub fn items(&self) -> Ref<'_, Vec<Value>> {
         Ref::map(self.mirror.borrow(), |m| &m.items)
     }

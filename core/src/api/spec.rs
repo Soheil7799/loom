@@ -264,6 +264,7 @@ pub const RESOURCES: &[Resource] = &[
             ("title", "string", true, ""),
             ("project", "string", true, "its project's name"),
             ("project_id", "string", true, "its project's id (folder)"),
+            ("cwd", "string", true, "the folder it works in (its project's, or a worktree of it)"),
             ("status", "string", true, "idle, working, asking, suspended, …"),
             ("unseen", "boolean", true, "something new the user hasn't seen"),
             ("busy", "boolean", true, "a turn under way"),
