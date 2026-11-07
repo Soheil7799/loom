@@ -100,12 +100,14 @@ pub struct Follow {
     store: Store,
     chat: Weak<Chat>,
     of: Of,
+    /// What came, kept (a conversation's entries: what its questions and messages are).
+    mirror: RefCell<loom_core::api::Mirror>,
 }
 
 impl Follow {
     /// Follows `resource` for `chat` (None: no such resource).
     pub fn start(resource: &str, of: Of, chat: &Rc<Chat>) -> Option<Rc<Follow>> {
-        let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(resource), chat: Rc::downgrade(chat), of });
+        let follow = Rc::new(Follow { sub: RefCell::default(), store: loom_core::api::hub().store(resource), chat: Rc::downgrade(chat), of, mirror: RefCell::default() });
         let weak = Rc::downgrade(&follow);
         let sub = crate::conn::subscribe(resource, move || {
             if let Some(follow) = weak.upgrade() {
@@ -127,6 +129,7 @@ impl Follow {
             None => return,
         };
         for message in messages {
+            self.mirror.borrow_mut().apply(&message);
             match message.body {
                 // A snapshot (the first, or after a resync): what isn't drawn yet is.
                 Body::Page { items } => items.iter().for_each(|item| self.item(&chat, item)),
@@ -142,6 +145,11 @@ impl Follow {
                 _ => {}
             }
         }
+    }
+
+    /// Its items as they are now (a conversation: its entries).
+    pub fn items(&self) -> Vec<Value> {
+        self.mirror.borrow().items.clone()
     }
 
     fn item(&self, chat: &Chat, item: &Value) {

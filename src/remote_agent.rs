@@ -60,6 +60,45 @@ impl RemoteAgent {
         agent
     }
 
+    /// Its conversation's entries as they are now.
+    pub fn entries(&self) -> Vec<Value> {
+        self.follows.borrow().first().map(|f| f.items()).unwrap_or_default()
+    }
+
+    /// Its oldest question waiting for the user (the one the keys are shown on).
+    fn waiting_question(&self) -> Option<Value> {
+        self.entries().into_iter().find(|e| e["kind"] == "question" && e["status"] == "awaiting_user")
+    }
+
+    /// Alt+1…9: its oldest question answered with option `option`. False if there is none (or
+    /// it is a form: picked in the form itself).
+    pub fn answer(&self, option: usize) -> bool {
+        let Some(question) = self.waiting_question() else { return false };
+        let Some(chosen) = question["options"].get(option).and_then(|o| o["id"].as_str()) else { return false };
+        self.send("answer", json!({ "entry": question["id"], "option": chosen }));
+        true
+    }
+
+    /// Alt+Y / Alt+N: its oldest question's first option of that kind ("allow", "reject").
+    pub fn answer_kind(&self, kind: &str) -> bool {
+        let Some(question) = self.waiting_question() else { return false };
+        let at = question["options"].as_array().and_then(|o| o.iter().position(|o| o["kind"].as_str().is_some_and(|k| k.starts_with(kind))));
+        at.is_some_and(|at| self.answer(at))
+    }
+
+    /// Shift+Tab: its next permission mode.
+    pub fn cycle_mode(&self) {
+        let next = {
+            let item = self.item.borrow();
+            let modes: Vec<&str> = item["modes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            let at = modes.iter().position(|m| Some(*m) == item["mode"].as_str());
+            modes.get(at.map_or(0, |i| (i + 1) % modes.len())).map(|m| (*m).to_owned())
+        };
+        if let Some(next) = next {
+            self.send("set_mode", json!({ "mode": next }));
+        }
+    }
+
     fn send(&self, method: &str, mut params: Value) {
         params["agent"] = Value::String(self.id.to_string());
         crate::conn::command(&format!("agent {}", self.id), method, params);
@@ -154,14 +193,7 @@ impl RemoteAgent {
         };
         *chat.on_cancel.borrow_mut() = Some(me(|a| a.send("stop", json!({}))));
         *chat.on_send_now.borrow_mut() = Some(me(|a| a.send("send_now", json!({}))));
-        *chat.on_cycle_mode.borrow_mut() = Some(me(|a| {
-            let item = a.item.borrow();
-            let modes: Vec<&str> = item["modes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
-            let at = modes.iter().position(|m| Some(*m) == item["mode"].as_str());
-            if let Some(next) = modes.get(at.map_or(0, |i| (i + 1) % modes.len())) {
-                a.send("set_mode", json!({ "mode": next }));
-            }
-        }));
+        *chat.on_cycle_mode.borrow_mut() = Some(me(RemoteAgent::cycle_mode));
         let weak = Rc::downgrade(self);
         *chat.on_submit.borrow_mut() = Some(Rc::new(move |(text, images): (String, Vec<gtk::glib::Bytes>)| {
             if let Some(agent) = weak.upgrade() {

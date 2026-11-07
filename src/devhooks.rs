@@ -395,7 +395,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "answer" => {
             let n: usize = argument.parse().map_err(|_| "answer:<n>")?;
-            if !app.active_agent().ok_or("no agent")?.answer(0, n.saturating_sub(1)) {
+            let local = app.active_agent().is_some_and(|a| a.answer(0, n.saturating_sub(1)));
+            if !local && !app.remote_view().is_some_and(|a| a.answer(n.saturating_sub(1))) {
                 return Err("no such question or option".into());
             }
         }

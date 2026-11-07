@@ -998,17 +998,17 @@ impl App {
             // Alt+Enter sends a form.
             (false, false, true, k) if k.to_unicode().and_then(|c| c.to_digit(10)).is_some_and(|d| d >= 1) => {
                 let option = k.to_unicode().and_then(|c| c.to_digit(10)).unwrap_or(1) as usize - 1;
-                if !self.active_agent().is_some_and(|a| a.answer(0, option)) {
+                if !self.active_agent().is_some_and(|a| a.answer(0, option)) && !self.remote_view().is_some_and(|a| a.answer(option)) {
                     return glib::Propagation::Proceed;
                 }
             }
             (false, false, true, gdk::Key::y) => {
-                if !self.active_agent().is_some_and(|a| a.answer_kind("allow")) {
+                if !self.active_agent().is_some_and(|a| a.answer_kind("allow")) && !self.remote_view().is_some_and(|a| a.answer_kind("allow")) {
                     return glib::Propagation::Proceed;
                 }
             }
             (false, false, true, gdk::Key::n) => {
-                if !self.active_agent().is_some_and(|a| a.answer_kind("reject")) {
+                if !self.active_agent().is_some_and(|a| a.answer_kind("reject")) && !self.remote_view().is_some_and(|a| a.answer_kind("reject")) {
                     return glib::Propagation::Proceed;
                 }
             }
@@ -1026,7 +1026,7 @@ impl App {
                 // In a terminal, Ctrl+C is its own (an interrupt).
                 let in_terminal = GtkWindowExt::focus(&self.window).is_some_and(|w| w.is::<vte::Terminal>() || w.ancestor(vte::Terminal::static_type()).is_some());
                 let copied = !in_terminal
-                    && self.active_agent().is_some_and(|agent| !agent.chat().input.buffer().has_selection() && agent.chat().copy_selection());
+                    && self.chat_in_view().is_some_and(|chat| !chat.input.buffer().has_selection() && chat.copy_selection());
                 if !copied {
                     return glib::Propagation::Proceed;
                 }
@@ -1040,8 +1040,8 @@ impl App {
                 } else if !(in_files && self.files.find()) {
                     if self.showing_project().is_some() {
                         self.history.focus_filter();
-                    } else if let Some(agent) = self.active_agent() {
-                        agent.chat().find();
+                    } else if let Some(chat) = self.chat_in_view() {
+                        chat.find();
                     }
                 }
             }
@@ -1386,11 +1386,15 @@ impl App {
             act("Copy this conversation (fork)", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.fork(None, String::new());
+                } else {
+                    a.remote_do("fork", json!({}));
                 }
             }),
             act("Clear: a fresh conversation here (/clear)", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.clear_conversation();
+                } else {
+                    a.remote_do("clear", json!({}));
                 }
             }),
             act("Let this agent work in another folder too…", "", |a| a.add_dir()),
@@ -1402,15 +1406,23 @@ impl App {
             act("Restart this agent", "", |a| {
                 if let Some(agent) = a.focused_agent() {
                     a.unless_stopping(&agent, "Restart", "The conversation goes on after it.", |_, agent| agent.restart());
+                } else if let Some(id) = a.remote_in_view() {
+                    a.unless_stopping_remote(id, "Restart", "The conversation goes on after it.", |_, id| {
+                        crate::conn::command("window", "restart", json!({ "agent": id.to_string() }));
+                    });
                 }
             }),
             act("Stop the turn", "Esc", |a| {
                 if let Some(agent) = a.focused_agent() {
                     agent.cancel();
+                } else {
+                    a.remote_do("stop", json!({}));
                 }
             }),
             act("Next permission mode", "Shift+Tab", |a| {
                 if let Some(agent) = a.focused_agent() {
+                    agent.cycle_mode();
+                } else if let Some(agent) = a.remote_view() {
                     agent.cycle_mode();
                 }
             }),
@@ -1718,8 +1730,14 @@ impl App {
         {
             return Some(chat);
         }
-        let remote = self.remote_focused.get().and_then(|id| self.remote_agents.borrow().get(&id).map(|a| a.chat.clone()));
+        let remote = self.remote_view().map(|a| a.chat.clone());
         remote.or_else(|| self.active_agent().map(|a| a.chat()))
+    }
+
+    /// loomd's agent whose chat is in view, if one is.
+    pub fn remote_view(&self) -> Option<Rc<crate::remote_agent::RemoteAgent>> {
+        let id = self.remote_in_view()?;
+        self.remote_agents.borrow().get(&id).cloned()
     }
 
     /// One of loomd's agents in view (the window as its client): its chat made the first time.
@@ -2352,21 +2370,38 @@ impl App {
 
     /// Saves the conversation in view as a Markdown file (asks where).
     fn export(self: &Rc<Self>) {
-        let Some(agent) = self.focused_agent() else { return };
-        let name: String = agent.title().chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
+        // The window's own agent, or loomd's in view: its title, folder and chat.
+        let (title, cwd, chat) = match (self.focused_agent(), self.remote_view()) {
+            (Some(agent), _) => (agent.title(), agent.cwd.clone(), agent.chat()),
+            (None, Some(agent)) => {
+                let item = self.remote_item(agent.id).unwrap_or_default();
+                (item["title"].as_str().unwrap_or_default().to_owned(), PathBuf::from(item["cwd"].as_str().unwrap_or_default()), agent.chat.clone())
+            }
+            (None, None) => return,
+        };
+        let name: String = title.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).collect();
         let dialog = gtk::FileDialog::builder().title("Save the conversation").initial_name(format!("{}.md", name.trim())).modal(true).build();
-        dialog.set_initial_folder(Some(&gio::File::for_path(&agent.cwd)));
+        dialog.set_initial_folder(Some(&gio::File::for_path(&cwd)));
         dialog.save(Some(&self.window), None::<&gio::Cancellable>, move |result| {
             if let Ok(file) = result
                 && let Some(path) = file.path()
             {
-                let text = format!("# {}\n\n{}", agent.title(), agent.chat().transcript());
+                let text = format!("# {title}\n\n{}", chat.transcript());
                 match std::fs::write(&path, text) {
-                    Ok(()) => agent.chat().notice(&format!("Saved to {}", path.display()), "dim"),
-                    Err(err) => agent.chat().notice(&format!("Could not save it: {err}"), "error"),
+                    Ok(()) => chat.notice(&format!("Saved to {}", path.display()), "dim"),
+                    Err(err) => chat.notice(&format!("Could not save it: {err}"), "error"),
                 }
             }
         });
+    }
+
+    /// Command `method` for loomd's agent in view (`extra`: its other params); false if none
+    /// is in view.
+    fn remote_do(&self, method: &str, mut extra: Value) -> bool {
+        let Some(id) = self.remote_in_view() else { return false };
+        extra["agent"] = json!(id.to_string());
+        crate::conn::command("window", method, extra);
+        true
     }
 
     /// Moves the focused agent up or down among its project's agents.
@@ -2393,6 +2428,20 @@ impl App {
 
     /// Asks for a folder the focused agent may work in besides its own (another repo).
     fn add_dir(self: &Rc<Self>) {
+        // loomd's in view: the folder asked for here, given to it there.
+        if let Some(id) = self.remote_in_view() {
+            let project = self.remote_item(id).and_then(|i| i["project_id"].as_str().map(PathBuf::from)).unwrap_or_default();
+            let dialog = gtk::FileDialog::builder().title("Another folder this agent may work in").modal(true).build();
+            dialog.set_initial_folder(Some(&gio::File::for_path(project.parent().unwrap_or(&project))));
+            dialog.select_folder(Some(&self.window), None::<&gio::Cancellable>, move |result| {
+                if let Ok(folder) = result
+                    && let Some(path) = folder.path()
+                {
+                    crate::conn::command("window", "add_folder", json!({ "agent": id.to_string(), "folder": path }));
+                }
+            });
+            return;
+        }
         let Some(agent) = self.focused_agent() else { return };
         let dialog = gtk::FileDialog::builder().title("Another folder this agent may work in").modal(true).build();
         dialog.set_initial_folder(Some(&gio::File::for_path(agent.project.parent().unwrap_or(&agent.project))));
