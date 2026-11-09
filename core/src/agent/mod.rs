@@ -34,6 +34,27 @@ pub enum Mark {
     Changed,
 }
 
+/// A turn's start in git (see `note_shell_files`).
+enum TurnChanges {
+    None,
+    Reading,
+    /// still reading, and the turn is over
+    ReadingEnded,
+    Read(Vec<(String, String)>),
+}
+
+/// What git shows changed at a turn's end that it didn't at its start: new files (`??`)
+/// created, the rest changed; deleted ones and untracked folders left out.
+fn shell_writes(repo: &Path, before: &[(String, String)], now: &[(String, String)]) -> Vec<(PathBuf, Mark)> {
+    now.iter()
+        .filter(|change| !before.contains(change) && !change.0.contains('D') && !change.1.ends_with('/'))
+        .map(|(code, path)| {
+            let path = path.rsplit(" -> ").next().unwrap_or(path);
+            (repo.join(path), if code == "??" { Mark::Created } else { Mark::Changed })
+        })
+        .collect()
+}
+
 /// A tool's title for people: no Markdown ticks, and "mcp__server__tool" as "server · tool".
 /// One line: a multi-line command (a heredoc) shows its first line and "…"; the rest
 /// would spill over the card around it.
@@ -284,6 +305,9 @@ pub struct Agent {
     subs: RefCell<Vec<Rc<Sub>>>,
     asked: Cell<u64>,
     files: RefCell<Vec<(PathBuf, Mark)>>,
+    /// Its folder's git changes when the turn began (read in the background): what a shell
+    /// command wrote is what differs at the turn's end.
+    turn_changes: RefCell<TurnChanges>,
     /// The git repos it has read or changed files in, latest first.
     repos: RefCell<Vec<PathBuf>>,
     /// The latest repo's git status, and when it was read.
@@ -396,6 +420,7 @@ impl Agent {
             subs: RefCell::default(),
             asked: Cell::new(0),
             files: RefCell::default(),
+            turn_changes: RefCell::new(TurnChanges::None),
             repos: RefCell::default(),
             repo_status: RefCell::default(),
             reading_repo: Cell::new(false),
@@ -712,6 +737,59 @@ impl Agent {
 
     pub fn files(&self) -> Vec<(PathBuf, Mark)> {
         self.files.borrow().clone()
+    }
+
+    /// Its folder's git changes now, kept for the turn's end (off the main loop).
+    fn read_turn_changes(self: &Rc<Self>) {
+        let Some(repo) = crate::repos::repo_of(&self.cwd) else { return };
+        *self.turn_changes.borrow_mut() = TurnChanges::Reading;
+        let weak = Rc::downgrade(self);
+        crate::rt::spawn_local(async move {
+            let found = crate::rt::spawn_blocking(move || crate::repos::status(&repo)).await.ok().flatten();
+            let Some(agent) = weak.upgrade() else { return };
+            let ended = matches!(*agent.turn_changes.borrow(), TurnChanges::ReadingEnded);
+            *agent.turn_changes.borrow_mut() = found.map_or(TurnChanges::None, |r| TurnChanges::Read(r.changes));
+            // the turn ended before git answered: its end is looked at now
+            if ended {
+                agent.note_shell_files();
+            }
+        });
+    }
+
+    /// The files a shell command wrote this turn (`printf > x`, `sed -i`): the edit tools'
+    /// diffs miss them, git doesn't. Added once git has answered.
+    /// shortcut: a file already changed before the turn and changed again by a command is
+    /// missed (its status stays the same); diff contents if that matters.
+    fn note_shell_files(self: &Rc<Self>) {
+        let before = match self.turn_changes.replace(TurnChanges::None) {
+            TurnChanges::Read(before) => before,
+            TurnChanges::Reading => {
+                *self.turn_changes.borrow_mut() = TurnChanges::ReadingEnded;
+                return;
+            }
+            _ => return,
+        };
+        let Some(repo) = crate::repos::repo_of(&self.cwd) else { return };
+        let weak = Rc::downgrade(self);
+        crate::rt::spawn_local(async move {
+            let Some(now) = crate::rt::spawn_blocking(move || crate::repos::status(&repo)).await.ok().flatten() else { return };
+            let Some(agent) = weak.upgrade() else { return };
+            let new = shell_writes(&now.path, &before, &now.changes);
+            let mut files = agent.files.borrow_mut();
+            let mut added = false;
+            for (path, mark) in new {
+                if !files.iter().any(|(p, _)| *p == path) {
+                    files.insert(0, (path, mark));
+                    added = true;
+                }
+            }
+            drop(files);
+            if added {
+                agent.emit(Event::Files);
+                // its count in `agents` too (the edit tools' files arrive before the turn's end)
+                agent.emit(Event::Changed);
+            }
+        });
     }
 
     /// Permission questions waiting, oldest first: (serial, title, option names and kinds).
@@ -1245,6 +1323,7 @@ impl Agent {
             self.view.set_working(None);
             self.view.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
+            self.note_shell_files();
             self.emit(Event::TurnEnded);
             self.done_owed.set(true);
             self.settle_done(true);
@@ -1791,6 +1870,7 @@ impl Agent {
         let Some(conn) = self.conn.borrow().clone() else { return };
         let Some(session) = self.session_id.borrow().clone() else { return };
         self.turn.set(true);
+        self.read_turn_changes();
         self.last_heard.set(Instant::now());
         self.done_owed.set(false);
         if let Some(timer) = self.owed_timer.take() {
@@ -1875,6 +1955,7 @@ impl Agent {
                 agent.last_turn.set(Instant::now());
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.mark_used();
+                agent.note_shell_files();
                 agent.emit(Event::TurnEnded);
                 // a queued message goes first: "done" is for the end of all of it
                 agent.done_owed.set(true);
@@ -3042,4 +3123,21 @@ fn limit_words(kind: &str, used: f64, resets: Option<i64>) -> (String, String) {
 /// What an error from the agent's process says: its message, else the whole of it.
 fn message(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shell_writes_are_what_git_shows_new_this_turn() {
+        let c = |code: &str, path: &str| (code.to_owned(), path.to_owned());
+        let before = [c(" M", "kept.rs"), c("??", "old.txt")];
+        let now = [c(" M", "kept.rs"), c("??", "old.txt"), c("??", "x"), c(" M", "src/a.rs"), c(" D", "gone.rs"), c("??", "dir/"), c("R ", "a -> b")];
+        let repo = Path::new("/r");
+        assert_eq!(
+            shell_writes(repo, &before, &now),
+            vec![(repo.join("x"), Mark::Created), (repo.join("src/a.rs"), Mark::Changed), (repo.join("b"), Mark::Changed)]
+        );
+    }
 }

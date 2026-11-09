@@ -159,6 +159,10 @@ impl Host for Daemon {
 
     fn agent_event(&self, agent: &Rc<Agent>, event: Event) {
         let looking = self.looking_at(agent.id);
+        // Done while the window shows it: seen there already.
+        if looking && matches!(event, Event::Done) {
+            agent.mark_seen();
+        }
         self.bridges.agent_event(agent, &event, looking);
         // A copy (rewind, fork) opens beside it, as in the window.
         if let Event::Forked(saved) = &event {
@@ -450,6 +454,12 @@ fn commands(daemon: &Rc<Daemon>) {
         let active = params["active"].as_bool().ok_or_else(|| Error::Invalid("set_looking needs active".into()))?;
         let agents = params["agents"].as_array().into_iter().flatten().filter_map(|a| a.as_str()?.parse().ok()).collect();
         *daemon.looking.borrow_mut() = (active, agents, std::time::Instant::now());
+        // What the window shows in use is seen: its dot goes.
+        for id in daemon.looking.borrow().1.clone() {
+            if let Some(agent) = daemon.ws.agent(id).filter(|_| daemon.looking_at(id)) {
+                agent.mark_seen();
+            }
+        }
         daemon.publish_soon();
         Ok(serde_json::json!({}))
     });

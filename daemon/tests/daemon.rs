@@ -139,7 +139,9 @@ fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
     while d.said.try_recv().is_ok() {}
     // A turn that leaves a dev server running is done at once: it never ends by itself.
     command(&mut c, "send", json!({ "agent": agent, "text": "server" }));
-    until(&mut c, "agents", Duration::from_secs(20), "done beside a dev server", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["unseen"] == true && a["busy"] == false));
+    until(&mut c, "agents", Duration::from_secs(20), "done beside a dev server", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["last_turn"]["turns"] == 3 && a["busy"] == false));
+    std::thread::sleep(Duration::from_millis(500));
+    assert_eq!(agent_item(&mut c, &agent)["unseen"], false, "done while looked at: seen");
     let said: Vec<String> = d.said.try_iter().collect();
     assert!(!said.iter().any(|l| l.ends_with(": Finished")), "no desktop notice of what the user looks at: {said:?}");
     command(&mut c, "set_looking", json!({ "active": false, "agents": [] }));
@@ -148,6 +150,18 @@ fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
     command(&mut c, "send", json!({ "agent": agent, "text": "plan" }));
     let plan = until(&mut c, &format!("plan/{agent}"), Duration::from_secs(20), "the plan", |p| p.len() == 2);
     assert_eq!((plan[1]["content"].as_str(), plan[1]["status"].as_str()), (Some("Fix it"), Some("in_progress")));
+}
+
+#[test]
+fn a_file_a_shell_command_writes_counts_as_edited() {
+    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
+    let (d, mut c) = start("Shell", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let project = d.root.join("project");
+    assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&project).status().unwrap().success());
+    let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
+    command(&mut c, "send", json!({ "agent": agent, "text": "write" }));
+    until(&mut c, &format!("conversation/{agent}"), Duration::from_secs(20), "the reply", |e| replied(e, "wrote"));
+    until(&mut c, "agents", Duration::from_secs(20), "made.txt counted", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["edited"] == 1));
 }
 
 fn agent_tests() -> bool {

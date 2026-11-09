@@ -50,6 +50,13 @@ for line in sys.stdin:
         elif "plan" in prompt:
             update({"sessionUpdate": "plan", "entries": [{"content": "Read it", "status": "completed", "priority": "high"}, {"content": "Fix it", "status": "in_progress", "priority": "high"}]})
             say("planned")
+        elif "write" in prompt:
+            # as a shell command would (`printf > made.txt`): no diff for loom to see; after a
+            # while, as an agent thinks first (loom reads git's status as the turn begins)
+            time.sleep(1)
+            with open("made.txt", "w") as f:
+                f.write("made\n")
+            say("wrote")
         elif "server" in prompt:
             say("serving")
             update({"sessionUpdate": "background_tasks", "tasks": [{"taskId": "t1", "toolCallId": "c1", "taskType": "local_bash", "description": "dev server"}]})
