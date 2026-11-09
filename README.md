@@ -14,6 +14,10 @@ Agents are grouped by project, and a project may hold several git repos. (Any ot
 
 ## Features
 
+- **loomd runs them.** Agents, jobs and bridges live in loomd, loom's core with no window;
+  the window is its client and starts it when needed. Closing the window stops loomd, or
+  leaves your agents working (Settings → General). The same UI also opens as a web page on
+  this computer only (`loom api web --open`).
 - **Agents first.** Many at once, each with a status (working, needs you, done, idle).
   Idle agents are suspended to save memory and wake when you open them.
 - **A sidebar of projects**, with a Running list above them. Agents can be dragged into any
@@ -83,7 +87,9 @@ With Rust installed, run `./install.sh` in a checkout; it builds loom first (wit
 
 ### What it installs
 
-`loom` into `~/.local/bin`, with a desktop entry and an icon.
+`loom`, `loomd` and `loom-remote` into `~/.local/bin`, with a desktop entry and an icon, and
+loomd's systemd user service (installed, not enabled: the window starts loomd itself; see
+`docs/loomd.md`).
 
 ## Use
 
