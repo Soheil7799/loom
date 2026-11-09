@@ -50,6 +50,17 @@ for line in sys.stdin:
         elif "plan" in prompt:
             update({"sessionUpdate": "plan", "entries": [{"content": "Read it", "status": "completed", "priority": "high"}, {"content": "Fix it", "status": "in_progress", "priority": "high"}]})
             say("planned")
+        elif "bus" in prompt:
+            # the session bus, as `systemd-run --user` would reach it (the strict sandbox shuts it)
+            import os, socket
+            path = f"/run/user/{os.getuid()}/bus"
+            try:
+                socket.socket(socket.AF_UNIX).connect(path)
+                say("bus reachable")
+            except PermissionError:
+                say("bus blocked")
+            except OSError:
+                say("no bus")
         elif "write" in prompt:
             # as a shell command would (`printf > made.txt`): no diff for loom to see; after a
             # while, as an agent thinks first (loom reads git's status as the turn begins)

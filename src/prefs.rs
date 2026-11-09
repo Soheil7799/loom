@@ -887,6 +887,22 @@ fn advanced(s: &Settings) -> gtk::Box {
     );
     content.append(&program);
 
+    let sandbox = section("Sandbox");
+    let strict = switch(s.strict_sandbox, |s, on| s.strict_sandbox = on);
+    let can = loom_core::sandbox::available();
+    strict.set_sensitive(can || s.strict_sandbox);
+    row(
+        &sandbox,
+        "Strict sandbox for agents",
+        if can {
+            "Agents and the jobs they start reach no local socket but loom's, SSH's and GPG's, so none can start a program outside loom's sight. They lose sudo, systemctl --user, notifications, gsettings, podman and portals: run those in the tray yourself. For agents started from now on."
+        } else {
+            "Needs Linux's Landlock with Unix socket rules (ABI 9), which this kernel lacks."
+        },
+        &strict,
+    );
+    content.append(&sandbox);
+
     let trouble = section("Troubleshooting");
     let open = flat_button("Open folder");
     open.set_visible(s.debug_log);

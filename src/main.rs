@@ -97,6 +97,11 @@ fn main() -> glib::ExitCode {
     if std::env::args().nth(1).as_deref() == Some("mcp") {
         return glib::ExitCode::from(mcp::run() as u8);
     }
+    // `loom sandbox -- <program>`: an agent's program held to the strict sandbox (sandbox.rs).
+    if std::env::args().nth(1).as_deref() == Some("sandbox") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        return glib::ExitCode::from(loom_core::sandbox::run(&args) as u8);
+    }
     // `loom api …`: the core API's command-line client (no window).
     if std::env::args().nth(1).as_deref() == Some("api") {
         let args: Vec<String> = std::env::args().skip(2).collect();

@@ -20,6 +20,9 @@ pub struct Settings {
     pub confirm_quit: bool,
     /// loomd's agents keep working when loom's window closes (off: closing it stops loomd).
     pub keep_working: bool,
+    /// Agents and their jobs under Landlock: no Unix socket but loom's, SSH's and GPG's
+    /// (sandbox.rs). Off by default: it costs them sudo, systemctl --user, notify-send…
+    pub strict_sandbox: bool,
     /// The agent program (empty: the one loom installs, else claude-agent-acp on PATH).
     pub adapter: String,
     /// Permission mode new agents start in (empty: Claude Code's own default).
@@ -88,6 +91,7 @@ impl Default for Settings {
             notify_done: true,
             confirm_quit: true,
             keep_working: false,
+            strict_sandbox: false,
             adapter: String::new(),
             default_mode: String::new(),
             show_thinking: true,
@@ -179,6 +183,8 @@ const WINDOW_ONLY: &[&str] = &[
     "sttKey",
     "adapter",
     "defaultMode",
+    // what agents may reach: never turned off by one
+    "strictSandbox",
     // A program loom runs; what Scribe reads and sends.
     "editor",
     "notesEnabled",
@@ -352,6 +358,7 @@ fn parse(text: &str) -> Settings {
         notify_done: flag("notifyDone", d.notify_done),
         confirm_quit: flag("confirmQuit", d.confirm_quit),
         keep_working: flag("keepWorking", d.keep_working),
+        strict_sandbox: flag("strictSandbox", d.strict_sandbox),
         adapter: string("adapter", &d.adapter),
         default_mode: string("defaultMode", &d.default_mode),
         show_thinking: flag("showThinking", d.show_thinking),
@@ -401,6 +408,7 @@ fn render(s: &Settings) -> String {
         "notifyDone": s.notify_done,
         "confirmQuit": s.confirm_quit,
         "keepWorking": s.keep_working,
+        "strictSandbox": s.strict_sandbox,
         "adapter": s.adapter,
         "defaultMode": s.default_mode,
         "showThinking": s.show_thinking,

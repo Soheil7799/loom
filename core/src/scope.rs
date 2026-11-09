@@ -51,6 +51,8 @@ fn works() -> bool {
 
 /// `program` run in a new scope of agent `agent`'s (as it is, when scopes aren't available).
 pub fn wrap(program: &[String], agent: u32) -> Vec<String> {
+    // inside the scope, the strict sandbox (if on): systemd-run itself needs the bus
+    let program = &crate::sandbox::wrap(program);
     if !available() || program.is_empty() {
         return program.to_vec();
     }

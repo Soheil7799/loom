@@ -298,7 +298,7 @@ fn command_line(pid: u32) -> String {
 
 /// The `loom` program's modes that are not its window (`loom api …` is the CLI, `loom mcp`
 /// an agent's tools…). A new mode of `loom` goes here too, or it would pass for the window.
-pub const NOT_THE_WINDOW: &[&str] = &["mcp", "api", "bridge", "scribe-eval"];
+pub const NOT_THE_WINDOW: &[&str] = &["mcp", "api", "bridge", "scribe-eval", "sandbox"];
 
 /// Whether a process running `exe` (as /proc gives it) with `mode` (its first argument) is
 /// loom's window installed beside this program (`loom`, `window`): its own file (" (deleted)"

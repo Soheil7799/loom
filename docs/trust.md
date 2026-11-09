@@ -60,6 +60,15 @@ process an agent leaves running on its own escapes too. Such a process is taken 
 CLI. That is why the CLI answers no questions and can't open a way off the
 machine: whatever it can do, the agent could already do by editing your files.
 
+**The strict sandbox** (Settings → Advanced, off by default) closes the systemd way out:
+agents and the jobs they start run under Landlock (`loom sandbox`, Linux with Landlock ABI 9)
+and reach no Unix socket but loom's own and the SSH and GPG agents', and no abstract one. No
+session bus, no systemd: no new unit. They also lose sudo (no new privileges), `systemctl
+--user`, notifications, gsettings, podman and portals; run those in the tray yourself (your
+own tray commands are not sandboxed). What still escapes is a file
+it edits that something else runs later outside it (your `.bashrc`, a git hook you trigger).
+Only loom's window turns it off.
+
 ## The web page
 
 Off until asked for (`web_open`: loom's window, or `loom api web`), and on 127.0.0.1 only. The

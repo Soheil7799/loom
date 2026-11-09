@@ -164,6 +164,20 @@ fn a_file_a_shell_command_writes_counts_as_edited() {
     until(&mut c, "agents", Duration::from_secs(20), "made.txt counted", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["edited"] == 1));
 }
 
+#[test]
+fn the_strict_sandbox_keeps_an_agent_off_the_session_bus() {
+    if !loom_core::sandbox::available() || !Path::new(&format!("/run/user/{}/bus", std::os::unix::fs::MetadataExt::uid(&std::fs::metadata("/proc/self").unwrap()))).exists() {
+        eprintln!("no Landlock ABI 9 or no session bus here: skipped");
+        return;
+    }
+    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
+    let (d, mut c) = start("Sandbox", json!({ "strictSandbox": true }), &[("LOOM_AGENT", fake)], &[]);
+    let agent = command(&mut c, "new_agent", json!({ "folder": d.root.join("project") }))["agent"].as_str().unwrap().to_owned();
+    command(&mut c, "send", json!({ "agent": agent, "text": "bus" }));
+    let entries = until(&mut c, &format!("conversation/{agent}"), Duration::from_secs(20), "its answer", |e| replied(e, "bus"));
+    assert!(replied(&entries, "bus blocked"), "{entries:#?}");
+}
+
 fn agent_tests() -> bool {
     std::env::var_os("LOOM_E2E_AGENT").is_some()
 }

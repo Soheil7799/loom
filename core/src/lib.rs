@@ -32,6 +32,7 @@ pub mod quickopen;
 pub mod repos;
 pub mod rt;
 pub mod schedule;
+pub mod sandbox;
 pub mod scope;
 pub mod scribe;
 pub mod settings;
