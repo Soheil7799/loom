@@ -2043,7 +2043,6 @@ dependencies = [
  "gtk4",
  "libc",
  "loom-core",
- "pango",
  "pulldown-cmark",
  "qrcode",
  "serde_json",

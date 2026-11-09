@@ -165,6 +165,7 @@ fn main() -> glib::ExitCode {
     // `loom <folder>`: that folder's project page (in the running window, if there is one).
     // Dialogs (no application of their own) take the program name as their app id: this one's.
     glib::set_prgname(Some(app_id.as_str()));
+    theme::load_fonts();
     let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_open(|app, files, _| {
         app.activate();
@@ -179,7 +180,6 @@ fn main() -> glib::ExitCode {
         }
     });
     app.connect_startup(|_| {
-        theme::load_fonts();
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);
         theme::watch();

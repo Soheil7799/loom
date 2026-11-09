@@ -146,25 +146,30 @@ pub fn follow(term: &vte::Terminal) {
 }
 
 /// The brand's font (Onest, OFL: data/fonts/OFL-Onest.txt) ships inside loom, so the window
-/// looks the same where it isn't installed: written once to the cache, given to Pango there.
+/// looks the same where it isn't installed: written once to the cache, given to fontconfig as
+/// this program's own font. Before GTK starts (Pango then finds it), and with any Pango (its
+/// own add_font_file needs 1.56).
 pub fn load_fonts() {
-    use gtk::pango::prelude::FontMapExt;
+    #[link(name = "fontconfig")]
+    unsafe extern "C" {
+        fn FcConfigAppFontAddFile(config: *mut std::ffi::c_void, file: *const std::ffi::c_char) -> std::ffi::c_int;
+    }
     const FONTS: [(&str, &[u8]); 2] = [
         ("onest-normal-latin.woff2", include_bytes!("../data/fonts/onest-normal-latin.woff2")),
         ("onest-normal-latin-ext.woff2", include_bytes!("../data/fonts/onest-normal-latin-ext.woff2")),
     ];
     let dir = gtk::glib::user_cache_dir().join("loom").join("fonts");
-    let map = gtk::Label::new(None).pango_context().font_map();
     for (name, bytes) in FONTS {
         let path = dir.join(name);
         let fresh = std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64);
         if !fresh && std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, bytes)).is_err() {
             continue;
         }
-        if let Some(map) = &map
-            && let Err(e) = map.add_font_file(&path)
-        {
-            eprintln!("loom: font {name}: {e}");
+        use std::os::unix::ffi::OsStrExt;
+        let Ok(file) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { continue };
+        // SAFETY: a NUL-terminated path; a null config is fontconfig's current one.
+        if unsafe { FcConfigAppFontAddFile(std::ptr::null_mut(), file.as_ptr()) } == 0 {
+            eprintln!("loom: font {name}: fontconfig refused it");
         }
     }
 }
