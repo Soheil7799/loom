@@ -111,7 +111,11 @@ impl Remote {
             last: Cell::new(0),
             ready: Box::new(ready),
         });
-        self.0.followed.borrow_mut().push(Rc::downgrade(&sub));
+        let mut followed = self.0.followed.borrow_mut();
+        // the ones let go since leave (switching agents makes and drops many)
+        followed.retain(|s| s.strong_count() > 0);
+        followed.push(Rc::downgrade(&sub));
+        drop(followed);
         if self.connected() {
             Inner::follow(&self.0, &sub);
         }
@@ -269,8 +273,16 @@ impl Inner {
             "subscribe",
             json!({ "resource": sub.resource }),
             Box::new(move |answer| {
-                let (Some(me), Some(sub)) = (weak.upgrade(), held.upgrade()) else { return };
-                match answer.ok().and_then(|a| a["sub"].as_str().map(str::to_owned)) {
+                let Some(me) = weak.upgrade() else { return };
+                let id = answer.ok().and_then(|a| a["sub"].as_str().map(str::to_owned));
+                let Some(sub) = held.upgrade() else {
+                    // let go before loomd answered: unsubscribed now (Drop had no id to give)
+                    if let Some(id) = id {
+                        me.request("unsubscribe", json!({ "sub": id }), Box::new(|_| {}));
+                    }
+                    return;
+                };
+                match id {
                     Some(id) => {
                         me.by_sub.borrow_mut().insert(id.clone(), Rc::downgrade(&sub));
                         *sub.sub.borrow_mut() = Some(id);

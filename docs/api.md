@@ -1081,9 +1081,9 @@ Who: window. Result: `{}`.
 
 ### `save`
 
-A file for an agent, saved in its folder under `<bridge>-files/` (never over another).
+A file for an agent, saved in its folder under `<bridge>-files/` (a bridge's) or `web-files/` (dropped in a web page), never over another.
 
-Who: bridge. Result: `{path}`, once done.
+Who: window, cli, bridge. Result: `{path}`, once done.
 
 | Param | Type | |
 |---|---|---|

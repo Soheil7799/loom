@@ -21,3 +21,10 @@ test("a unified diff splits into its hunks, the file's header left out", () => {
   expect(hunks.map((h) => h.head)).toEqual(["@@ -1,2 +1,2 @@", "@@ -9 +9 @@"]);
   expect(hunks[0].lines).toEqual([{ t: "-", text: "a" }, { t: "+", text: "b" }, { t: " ", text: "c" }]);
 });
+
+test("a diff of two files: the second file's header is in no hunk", () => {
+  const diff = ["diff --git a/one.rs b/one.rs", "--- a/one.rs", "+++ b/one.rs", "@@ -1 +1 @@", "-a", "+b",
+    "diff --git a/two.rs b/two.rs", "--- a/two.rs", "+++ b/two.rs", "@@ -1 +1 @@", " c"].join("\n");
+  const got = unified(diff);
+  expect(got.map((h) => [h.file, h.lines.length])).toEqual([["one.rs", 2], ["two.rs", 1]]);
+});

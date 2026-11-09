@@ -59,6 +59,13 @@ pub fn command_result(who: &str, method: &str, params: Value, then: impl FnOnce(
     }
 }
 
+/// Whether this window started the loomd it speaks to (so closing it may stop it).
+pub fn started_loomd() -> bool {
+    STARTED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// loomd started for this window (none answers at `socket` for `app_id`): the one installed
 /// beside this loom, on its own (it outlives the window: its agents go on when the window
 /// closes), its output in `<state>/loom/loomd[-<suffix>].log`. Under systemd where there is
@@ -84,6 +91,7 @@ pub fn start_loomd(socket: &Path, app_id: &str) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(100));
     }
+    STARTED.store(true, std::sync::atomic::Ordering::Relaxed);
     Ok(())
 }
 
@@ -104,7 +112,9 @@ fn under_systemd(program: &Path, log: &Path, app_id: &str) -> bool {
         if name == "LOOM_CONTROL" || value.chars().any(char::is_control) {
             continue;
         }
-        run.arg(format!("--setenv={name}={value}"));
+        // By name only: systemd-run copies the value from its own environment, so none (a
+        // token, a key) shows on its command line to other users.
+        run.arg(format!("--setenv={name}"));
     }
     run.arg(program).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
     run.status().is_ok_and(|status| status.success())

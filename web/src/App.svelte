@@ -93,7 +93,8 @@
   const showJob = (id: string) => { const j = jobs.find((x) => x.id === id); trayOf = j?.project_id ?? null; peekJob = id; if (view !== "chat" && view !== "overview") view = "chat"; };
   const newestJob = () => { const j = trayJobs.at(-1); if (j) peekJob = j.id; };
   const nextMode = () => {
-    const modes = (current?.modes ?? []) as string[];
+    // bypass is never one key press away
+    const modes = ((current?.modes ?? []) as string[]).filter((m) => m !== "bypassPermissions");
     if (current && modes.length) command("set_mode", { agent: current.id, mode: modes[(modes.indexOf(current.mode ?? "") + 1) % modes.length] }).catch((e) => (problem = e.message));
   };
   const has = () => !!current;
@@ -201,9 +202,11 @@
   // A job waiting for you to type (an agent's `loom_run` with input): its terminal, at once.
   let seenAsks: Set<string> | null = null;
   $effect(() => {
+    // `asks` read first: an effect that returns before it tracks nothing, and never runs again
+    const now = asks;
     if (!seenAsks) return;
-    const fresh = asks.filter((a) => a.kind === "input" && !seenAsks!.has(a.id));
-    for (const a of asks) seenAsks.add(a.id);
+    const fresh = now.filter((a) => a.kind === "input" && !seenAsks!.has(a.id));
+    for (const a of now) seenAsks.add(a.id);
     const latest = fresh.at(-1) as (typeof fresh)[number] & { job?: string } | undefined;
     if (latest?.job) showJob(latest.job);
   });

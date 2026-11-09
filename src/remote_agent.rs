@@ -119,7 +119,8 @@ impl RemoteAgent {
     pub fn cycle_mode(&self) {
         let next = {
             let item = self.item.borrow();
-            let modes: Vec<&str> = item["modes"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
+            // Bypass is never one key press away (as the core's own cycle).
+            let modes: Vec<&str> = item["modes"].as_array().into_iter().flatten().filter_map(Value::as_str).filter(|m| *m != "bypassPermissions").collect();
             let at = modes.iter().position(|m| Some(*m) == item["mode"].as_str());
             modes.get(at.map_or(0, |i| (i + 1) % modes.len())).map(|m| (*m).to_owned())
         };

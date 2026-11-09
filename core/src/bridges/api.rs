@@ -28,9 +28,13 @@ pub fn serve() {
     }
     let hub = crate::api::hub();
     hub.handle_later("save", |who, params, reply| {
-        let Principal::Bridge(bridge) = who else { return reply(Err(Error::Forbidden("saving files, but for bridges".into()))) };
+        // a bridge's under its name; loom's web page's (dropped there: the browser gives no path) under web-files
+        let folder = match who {
+            Principal::Bridge(bridge) => format!("{bridge}-files"),
+            _ => "web-files".to_owned(),
+        };
         let dir = match crate::agent::commands::target(who, params, "be sent files") {
-            Ok(agent) => agent.cwd.join(format!("{bridge}-files")),
+            Ok(agent) => agent.cwd.join(folder),
             Err(err) => return reply(Err(err)),
         };
         let name = super::safe_name(params["name"].as_str().unwrap_or(""));
@@ -138,11 +142,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_bridges_save_and_say_their_state_and_agents_hear_nothing() {
+    fn people_and_bridges_save_only_bridges_say_their_state_and_agents_hear_nothing() {
         serve();
         let hub = crate::api::hub();
         let cli = hub.connect(Principal::Cli);
-        assert!(matches!(cli.command("s1", "save", json!({ "agent": "1", "name": "a", "data": "" })), Err(Error::Forbidden(_))));
+        assert!(matches!(cli.command("s1", "save", json!({ "agent": "99", "name": "a", "data": "" })), Err(Error::NotFound(_))));
+        assert!(matches!(hub.connect(Principal::Agent("1".into())).command("s1a", "save", json!({ "agent": "1", "name": "a", "data": "" })), Err(Error::Forbidden(_))));
         assert!(matches!(cli.command("s2", "bridge_state", json!({ "state": "ok" })), Err(Error::Forbidden(_))));
         let agent = hub.connect(Principal::Agent("1".into()));
         assert!(matches!(agent.command("s3", "transcribe", json!({ "audio": "" })), Err(Error::Forbidden(_))));

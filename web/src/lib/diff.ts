@@ -25,11 +25,12 @@ export function hunks(all: Line[], context = 2): Line[] {
 /** A unified diff (git's) as its hunks: each its `@@` line, its file and its lines, marked +, - or " ". */
 export function unified(diff: string): { head: string; file: string; lines: Line[] }[] {
   const hunks: { head: string; file: string; lines: Line[] }[] = [];
-  let file = "";
+  let file = "", inHunk = false;
   for (const raw of diff.split("\n")) {
-    if (raw.startsWith("diff --git ")) file = raw.replace(/^diff --git a\/.* b\//, "");
-    else if (raw.startsWith("@@")) hunks.push({ head: raw, file, lines: [] });
-    else if (hunks.length && /^[ +-]/.test(raw)) hunks.at(-1)!.lines.push({ t: raw[0] as Line["t"], text: raw.slice(1) });
+    // a file's header (its "--- a/…", "+++ b/…") is no hunk's: lines count from its next @@
+    if (raw.startsWith("diff --git ")) { file = raw.replace(/^diff --git a\/.* b\//, ""); inHunk = false; }
+    else if (raw.startsWith("@@")) { hunks.push({ head: raw, file, lines: [] }); inHunk = true; }
+    else if (inHunk && /^[ +-]/.test(raw)) hunks.at(-1)!.lines.push({ t: raw[0] as Line["t"], text: raw.slice(1) });
   }
   return hunks;
 }

@@ -136,11 +136,15 @@ fn handle() {
     });
     // A permission mode: "bypassPermissions" from loom's window only (as "Always allow").
     hub.handle("set_mode", |who, params| {
-        let agent = target(who, params, "change modes")?;
         let mode = params["mode"].as_str().ok_or_else(|| Error::Invalid("which mode?".into()))?;
         if mode == "bypassPermissions" && *who != Principal::Window {
             return Err(Error::Forbidden("bypassing permissions, but from loom's window".into()));
         }
+        // A bridge gets no standing approval ("Always allow" is refused it too): asking, or planning.
+        if matches!(who, Principal::Bridge(_)) && !matches!(mode, "default" | "plan") {
+            return Err(Error::Forbidden(format!("mode {mode} from a bridge")));
+        }
+        let agent = target(who, params, "change modes")?;
         agent.choose_mode(mode).map_err(Error::Invalid)?;
         Ok(json!({}))
     });
@@ -363,6 +367,18 @@ pub(crate) fn target(who: &Principal, params: &Value, what: &str) -> Result<Rc<A
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_bridge_may_not_turn_on_standing_approval() {
+        serve();
+        let bot = crate::api::hub().connect(Principal::Bridge("telegram".into()));
+        for mode in ["acceptEdits", "auto", "bypassPermissions"] {
+            assert!(matches!(bot.command(mode, "set_mode", json!({ "agent": "99", "mode": mode })), Err(Error::Forbidden(_))), "{mode}");
+        }
+        // asking and planning pass (then: no agent 99)
+        let plan = bot.command("plan", "set_mode", json!({ "agent": "99", "mode": "plan" }));
+        assert!(matches!(plan, Err(Error::NotFound(_))), "{plan:?}");
+    }
 
     #[test]
     fn rewinding_goes_to_the_agents_message_before_yours() {

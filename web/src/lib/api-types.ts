@@ -11,6 +11,8 @@ export type AgentsItem = {
   project: string;
   /** its project's id (folder) */
   project_id: string;
+  /** the folder it works in (its project's, or a worktree of it) */
+  cwd: string;
   /** idle, working, asking, suspended, … */
   status: string;
   /** something new the user hasn't seen */
@@ -122,6 +124,10 @@ export type UsageItem = {
   cost?: Record<string, unknown>;
   /** a spending limit */
   limit?: Record<string, unknown>;
+  /** what fills an agent's context: {name, tokens} */
+  parts?: unknown[];
+  /** the tokens it compacts at */
+  compacts_at?: number;
 };
 
 /** Every project's jobs, oldest first. */
@@ -207,6 +213,12 @@ export type ScribeItem = {
   calls_left?: number;
 };
 
+/** A subagent's own conversation (a `crew/<agent>` item's id; a tool entry's `subagent`), entries as an agent's. */
+export type SubagentItem = {
+  /** as `conversation/<agent>`'s */
+  id: string;
+};
+
 /** An agent's subagents (tasks it runs), while its turn goes on. */
 export type CrewItem = {
   /** the subagent's session, or its task's tool call */
@@ -230,6 +242,8 @@ export type OverviewItem = {
   id: string;
   /** the titles of its questions waiting */
   waiting: unknown[];
+  /** those questions: {entry, title, options: [{id, name, kind}], form} (`answer`; a form in its conversation) */
+  questions: unknown[];
   /** the start of its last reply (240 characters, one line) */
   reply?: string;
   /** its conversation (a schedule's `session`) */
@@ -262,6 +276,10 @@ export type WorkflowsItem = {
   agents: number;
   /** {label, phase, done} */
   members: unknown[];
+  /** its task's id */
+  task: string;
+  /** the folder of its agents' transcripts (on loomd's computer) */
+  dir: string;
 };
 
 /** Each agent's MCP servers, as its process last said. */
@@ -314,6 +332,8 @@ export type BridgesItem = {
   /** a device asking to pair: {id, name} */
   candidate?: Record<string, unknown>;
   why?: string;
+  /** remote: this computer's id */
+  node?: string;
 };
 
 /** The remote bridge's pairing ticket, while pairing is open (`pairing {open}`): whoever has it can ask to pair, so the window's alone. */
@@ -424,6 +444,7 @@ export interface Resources {
   "note/<path>": NoteItem;
   "notes_chats": NotesChatsItem;
   "scribe": ScribeItem;
+  "subagent/<agent>/<subagent>": SubagentItem;
   "crew/<agent>": CrewItem;
   "overview": OverviewItem;
   "plan/<agent>": PlanItem;
@@ -707,6 +728,19 @@ export type StopParams = {
   agent: string;
 };
 
+/** loomd stops, as on SIGTERM: agents stopped (their conversations resume next time), the workspace saved. The window restarts an older loomd with it. Result: {} */
+export type LoomdStopParams = {
+
+};
+
+/** What loom's window shows (loomd: no desktop notice about those agents, none of a question while the window is in use). Said again within a minute, else forgotten. Result: {} */
+export type SetLookingParams = {
+  /** the window is in use */
+  active: boolean;
+  /** the agents' ids in view */
+  agents: unknown[];
+};
+
 /** Starts an agent in a folder. Result: {agent} */
 export type NewAgentParams = {
   /** an absolute folder: its project */
@@ -877,7 +911,19 @@ export type ScribeForgetParams = {
   id: string;
 };
 
-/** A file for an agent, saved in its folder under `<bridge>-files/` (never over another). Result: {path} */
+/** A change Scribe wrote, seen: shown folded from then on. Result: {} */
+export type ScribeSeenParams = {
+  /** a `change` item of `scribe` (none: all) */
+  id?: string;
+};
+
+/** Scribe reads what is left unread of a conversation, now ("Check now"). Result: {} */
+export type ScribeCheckParams = {
+  /** the conversation */
+  session: string;
+};
+
+/** A file for an agent, saved in its folder under `<bridge>-files/` (a bridge's) or `web-files/` (dropped in a web page), never over another. Result: {path} */
 export type SaveParams = {
   /** the agent's id */
   agent: string;
@@ -1085,6 +1131,12 @@ export type AskDoneParams = {
   id: string;
 };
 
+/** A file the user won't fill in: the agent hears they cancelled; the ask goes. Result: {} */
+export type AskCancelParams = {
+  /** an `edit` item of `asks` */
+  id: string;
+};
+
 /** Opens an ask's file in the user's editor (the setting, else the desktop's), on this computer. Result: {} */
 export type AskOpenParams = {
   /** an `asks` item with a file */
@@ -1149,6 +1201,8 @@ export interface Commands {
   "pair_confirm": PairConfirmParams;
   "schedule_act": ScheduleActParams;
   "stop": StopParams;
+  "loomd_stop": LoomdStopParams;
+  "set_looking": SetLookingParams;
   "new_agent": NewAgentParams;
   "rename_project": RenameProjectParams;
   "set_collapsed": SetCollapsedParams;
@@ -1173,6 +1227,8 @@ export interface Commands {
   "scribe_keep_rule": ScribeKeepRuleParams;
   "scribe_history": ScribeHistoryParams;
   "scribe_forget": ScribeForgetParams;
+  "scribe_seen": ScribeSeenParams;
+  "scribe_check": ScribeCheckParams;
   "save": SaveParams;
   "transcribe": TranscribeParams;
   "bridge_state": BridgeStateParams;
@@ -1201,6 +1257,7 @@ export interface Commands {
   "git_show": GitShowParams;
   "git_log": GitLogParams;
   "ask_done": AskDoneParams;
+  "ask_cancel": AskCancelParams;
   "ask_open": AskOpenParams;
   "notes_open": NotesOpenParams;
   "notes_close": NotesCloseParams;

@@ -1667,7 +1667,13 @@ impl App {
             let lacks = if missing > 0 { format!(", and lacks {missing} of the commands this window uses") } else { String::new() };
             return ("blocked", format!("loomd {version}"), format!("loomd is {version}, this window {mine}{lacks}. Click to restart it as this window's version."));
         }
-        let closing = if settings::get().keep_working { "Closing this window leaves them working." } else { "Closing this window stops it (Settings → General: keep agents working)." };
+        let closing = if settings::get().keep_working {
+            "Closing this window leaves them working."
+        } else if !crate::conn::started_loomd() {
+            "It ran before this window (a service, or another window): closing this one leaves it running."
+        } else {
+            "Closing this window stops it (Settings → General: keep agents working)."
+        };
         ("done", "loomd".to_owned(), format!("loomd {version} runs your agents, jobs and bridges. {closing}"))
     }
 
@@ -2771,8 +2777,9 @@ impl App {
     }
 
     fn close_request(self: &Rc<Self>) -> glib::Propagation {
-        // loomd's client: closing stops loomd unless its agents are to keep working.
-        let stops_loomd = !settings::get().keep_working;
+        // loomd's client: closing stops the loomd it started, unless its agents are to keep
+        // working (one that ran before, a service, has its own reasons to run).
+        let stops_loomd = !settings::get().keep_working && crate::conn::started_loomd();
         // Only a turn in flight is lost by quitting (an agent still starting just restarts).
         let mut busy: Vec<String> = Vec::new();
         if stops_loomd {

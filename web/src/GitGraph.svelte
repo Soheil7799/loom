@@ -22,16 +22,20 @@
   let hover = $state<number | null>(null);
   let box: HTMLElement | undefined = $state();
 
+  // a new repo's load overtakes one still on its way: only the latest's answer is used
+  let asked = 0;
   async function load(reset = false) {
-    if (loading || (!more && !reset)) return;
+    if ((loading && !reset) || (!more && !reset)) return;
     loading = true;
+    const mine = ++asked;
     try {
       const got = (await command("git_log", { repo, limit: PAGE, skip: reset ? 0 : commits.length, all: true })).commits as Commit[];
+      if (mine !== asked) return;
       commits = reset ? got : [...commits, ...got];
       more = got.length === PAGE;
       problem = "";
-    } catch (e) { problem = (e as Error).message; }
-    loading = false;
+    } catch (e) { if (mine === asked) problem = (e as Error).message; }
+    if (mine === asked) loading = false;
   }
   $effect(() => { repo; untrack(() => { more = true; load(true); }); });
   const g = $derived(layout(commits));

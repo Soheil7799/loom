@@ -2871,8 +2871,10 @@
       "result": "{}"
     },
     "save": {
-      "description": "A file for an agent, saved in its folder under `<bridge>-files/` (never over another).",
+      "description": "A file for an agent, saved in its folder under `<bridge>-files/` (a bridge's) or `web-files/` (dropped in a web page), never over another.",
       "who": [
+        "window",
+        "cli",
         "bridge"
       ],
       "later": true,

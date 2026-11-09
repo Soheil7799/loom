@@ -51,9 +51,10 @@
     if (!file || file.text === null) return;
     try {
       // what went: typed meanwhile is still unsaved
-      const sent = file.text;
-      const got = await command("file_write", { path: file.path, text: sent, ...(force ? {} : { modified: file.modified }) });
-      file = { ...file!, modified: got.modified, saved: sent };
+      const { path: saving, text: sent } = file;
+      const got = await command("file_write", { path: saving, text: sent, ...(force ? {} : { modified: file.modified }) });
+      // another file opened meanwhile: this answer is the saved one's, not its
+      if (file?.path === saving) file = { ...file, modified: got.modified, saved: sent };
       problem = "";
     } catch (e) {
       const why = (e as Error).message;

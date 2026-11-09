@@ -187,11 +187,11 @@ pub const COMMANDS: &[Command] = &[
     Command { name: "scribe_check", who: WINDOW, params: &[("session", "string", true, "the conversation")], result: "{}", later: false, about: "Scribe reads what is left unread of a conversation, now (\"Check now\")." },
     Command {
         name: "save",
-        who: &["bridge"],
+        who: ALL_BUT_AGENTS,
         params: &[("agent", "string", true, "the agent's id"), ("name", "string", true, "the file's name"), ("data", "string", true, "its bytes, base64")],
         result: "{path}",
         later: true,
-        about: "A file for an agent, saved in its folder under `<bridge>-files/` (never over another).",
+        about: "A file for an agent, saved in its folder under `<bridge>-files/` (a bridge's) or `web-files/` (dropped in a web page), never over another.",
     },
     Command {
         name: "transcribe",
