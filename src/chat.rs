@@ -72,7 +72,6 @@ pub struct Chat {
     place: gtk::Label,
     dot: gtk::Box,
     context: gtk::LevelBar,
-    starting: gtk::Label,
     state: gtk::Label,
     mode: gtk::Button,
     usage: gtk::Label,
@@ -410,9 +409,6 @@ impl Chat {
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 16);
         list.add_css_class("messages");
-        let starting = gtk::Label::builder().visible(false).halign(gtk::Align::Center).build();
-        starting.add_css_class("starting-note");
-        list.append(&starting);
         let clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
         clamp.append(&list);
         // About 75 characters a line: long lines are hard to follow back.
@@ -601,7 +597,6 @@ impl Chat {
             place,
             dot,
             context,
-            starting,
             state,
             mode,
             usage,
@@ -1571,42 +1566,6 @@ impl Chat {
         self.queued_box.set_visible(!messages.is_empty());
     }
 
-    /// A queued message taken back: into the input (before what is typed there).
-    pub fn unqueue(self: &Rc<Self>, text: &str, images: Vec<glib::Bytes>) {
-        let buffer = self.input.buffer();
-        let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
-        let joined = [text, typed.trim()].iter().filter(|t| !t.is_empty()).copied().collect::<Vec<_>>().join("\n\n");
-        buffer.set_text(&joined);
-        self.attachments.borrow_mut().extend(images);
-        self.show_attachments();
-        self.input.grab_focus();
-    }
-
-    /// Messages that never went out (the turn was stopped first): back in the input, with
-    /// their images, so nothing typed is lost.
-    pub fn restore_unsent(self: &Rc<Self>, messages: Vec<(String, Vec<glib::Bytes>)>) {
-        if messages.is_empty() {
-            return;
-        }
-        let buffer = self.input.buffer();
-        let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string();
-        let mut texts: Vec<String> = messages.iter().map(|(t, _)| t.clone()).filter(|t| !t.is_empty()).collect();
-        if !typed.trim().is_empty() {
-            texts.push(typed);
-        }
-        buffer.set_text(&texts.join("\n\n"));
-        for (_, images) in messages {
-            self.attachments.borrow_mut().extend(images);
-        }
-        self.show_attachments();
-        self.notice("Not sent (the turn was stopped first): it is back in the input.", "dim");
-    }
-
-    /// The tokens in the context, as last reported.
-    pub fn context_used(&self) -> u64 {
-        self.spent.borrow().0.map_or(0, |(used, _)| used)
-    }
-
     /// The draft in the input (kept across restarts).
     pub fn draft(&self) -> String {
         let buffer = self.input.buffer();
@@ -1918,12 +1877,6 @@ impl Chat {
         *self.last.borrow_mut() = Last::None;
     }
 
-    /// An image from a resumed conversation (base64, as the agent replays it).
-    pub fn user_image_data(&self, base64: &str) {
-        let bytes = glib::base64_decode(base64);
-        self.user_images(&[glib::Bytes::from_owned(bytes)]);
-    }
-
     // ---- slash commands -------------------------------------------------------------------
 
     pub fn set_commands(&self, commands: Vec<(String, String)>) {
@@ -2049,14 +2002,6 @@ impl Chat {
         }
         self.dot.add_css_class(class);
         self.state.add_css_class(class);
-    }
-
-    /// While the agent starts, the empty conversation says so.
-    pub fn set_starting(&self, text: Option<&str>) {
-        self.starting.set_label(text.unwrap_or(""));
-        // Only an empty conversation needs it (a resumed one fills in by itself).
-        let empty = self.list.first_child().and_then(|c| c.next_sibling()).is_none();
-        self.starting.set_visible(text.is_some() && empty);
     }
 
     pub fn set_mode(&self, mode: &str) {
@@ -2229,23 +2174,6 @@ impl Chat {
         *self.last.borrow_mut() = Last::None;
     }
 
-    /// The last turn's footer offers to undo the file changes it made (`undo`).
-    pub fn turn_undo(&self, undo: Rc<dyn Fn()>) {
-        let Some(footer) = self.list.last_child().and_downcast::<gtk::Label>().filter(|l| l.has_css_class("turn-footer")) else { return };
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        line.add_css_class("turn-footer-line");
-        self.list.remove(&footer);
-        line.append(&footer);
-        let button = gtk::Button::with_label("Undo file changes");
-        button.add_css_class("flat");
-        button.add_css_class("small");
-        button.add_css_class("undo-files");
-        button.set_tooltip_text(Some("Put the files Claude changed from this turn on back as they were (asks first; the conversation stays)"));
-        button.connect_clicked(move |_| undo());
-        line.append(&button);
-        self.list.append(&line);
-    }
-
     pub fn set_show_thinking(&self, show: bool) {
         self.show_thinking.set(show);
         self.thoughts.borrow_mut().retain(|weak| match weak.upgrade() {
@@ -2362,29 +2290,6 @@ impl Chat {
     }
 
     // ---- messages -------------------------------------------------------------------------
-
-    pub fn clear(&self) {
-        // The guess was about the conversation that went.
-        self.set_suggestion(None);
-        // Everything but the "starting" note, which stays first.
-        while let Some(child) = self.starting.next_sibling() {
-            self.list.remove(&child);
-        }
-        *self.last.borrow_mut() = Last::None;
-        self.group.take();
-        self.turn_start.take();
-        self.turn_result.take();
-        self.seen.take();
-        self.since.take();
-        self.drawn.borrow_mut().clear();
-        self.cards.borrow_mut().clear();
-        self.turn_steps.set(0);
-        self.messages.borrow_mut().clear();
-        self.tools.borrow_mut().clear();
-        self.entries.borrow_mut().clear();
-        self.entry_images.borrow_mut().clear();
-        self.set_plan(&Value::Null);
-    }
 
     /// Entry `item` of the core's `conversation/<agent>` (warp): drawn the first time it
     /// comes, its text and message id kept up to date after. Text entries only (`user`,
@@ -2591,49 +2496,6 @@ impl Chat {
         }
     }
 
-    /// Dev builds: where what this chat drew differs from its conversation's entries `items`
-    /// (each a line; empty: they agree).
-    pub fn differences(&self, items: &[Value]) -> Vec<String> {
-        let mut wrong = Vec::new();
-        let (entries, tools, images) = (self.entries.borrow(), self.tools.borrow(), self.entry_images.borrow());
-        for item in items {
-            let Some(id) = item["id"].as_str() else { continue };
-            match item["kind"].as_str() {
-                Some("user" | "agent" | "thought") => {
-                    let text = item["text"].as_str().unwrap_or_default();
-                    match entries.get(id) {
-                        Some(drawn) if *drawn.text.borrow() != text => {
-                            wrong.push(format!("{id}: its text is drawn as {} bytes, the entry has {}", drawn.text.borrow().len(), text.len()));
-                        }
-                        None if !text.is_empty() => wrong.push(format!("{id}: not drawn")),
-                        _ => {}
-                    }
-                    let pictures = item["images"].as_array().map_or(0, Vec::len);
-                    if pictures > 0 && images.get(id).copied().unwrap_or(0) != pictures {
-                        wrong.push(format!("{id}: {} of {pictures} pictures drawn", images.get(id).copied().unwrap_or(0)));
-                    }
-                }
-                Some("tool") => {
-                    let Some(call) = item["call"].as_str() else { continue };
-                    let Some(card) = tools.get(call) else {
-                        wrong.push(format!("{id}: no card for tool {call}"));
-                        continue;
-                    };
-                    if let Some(output) = item["output"].as_str()
-                        && *card.output.borrow() != output
-                    {
-                        wrong.push(format!("{id}: the card shows {} bytes of output, the entry has {}", card.output.borrow().len(), output.len()));
-                    }
-                    if item.get("exit").is_some() && card.exit.get() != Some(item["exit"].as_i64()) {
-                        wrong.push(format!("{id}: the card's exit is {:?}, the entry's {}", card.exit.get(), item["exit"]));
-                    }
-                }
-                _ => {}
-            }
-        }
-        wrong
-    }
-
     /// Text added to entry `id`'s `field` (a streaming reply).
     pub fn entry_append(&self, id: &str, field: &str, text: &str) {
         let Some(message) = self.entries.borrow().get(id).cloned().filter(|_| field == "text") else { return };
@@ -2693,14 +2555,6 @@ impl Chat {
         !self.messages.borrow().is_empty()
     }
 
-    /// What Claude said last (for the overview).
-    pub fn last_reply(&self) -> Option<String> {
-        let messages = self.messages.borrow();
-        let last = messages.iter().rev().find(|m| m.kind == Kind::Agent)?;
-        let text = last.text.borrow().trim().to_owned();
-        (!text.is_empty()).then_some(text)
-    }
-
     /// The conversation as Markdown: who said what.
     pub fn transcript(&self) -> String {
         let mut out = String::new();
@@ -2713,24 +2567,6 @@ impl Chat {
             }
         }
         out
-    }
-
-    pub fn thought(&self, text: &str) {
-        self.chunk(Kind::Thought, text);
-    }
-
-    pub fn user_chunk(&self, text: &str) {
-        // The summary a compacted conversation goes on from: folded, its own kind of block.
-        let starts = !matches!(&*self.last.borrow(), Last::User(_));
-        if starts && text.trim_start().starts_with(SUMMARY_START) {
-            let message = self.summary();
-            message.text.borrow_mut().push_str(text);
-            message.render_soon();
-            // A replay gives a message in one piece: the next one is the user's own words.
-            *self.last.borrow_mut() = Last::None;
-            return;
-        }
-        self.chunk(Kind::User, text);
     }
 
     /// A compaction's summary: one line, opened to read it (as Markdown). Not one of the
@@ -2878,11 +2714,6 @@ impl Chat {
         self.background_note();
     }
 
-    /// A notice with a button that does something about it.
-    pub fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
-        self.notice_button(text, button, "error", action);
-    }
-
     /// A question with one way on (not an error): `button` does it.
     pub fn notice_choice(&self, text: &str, button: &str, action: Rc<dyn Fn()>) {
         self.notice_button(text, button, "choice", action);
@@ -3010,12 +2841,6 @@ impl Chat {
     /// No subagents any more (the agent stopped, failed or started over).
     pub fn crew_clear(&self) {
         self.crew.borrow_mut().clear();
-        self.show_crew();
-    }
-
-    /// A row of the strip gone (a background command that ended: its card stays).
-    pub fn crew_remove(&self, key: &str) {
-        self.crew.borrow_mut().retain(|c| c.key != key);
         self.show_crew();
     }
 
@@ -3210,28 +3035,6 @@ impl Chat {
                 adj.set_value((f64::from(point.y()) - 24.0).clamp(0.0, (adj.upper() - adj.page_size()).max(0.0)));
             }
         });
-    }
-
-    /// Adds a button to a tool card that opens its terminal.
-    /// A command's output as it comes (kept with its tool call, not in the tray: the tray is
-    /// for jobs Claude means you to watch). An "output" button opens it for a look.
-    pub fn tool_output(&self, id: &str, data: &str) {
-        let Some(card) = self.tools.borrow().get(id).cloned() else { return };
-        {
-            let mut output = card.output.borrow_mut();
-            output.push_str(data);
-            if output.len() > 200_000 {
-                let mut cut = output.len() - 150_000;
-                while !output.is_char_boundary(cut) {
-                    cut += 1;
-                }
-                output.drain(..cut);
-            }
-        }
-        card.output_button();
-        if card.revealer.reveals_child() {
-            card.render_soon();
-        }
     }
 
     /// Opens a tool card on its detail (and keeps its run of calls from folding).
@@ -3605,32 +3408,11 @@ impl FormCard {
         }
     }
 
-    /// "Approach: Small steps · Other: keep the API", for the card once answered.
-    pub fn summary(&self) -> String {
-        self.model.borrow().summary()
-    }
-
-    /// Its choices: (question, option names, several allowed, which are picked).
-    pub fn choices(&self) -> Vec<(String, Vec<String>, bool, Vec<bool>)> {
-        self.model.borrow().choices()
-    }
-
     /// Option `option` of choice `field` (counted among the choices): picked, or toggled in a
     /// multiple choice.
     pub fn pick_in(&self, field: usize, option: usize) -> bool {
         let picked = self.model.borrow_mut().pick_in(field, option);
         picked.inspect(|field| self.show(*field)).is_some()
-    }
-
-    /// One text field (more, and a written answer could not say which it is for).
-    pub fn writable(&self) -> bool {
-        self.model.borrow().writable()
-    }
-
-    /// `text` in its text field (false unless it has exactly one).
-    pub fn write(&self, text: &str) -> bool {
-        let written = self.model.borrow_mut().write(text);
-        written.inspect(|field| self.show(*field)).is_some()
     }
 
     /// Option `n` (from 0) of the first question with options: picked (a multiple choice:

@@ -9,11 +9,9 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use crate::settings::{self, Settings};
 use crate::bridges::Link;
 
-/// The settings as the core API's `settings` has them (warp); the secrets, which it never
-/// gives anyone, from the core itself: this window shows you your own.
+/// The settings as last read (loomd writes them; this window shows you your own).
 fn current() -> Settings {
-    let item = crate::feed::snapshot("settings").into_iter().next().unwrap_or_default();
-    loom_core::settings::from_item(&item, &settings::get())
+    settings::get()
 }
 
 /// A change made in this window, made through the core API (`set_settings`), as any client
@@ -355,14 +353,13 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
     );
     row(&behaviour, "Confirm quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
     // loomd's client: what closing the window does to loomd's agents.
-    if crate::conn::is_remote() {
-        row(
-            &behaviour,
-            "Keep agents working when the window closes",
-            "loomd goes on running them, with your jobs, bridges and scheduled prompts. Off: closing the window stops loomd; conversations go on next time.",
-            &switch(s.keep_working, |s, on| s.keep_working = on),
-        );
-    }
+    row(
+        &behaviour,
+        "Keep agents working when the window closes",
+        "loomd goes on running them, with your jobs, bridges and scheduled prompts. Off: closing the window stops loomd; conversations go on next time.",
+        &switch(s.keep_working, |s, on| s.keep_working = on),
+    );
+
     row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
     content.append(&behaviour);
 
@@ -541,7 +538,14 @@ fn telegram(s: &Settings) -> gtk::Box {
     let token = gtk::PasswordEntry::builder().text(&s.telegram_token).show_peek_icon(true).placeholder_text("123456:ABC…").build();
     token.add_css_class("mono");
     on_done(&token, |text| update(|s| s.telegram_token = text));
-    row_stacked(&setup, "Bot token", "Make a bot with @BotFather in Telegram (/newbot) and paste the token it gives.", &token);
+    let botfather = gtk::Button::with_label("Open BotFather");
+    botfather.set_tooltip_text(Some("t.me/BotFather, in Telegram: /newbot makes the bot"));
+    botfather.connect_clicked(|b| gtk::UriLauncher::new("https://t.me/BotFather").launch(b.root().and_downcast_ref::<gtk::Window>(), None::<&gio::Cancellable>, |_| {}));
+    let token_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    token.set_hexpand(true);
+    token_line.append(&token);
+    token_line.append(&botfather);
+    row_stacked(&setup, "Bot token", "Make a bot with @BotFather in Telegram (/newbot) and paste the token it gives.", &token_line);
     let user = gtk::Entry::builder()
         .text(if s.telegram_user == 0 { String::new() } else { s.telegram_user.to_string() })
         .placeholder_text("Linked with the code above, or typed here")
@@ -711,9 +715,9 @@ fn remote(s: &Settings) -> gtk::Box {
     let candidate = Rc::new(std::cell::RefCell::new((String::new(), String::new())));
     let chosen = candidate.clone();
     accept.connect_clicked(move |_| {
-        let (id, name) = chosen.borrow().clone();
+        let id = chosen.borrow().0.clone();
         if !id.is_empty() {
-            accept_device(&id, &name);
+            accept_device(&id);
         }
     });
     refuse.connect_clicked(|_| open_pairing(false));
@@ -1470,9 +1474,6 @@ fn short(description: &str) -> String {
 /// Bridge `name`'s state, now and on every change while `f` returns true: the core here's, or
 /// loomd's when the window is its client (its `bridges` item, the ticket from `pairing`).
 fn watch_bridge(name: &'static str, f: impl Fn(&serde_json::Value) -> bool + 'static) {
-    if !crate::conn::is_remote() {
-        return crate::bridges::watch(name, f);
-    }
     type Feeds = Rc<std::cell::RefCell<Option<(crate::feed::Feed, crate::feed::Feed)>>>;
     // Kept by their own callbacks until `f` says it is done (its widgets gone).
     let feeds: Feeds = Rc::default();
@@ -1505,20 +1506,12 @@ fn watch_bridge(name: &'static str, f: impl Fn(&serde_json::Value) -> bool + 'st
     draw();
 }
 
-/// Opens pairing (a code to scan) or closes it, here or in loomd.
+/// Opens pairing (a code to scan) or closes it, in loomd.
 fn open_pairing(open: bool) {
-    if crate::conn::is_remote() {
-        crate::conn::command("settings", "pairing", serde_json::json!({ "open": open }));
-    } else {
-        crate::bridges::pair(open);
-    }
+    crate::conn::command("settings", "pairing", serde_json::json!({ "open": open }));
 }
 
-/// The device asking to pair let in, here or in loomd.
-fn accept_device(id: &str, name: &str) {
-    if crate::conn::is_remote() {
-        crate::conn::command("settings", "pair_confirm", serde_json::json!({ "id": id }));
-    } else {
-        crate::bridges::accept_device(id, name);
-    }
+/// The device asking to pair let in, in loomd.
+fn accept_device(id: &str) {
+    crate::conn::command("settings", "pair_confirm", serde_json::json!({ "id": id }));
 }

@@ -7,8 +7,8 @@ phone, the Telegram bot, `loom api` in a terminal.
 
 loom's window starts it (the `loomd` installed beside `loom`) when none runs, and stops it
 when it closes, unless Settings → General keeps agents working. Its footer says loomd's
-state; an older or newer loomd is restarted from there as the window's version.
-`LOOM_LOCAL=1 loom` runs the core in the window's own process instead, as before loomd.
+state; an older or newer loomd is restarted from there as the window's version. The
+window runs no core of its own: without loomd it has nothing to show.
 
 ```sh
 loomd                        # until SIGTERM or Ctrl+C
@@ -16,10 +16,9 @@ loomd --web                  # and a link to the web page, as loom's window woul
 LOOM_APP_ID=… loomd          # another instance's agents and settings, as with loom
 ```
 
-- **One core per app id.** loomd doesn't start while another core of its app id runs (a
-  loomd, or a window with `LOOM_LOCAL=1`; it exits with 3, which its service isn't restarted
-  for), and a `LOOM_LOCAL=1` window doesn't start while loomd does: two cores on the same
-  agents would fight over them.
+- **One core per app id.** loomd doesn't start while another core of its app id runs (it
+  exits with 3, which its service isn't restarted for): two cores on the same agents would
+  fight over them.
 - **Stopping** (SIGTERM, Ctrl+C) saves the workspace and stops the agents and their jobs, as
   closing the window does.
 - **What the window would show, a UI shows** (`docs/api.md`):
@@ -46,6 +45,10 @@ LOOM_APP_ID=… loomd          # another instance's agents and settings, as with
   `--web` from a terminal.
 
 The web page's UI is in `web/` (Svelte; `web/README.md` builds and installs it).
+
+Opening loom's window starts loomd if none runs: as a transient systemd user service
+(`loomd-<app id>`, started again if it crashes; its output in loom's state folder,
+`loomd.log`), or as a plain process where there is no systemd.
 
 To have it from login on, rather than with the window, as a systemd user service (then turn
 on Settings → General → Keep agents working when the window closes):

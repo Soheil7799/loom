@@ -144,3 +144,27 @@ pub fn refont(font: &str) {
 pub fn follow(term: &vte::Terminal) {
     TERMINALS.with(|terms| terms.borrow_mut().push(term.downgrade()));
 }
+
+/// The brand's font (Onest, OFL: data/fonts/OFL-Onest.txt) ships inside loom, so the window
+/// looks the same where it isn't installed: written once to the cache, given to Pango there.
+pub fn load_fonts() {
+    use gtk::pango::prelude::FontMapExt;
+    const FONTS: [(&str, &[u8]); 2] = [
+        ("onest-normal-latin.woff2", include_bytes!("../data/fonts/onest-normal-latin.woff2")),
+        ("onest-normal-latin-ext.woff2", include_bytes!("../data/fonts/onest-normal-latin-ext.woff2")),
+    ];
+    let dir = gtk::glib::user_cache_dir().join("loom").join("fonts");
+    let map = gtk::Label::new(None).pango_context().font_map();
+    for (name, bytes) in FONTS {
+        let path = dir.join(name);
+        let fresh = std::fs::metadata(&path).is_ok_and(|m| m.len() == bytes.len() as u64);
+        if !fresh && std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(&path, bytes)).is_err() {
+            continue;
+        }
+        if let Some(map) = &map
+            && let Err(e) = map.add_font_file(&path)
+        {
+            eprintln!("loom: font {name}: {e}");
+        }
+    }
+}

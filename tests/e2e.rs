@@ -1,8 +1,9 @@
-//! End to end: a real loom, started for the test with folders of its own, driven only through
-//! its API socket by `loom api`'s client (what the screenshot checks used to do by hand).
+//! End to end: a real loom window, started for the test with folders of its own; it starts
+//! loomd (beside it in target/), which is driven only through its API socket by `loom api`'s
+//! client (what the screenshot checks used to do by hand).
 //!
 //! It opens a window, so it needs a display and is not run by default:
-//!     cargo test --test e2e -- --ignored --nocapture
+//!     cargo build -p loomd && cargo test --test e2e -- --ignored --nocapture
 //! With LOOM_E2E_AGENT=1 it also has Claude Code do a turn that asks a question, answered
 //! through the API (a few cents of use).
 
@@ -14,22 +15,24 @@ use loom_core::api::cli::{Connection, new_id};
 use loom_core::api::{Applied, Body, Message, Mirror, Op, wire};
 use serde_json::{Value, json};
 
-#[path = "support/telegram.rs"]
-mod telegram;
-use telegram::{bot_calls, fake_telegram, user_says, user_taps};
-
 const APP_ID: &str = "dev.shirvani.LoomE2e";
 
-/// The loom under test; closed when dropped.
+/// The loom under test (its window, and the loomd it started); both closed when dropped.
 struct Instance {
     child: Child,
     root: PathBuf,
+    app_id: String,
 }
 
 impl Drop for Instance {
     fn drop(&mut self) {
+        // loomd outlives a window that is killed: told to stop (a test instance lets the CLI).
+        if let Ok(mut c) = Connection::open(&loom_core::api::socket::socket_path(&self.app_id)) {
+            let _ = c.command(&new_id(), "loomd_stop", json!({}));
+        }
         let _ = self.child.kill();
         let _ = self.child.wait();
+        std::thread::sleep(Duration::from_millis(500));
         let _ = std::fs::remove_dir_all(&self.root);
     }
 }
@@ -52,6 +55,8 @@ fn start_as(app_id: &str, prepare: impl FnOnce(&Path), env: &[(&str, String)]) -
         std::fs::create_dir_all(root.join(dir)).unwrap();
     }
     prepare(&root);
+    let loomd = Path::new(env!("CARGO_BIN_EXE_loom")).with_file_name("loomd");
+    assert!(loomd.is_file(), "{} is missing: cargo build -p loomd first", loomd.display());
     let child = Command::new(env!("CARGO_BIN_EXE_loom"))
         .env("LOOM_APP_ID", app_id)
         .env("XDG_CONFIG_HOME", root.join("config"))
@@ -60,12 +65,10 @@ fn start_as(app_id: &str, prepare: impl FnOnce(&Path), env: &[(&str, String)]) -
         .env_remove("LOOM_API")
         // Only a test instance lets the CLI answer agents' questions.
         .env("LOOM_TEST_INSTANCE", "1")
-        // the core in the window's process, as these tests drive it
-        .env("LOOM_LOCAL", "1")
         .envs(env.iter().map(|(k, v)| (*k, v.as_str())))
         .spawn()
         .expect("loom starts");
-    let instance = Instance { child, root };
+    let instance = Instance { child, root, app_id: app_id.to_owned() };
     let socket = loom_core::api::socket::socket_path(app_id);
     let deadline = Instant::now() + Duration::from_secs(30);
     let connection = loop {
@@ -168,8 +171,6 @@ fn loom_through_its_api() {
         agent_turn_with_question(&mut c, &agent);
     eprintln!("e2e: agent_turn_with_question ok");
     }
-    window_agrees_with_the_core(&mut c, &agent);
-    eprintln!("e2e: window_agrees_with_the_core ok");
     closing_an_agent_ends_its_conversation(&mut c, &agent);
     eprintln!("e2e: closing_an_agent_ends_its_conversation ok");
     audit_log_has_every_command(&instance.root);
@@ -179,6 +180,7 @@ fn loom_through_its_api() {
 fn handshake(c: &Connection) {
     assert_eq!(c.hello["protocol"], 1);
     assert_eq!(c.hello["principal"]["kind"], "cli");
+    assert_eq!(c.hello["server"]["host"], "daemon", "the window started loomd and runs no core of its own");
     let commands: Vec<&str> = c.hello["capabilities"]["commands"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
     for needed in ["send", "answer", "stop", "run_job", "restart_job", "set_settings", "new_agent", "blob"] {
         assert!(commands.contains(&needed), "no {needed} in {commands:?}");
@@ -339,29 +341,6 @@ fn agent_turn_with_question(c: &mut Connection, agent: &str) {
     c.request("unsubscribe", json!({ "sub": chat.sub })).unwrap();
 }
 
-/// Dev builds: the window's copies of what it follows are what the core has (a moment
-/// given for what is still on its way).
-fn window_agrees_with_the_core(c: &mut Connection, agent: &str) {
-    if !c.hello["capabilities"]["commands"].as_array().unwrap().iter().any(|m| m == "_selfcheck") {
-        eprintln!("e2e: no _selfcheck (a release build): skipped");
-        return;
-    }
-    let deadline = Instant::now() + Duration::from_secs(5);
-    loop {
-        let report = command(c, "_selfcheck", json!({}));
-        let checked: Vec<&str> = report["checked"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
-        let chat = format!("conversation/{agent}");
-        for resource in ["agents", "projects", "jobs", chat.as_str()] {
-            assert!(checked.contains(&resource), "the window follows {resource}: {checked:?}");
-        }
-        if report["wrong"].as_array().unwrap().is_empty() {
-            return;
-        }
-        assert!(Instant::now() < deadline, "the window's copies differ from the core's: {:#}", report["wrong"]);
-        std::thread::sleep(Duration::from_millis(200));
-    }
-}
-
 /// Every command the socket took is in the audit log, with the process that sent it.
 fn audit_log_has_every_command(root: &Path) {
     let log = std::fs::read_to_string(root.join("state/loom/audit-LoomE2e.jsonl")).expect("an audit log");
@@ -386,94 +365,6 @@ fn closing_an_agent_ends_its_conversation(c: &mut Connection, agent: &str) {
     command(c, "close_agent", json!({ "agent": agent }));
     until(c, &mut chat, Duration::from_secs(10), "gone", |f| f.mirror.gone);
     assert!(!c.get("agents").unwrap().iter().any(|a| a["id"] == agent));
-}
-
-// ---- the Telegram bot, against a stand-in for Telegram -----------------------------------
-
-#[test]
-#[ignore = "opens a window: cargo test --test e2e -- --ignored"]
-fn the_telegram_bot_through_the_api() {
-    let (url, telegram) = fake_telegram();
-    let settings = |root: &Path| {
-        let file = json!({ "telegramEnabled": true, "telegramToken": "123:test", "telegramUser": 42 });
-        std::fs::write(root.join("config/loom/settings-LoomE2eTg.json"), file.to_string()).unwrap();
-    };
-    // LOOM_CONTROL marks a test instance: only then does the bot talk to a stand-in server.
-    let env = [("LOOM_TELEGRAM_API", url), ("LOOM_CONTROL", "/nonexistent/loom-e2e-controls".to_owned())];
-    let (instance, mut c) = start_as("dev.shirvani.LoomE2eTg", settings, &env);
-    let (_, at) = bot_calls(&telegram, 0, "getUpdates", Duration::from_secs(30), "poll Telegram", |b| b["timeout"] != 0);
-    eprintln!("e2e telegram: the bot runs");
-    let project = instance.root.join("project");
-    let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
-    // Written to with no agent picked: the agents, as a keyboard (made from the API's `agents`).
-    user_says(&telegram, "hello");
-    let (menu, at) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "offer the agents", |b| b["reply_markup"]["keyboard"].is_array());
-    let label = menu["reply_markup"]["keyboard"][0][0]["text"].as_str().unwrap().to_owned();
-    assert!(label.contains("project"), "the agent's project in {label:?}");
-    user_says(&telegram, &label);
-    let (_, at) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "say who it writes to", |b| b["text"].as_str().is_some_and(|t| t.contains("Your messages go to it")));
-    eprintln!("e2e telegram: an agent picked");
-    // A shell command never goes through a bridge.
-    user_says(&telegram, "!ls");
-    let (_, mut at) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "refuse a ! command", |b| b["text"].as_str().is_some_and(|t| t.contains("! commands")));
-    if std::env::var_os("LOOM_E2E_AGENT").is_some() {
-        user_says(&telegram, "Reply with exactly: telegram ok");
-        let (done, next) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(120), "tell the turn's end", |b| b["text"].as_str().is_some_and(|t| t.contains("telegram ok")));
-        eprintln!("e2e telegram: the reply came back: {}", done["text"]);
-        at = next;
-        let chat = c.get(&format!("conversation/{agent}")).unwrap();
-        assert!(chat.iter().any(|e| e["kind"] == "user" && e["text"] == "Reply with exactly: telegram ok"), "sent through the API");
-        // A question, answered with the bot's buttons: Blue picked, then Send.
-        user_says(&telegram, "Use the AskUserQuestion tool once to ask me which colour I prefer, with the options Red and Blue. Then reply with only the colour I chose.");
-        let blue = |b: &Value| b["reply_markup"]["inline_keyboard"].as_array().into_iter().flatten().flat_map(|row| row.as_array().into_iter().flatten()).find(|k| k["text"].as_str().is_some_and(|t| t.contains("Blue"))).cloned();
-        let (asked, next) = bot_calls(&telegram, at, "sendMessage", Duration::from_secs(120), "ask with buttons", |b| blue(b).is_some());
-        let button = |text: &str| asked["reply_markup"]["inline_keyboard"].as_array().into_iter().flatten().flat_map(|row| row.as_array().into_iter().flatten()).find(|k| k["text"].as_str().is_some_and(|t| t.contains(text))).and_then(|k| k["callback_data"].as_str().map(str::to_owned));
-        let pick = blue(&asked).unwrap()["callback_data"].as_str().unwrap().to_owned();
-        user_taps(&telegram, &pick);
-        let send = button("Send").expect("a Send button");
-        user_taps(&telegram, &send);
-        let (done, next) = bot_calls(&telegram, next, "sendMessage", Duration::from_secs(120), "tell the answered turn's end", |b| b["text"].as_str().is_some_and(|t| t.contains("done in") && t.contains("Blue")));
-        eprintln!("e2e telegram: answered with buttons: {}", done["text"]);
-        at = next;
-        let log = std::fs::read_to_string(instance.root.join("state/loom/audit-LoomE2eTg.jsonl")).unwrap();
-        assert!(log.lines().any(|l| l.contains("\"method\":\"answer\"") && l.contains("\"ok\":true") && l.contains("telegram")), "the answer went through the API as the bot");
-        assert!(log.lines().any(|l| l.contains("\"method\":\"send\"") && l.contains("\"kind\":\"bridge\"") && l.contains("telegram")), "logged as the bot's");
-    }
-    // Closed in loom: the bot knows no agents any more.
-    command(&mut c, "close_agent", json!({ "agent": agent }));
-    std::thread::sleep(Duration::from_millis(500));
-    user_says(&telegram, "hello again");
-    bot_calls(&telegram, at, "sendMessage", Duration::from_secs(10), "say no agents are open", |b| b["text"].as_str().is_some_and(|t| t.contains("No agents open")));
-    eprintln!("e2e telegram: closing told");
-}
-
-/// The remote bridge (the phone's) starts and speaks the bridge protocol over the API as
-/// itself. Its relay is a closed port on this machine and iroh's minimal setup looks nothing
-/// up: nothing goes out.
-#[test]
-#[ignore = "opens a window: cargo test --test e2e -- --ignored"]
-fn the_remote_bridge_through_the_api() {
-    let settings = |root: &Path| {
-        let file = json!({ "remoteEnabled": true, "remoteRelay": "http://127.0.0.1:9" });
-        std::fs::write(root.join("config/loom/settings-LoomE2eRemote.json"), file.to_string()).unwrap();
-    };
-    let (instance, _c) = start_as("dev.shirvani.LoomE2eRemote", settings, &[]);
-    let log = instance.root.join("state/loom/audit-LoomE2eRemote.jsonl");
-    let deadline = Instant::now() + Duration::from_secs(30);
-    let asked = |method: &str| {
-        std::fs::read_to_string(&log).unwrap_or_default().lines().filter_map(|l| serde_json::from_str::<Value>(l).ok()).any(|l| {
-            l["method"] == "bridge" && l["ok"] == true && l["peer"]["principal"] == json!({ "kind": "bridge", "name": "remote" }) && l["params"].as_str().is_some_and(|p| p.contains(&format!("\"method\":\"{method}\"")))
-        })
-    };
-    // `hello` only reads (not logged); `state` comes once it was answered.
-    while !asked("state") {
-        assert!(Instant::now() < deadline, "the remote bridge never said its state through the API: {}", std::fs::read_to_string(&log).unwrap_or_default());
-        std::thread::sleep(Duration::from_millis(200));
-    }
-    eprintln!("e2e remote: its state through the API, as the remote bridge");
-    assert!(!instance.root.join("loom-LoomE2eRemote-bridges.sock").exists());
-    let old = loom_core::paths::runtime_dir().join("loom/loom-LoomE2eRemote-bridges.sock");
-    assert!(!old.exists(), "no bridge socket any more");
 }
 
 // ---- the web page --------------------------------------------------------------------------

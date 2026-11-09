@@ -188,26 +188,13 @@ impl Hub {
                     hub.status.set_label("This conversation is read as soon as the check running now ends…");
                 }
                 // loomd's Scribe: it says what it does in `scribe`.
-                if crate::conn::is_remote() {
-                    scribe("scribe_check", json!({ "session": session }));
-                    return;
-                }
-                hub.core.check_now(&session, true);
-                // Nothing started: there was nothing new to read.
-                if !busy && !hub.core.running.get() {
-                    hub.status.set_label("Nothing new to read since the last check.");
-                    hub.refresh_head();
-                }
+                scribe("scribe_check", json!({ "session": session }));
             }
         });
         let view: std::rc::Weak<Hub> = Rc::downgrade(&hub);
         *hub.me.borrow_mut() = view.clone();
         // Scribe in the core API (warp): the panel's lists draw from it. loomd's client: Scribe
         // is loomd's alone (one here would write in the same vault).
-        if !crate::conn::is_remote() {
-            hub.core.set_view(view);
-            hub.core.serve();
-        }
         let weak = Rc::downgrade(&hub);
         *hub.feed.borrow_mut() = crate::feed::Feed::new("scribe", move || {
             let Some(hub) = weak.upgrade() else { return };
@@ -233,12 +220,6 @@ impl Hub {
             None => glib::ControlFlow::Break,
         });
         hub
-    }
-
-    /// The window shows this conversation now.
-    pub fn set_current(&self, session: Option<String>, title: &str) {
-        *self.current.borrow_mut() = session.map(|s| (s, title.to_owned()));
-        self.refresh_head();
     }
 
     fn refresh_head(&self) {
@@ -283,7 +264,6 @@ impl Hub {
         // What the core's `scribe` has now (each with Scribe's own number as its id, as the
         // cards act by it).
         self.due.set(false);
-        loom_core::api::hub().store("scribe").flush();
         let items: Vec<Value> = match self.feed.borrow().as_ref() {
             Some(feed) => {
                 feed.update();
@@ -303,9 +283,8 @@ impl Hub {
                 .collect()
         };
         let (questions, pending, recent, teach) = (list("question"), list("proposal"), list("change"), list("teach"));
-        if crate::conn::is_remote() {
-            self.remote_news(&items, questions.len() + pending.len() + recent.iter().filter(|c| c["unseen"] == true).count());
-        }
+        self.remote_news(&items, questions.len() + pending.len() + recent.iter().filter(|c| c["unseen"] == true).count());
+
         if questions.is_empty() && pending.is_empty() && recent.is_empty() && teach.is_empty() {
             let empty = gtk::Label::builder()
                 .label("Questions Scribe has, changes waiting for your OK, and what it wrote in your notes show up here.")
@@ -575,18 +554,14 @@ impl Hub {
                 // A comment on it: Scribe changes the note as the user says.
                 let comment = gtk::Entry::builder().placeholder_text("Ask Scribe to change it… Enter").hexpand(true).build();
                 comment.set_tooltip_text(Some("What's wrong or missing in this change (\"it's net, not gross\"): Scribe changes the note that way at once"));
-                let (weak, row_data, held) = (Rc::downgrade(&hub), v.clone(), card.downgrade());
+                let (row_data, held) = (v.clone(), card.downgrade());
                 comment.connect_activate(move |entry| {
                     let text = entry.text().trim().to_owned();
-                    if let (Some(hub), false) = (weak.upgrade(), text.is_empty()) {
+                    if !text.is_empty() {
                         if let Some(card) = held.upgrade() {
                             card.set_sensitive(false);
                         }
-                        if crate::conn::is_remote() {
-                            scribe("scribe_fix", json!({ "id": format!("change:{}", row_data["id"]), "said": text }));
-                        } else {
-                            hub.core.fix(row_data.clone(), text);
-                        }
+                        scribe("scribe_fix", json!({ "id": format!("change:{}", row_data["id"]), "said": text }));
                     }
                 });
                 card.append(&comment);
@@ -813,38 +788,14 @@ impl Hub {
 
     // loomd's client: Scribe is loomd's, which hears of its agents itself; the core here
     // must not write Scribe's store or the vault beside it.
-    pub fn turn_done(&self, session: &str) {
-        if !crate::conn::is_remote() {
-            self.core.turn_done(session);
-        }
-    }
-
-    pub fn check_now(&self, session: &str, all: bool) {
-        if !crate::conn::is_remote() {
-            self.core.check_now(session, all);
-        }
-    }
-
-    pub fn record_external(&self, edits: Vec<(String, Option<String>, String)>, session: &str, title: &str) {
-        if !crate::conn::is_remote() {
-            self.core.record_external(edits, session, title);
-        }
-    }
-
     pub fn counts(&self) -> (usize, usize) {
-        if crate::conn::is_remote() {
-            let items = self.items();
-            let count = |list: &str| items.iter().filter(|i| i["list"] == list).count();
-            return (count("question"), count("proposal"));
-        }
-        self.core.counts()
+        let items = self.items();
+        let count = |list: &str| items.iter().filter(|i| i["list"] == list).count();
+        (count("question"), count("proposal"))
     }
 
     pub fn asks_about(&self, session: &str) -> bool {
-        if crate::conn::is_remote() {
-            return self.items().iter().any(|i| i["list"] == "question" && i["session"].as_str() == Some(session));
-        }
-        self.core.asks_about(session)
+        self.items().iter().any(|i| i["list"] == "question" && i["session"].as_str() == Some(session))
     }
 
     /// The `scribe` feed's items as last read.
@@ -854,20 +805,14 @@ impl Hub {
 
     /// Scribe is checking a conversation now (here, or loomd's).
     fn running(&self) -> bool {
-        if crate::conn::is_remote() {
-            return self.items().iter().any(|i| i["id"] == "status" && i["running"] == true);
-        }
-        self.core.running.get()
+        self.items().iter().any(|i| i["id"] == "status" && i["running"] == true)
     }
 
     /// Changes seen (one, or all): folded from then on. True if that changed anything here
     /// (loomd's: its `scribe` says so when it did).
     fn mark_seen(&self, id: Option<u64>) -> bool {
-        if crate::conn::is_remote() {
-            scribe("scribe_seen", json!({ "id": id.map(|id| format!("change:{id}")) }));
-            return false;
-        }
-        self.core.mark_seen(id)
+        scribe("scribe_seen", json!({ "id": id.map(|id| format!("change:{id}")) }));
+        false
     }
 
     /// loomd's Scribe as `scribe` says: what it does in the status line, and the Notes tab

@@ -1,17 +1,15 @@
-//! The window's way to loom's core API: the core in this process, or loomd's over its socket
-//! once the window is its client. The rest of the window follows resources and does commands
-//! through here, the same either way.
+//! The window's way to loom's core API: loomd's, over its socket (the window is its client).
+//! The rest of the window follows resources and does commands through here.
 
 use std::cell::RefCell;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
 use loom_core::api::remote::{Remote, RemoteSub};
-use loom_core::api::{Message, Principal, Subscription};
 use serde_json::Value;
 
 thread_local! {
-    /// loomd's connection, when the window is its client (None: the core is in this process).
+    /// loomd's connection (set at start, before anything follows a resource).
     static REMOTE: RefCell<Option<Remote>> = const { RefCell::new(None) };
 }
 
@@ -20,59 +18,18 @@ pub fn use_remote(remote: Remote) {
     REMOTE.with_borrow_mut(|r| *r = Some(remote));
 }
 
-/// Whether the window is loomd's client (its agents are loomd's).
-pub fn is_remote() -> bool {
-    REMOTE.with_borrow(Option::is_some)
-}
-
-/// loomd's connection, when the window is its client.
+/// loomd's connection.
 pub fn loomd() -> Option<Remote> {
-    remote()
-}
-
-fn remote() -> Option<Remote> {
     REMOTE.with_borrow(Clone::clone)
 }
 
-/// A resource followed, wherever the core is.
-pub enum Sub {
-    Local(Subscription),
-    Remote(RemoteSub),
-}
+/// A resource followed.
+pub type Sub = RemoteSub;
 
-impl Sub {
-    /// What came since, numbered for a `Mirror`.
-    pub fn drain(&self) -> Vec<Message> {
-        match self {
-            Sub::Local(sub) => sub.drain(),
-            Sub::Remote(sub) => sub.drain(),
-        }
-    }
-
-    /// Asks for a fresh snapshot (a copy saw a gap).
-    pub fn resync(&self) {
-        match self {
-            Sub::Local(sub) => sub.resync(),
-            Sub::Remote(sub) => sub.resync(),
-        }
-    }
-
-    /// Whether something waits.
-    pub fn waiting(&self) -> bool {
-        match self {
-            Sub::Local(sub) => sub.waiting(),
-            Sub::Remote(sub) => sub.waiting(),
-        }
-    }
-}
-
-/// Follows `resource` as the window; `ready` is called when something waits. None: no such
-/// resource in this process (loomd's answer comes later: a `gone`, if it has none).
+/// Follows `resource` as the window; `ready` is called when something waits (loomd's answer
+/// comes later: a `gone`, if it has no such resource). None: not connected to loomd yet.
 pub fn subscribe(resource: &str, ready: impl Fn() + 'static) -> Option<Sub> {
-    match remote() {
-        Some(remote) => Some(Sub::Remote(remote.subscribe(resource, ready))),
-        None => loom_core::api::hub().connect(Principal::Window).subscribe(resource, ready).ok().map(Sub::Local),
-    }
+    loomd().map(|remote| remote.subscribe(resource, ready))
 }
 
 /// Does command `method` as the window; a refusal is logged under `who`.
@@ -96,18 +53,18 @@ pub fn command_result(who: &str, method: &str, params: Value, then: impl FnOnce(
         }
         then(result);
     };
-    match remote() {
+    match loomd() {
         Some(remote) => remote.command_later(&loom_core::rt::uuid(), method, params, reply),
-        None => loom_core::api::hub().connect(Principal::Window).command_later(&loom_core::rt::uuid(), method, params, reply),
+        None => reply(Err(loom_core::api::Error::NotFound("loomd".into()))),
     }
 }
 
 /// loomd started for this window (none answers at `socket` for `app_id`): the one installed
 /// beside this loom, on its own (it outlives the window: its agents go on when the window
-/// closes), its output in `<state>/loom/loomd[-<suffix>].log`. Waits until it answers.
-// shortcut: started as a plain process, not under systemd (no restart if it fails); loomd.service does that, use it once loomd is how loom always runs
+/// closes), its output in `<state>/loom/loomd[-<suffix>].log`. Under systemd where there is
+/// one (started again if it crashes, as loomd.service would), else a plain process. Waits
+/// until it answers.
 pub fn start_loomd(socket: &Path, app_id: &str) -> Result<(), String> {
-    use std::os::unix::process::CommandExt;
     let program = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("loomd");
     if !program.is_file() {
         return Err(format!("{} is not installed", program.display()));
@@ -117,10 +74,48 @@ pub fn start_loomd(socket: &Path, app_id: &str) -> Result<(), String> {
         None => "loomd.log".to_owned(),
     });
     std::fs::create_dir_all(loom_core::state::dir()).map_err(|e| e.to_string())?;
-    let out = std::fs::OpenOptions::new().create(true).append(true).open(&log).map_err(|e| format!("{}: {e}", log.display()))?;
-    let mut child = std::process::Command::new(&program)
-        // The window's own switches are not loomd's.
-        .env_remove("LOOM_LOCAL")
+    if !under_systemd(&program, &log, app_id) {
+        spawn_loomd(&program, &log)?;
+    }
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while loom_core::api::socket::running(socket).as_deref() != Some("daemon") {
+        if Instant::now() > deadline {
+            return Err(format!("loomd didn't start (its output: {})", log.display()));
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+/// loomd as a transient systemd user service (`loomd-<app id>`), with this window's
+/// environment (PATH finds the agents' programs): restarted if it fails, as loomd.service
+/// is. False if there's no systemd to ask (or it refused).
+fn under_systemd(program: &Path, log: &Path, app_id: &str) -> bool {
+    let mut run = std::process::Command::new("systemd-run");
+    run.args(["--user", "--quiet", "--collect", "--unit"]).arg(format!("loomd-{app_id}"));
+    // as data/loomd.service: given up after 5 failures in 2 minutes; 3 (another core runs) isn't one
+    for property in ["Restart=on-failure", "RestartSec=5", "RestartPreventExitStatus=3", "StartLimitIntervalSec=120", "StartLimitBurst=5"] {
+        run.arg("-p").arg(property);
+    }
+    run.arg("-p").arg(format!("StandardOutput=append:{}", log.display()));
+    run.arg("-p").arg(format!("StandardError=append:{}", log.display()));
+    for (name, value) in std::env::vars() {
+        // The window's own switch is not loomd's; systemd refuses control characters.
+        if name == "LOOM_CONTROL" || value.chars().any(char::is_control) {
+            continue;
+        }
+        run.arg(format!("--setenv={name}={value}"));
+    }
+    run.arg(program).stdin(std::process::Stdio::null()).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    run.status().is_ok_and(|status| status.success())
+}
+
+/// loomd as a plain process of its own (no systemd): not started again if it fails.
+fn spawn_loomd(program: &Path, log: &Path) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
+    let out = std::fs::OpenOptions::new().create(true).append(true).open(log).map_err(|e| format!("{}: {e}", log.display()))?;
+    let mut child = std::process::Command::new(program)
+        // The window's own switch is not loomd's.
         .env_remove("LOOM_CONTROL")
         .stdin(std::process::Stdio::null())
         .stdout(out.try_clone().map_err(|e| e.to_string())?)
@@ -131,12 +126,5 @@ pub fn start_loomd(socket: &Path, app_id: &str) -> Result<(), String> {
         .map_err(|e| format!("{}: {e}", program.display()))?;
     // Waited for, off this thread (no zombie while the window runs).
     std::thread::spawn(move || child.wait());
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while loom_core::api::socket::running(socket).as_deref() != Some("daemon") {
-        if Instant::now() > deadline {
-            return Err(format!("loomd didn't start (its output: {})", log.display()));
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
     Ok(())
 }

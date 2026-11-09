@@ -9,7 +9,7 @@
 @define-color loom_shell #c39bff;
 @define-color loom_line alpha(@window_fg_color, 0.07);
 
-window.loom { font-family: "Inter Variable", Inter, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
+window.loom { font-family: Onest, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
 .mono, .tool-title, .chip, .code-block, .diff label, .table-cell.mono { font-family: "JetBrains Mono", Vazirmatn, monospace; }
 .dim { color: alpha(@window_fg_color, 0.68); }
 .small { font-size: 0.9em; }
@@ -58,6 +58,15 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .agents row.project-row { margin: 10px 10px 0 10px; padding: 8px 6px 4px 8px; border-radius: 12px 12px 0 0; }
 .agents row.project-row.alone { border-radius: 12px; padding-bottom: 8px; }
 .agents row.project-row:hover { background: alpha(@window_fg_color, 0.075); }
+/* Depth: cards and the boxes that float on the chat cast a soft shadow below. A project card
+   is several rows, so only its bottom row casts one (side shadows would show at each seam). */
+@define-color loom_shadow alpha(black, 0.32);
+.agents row.agent-row.last, .agents row.project-row.alone { box-shadow: 0 5px 8px -5px @loom_shadow; }
+.agents row.agent-row:selected > box, .agents row.running-row.current { box-shadow: 0 1px 3px @loom_shadow; }
+.msg-user { box-shadow: 0 1px 3px @loom_shadow; }
+.composer { box-shadow: 0 4px 14px @loom_shadow; }
+.overview-card { box-shadow: 0 2px 6px @loom_shadow; }
+.overview-card:hover { box-shadow: 0 4px 12px @loom_shadow; }
 .project-row button.arrow { opacity: 0.6; font-size: 0.8em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 6px; }
 .project-row button.arrow:hover { opacity: 1; }
 .project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }
@@ -77,14 +86,17 @@ menubutton.inbox-banner label { color: @loom_wait; font-weight: 600; }
 .menu { padding: 4px; }
 button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
 
-/* Status: shape and colour both (a waiting agent is a ring, not just another hue). */
-.dot { min-width: 9px; min-height: 9px; border-radius: 99px; background: alpha(@window_fg_color, 0.25); }
-.dot.working { background: @accent_color; animation: pulse 1.4s ease-in-out infinite; }
-.dot.starting { background: alpha(@accent_color, 0.45); }
-.dot.blocked { background: @loom_wait; box-shadow: 0 0 0 2px alpha(@loom_wait, 0.35); border-radius: 2px; transform: rotate(45deg); }
+/* Status: shape and colour both, each bead in a 12 px slot. Only working moves (a turning
+   arc; still, it still reads as an arc when animations are off). */
+.dot { min-width: 9px; min-height: 9px; margin: 1.5px; border-radius: 99px; background: alpha(@window_fg_color, 0.35); }
+.dot.idle { min-width: 5px; min-height: 5px; margin: 3.5px; }
+.dot.working { min-width: 5px; min-height: 5px; background: none; border: 2px solid @accent_color; border-top-color: transparent; animation: spin 0.9s linear infinite; }
+.dot.starting { background: none; box-shadow: inset 0 0 0 1.5px @accent_color; }
+.dot.blocked { min-width: 8px; min-height: 8px; margin: 2px; background: @loom_wait; border-radius: 1px; transform: rotate(45deg); }
 .dot.done { background: @loom_ok; }
-.dot.failed { background: @loom_err; }
-.dot.suspended { background: transparent; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.4); }
+.dot.failed { min-width: 8px; min-height: 8px; margin: 2px; background: @loom_err; border-radius: 1px; }
+.dot.suspended { background: none; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.35); }
+@keyframes spin { to { transform: rotate(360deg); } }
 @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
 
 /* ---- chat ------------------------------------------------------------------------------- */
@@ -164,7 +176,7 @@ textview.input, textview.input text { background: transparent; }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
 button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
 button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
-.working { font-size: 0.9em; opacity: 0.85; margin-left: 6px; color: @accent_color; font-variant-numeric: tabular-nums; }
+label.working { font-size: 0.9em; opacity: 0.85; margin-left: 6px; color: @accent_color; font-variant-numeric: tabular-nums; }
 .completion row { padding: 3px 8px; }
 .option-list { padding: 4px; min-width: 240px; }
 .option-heading { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
@@ -423,7 +435,7 @@ button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity
 .middle { background: @sidebar_bg_color; }
 /* The panels: rounded, in the sidebars' colour, with no lines between the parts around them. */
 paned.panels { margin: 6px 6px 0 0; }
-.island { border-radius: 12px; background: @view_bg_color; }
+.island { border-radius: 12px; background: @view_bg_color; box-shadow: 0 2px 10px @loom_shadow; }
 window.loom .middle paned > separator, window.loom paned.split > separator { background-color: @sidebar_bg_color; }
 window.loom paned.panels > separator { min-width: 6px; background-color: transparent; }
 /* A toggle among the buttons looks like them, pressed or not. */
@@ -442,7 +454,7 @@ separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg
 .agents row.heading-row:hover { background: none; }
 button.heading-button { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; opacity: 0.6; }
 button.heading-button:hover { opacity: 1; }
-.agents row.running-row { margin: 0 10px; padding: 4px 8px; border-radius: 8px; }
+.agents row.running-row { margin: 0 10px; padding: 4px 8px 4px 12px; border-radius: 8px; }
 .agents row.running-row:hover { background: alpha(@window_fg_color, 0.05); }
 .agents row.running-row.current { background: alpha(@accent_color, 0.14); }
 .running-number { font-size: 0.8em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
@@ -569,3 +581,10 @@ button.turn-fold:hover label { opacity: 1; }
 button.pinned-ask { margin: 6px 24px 0; padding: 6px 14px; min-height: 0; border-radius: 10px; background: alpha(@view_bg_color, 0.96); box-shadow: 0 2px 8px alpha(black, 0.25); border: 1px solid alpha(@window_fg_color, 0.1); font-weight: normal; }
 button.mcp-alert { min-height: 0; padding: 2px 8px; color: @warning_color; font-weight: normal; }
 button.plan-line { min-height: 0; padding: 2px 4px; font-weight: normal; }
+
+/* Tooltips: one look for GTK's own and the footer's (popovers opening above, tip_above in
+   app.rs): the popover's colours, small text, rounded, a soft shadow. */
+popover.tip > contents { padding: 5px 9px; border-radius: 8px; }
+popover.tip label { font-size: 0.9em; }
+window.loom tooltip, tooltip.background { background-color: @popover_bg_color; color: @popover_fg_color; border-radius: 8px; padding: 5px 9px; border: 1px solid alpha(@window_fg_color, 0.08); box-shadow: 0 2px 8px @loom_shadow; }
+tooltip label { font-size: 0.9em; }

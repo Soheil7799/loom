@@ -12,9 +12,7 @@ pub use loom_core::workflow::*;
 
 /// A workflow's card in the conversation, kept up to date while it runs.
 pub struct Run {
-    pub tool_id: String,
     pub name: String,
-    pub task: String,
     pub root: gtk::Box,
     status: gtk::Label,
     stop: gtk::Button,
@@ -40,7 +38,7 @@ pub struct Run {
 
 impl Run {
     /// `live`: launched now (a conversation read back has only workflows that are over).
-    pub fn new(tool_id: &str, launch: Launch, live: bool, alive: impl Fn() -> bool + 'static) -> Rc<Run> {
+    pub fn new(launch: Launch, live: bool, alive: impl Fn() -> bool + 'static) -> Rc<Run> {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 6);
         root.add_css_class("workflow-card");
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -75,10 +73,8 @@ impl Run {
         agents.set_tooltip_text(Some("Every agent of the workflow: what it does and its answer; one opens its whole conversation"));
         root.append(&agents);
         let run = Rc::new(Run {
-            tool_id: tool_id.to_owned(),
             name: launch.name.clone(),
             progress: RefCell::new(Progress::new(&launch, live)),
-            task: launch.task,
             root,
             status,
             stop: stop.clone(),
@@ -189,15 +185,6 @@ impl Run {
             && let Some(changed) = self.on_changed.borrow().clone()
         {
             changed();
-        }
-    }
-
-    /// Its Stop was asked for and nothing stopped it (the request was taken back, or Claude
-    /// did not stop it): Stop can be pressed again.
-    pub fn stop_unanswered(&self) {
-        if !self.done() {
-            self.stop.set_sensitive(true);
-            self.stop.set_label("Stop");
         }
     }
 

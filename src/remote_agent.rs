@@ -165,6 +165,11 @@ impl RemoteAgent {
         }
     }
 
+    /// The folder it works in (as its `agents` item last said).
+    pub fn cwd(&self) -> Option<std::path::PathBuf> {
+        self.item.borrow()["cwd"].as_str().map(std::path::PathBuf::from)
+    }
+
     /// Its project's folder (as its `agents` item last said).
     pub fn project(&self) -> Option<std::path::PathBuf> {
         self.item.borrow()["project_id"].as_str().map(std::path::PathBuf::from)
@@ -240,7 +245,7 @@ impl RemoteAgent {
                         summary: item["summary"].as_str().unwrap_or_default().to_owned(),
                     };
                     let still = alive.clone();
-                    let run = crate::workflow::Run::new(tool_id, launch, running, move || still.get());
+                    let run = crate::workflow::Run::new(launch, running, move || still.get());
                     let chat = Rc::downgrade(&self.chat);
                     *run.on_open.borrow_mut() = Some(Rc::new(move |path: std::path::PathBuf, label: String| {
                         let Some(chat) = chat.upgrade() else { return };

@@ -87,15 +87,14 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // loom's Claude folder changed (as when an item is switched in Settings).
         "pluginchanged" => crate::plugin::changed(),
         // Ctrl+Enter: what waits goes into the running turn.
-        "sendnow" => app.active_agent().ok_or("no agent")?.send_waiting_now(),
+        "sendnow" => crate::conn::command("window", "send_now", serde_json::json!({ "agent": app.remote_view().ok_or("no agent")?.id.to_string() })),
         "latest" => {
             // Laid out first, so the end is where the latest message really is.
             lay_out(app.window.upcast_ref())?;
             app.chat_in_view().ok_or("no agent")?.scroll_to_latest();
         }
         "send" => {
-            let local = app.active_agent().is_some_and(|a| a.send_form());
-            if !local && !app.remote_view().is_some_and(|a| a.send_form()) {
+            if !app.remote_view().is_some_and(|a| a.send_form()) {
                 return Err("no question form open".into());
             }
         }
@@ -191,12 +190,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let (n, side) = argument.split_once(':').ok_or("dropline:<n>:before|after")?;
             app.drop_line_for_tests(n.parse::<usize>().map_err(|_| "a number")?.saturating_sub(1), side == "before");
         }
-        // A schedule due now: a new conversation in <dir> that runs `!echo scheduled-ok`.
-        "schedtest" => app.add_schedule_for_tests(PathBuf::from(argument), "!echo scheduled-ok"),
-        "schedule" => {
-            let agent = app.agents_listed().into_iter().next().ok_or("no agent")?;
-            app.schedule_for(&agent);
-        }
+        "schedule" => app.schedule_for_remote(app.remote_view().ok_or("no agent")?.id),
         // A plan to review: "fakeplan", then "plancomment:<text>" (on its first part) and
         // "planchanges" (Request changes).
         "fakeplan" => {
@@ -328,7 +322,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "maximize" => app.window.maximize(),
         "scrollinfo" => eprintln!("SCROLL {}", app.chat_in_view().ok_or("no agent")?.scroll_info()),
-        "toast" => app.show_toast(&app.active_agent().ok_or("no agent")?, argument, false),
+        "toast" => app.show_remote_toast(app.remote_view().ok_or("no agent")?.id, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
         "snapchat" => {
             let list = app.chat_in_view().ok_or("no agent")?.messages();
@@ -371,10 +365,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         // The memory snapshot the debug log takes every 3 minutes, now.
         "memory" => {
-            eprintln!("{}", crate::memory::snapshot(&app.memory_agents(), None).0);
+            eprintln!("{}", crate::memory::snapshot(&[], None).0);
         }
-        // What Esc does: stops the turn, or a ! command.
-        "cancel" => app.active_agent().ok_or("no agent")?.cancel(),
         "stop" => app.chat_in_view().ok_or("no agent")?.press_stop(),
         // A view over the focused conversation (as a subagent's), and back.
         "aside" => app.chat_in_view().ok_or("no agent")?.show_aside(gtk::Label::new(Some("aside")).upcast_ref(), "Test"),
@@ -396,8 +388,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "answer" => {
             let n: usize = argument.parse().map_err(|_| "answer:<n>")?;
-            let local = app.active_agent().is_some_and(|a| a.answer(0, n.saturating_sub(1)));
-            if !local && !app.remote_view().is_some_and(|a| a.answer(n.saturating_sub(1))) {
+            if !app.remote_view().is_some_and(|a| a.answer(n.saturating_sub(1))) {
                 return Err("no such question or option".into());
             }
         }

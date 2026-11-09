@@ -137,40 +137,17 @@ fn main() -> glib::ExitCode {
     }
     // LOOM_APP_ID: a separate instance (tests), with its own saved agents and settings.
     let app_id = std::env::var("LOOM_APP_ID").unwrap_or_else(|_| APP_ID.to_owned());
-    // loomd hosts this app id's core already: a window would be a second core on the same
-    // agents. (Another window is GApplication's to raise.)
+    // The window is loomd's client (another window is GApplication's to raise).
     let socket = loom_core::api::socket::socket_path(&app_id);
     let daemon = loom_core::api::socket::running(&socket).as_deref() == Some("daemon");
-    // The window is loomd's client: its agents are loomd's, the window runs none of its own.
-    // LOOM_LOCAL=1: the core in the window's own process, as before loomd (the window's
-    // end-to-end tests).
-    if std::env::var("LOOM_LOCAL").as_deref() != Ok("1") {
-        // None runs: started now (closing the window stops it, unless Settings keep agents
-        // working).
-        if !daemon && let Err(err) = conn::start_loomd(&socket, &app_id) {
-            eprintln!("loom: {err}");
-            return glib::ExitCode::from(1);
-        }
-        conn::use_remote(loom_core::api::remote::Remote::connect(socket, "loom window"));
-    } else if daemon {
-        eprintln!("loom: loomd is running for {app_id}; open its web page (loom api web --open), or stop it first");
+    // Its agents are loomd's, the window runs none of its own. None runs: started now
+    // (closing the window stops it, unless Settings keep agents working).
+    if !daemon && let Err(err) = conn::start_loomd(&socket, &app_id) {
+        eprintln!("loom: {err}");
         return glib::ExitCode::from(1);
     }
+    conn::use_remote(loom_core::api::remote::Remote::connect(socket, "loom window"));
     settings::init(&app_id);
-    loom_core::audit::init(&app_id);
-    // The notes vault in the core API (warp).
-    loom_core::notes_api::serve();
-    loom_core::api::blobs::serve();
-    loom_core::agent::commands::serve();
-    loom_core::jobs_api::serve();
-    loom_core::bridges::api::serve();
-    loom_core::api::web::serve();
-    loom_core::asks::serve();
-    loom_core::library::serve();
-    loom_core::project_files::serve();
-    // Whether agents get scopes of their own, found out off this thread.
-    loom_core::scope::probe();
-    feed::watch_copies();
     log::name_for(&app_id);
     log::install();
     // GTK's own warnings go into the log too.
@@ -185,13 +162,9 @@ fn main() -> glib::ExitCode {
     log::set(settings::get().debug_log);
     plugin::init(&app_id);
     journal::init(&app_id);
-    // (loomd's client: loomd prepares it, commits included.)
-    if let Some(vault) = vault::current().filter(|_| !conn::is_remote()) {
-        if let Err(err) = vault::prepare(&vault) {
-            log::write("notes", &format!("vault {}: {err}", vault.display()));
-        }
-    }
     // `loom <folder>`: that folder's project page (in the running window, if there is one).
+    // Dialogs (no application of their own) take the program name as their app id: this one's.
+    glib::set_prgname(Some(app_id.as_str()));
     let app = gtk::Application::builder().application_id(app_id).flags(gio::ApplicationFlags::HANDLES_OPEN).build();
     app.connect_open(|app, files, _| {
         app.activate();
@@ -206,6 +179,7 @@ fn main() -> glib::ExitCode {
         }
     });
     app.connect_startup(|_| {
+        theme::load_fonts();
         let css = gtk::CssProvider::new();
         css.load_from_string(CSS);
         theme::watch();

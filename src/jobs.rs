@@ -101,20 +101,6 @@ impl Tray {
         tray
     }
 
-    /// Its jobs (in loom-core).
-    pub fn core(&self) -> Jobs {
-        self.core.clone()
-    }
-
-    /// The chip of job `id`, made if it has none yet (a job started elsewhere: by an agent).
-    pub fn adopt(self: &Rc<Self>, id: Id) -> Option<Rc<Job>> {
-        if let Some(job) = self.by_id(id) {
-            return Some(job);
-        }
-        let info = self.core.info(id)?;
-        Some(self.add(id, &info.name, &info.command))
-    }
-
     /// The chips drawn as the core's `jobs` has this project's jobs now.
     fn sync(self: &Rc<Self>) {
         let items: Vec<Value> = {
@@ -404,13 +390,6 @@ impl Tray {
         }
     }
 
-    /// Stops the jobs this tray started (on quit; loomd's go on without the window).
-    pub fn stop_all(&self) {
-        if crate::conn::is_remote() {
-            return;
-        }
-        self.core.stop_all();
-    }
 }
 
 impl Job {
