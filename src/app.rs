@@ -113,7 +113,9 @@ pub struct App {
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// Open projects' cards (name, first and last agent row): their names drawn up the left.
     cards: RefCell<Vec<(PathBuf, String, gtk::ListBoxRow, gtk::ListBoxRow)>>,
-    card_names: crate::tube::Tube,
+    /// Over the agent list: each open card's name (a button: its page) and ▾ (folds it).
+    card_layer: gtk::Overlay,
+    card_spots: CardSpots,
     /// loomd's agents opened in the window (its client), and the one in view.
     remote_agents: RefCell<HashMap<u32, Rc<crate::remote_agent::RemoteAgent>>>,
     remote_focused: Cell<Option<u32>>,
@@ -269,9 +271,18 @@ impl App {
         menu.set_parent(&list);
         // An open project's name runs up its card's left edge, drawn over the list (its rows stay
         // the list's own: keys, menus and drag work as on any row).
-        let card_names = crate::tube::Tube::new();
         let with_names = gtk::Overlay::builder().child(&list).build();
-        with_names.add_overlay(&card_names);
+        let card_spots: CardSpots = Rc::default();
+        // each over its card's left edge: the ▾ at the top, the name below it
+        let (spots, under) = (card_spots.clone(), list.clone());
+        with_names.connect_get_child_position(move |_, widget| {
+            let spots = spots.borrow();
+            let (_, fold, first, last) = spots.iter().find(|s| s.0 == *widget)?;
+            let (top, bottom) = (first.compute_bounds(&under)?, last.compute_bounds(&under)?);
+            let height = bottom.y() + bottom.height() - top.y();
+            let (y, h) = if *fold { (top.y() + 6.0, CARD_FOLD) } else { (top.y() + 6.0 + CARD_FOLD, height - CARD_FOLD - 12.0) };
+            Some(gdk::Rectangle::new(top.x() as i32 + 2, y as i32, CARD_STRIP as i32, h.max(1.0) as i32))
+        });
         let list_scroller = gtk::ScrolledWindow::builder().child(&with_names).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         let notes_chat = crate::notes_chat::NotesChat::new();
         // Back to the agents, with how many work and wait meanwhile.
@@ -554,7 +565,8 @@ impl App {
             hub: hub.clone(),
             project_edges: RefCell::default(),
             cards: RefCell::default(),
-            card_names,
+            card_layer: with_names.clone(),
+            card_spots,
             running: RefCell::default(),
             running_rows: RefCell::default(),
             sidebar_feeds: RefCell::default(),
@@ -668,66 +680,10 @@ impl App {
                 app.refresh_inbox();
             }
         });
-        // An open project's name (its card's left edge): clicked, its page; dragged, the project
-        // moves (dropped on another, as a closed one's pill is).
-        let press = gtk::GestureDrag::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
-        // (the project, whether it was pressed on its ▾, whether it is being dragged)
-        let held: Rc<RefCell<Option<(PathBuf, bool, bool)>>> = Rc::default();
-        let (weak, grab) = (Rc::downgrade(self), held.clone());
-        press.connect_drag_begin(move |gesture, x, y| {
-            let Some(app) = weak.upgrade() else { return };
-            match app.card_at(x, y) {
-                Some((path, fold)) => {
-                    gesture.set_state(gtk::EventSequenceState::Claimed);
-                    *grab.borrow_mut() = Some((path, fold, false));
-                }
-                None => {
-                    gesture.set_state(gtk::EventSequenceState::Denied);
-                }
-            }
-        });
-        let (weak, moving) = (Rc::downgrade(self), held.clone());
-        press.connect_drag_update(move |gesture, dx, dy| {
-            let Some(app) = weak.upgrade() else { return };
-            let mut held = moving.borrow_mut();
-            let Some((path, _, started)) = held.as_mut() else { return };
-            if *started || dx.hypot(dy) < 8.0 {
-                return;
-            }
-            *started = true;
-            let (Some(surface), Some(device)) = (app.list.native().and_then(|n| n.surface()), gesture.device()) else { return };
-            let content = gdk::ContentProvider::for_value(&format!("loom-project:{}", path.to_string_lossy()).to_value());
-            if let Some(drag) = gdk::Drag::begin(&surface, &device, &content, gdk::DragAction::MOVE, -dx, -dy) {
-                let first = app.cards.borrow().iter().find(|c| c.0 == *path).map(|c| c.2.clone());
-                if let Some(first) = first {
-                    gtk::DragIcon::set_from_paintable(&drag, &gtk::WidgetPaintable::new(Some(&first)), 12, 12);
-                }
-            }
-        });
-        let weak = Rc::downgrade(self);
-        press.connect_drag_end(move |_, _, _| {
-            // not moved: a click
-            match (weak.upgrade(), held.borrow_mut().take()) {
-                (Some(app), Some((path, true, false))) => app.toggle_collapsed(&path),
-                (Some(app), Some((path, false, false))) => app.show_project(&path, &path),
-                _ => {}
-            }
-        });
-        self.list.add_controller(press);
-        let weak = Rc::downgrade(self);
-        self.card_names.set_draw(move |area, snapshot| {
-            if let Some(app) = weak.upgrade() {
-                app.draw_card_names(area, snapshot);
-            }
-        });
         // Right-click (or the Menu key) on a project or agent: its menu.
         let weak = Rc::downgrade(self);
         crate::menu::on_right_click(&self.list, move |x, y| {
             let Some(app) = weak.upgrade() else { return };
-            // an open project's name, up its card's edge: the project's menu
-            if let Some((path, _)) = app.card_at(x, y) {
-                return app.project_menu(&path, x, y);
-            }
             match app.list.row_at_y(y as i32) {
                 // A heading (Running, Projects): no menu of its own.
                 Some(row) if matches!(app.rows.borrow().get(row.index() as usize), Some(Row::Heading)) => {}
@@ -3079,6 +3035,14 @@ impl App {
                 .item("Open its folder in the file manager", move || crate::menu::launch(&list, &cwd))
                 .item("Copy its folder's path", move || crate::menu::copy(&list2, &cwd2.to_string_lossy()))
                 .item("Schedule a prompt…", with(|app, id| app.schedule_for_remote(id)))
+                .item("Fold its project", {
+                    let (weak, project) = (Rc::downgrade(self), PathBuf::from(item["project_id"].as_str().unwrap_or_default()));
+                    move || {
+                        if let Some(app) = weak.upgrade() {
+                            app.toggle_collapsed(&project);
+                        }
+                    }
+                })
                 .section()
                 .item("Suspend (free its memory)", say("suspend", json!({})))
                 .enabled(!suspended && item["busy"] != true)
@@ -3271,7 +3235,7 @@ impl App {
         }
         *self.project_edges.borrow_mut() = edges;
         *self.cards.borrow_mut() = cards;
-        self.card_names.queue_draw();
+        self.card_buttons();
         if projects.is_empty() {
             let hint = gtk::Label::builder()
                 .label("No projects yet.\nCtrl+Shift+N starts an agent in a folder.")
@@ -3299,49 +3263,75 @@ impl App {
         }
     }
 
-    /// The open projects' names, each up its card's left edge (bottom to top, as a book's spine).
-    fn draw_card_names(&self, area: &crate::tube::Tube, snapshot: &gtk::Snapshot) {
-        use gtk::graphene::Point;
-        let color = self.list.color();
-        for (_, name, first, last) in self.cards.borrow().iter() {
-            // the rows' own edges (compute_point gives their content's, inside the padding)
-            let (Some(top), Some(bottom)) = (first.compute_bounds(area), last.compute_bounds(area)) else { continue };
-            let height = bottom.y() + bottom.height() - top.y();
-            let layout = self.list.create_pango_layout(Some(&name.to_uppercase()));
-            let mut font = pango::FontDescription::new();
-            font.set_weight(pango::Weight::Bold);
-            font.set_size(9 * pango::SCALE);
-            layout.set_font_description(Some(&font));
-            let attrs = pango::AttrList::new();
-            attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
-            layout.set_attributes(Some(&attrs));
-            // the ▾ at the top folds it; the name centred in the rest
-            let room = height - CARD_FOLD;
-            layout.set_width(((room - 10.0).max(10.0) * pango::SCALE as f32) as i32);
-            layout.set_ellipsize(pango::EllipsizeMode::End);
-            let (_, text) = layout.pixel_extents();
-            let fold = self.list.create_pango_layout(Some("▾"));
-            let (_, mark) = fold.pixel_extents();
-            snapshot.save();
-            snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - mark.width() as f32) / 2.0, top.y() + (CARD_FOLD - mark.height() as f32) / 2.0 + 4.0));
-            snapshot.append_layout(&fold, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.55));
-            snapshot.restore();
-            snapshot.save();
-            snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - text.height() as f32) / 2.0, top.y() + CARD_FOLD + (room + text.width() as f32) / 2.0));
-            snapshot.rotate(-90.0);
-            snapshot.append_layout(&layout, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.85));
-            snapshot.restore();
+    /// The open cards' name and ▾ buttons, made again with the list (real widgets: in the
+    /// focus order and named for screen readers, as drawn text never is).
+    // shortcut: they come after the list in Tab order; one focus order with the rows if that bites
+    fn card_buttons(self: &Rc<Self>) {
+        for (widget, ..) in self.card_spots.take() {
+            self.card_layer.remove_overlay(&widget);
         }
-    }
-
-    /// The open project whose card's name strip is at (x, y) in the list, if one is, and
-    /// whether (x, y) is on its ▾ (which folds it).
-    fn card_at(&self, x: f64, y: f64) -> Option<(PathBuf, bool)> {
-        self.cards.borrow().iter().find_map(|(path, _, first, last)| {
-            let (top, bottom) = (first.compute_bounds(&self.list)?, last.compute_bounds(&self.list)?);
-            let inside = x >= f64::from(top.x()) && x <= f64::from(top.x() + CARD_STRIP) && y >= f64::from(top.y()) && y <= f64::from(bottom.y() + bottom.height());
-            inside.then(|| (path.clone(), y < f64::from(top.y() + CARD_FOLD)))
-        })
+        let mut spots = Vec::new();
+        for (path, name, first, last) in self.cards.borrow().iter() {
+            let label = name.to_uppercase();
+            // one agent: tall enough for its project's name
+            if first == last {
+                let (width, _) = name_layout(&self.list, &label, i32::MAX).pixel_size();
+                first.set_size_request(-1, width + CARD_FOLD as i32 + 48);
+                // its pill at its height, in the middle of the taller card
+                if let Some(pill) = first.child() {
+                    pill.set_valign(gtk::Align::Center);
+                }
+            }
+            let spine = crate::tube::Tube::new();
+            spine.set_draw(move |tube, snapshot| {
+                let layout = name_layout(tube, &label, tube.height().max(10));
+                let (w, h) = layout.pixel_size();
+                snapshot.save();
+                snapshot.translate(&gtk::graphene::Point::new((tube.width() - h) as f32 / 2.0, (tube.height() + w) as f32 / 2.0));
+                snapshot.rotate(-90.0);
+                snapshot.append_layout(&layout, &tube.color());
+                snapshot.restore();
+            });
+            let strip = gtk::Button::builder().child(&spine).tooltip_text(format!("{name}: its board and conversations")).build();
+            strip.add_css_class("card-strip");
+            strip.set_cursor_from_name(Some("pointer"));
+            strip.update_property(&[gtk::accessible::Property::Label(&format!("{name}: board and conversations"))]);
+            let (weak, open) = (Rc::downgrade(self), path.clone());
+            strip.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.show_project(&open, &open);
+                }
+            });
+            // dragged onto another project: it goes there (as a closed one's pill)
+            let source = gtk::DragSource::builder().actions(gdk::DragAction::MOVE).build();
+            let dragged = path.to_string_lossy().into_owned();
+            source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&format!("loom-project:{dragged}").to_value())));
+            let shown = first.clone();
+            source.connect_drag_begin(move |source, _| source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&shown))), 12, 12));
+            strip.add_controller(source);
+            let (weak, menu, at) = (Rc::downgrade(self), path.clone(), strip.clone());
+            crate::menu::on_right_click(&strip, move |x, y| {
+                let Some(app) = weak.upgrade() else { return };
+                let point = at.compute_point(&app.list, &gtk::graphene::Point::new(x as f32, y as f32)).map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())));
+                app.project_menu(&menu, point.0, point.1);
+            });
+            let fold = gtk::Button::builder().label("▾").tooltip_text(format!("Fold {name}")).build();
+            fold.add_css_class("card-fold");
+            fold.set_cursor_from_name(Some("pointer"));
+            fold.update_property(&[gtk::accessible::Property::Label(&format!("Fold {name}"))]);
+            fold.update_state(&[gtk::accessible::State::Expanded(Some(true))]);
+            let (weak, shut) = (Rc::downgrade(self), path.clone());
+            fold.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.toggle_collapsed(&shut);
+                }
+            });
+            self.card_layer.add_overlay(&fold);
+            self.card_layer.add_overlay(&strip);
+            spots.push((fold.upcast(), true, first.clone(), last.clone()));
+            spots.push((strip.upcast(), false, first.clone(), last.clone()));
+        }
+        *self.card_spots.borrow_mut() = spots;
     }
 
     /// Where the first project's card starts in the sidebar list (None before it is laid out).
@@ -3795,7 +3785,27 @@ fn tip_above(widget: &impl IsA<gtk::Widget>) {
 /// How wide an open project's name strip is, at its card's left, and how tall its ▾ (at the
 /// top: folds it).
 const CARD_STRIP: f32 = 26.0;
-const CARD_FOLD: f32 = 22.0;
+const CARD_FOLD: f32 = 26.0;
+
+/// The open cards' buttons over the list: each widget, whether it is the ▾, the card's rows.
+type CardSpots = Rc<RefCell<Vec<(gtk::Widget, bool, gtk::ListBoxRow, gtk::ListBoxRow)>>>;
+
+/// An open project's name as its card's edge shows it (`width`: the most it may take).
+fn name_layout(widget: &impl IsA<gtk::Widget>, text: &str, width: i32) -> pango::Layout {
+    let layout = widget.create_pango_layout(Some(text));
+    let mut font = pango::FontDescription::new();
+    font.set_weight(pango::Weight::Bold);
+    font.set_size(10 * pango::SCALE);
+    layout.set_font_description(Some(&font));
+    let attrs = pango::AttrList::new();
+    attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
+    layout.set_attributes(Some(&attrs));
+    if width < i32::MAX {
+        layout.set_width(width * pango::SCALE);
+        layout.set_ellipsize(pango::EllipsizeMode::End);
+    }
+    layout
+}
 
 fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
