@@ -625,3 +625,27 @@ textview.board-body, textview.board-body text { background: alpha(@window_fg_col
 .project-side { border-left: 1px solid @loom_line; background: alpha(@window_fg_color, 0.02); }
 .project-side .project-column { padding: 6px 4px; }
 .side-title { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.7; padding: 10px 2px 2px 2px; }
+
+/* Polish (design-critic, 2026-11-10): the card a sunk container, the pills lifted; tints by
+   urgency, done the quietest; a selection ring that shows on any tint; deeper board lanes. */
+/* (no outline: each row of the card would draw its own, a line between every two) */
+.agents row.agent-row.in-card, .agents row.agent-row.in-card:selected { background: alpha(black, 0.16); }
+/* one agent: room for its project's name up the edge */
+.agents row.agent-row.in-card.first.last { padding-top: 14px; padding-bottom: 14px; }
+.agents row.agent-row.in-card > box { background: alpha(@window_fg_color, 0.07); }
+.agents row.agent-row.in-card.state-working > box { background: alpha(@loom_run, 0.16); }
+.agents row.agent-row.in-card.state-starting > box { background: alpha(@loom_run, 0.08); }
+.agents row.agent-row.in-card.state-done > box { background: alpha(@loom_ok, 0.09); }
+.agents row.agent-row.in-card.state-blocked > box { background: alpha(@loom_wait, 0.22); box-shadow: inset 0 0 0 1px alpha(@loom_wait, 0.5); }
+.agents row.agent-row.in-card.state-failed > box { background: alpha(@loom_err, 0.16); }
+.agents row.agent-row.in-card:selected > box { box-shadow: inset 0 0 0 2px alpha(@window_fg_color, 0.85), 0 2px 8px @loom_shadow; }
+.agents row.agent-row .agent-sub { opacity: 0.68; }
+.project-row.alone .project-name { font-size: 1em; font-weight: 600; letter-spacing: 0; text-transform: none; opacity: 1; }
+.agents row.project-row.alone { background: alpha(@window_fg_color, 0.07); }
+.board-heading { padding: 18px 22px 10px 22px; }
+.board-lane { background: alpha(black, 0.14); box-shadow: inset 0 0 0 1px @loom_line; }
+button.board-card { background: alpha(@window_fg_color, 0.065); box-shadow: inset 0 1px alpha(white, 0.04), 0 1px 3px @loom_shadow; transition: background 120ms; }
+button.board-card.done { opacity: 0.72; }
+.board-card-meta { font-size: 0.82em; }
+.side-title { padding: 22px 2px 6px 2px; }
+.project-side { background: alpha(black, 0.1); }

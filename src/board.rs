@@ -31,6 +31,7 @@ impl BoardView {
         let place = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Start).build();
         place.add_css_class("dim");
         place.add_css_class("small");
+        place.add_css_class("mono");
         let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
         heading.add_css_class("board-heading");
         heading.append(&title);
@@ -167,7 +168,7 @@ impl BoardView {
         inner.append(&title);
         let body = card["body"].as_str().unwrap_or_default();
         if !body.is_empty() {
-            let excerpt = gtk::Label::builder().label(body).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).lines(3).ellipsize(pango::EllipsizeMode::End).build();
+            let excerpt = gtk::Label::builder().label(body).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).lines(2).ellipsize(pango::EllipsizeMode::End).build();
             excerpt.add_css_class("dim");
             excerpt.add_css_class("small");
             inner.append(&excerpt);

@@ -3261,19 +3261,21 @@ impl App {
             let layout = self.list.create_pango_layout(Some(&name.to_uppercase()));
             let mut font = pango::FontDescription::new();
             font.set_weight(pango::Weight::Bold);
-            font.set_size(8 * pango::SCALE);
+            font.set_size(9 * pango::SCALE);
             layout.set_font_description(Some(&font));
             let attrs = pango::AttrList::new();
             attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
             layout.set_attributes(Some(&attrs));
-            layout.set_width(((height - 8.0).max(10.0) * pango::SCALE as f32) as i32);
+            layout.set_width(((height - 12.0).max(10.0) * pango::SCALE as f32) as i32);
             layout.set_ellipsize(pango::EllipsizeMode::End);
             let (_, text) = layout.pixel_extents();
+            // a faint tab the length of the card: where the name is, and where to click
+            snapshot.append_color(&gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.06), &gtk::graphene::Rect::new(top.x() + 4.0, top.y() + 10.0, CARD_STRIP - 6.0, height - 20.0));
             snapshot.save();
             // the strip: CARD_STRIP wide at the card's left, the name centred in it
             snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - text.height() as f32) / 2.0, top.y() + (height + text.width() as f32) / 2.0));
             snapshot.rotate(-90.0);
-            snapshot.append_layout(&layout, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.78));
+            snapshot.append_layout(&layout, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.9));
             snapshot.restore();
         }
     }
