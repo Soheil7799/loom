@@ -10,6 +10,8 @@ use std::rc::{Rc, Weak};
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
+type OnAgent = Rc<dyn Fn(u32)>;
+
 pub struct BoardView {
     pub root: gtk::Box,
     title: gtk::Label,
@@ -22,7 +24,7 @@ pub struct BoardView {
     /// The board as last drawn (an action and the file's monitor both reload it: drawn once).
     drawn: RefCell<Value>,
     /// An agent started on a card (Work on this): the window opens it.
-    pub on_agent: RefCell<Option<Rc<dyn Fn(u32)>>>,
+    pub on_agent: RefCell<Option<OnAgent>>,
 }
 
 impl BoardView {

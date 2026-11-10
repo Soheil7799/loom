@@ -825,6 +825,37 @@ Who: window, cli. Result: `{agent}`.
 |---|---|---|
 | `folder` | string | an absolute folder: its project |
 
+### `new_worktree_agent`
+
+Starts an agent in a worktree of its own: a new branch from what the project has checked out, in <parent>/<project>.worktrees/<branch>. Its agents stay on the project's card.
+
+Who: window, cli. Result: `{agent}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
+| `branch` | string | the new branch's name |
+
+### `worktree_merge`
+
+Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone.
+
+Who: window, cli. Result: `{said}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
+### `worktree_remove`
+
+Closes an agent and removes its worktree, and its branch once merged (an unmerged branch is kept). Refused while it works or has changes not committed.
+
+Who: window, cli. Result: `{said}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
 ### `rename_project`
 
 Renames a project.

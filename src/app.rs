@@ -2325,6 +2325,41 @@ impl App {
         entry.select_region(0, -1);
     }
 
+    /// A branch's name asked for in place, then an agent in a worktree of its own on it.
+    fn new_worktree_at(self: &Rc<Self>, project: &Path, x: f64, y: f64) {
+        let entry = gtk::Entry::builder().width_chars(30).placeholder_text("The new branch's name").build();
+        entry.set_tooltip_text(Some("Made from what the project has checked out, in a folder beside it"));
+        let weak = Rc::downgrade(self);
+        let project = project.to_owned();
+        entry.connect_activate(move |entry| {
+            let Some(app) = weak.upgrade() else { return };
+            let branch = entry.text().trim().to_owned();
+            if branch.is_empty() {
+                return;
+            }
+            entry.set_sensitive(false);
+            let (weak, entry) = (Rc::downgrade(&app), entry.clone());
+            crate::conn::command_result("window", "new_worktree_agent", json!({ "project": project, "branch": branch }), move |answer| {
+                entry.set_sensitive(true);
+                let Some(app) = weak.upgrade() else { return };
+                match answer {
+                    Ok(answer) => {
+                        app.menu.popdown();
+                        if let Some(id) = answer["agent"].as_str().and_then(|a| a.parse().ok()) {
+                            app.focus_remote(id);
+                        }
+                    }
+                    // said, and the name typed stays to be fixed
+                    Err(err) => crate::conn::tell(&err.to_string()),
+                }
+            });
+        });
+        self.menu.set_child(Some(&entry));
+        self.menu.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        self.menu.popup();
+        entry.grab_focus();
+    }
+
     // ---- overview and schedules -----------------------------------------------------------
 
     fn showing_overview(&self) -> bool {
@@ -2973,6 +3008,14 @@ impl App {
                 let list = self.list.clone();
                 Menu::new()
                     .item("New agent here", on(Box::new(move |app| app.start_agent_in(p1.clone()))))
+                    .item("New agent in a worktree…", {
+                        let (weak, at) = (Rc::downgrade(self), path.clone());
+                        move || {
+                            if let Some(app) = weak.upgrade() {
+                                app.new_worktree_at(&at, x, y);
+                            }
+                        }
+                    })
                     .item("Board and conversations…", on(Box::new(move |app| app.show_project(&p2, &p2))))
                     .section()
                     .item("Open in the file manager", move || crate::menu::launch(&list, &p3))
@@ -3042,8 +3085,17 @@ impl App {
         let awake = item["awake"] == true;
         let cwd = PathBuf::from(item["cwd"].as_str().or(item["project_id"].as_str()).unwrap_or_default());
         let (list, list2, cwd2) = (self.list.clone(), self.list.clone(), cwd.clone());
-        Some(
-            Menu::new()
+        // In a worktree loom made for it: merged back, then removed (what git said, in a toast).
+        let worktree = loom_core::worktrees::made_from(&cwd).is_some();
+        let git = |method: &'static str| {
+            move || {
+                crate::conn::command_result("window", method, json!({ "agent": id.to_string() }), |answer| match answer {
+                    Ok(answer) => crate::conn::tell(answer["said"].as_str().unwrap_or("Done.")),
+                    Err(err) => crate::conn::tell(&err.to_string()),
+                });
+            }
+        };
+        let menu = Menu::new()
                 .item("Open", with(|app, id| app.focus_remote(id)))
                 .enabled(!focused)
                 .item("Show beside the focused one", with(|app, id| app.pin_remote(id)))
@@ -3065,8 +3117,17 @@ impl App {
                             app.toggle_collapsed(&project);
                         }
                     }
-                })
-                .section()
+                });
+        let menu = if worktree {
+            menu.section()
+                .item("Merge its branch back", git("worktree_merge"))
+                .item("Remove its worktree", git("worktree_remove"))
+                .enabled(item["busy"] != true)
+        } else {
+            menu
+        };
+        Some(
+            menu.section()
                 .item("Suspend (free its memory)", say("suspend", json!({})))
                 .enabled(!suspended && item["busy"] != true)
                 .item("Restart", with(|app, id| {

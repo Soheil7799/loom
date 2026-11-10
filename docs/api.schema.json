@@ -2313,6 +2313,74 @@
       },
       "result": "{agent}"
     },
+    "new_worktree_agent": {
+      "description": "Starts an agent in a worktree of its own: a new branch from what the project has checked out, in <parent>/<project>.worktrees/<branch>. Its agents stay on the project's card.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "the project's id (its folder)"
+          },
+          "branch": {
+            "type": "string",
+            "description": "the new branch's name"
+          }
+        },
+        "required": [
+          "project",
+          "branch"
+        ]
+      },
+      "result": "{agent}"
+    },
+    "worktree_merge": {
+      "description": "Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{said}"
+    },
+    "worktree_remove": {
+      "description": "Closes an agent and removes its worktree, and its branch once merged (an unmerged branch is kept). Refused while it works or has changes not committed.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{said}"
+    },
     "rename_project": {
       "description": "Renames a project.",
       "who": [

@@ -147,7 +147,10 @@ mod tests {
     }
 }
 
-/// The repository a folder belongs to (the nearest parent with .git), else the folder.
+/// The repository a folder belongs to (the nearest parent with .git), else the folder. An
+/// agent's worktree loom made belongs to the project it is a worktree of (others, made by
+/// hand, stay projects of their own).
 pub fn project_of(cwd: &Path) -> PathBuf {
-    cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd).to_owned()
+    let found = cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd);
+    crate::worktrees::made_from(found).unwrap_or_else(|| found.to_owned())
 }

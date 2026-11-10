@@ -137,8 +137,7 @@ impl Daemon {
 
 impl Host for Daemon {
     fn agent_jobs(&self, project: &Path) -> Jobs {
-        let jobs = self
-            .jobs
+        self.jobs
             .borrow_mut()
             .entry(project.to_path_buf())
             .or_insert_with(|| {
@@ -147,8 +146,7 @@ impl Host for Daemon {
                 drop(loom_core::jobs_api::published(&jobs, events));
                 jobs
             })
-            .clone();
-        jobs
+            .clone()
     }
 
     fn agent_added(&self, agent: &Rc<Agent>) {
@@ -478,6 +476,55 @@ fn commands(daemon: &Rc<Daemon>) {
         daemon.ws.publish_agents();
         Ok(json!({ "agent": agent.id.to_string() }))
     });
+    // An agent in a worktree of its own (worktrees.rs): git runs off loomd's thread.
+    let weak = Rc::downgrade(daemon);
+    hub.handle_later("new_worktree_agent", move |who, params, reply| {
+        if !human(who) {
+            return reply(Err(Error::Forbidden("starting agents".into())));
+        }
+        let project = match params["project"].as_str().map(|p| loom_core::project_files::inside(p, &loom_core::project_files::projects())) {
+            Some(Ok(project)) => project,
+            _ => return reply(Err(Error::Forbidden("only a project of the sidebar's".into()))),
+        };
+        let branch = params["branch"].as_str().unwrap_or_default().trim().to_owned();
+        let weak = weak.clone();
+        loom_core::rt::spawn_local(async move {
+            let made = loom_core::rt::spawn_blocking(move || loom_core::worktrees::add(&project, &branch)).await.unwrap_or_else(|_| Err("git stopped".into()));
+            let Some(daemon) = weak.upgrade() else { return reply(Err(Error::NotFound("loom".into()))) };
+            reply(made.map_err(Error::Invalid).map(|dir| {
+                let agent = daemon.ws.add_agent(Saved::new(dir));
+                daemon.ws.publish_agents();
+                json!({ "agent": agent.id.to_string() })
+            }));
+        });
+    });
+    for method in ["worktree_merge", "worktree_remove"] {
+        let weak = Rc::downgrade(daemon);
+        hub.handle_later(method, move |who, params, reply| {
+            if !human(who) {
+                return reply(Err(Error::Forbidden("an agent's worktree".into())));
+            }
+            let Some(daemon) = weak.upgrade() else { return reply(Err(Error::NotFound("loom".into()))) };
+            let id = params["agent"].as_str().unwrap_or_default();
+            let Some(agent) = id.parse().ok().and_then(|id| daemon.ws.agent(id)) else { return reply(Err(Error::NotFound(format!("agent {id}")))) };
+            let dir = agent.cwd.clone();
+            if loom_core::worktrees::made_from(&dir).is_none() {
+                return reply(Err(Error::Invalid("it doesn't work in a worktree of its own".into())));
+            }
+            if method == "worktree_remove" && agent.is_busy() {
+                return reply(Err(Error::Conflict("it is working: stop it first".into())));
+            }
+            let (weak, agent) = (weak.clone(), Rc::downgrade(&agent));
+            loom_core::rt::spawn_local(async move {
+                let done = loom_core::rt::spawn_blocking(move || if method == "worktree_merge" { loom_core::worktrees::merge(&dir) } else { loom_core::worktrees::remove(&dir) }).await.unwrap_or_else(|_| Err("git stopped".into()));
+                // closed once its folder is gone (refused: it stays open, as it was)
+                if let (true, Ok(_), Some(daemon), Some(agent)) = (method == "worktree_remove", &done, weak.upgrade(), agent.upgrade()) {
+                    daemon.close(&agent);
+                }
+                reply(done.map(|said| json!({ "said": said })).map_err(Error::Invalid));
+            });
+        });
+    }
     let weak = Rc::downgrade(daemon);
     hub.handle("board_work", move |who, params| {
         if !human(who) {
