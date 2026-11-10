@@ -303,9 +303,10 @@ pub const NOT_THE_WINDOW: &[&str] = &["mcp", "api", "bridge", "scribe-eval", "sa
 /// Whether a process running `exe` (as /proc gives it) with `mode` (its first argument) is
 /// loom's window installed beside this program (`loom`, `window`): its own file (" (deleted)"
 /// once an upgrade replaced it, the window still open), run as the window, not another mode.
-/// shortcut: a process outside every agent's scope could still start the real window or
-/// inject into it (LD_PRELOAD) and so act as it, as it could with a window hosting the core;
-/// a sandbox for agents (Landlock) is what closes that.
+/// A limit, by design: a process outside every agent's scope could still start the real
+/// window or inject into it (LD_PRELOAD) and so act as it. Agents get out of their scopes
+/// only through the user's systemd, which the strict sandbox (sandbox.rs) shuts; refusing a
+/// window run with LD_PRELOAD would demote the user's own when they set one system-wide.
 fn is_window(exe: &str, mode: Option<&str>, window: &Path) -> bool {
     Path::new(exe.strip_suffix(" (deleted)").unwrap_or(exe)) == window && !mode.is_some_and(|m| NOT_THE_WINDOW.contains(&m))
 }

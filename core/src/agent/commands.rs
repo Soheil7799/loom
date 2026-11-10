@@ -168,26 +168,46 @@ fn handle() {
         agent.set_awake(on);
         Ok(json!({}))
     });
-    // What it changed, and going back on it: only files it touched.
-    hub.handle("changes", |who, params| {
-        let agent = person(who, params, "read agents' changes")?;
-        // shortcut: git runs on the main loop (a diff per file, fast for an agent's handful); off it once that is slow
-        let files: Vec<Value> = agent.files().iter().map(|(path, mark)| crate::changes::describe(path, *mark)).collect();
-        Ok(json!({ "files": files }))
-    });
-    hub.handle("revert", |who, params| {
-        let agent = person(who, params, "revert agents' changes")?;
-        let path = params["path"].as_str().ok_or_else(|| Error::Invalid("which file (path)?".into()))?;
-        let path = std::path::Path::new(path);
-        if !agent.files().iter().any(|(p, _)| p == path) {
-            return Err(Error::Forbidden("only a file this agent created or changed".into()));
-        }
-        let hunk = match params["hunk"].as_u64() {
-            None => None,
-            Some(n) => Some((n as usize, params["hunk_text"].as_str().ok_or_else(|| Error::Invalid("a hunk is undone with its text as shown (hunk_text)".into()))?)),
+    // What it changed, and going back on it: only files it touched. git runs off the core's
+    // thread (a diff per file; an agent that touched hundreds of files would hold it).
+    hub.handle_later("changes", |who, params, reply| {
+        let agent = match person(who, params, "read agents' changes") {
+            Ok(agent) => agent,
+            Err(err) => return reply(Err(err)),
         };
-        crate::changes::revert(path, hunk).map_err(|why| if why.contains("changed since") { Error::Conflict(why) } else { Error::Failed(why) })?;
-        Ok(json!({}))
+        let files = agent.files();
+        crate::rt::spawn_local(async move {
+            let described = crate::rt::spawn_blocking(move || files.iter().map(|(path, mark)| crate::changes::describe(path, *mark)).collect::<Vec<Value>>()).await;
+            reply(described.map(|files| json!({ "files": files })).map_err(|_| Error::Failed("reading the changes stopped unexpectedly".into())));
+        });
+    });
+    hub.handle_later("revert", |who, params, reply| {
+        let checked = (|| {
+            let agent = person(who, params, "revert agents' changes")?;
+            let path = params["path"].as_str().ok_or_else(|| Error::Invalid("which file (path)?".into()))?;
+            let path = std::path::PathBuf::from(path);
+            if !agent.files().iter().any(|(p, _)| *p == path) {
+                return Err(Error::Forbidden("only a file this agent created or changed".into()));
+            }
+            let hunk = match params["hunk"].as_u64() {
+                None => None,
+                Some(n) => Some((n as usize, params["hunk_text"].as_str().ok_or_else(|| Error::Invalid("a hunk is undone with its text as shown (hunk_text)".into()))?.to_owned())),
+            };
+            Ok((path, hunk))
+        })();
+        let (path, hunk) = match checked {
+            Ok(checked) => checked,
+            Err(err) => return reply(Err(err)),
+        };
+        crate::rt::spawn_local(async move {
+            let done = crate::rt::spawn_blocking(move || crate::changes::revert(&path, hunk.as_ref().map(|(n, text)| (*n, text.as_str())))).await;
+            reply(match done {
+                Ok(Ok(())) => Ok(json!({})),
+                Ok(Err(why)) if why.contains("changed since") => Err(Error::Conflict(why)),
+                Ok(Err(why)) => Err(Error::Failed(why)),
+                Err(_) => Err(Error::Failed("reverting stopped unexpectedly".into())),
+            });
+        });
     });
     // The window's actions on an agent: a person's.
     hub.handle("fork", |who, params| {

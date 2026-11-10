@@ -40,15 +40,27 @@ enum TurnChanges {
     Reading,
     /// still reading, and the turn is over
     ReadingEnded,
-    Read(Vec<(String, String)>),
+    Read(Vec<Stamped>),
+}
+
+/// A change git shows: its two letters, its path, when the file was last written (ms; 0 if
+/// gone): one changed again shows the same letters, but not the same time.
+type Stamped = (String, String, u64);
+
+/// The repo's changes as `Stamped` (None: git can't read it).
+fn stamped(repo: &Path) -> Option<(PathBuf, Vec<Stamped>)> {
+    let status = crate::repos::status(repo)?;
+    let written = |path: &str| std::fs::metadata(status.path.join(path.rsplit(" -> ").next().unwrap_or(path))).and_then(|m| m.modified()).ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_millis() as u64);
+    let changes = status.changes.iter().map(|(code, path)| (code.clone(), path.clone(), written(path))).collect();
+    Some((status.path, changes))
 }
 
 /// What git shows changed at a turn's end that it didn't at its start: new files (`??`)
 /// created, the rest changed; deleted ones and untracked folders left out.
-fn shell_writes(repo: &Path, before: &[(String, String)], now: &[(String, String)]) -> Vec<(PathBuf, Mark)> {
+fn shell_writes(repo: &Path, before: &[Stamped], now: &[Stamped]) -> Vec<(PathBuf, Mark)> {
     now.iter()
         .filter(|change| !before.contains(change) && !change.0.contains('D') && !change.1.ends_with('/'))
-        .map(|(code, path)| {
+        .map(|(code, path, _)| {
             let path = path.rsplit(" -> ").next().unwrap_or(path);
             (repo.join(path), if code == "??" { Mark::Created } else { Mark::Changed })
         })
@@ -765,10 +777,10 @@ impl Agent {
         *self.turn_changes.borrow_mut() = TurnChanges::Reading;
         let weak = Rc::downgrade(self);
         crate::rt::spawn_local(async move {
-            let found = crate::rt::spawn_blocking(move || crate::repos::status(&repo)).await.ok().flatten();
+            let found = crate::rt::spawn_blocking(move || stamped(&repo)).await.ok().flatten();
             let Some(agent) = weak.upgrade() else { return };
             let ended = matches!(*agent.turn_changes.borrow(), TurnChanges::ReadingEnded);
-            *agent.turn_changes.borrow_mut() = found.map_or(TurnChanges::None, |r| TurnChanges::Read(r.changes));
+            *agent.turn_changes.borrow_mut() = found.map_or(TurnChanges::None, |(_, changes)| TurnChanges::Read(changes));
             // the turn ended before git answered: its end is looked at now
             if ended {
                 agent.note_shell_files();
@@ -777,9 +789,8 @@ impl Agent {
     }
 
     /// The files a shell command wrote this turn (`printf > x`, `sed -i`): the edit tools'
-    /// diffs miss them, git doesn't. Added once git has answered.
-    /// shortcut: a file already changed before the turn and changed again by a command is
-    /// missed (its status stays the same); diff contents if that matters.
+    /// diffs miss them, git doesn't (with when each was written: one changed before the turn
+    /// and again in it counts too). Added once git has answered.
     fn note_shell_files(self: &Rc<Self>) {
         let before = match self.turn_changes.replace(TurnChanges::None) {
             TurnChanges::Read(before) => before,
@@ -792,9 +803,9 @@ impl Agent {
         let Some(repo) = crate::repos::repo_of(&self.cwd) else { return };
         let weak = Rc::downgrade(self);
         crate::rt::spawn_local(async move {
-            let Some(now) = crate::rt::spawn_blocking(move || crate::repos::status(&repo)).await.ok().flatten() else { return };
+            let Some((top, now)) = crate::rt::spawn_blocking(move || stamped(&repo)).await.ok().flatten() else { return };
             let Some(agent) = weak.upgrade() else { return };
-            let new = shell_writes(&now.path, &before, &now.changes);
+            let new = shell_writes(&top, &before, &now);
             let mut files = agent.files.borrow_mut();
             let mut added = false;
             for (path, mark) in new {
@@ -3165,13 +3176,14 @@ mod tests {
 
     #[test]
     fn shell_writes_are_what_git_shows_new_this_turn() {
-        let c = |code: &str, path: &str| (code.to_owned(), path.to_owned());
-        let before = [c(" M", "kept.rs"), c("??", "old.txt")];
-        let now = [c(" M", "kept.rs"), c("??", "old.txt"), c("??", "x"), c(" M", "src/a.rs"), c(" D", "gone.rs"), c("??", "dir/"), c("R ", "a -> b")];
+        let c = |code: &str, path: &str, at: u64| (code.to_owned(), path.to_owned(), at);
+        let before = [c(" M", "kept.rs", 1), c("??", "old.txt", 1), c(" M", "again.rs", 1)];
+        let now = [c(" M", "kept.rs", 1), c("??", "old.txt", 1), c(" M", "again.rs", 2), c("??", "x", 2), c(" M", "src/a.rs", 2), c(" D", "gone.rs", 0), c("??", "dir/", 2), c("R ", "a -> b", 2)];
         let repo = Path::new("/r");
         assert_eq!(
             shell_writes(repo, &before, &now),
-            vec![(repo.join("x"), Mark::Created), (repo.join("src/a.rs"), Mark::Changed), (repo.join("b"), Mark::Changed)]
+            vec![(repo.join("again.rs"), Mark::Changed), (repo.join("x"), Mark::Created), (repo.join("src/a.rs"), Mark::Changed), (repo.join("b"), Mark::Changed)],
+            "a file changed before the turn and again in it counts"
         );
     }
 }

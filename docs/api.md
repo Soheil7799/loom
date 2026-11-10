@@ -477,7 +477,7 @@ Who: window, cli. Result: `{}`.
 
 The files an agent created or changed, with their diffs.
 
-Who: window, cli. Result: `{files: [{path, mark: created|changed, repo, status: git's two letters, diff: against the last commit}]}`.
+Who: window, cli. Result: `{files: [{path, mark: created|changed, repo, status: git's two letters, diff: against the last commit}]}`, once done.
 
 | Param | Type | |
 |---|---|---|
@@ -487,7 +487,7 @@ Who: window, cli. Result: `{files: [{path, mark: created|changed, repo, status: 
 
 Throws away changes to a file the agent touched, back to the last commit: all of them, or one hunk. It can't be undone. A file git doesn't know (new) is not reverted.
 
-Who: window, cli. Result: `{}`.
+Who: window, cli. Result: `{}`, once done.
 
 | Param | Type | |
 |---|---|---|

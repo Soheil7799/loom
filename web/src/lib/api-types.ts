@@ -580,6 +580,12 @@ export type MarkSeenParams = {
   all?: boolean;
 };
 
+/** Ctrl+B D: what its running turn runs goes on in the background (a notice says so if the agent program can't). Result: {} */
+export type BackgroundParams = {
+  /** the agent's id */
+  agent: string;
+};
+
 /** Ctrl+Enter: its queued messages go into the running turn now (or as the next prompt). Result: {} */
 export type SendNowParams = {
   /** the agent's id */
@@ -1125,6 +1131,48 @@ export type GitLogParams = {
   skip?: number;
 };
 
+/** A project's board, `.loom/board.md` in its folder (the Obsidian Kanban plugin's format): lanes and their cards, dates local to the minute. Agents use their loom tools for their own project's. Result: {project, file, lanes: [{title, cards: [{id, title, body, done, created, started, finished, by}]}]} */
+export type BoardParams = {
+  /** a project's folder */
+  project: string;
+};
+
+/** A new card at the end of a lane. Result: {card} */
+export type BoardAddParams = {
+  project: string;
+  title: string;
+  /** its description */
+  body?: string;
+  /** a lane's title (none: the first) */
+  lane?: string;
+};
+
+/** A card to a lane: started when it enters Doing, done (checked) when it enters Done. Result: {} */
+export type BoardMoveParams = {
+  project: string;
+  card: number;
+  lane: string;
+  /** the card it goes before (none: the end) */
+  before?: number;
+};
+
+/** A card's title or description changed. Result: {} */
+export type BoardEditParams = {
+  project: string;
+  card: number;
+  title?: string;
+  /** its whole description */
+  body?: string;
+  /** added below its description */
+  note?: string;
+};
+
+/** A card taken off the board. Result: {} */
+export type BoardRemoveParams = {
+  project: string;
+  card: number;
+};
+
 /** An ask answered: a file filled in (the agent goes on), or one seen (it goes). Result: {} */
 export type AskDoneParams = {
   /** an `asks` item */
@@ -1182,6 +1230,7 @@ export interface Commands {
   "move_agent": MoveAgentParams;
   "move_project": MoveProjectParams;
   "mark_seen": MarkSeenParams;
+  "background": BackgroundParams;
   "send_now": SendNowParams;
   "stop_workflow": StopWorkflowParams;
   "stop_subagent": StopSubagentParams;
@@ -1256,6 +1305,11 @@ export interface Commands {
   "trash_file": TrashFileParams;
   "git_show": GitShowParams;
   "git_log": GitLogParams;
+  "board": BoardParams;
+  "board_add": BoardAddParams;
+  "board_move": BoardMoveParams;
+  "board_edit": BoardEditParams;
+  "board_remove": BoardRemoveParams;
   "ask_done": AskDoneParams;
   "ask_cancel": AskCancelParams;
   "ask_open": AskOpenParams;

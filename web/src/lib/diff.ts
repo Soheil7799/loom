@@ -3,8 +3,11 @@ export type Line = { t: " " | "-" | "+"; text: string };
 
 export function lines(before: string, after: string): Line[] {
   const a = before.split("\n"), b = after.split("\n");
-  // shortcut: O(n*m) table; edits shown in a chat are small (a few hundred lines at most)
-  const n = a.length, m = b.length, keep = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
+  const n = a.length, m = b.length;
+  // An O(n*m) table: past ~4M cells (two files of 2000 lines) the page would stall, so a
+  // whole rewrite is shown as one: the old lines out, the new ones in.
+  if (n * m > 4_000_000) return [...a.map((text) => ({ t: "-" as const, text })), ...b.map((text) => ({ t: "+" as const, text }))];
+  const keep = Array.from({ length: n + 1 }, () => new Uint32Array(m + 1));
   for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) keep[i][j] = a[i] === b[j] ? keep[i + 1][j + 1] + 1 : Math.max(keep[i + 1][j], keep[i][j + 1]);
   const out: Line[] = [];
   let i = 0, j = 0;

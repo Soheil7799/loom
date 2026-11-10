@@ -34,8 +34,8 @@ pub(crate) fn projects() -> Vec<PathBuf> {
 
 /// `path` (absolute), if it lies in one of `projects`: no `..` past one, no symlink out of it
 /// (a dangling one too: written through, it would make its target wherever that is).
-// shortcut: checked, then used: a link swapped in between goes unseen; fine for one person's
-// own projects, a reason for openat-style checks if others could write into them
+// (what is read or written is opened by `open_checked`, which refuses it if it is not this
+// path any more: a link swapped in between)
 pub(crate) fn inside(path: &str, projects: &[PathBuf]) -> Result<PathBuf, Error> {
     let path = Path::new(path);
     if !path.is_absolute() {
@@ -92,7 +92,24 @@ fn find(project: &Path, query: &str, limit: usize) -> Value {
     json!({ "files": found.into_iter().take(limit).map(|(_, f)| f).collect::<Vec<_>>() })
 }
 
+/// `real` (as `inside` gave it) opened, and still `real` once open: no link at its end is
+/// followed, and one swapped in above it since the check is caught (refused, nothing done).
+fn open_checked(real: &Path, write: bool) -> Result<std::fs::File, Error> {
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::io::AsRawFd;
+    let file = std::fs::OpenOptions::new().read(!write).write(write).create(write).custom_flags(libc::O_NOFOLLOW).open(real).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => Error::NotFound(format!("{}: {e}", real.display())),
+        _ => Error::Failed(format!("{}: {e}", real.display())),
+    })?;
+    let opened = std::fs::read_link(format!("/proc/self/fd/{}", file.as_raw_fd())).map_err(|e| Error::Failed(e.to_string()))?;
+    if opened != real {
+        return Err(Error::Forbidden(format!("{} changed while being opened", real.display())));
+    }
+    Ok(file)
+}
+
 fn read(path: &Path) -> Result<Value, Error> {
+    use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|e| Error::NotFound(format!("{}: {e}", path.display())))?;
     if meta.is_dir() {
         return Err(Error::Invalid("a folder: files_list it".into()));
@@ -100,16 +117,19 @@ fn read(path: &Path) -> Result<Value, Error> {
     if meta.len() > READ {
         return Ok(json!({ "text": null, "size": meta.len(), "modified": modified(&meta) }));
     }
-    let bytes = std::fs::read(path).map_err(|e| Error::Failed(e.to_string()))?;
+    let mut bytes = Vec::new();
+    open_checked(path, false)?.take(READ).read_to_end(&mut bytes).map_err(|e| Error::Failed(e.to_string()))?;
     Ok(json!({ "text": String::from_utf8(bytes).ok(), "size": meta.len(), "modified": modified(&meta) }))
 }
 
 fn bytes(path: &Path) -> Result<Value, Error> {
+    use std::io::Read;
     let meta = std::fs::metadata(path).map_err(|e| Error::NotFound(format!("{}: {e}", path.display())))?;
     if !meta.is_file() || meta.len() > BYTES {
         return Err(Error::Invalid("a file of 10 MB at most".into()));
     }
-    let data = std::fs::read(path).map_err(|e| Error::Failed(e.to_string()))?;
+    let mut data = Vec::new();
+    open_checked(path, false)?.take(BYTES).read_to_end(&mut data).map_err(|e| Error::Failed(e.to_string()))?;
     Ok(json!({ "data": crate::api::wire::base64(&data), "size": meta.len() }))
 }
 
@@ -140,7 +160,10 @@ fn write(path: &Path, text: &str, seen: Option<u64>) -> Result<Value, Error> {
     {
         return Err(Error::Conflict("it changed on disk since it was opened: open it again, or save once more to overwrite".into()));
     }
-    std::fs::write(path, text).map_err(|e| Error::Failed(e.to_string()))?;
+    // emptied only once it is known to be this file
+    let mut file = open_checked(path, true)?;
+    let written = file.set_len(0).and_then(|()| std::io::Write::write_all(&mut file, text.as_bytes()));
+    written.map_err(|e| Error::Failed(e.to_string()))?;
     Ok(json!({ "modified": std::fs::metadata(path).map(|m| modified(&m)).unwrap_or(0) }))
 }
 
@@ -311,6 +334,24 @@ mod tests {
     fn only_a_hash_is_shown() {
         assert!(is_hash("b15ce87") && is_hash("B15CE875f0bc7bb255d3debcdb1ec62f04dd0aff"));
         assert!(!is_hash("--output=/tmp/x") && !is_hash("HEAD") && !is_hash("a1b") && !is_hash("a1b2..c3d4"));
+    }
+
+    #[test]
+    fn a_link_swapped_in_after_the_check_is_refused_and_nothing_outside_is_touched() {
+        let root = std::env::temp_dir().join(format!("loom-swap-{}", std::process::id()));
+        let (project, outside) = (root.join("project"), root.join("outside"));
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(project.join("notes.md"), "mine").unwrap();
+        std::fs::write(outside.join("secret"), "keep").unwrap();
+        let checked = inside(&project.join("notes.md").to_string_lossy(), std::slice::from_ref(&project)).unwrap();
+        // swapped for a link out of the project, between the check and the write
+        std::fs::remove_file(&checked).unwrap();
+        std::os::unix::fs::symlink(outside.join("secret"), &checked).unwrap();
+        assert!(write(&checked, "overwritten", None).is_err());
+        assert!(read(&checked).is_err());
+        assert_eq!(std::fs::read_to_string(outside.join("secret")).unwrap(), "keep");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

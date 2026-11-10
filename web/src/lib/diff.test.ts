@@ -28,3 +28,11 @@ test("a diff of two files: the second file's header is in no hunk", () => {
   const got = unified(diff);
   expect(got.map((h) => [h.file, h.lines.length])).toEqual([["one.rs", 2], ["two.rs", 1]]);
 });
+
+test("two huge files: shown as a rewrite, at once", () => {
+  const big = (k: string) => Array.from({ length: 3000 }, (_, i) => `${k}${i}`).join("\n");
+  const started = Date.now();
+  const got = lines(big("a"), big("b"));
+  expect(got.length).toBe(6000);
+  expect(Date.now() - started).toBeLessThan(500);
+});
