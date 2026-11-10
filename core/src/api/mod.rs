@@ -127,7 +127,7 @@ pub fn test_instance() -> bool {
 pub fn reads_only(method: &str, params: &Value) -> bool {
     match method {
         "blob" | "search_notes" | "set_looking" => true,
-        "tool" => matches!(params["name"].as_str(), Some("job_output" | "list_jobs" | "list_agents" | "notes_info" | "edit_state")),
+        "tool" => matches!(params["name"].as_str(), Some("job_output" | "list_jobs" | "list_agents" | "notes_info" | "edit_state" | "board")),
         "bridge" => matches!(
             params["method"].as_str(),
             Some("hello" | "agents" | "history" | "files" | "file" | "usage" | "last_reply" | "notes" | "notes_list" | "note_read" | "notes_search")

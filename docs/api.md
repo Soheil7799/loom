@@ -1359,6 +1359,67 @@ Who: window, cli. Result: `{commits: [{graph, hash, refs, subject, author, when,
 | `all` | boolean? | every branch (no graph drawn) |
 | `skip` | integer? | the newest ones left out: the next page |
 
+### `board`
+
+A project's board, `.loom/board.md` in its folder (the Obsidian Kanban plugin's format): lanes and their cards, dates local to the minute. Agents use their loom tools for their own project's.
+
+Who: window, cli. Result: `{project, file, lanes: [{title, cards: [{id, title, body, done, created, started, finished, by}]}]}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | a project's folder |
+
+### `board_add`
+
+A new card at the end of a lane.
+
+Who: window, cli. Result: `{card}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+| `title` | string |  |
+| `body` | string? | its description |
+| `lane` | string? | a lane's title (none: the first) |
+
+### `board_move`
+
+A card to a lane: started when it enters Doing, done (checked) when it enters Done.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+| `card` | integer |  |
+| `lane` | string |  |
+| `before` | integer? | the card it goes before (none: the end) |
+
+### `board_edit`
+
+A card's title or description changed.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+| `card` | integer |  |
+| `title` | string? |  |
+| `body` | string? | its whole description |
+| `note` | string? | added below its description |
+
+### `board_remove`
+
+A card taken off the board.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+| `card` | integer |  |
+
 ### `ask_done`
 
 An ask answered: a file filled in (the agent goes on), or one seen (it goes).

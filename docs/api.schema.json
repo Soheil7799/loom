@@ -3520,6 +3520,160 @@
       },
       "result": "{commits: [{graph, hash, refs, subject, author, when, parents}]}"
     },
+    "board": {
+      "description": "A project's board, `.loom/board.md` in its folder (the Obsidian Kanban plugin's format): lanes and their cards, dates local to the minute. Agents use their loom tools for their own project's.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": "a project's folder"
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": "{project, file, lanes: [{title, cards: [{id, title, body, done, created, started, finished, by}]}]}"
+    },
+    "board_add": {
+      "description": "A new card at the end of a lane.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "description": "its description"
+          },
+          "lane": {
+            "type": "string",
+            "description": "a lane's title (none: the first)"
+          }
+        },
+        "required": [
+          "project",
+          "title"
+        ]
+      },
+      "result": "{card}"
+    },
+    "board_move": {
+      "description": "A card to a lane: started when it enters Doing, done (checked) when it enters Done.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          },
+          "card": {
+            "type": "integer",
+            "description": ""
+          },
+          "lane": {
+            "type": "string",
+            "description": ""
+          },
+          "before": {
+            "type": "integer",
+            "description": "the card it goes before (none: the end)"
+          }
+        },
+        "required": [
+          "project",
+          "card",
+          "lane"
+        ]
+      },
+      "result": "{}"
+    },
+    "board_edit": {
+      "description": "A card's title or description changed.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          },
+          "card": {
+            "type": "integer",
+            "description": ""
+          },
+          "title": {
+            "type": "string",
+            "description": ""
+          },
+          "body": {
+            "type": "string",
+            "description": "its whole description"
+          },
+          "note": {
+            "type": "string",
+            "description": "added below its description"
+          }
+        },
+        "required": [
+          "project",
+          "card"
+        ]
+      },
+      "result": "{}"
+    },
+    "board_remove": {
+      "description": "A card taken off the board.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          },
+          "card": {
+            "type": "integer",
+            "description": ""
+          }
+        },
+        "required": [
+          "project",
+          "card"
+        ]
+      },
+      "result": "{}"
+    },
     "ask_done": {
       "description": "An ask answered: a file filled in (the agent goes on), or one seen (it goes).",
       "who": [

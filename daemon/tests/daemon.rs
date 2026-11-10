@@ -164,6 +164,26 @@ fn a_file_a_shell_command_writes_counts_as_edited() {
     until(&mut c, "agents", Duration::from_secs(20), "made.txt counted", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["edited"] == 1));
 }
 
+#[test]
+fn a_projects_board_is_a_file_in_it() {
+    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
+    let (d, mut c) = start("Board", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let project = d.root.join("project");
+    // a project of the sidebar's: one with an agent in it
+    command(&mut c, "new_agent", json!({ "folder": project }));
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "Fix the tooltip", "body": "It opens under the panel." }))["card"].clone();
+    command(&mut c, "board_move", json!({ "project": project, "card": card, "lane": "Done" }));
+    let board = command(&mut c, "board", json!({ "project": project }));
+    let done = &board["lanes"][3];
+    assert_eq!((done["title"].as_str(), done["cards"][0]["title"].as_str(), done["cards"][0]["done"].as_bool()), (Some("Done"), Some("Fix the tooltip"), Some(true)), "{board}");
+    assert!(!done["cards"][0]["finished"].as_str().unwrap_or_default().is_empty());
+    let file = std::fs::read_to_string(project.join(".loom/board.md")).unwrap();
+    assert!(file.contains("- [x] Fix the tooltip\n\tIt opens under the panel.\n"), "{file}");
+    // only the sidebar's projects
+    let elsewhere = c.command(&new_id(), "board", json!({ "project": d.root.join("vault") }));
+    assert!(elsewhere.is_err(), "{elsewhere:?}");
+}
+
 fn agent_tests() -> bool {
     std::env::var_os("LOOM_E2E_AGENT").is_some()
 }

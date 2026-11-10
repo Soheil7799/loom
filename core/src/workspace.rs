@@ -473,6 +473,11 @@ impl Workspace {
                 .as_ref()
                 .ok_or_else(gone)
                 .map(|agent| json!(agent.jobs.list().into_iter().map(|j| json!({ "name": j.name, "running": j.running, "exit_code": j.exit_code })).collect::<Vec<_>>())),
+            // Its project's board (board.rs), filed as the agent.
+            m @ ("board" | "board_add" | "board_move" | "board_edit") => (|| {
+                let agent = agent.as_ref().ok_or_else(gone)?;
+                crate::board::act(&agent.project, m, params, &agent.title()).expect("a board command")
+            })(),
             // The Notes vault, for the MCP server's note tools (null: Notes is off).
             "notes_info" => Ok(json!({ "vault": crate::vault::current().map(|v| v.to_string_lossy().into_owned()) })),
             "list_agents" => Ok(json!(
