@@ -130,6 +130,8 @@ fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
     until(&mut c, "agents", Duration::from_secs(20), "done", |all| all.iter().any(|a| a["id"] == agent.as_str() && a["unseen"] == true && a["busy"] == false));
     let a = agent_item(&mut c, &agent);
     assert_eq!(a["last_turn"]["turns"], 2, "two turns ended: {a}");
+    // Its row in the strip ended with it, though no turn of loom's ran then.
+    until(&mut c, &format!("crew/{agent}"), Duration::from_secs(5), "the helper's row to end", |rows| rows.iter().all(|r| r["state"] != "running"));
     command(&mut c, "mark_seen", json!({ "agent": agent }));
     std::thread::sleep(Duration::from_secs(3));
     assert_eq!(agent_item(&mut c, &agent)["unseen"], false, "done only once");

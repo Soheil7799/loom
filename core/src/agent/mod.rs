@@ -2726,9 +2726,14 @@ impl Agent {
     }
 
     /// The strip's row for `sub`: live, while the turn runs or the subagent does (a replay
-    /// shows none).
+    /// shows none). One that ends outside a turn (a background one, while Claude goes on by
+    /// itself) goes from the strip: it would spin on as running.
     fn show_sub(&self, sub: &Sub) {
-        if self.replaying.get() || !(self.turn.get() || sub.ended.get().is_none()) {
+        if self.replaying.get() {
+            return;
+        }
+        if !self.turn.get() && sub.ended.get().is_some() {
+            self.view.crew_remove(&sub.id);
             return;
         }
         self.view.crew_set(Crew {
