@@ -661,8 +661,8 @@ button.board-card.done { opacity: 0.72; }
 .lane-doing .board-lane-dot { color: @loom_run; }
 .lane-done .board-lane-dot { color: alpha(@loom_ok, 0.7); }
 .board-lane-title { font-size: 0.78em; letter-spacing: 0.08em; opacity: 0.7; }
-.board-lane menubutton.flat { opacity: 0.35; transition: opacity 120ms; }
-.board-lane:hover menubutton.flat { opacity: 1; }
+.board-lane menubutton.flat, .board-lane > box > button.flat { opacity: 0.35; transition: opacity 120ms; }
+.board-lane:hover menubutton.flat, .board-lane:hover > box > button.flat, .board-lane > box > button.flat:focus-visible { opacity: 1; }
 .board-lane.lane-doing { box-shadow: inset 0 2px alpha(@loom_run, 0.7), inset 0 0 0 1px @loom_line; }
 .board-lane.lane-done { background: alpha(black, 0.08); }
 button.board-card { padding: 8px 12px; }

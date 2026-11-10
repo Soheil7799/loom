@@ -39,6 +39,8 @@ pub struct Board {
     pub lanes: Vec<Lane>,
     head: String,
     tail: String,
+    /// The highest id in the archive: new cards come after it (no c12 twice).
+    floor: u32,
 }
 
 /// Where `project`'s board is.
@@ -46,25 +48,59 @@ pub fn path(project: &Path) -> PathBuf {
     project.join(".loom").join("board.md")
 }
 
+/// Where its archived cards go: a board of its own, newest first.
+pub fn archive_path(project: &Path) -> PathBuf {
+    project.join(".loom").join("board-archive.md")
+}
+
+/// Done's cards moved to the archive (written first: a card is never in neither). How many.
+pub fn archive(project: &Path) -> Result<usize, String> {
+    let mut board = Board::load(project);
+    let Some(done) = board.lanes.iter().position(|l| l.title.eq_ignore_ascii_case("done")) else { return Ok(0) };
+    let cards = std::mem::take(&mut board.lanes[done].cards);
+    if cards.is_empty() {
+        return Ok(0);
+    }
+    let file = archive_path(project);
+    let mut archive = std::fs::read_to_string(&file).map(|t| Board::parse(&t)).unwrap_or_else(|_| Board { lanes: vec![Lane { title: "Archived".into(), cards: Vec::new() }], ..Board::default() });
+    // (a board file always has a lane: parse gives the default ones to an empty file)
+    archive.lanes[0].cards.splice(0..0, cards.iter().cloned());
+    let failed = |e: std::io::Error| format!("{}: {e}", file.display());
+    write_whole(&file, &archive.render()).map_err(failed)?;
+    board.save(project).map_err(|e| format!("{}: {e}", path(project).display()))?;
+    Ok(cards.len())
+}
+
+/// `text` written to `file` through a file beside it, so a reader never sees half of it.
+fn write_whole(file: &Path, text: &str) -> std::io::Result<()> {
+    std::fs::create_dir_all(file.parent().expect("in .loom"))?;
+    let part = file.with_extension("md.part");
+    std::fs::write(&part, text)?;
+    std::fs::rename(part, file)
+}
+
 impl Default for Board {
     fn default() -> Board {
-        Board { lanes: LANES.iter().map(|t| Lane { title: (*t).to_owned(), cards: Vec::new() }).collect(), head: HEAD.to_owned(), tail: TAIL.to_owned() }
+        Board { lanes: LANES.iter().map(|t| Lane { title: (*t).to_owned(), cards: Vec::new() }).collect(), head: HEAD.to_owned(), tail: TAIL.to_owned(), floor: 0 }
     }
 }
 
 impl Board {
     /// `project`'s board as its file has it (a new one if there is none).
     pub fn load(project: &Path) -> Board {
-        std::fs::read_to_string(path(project)).map(|text| Board::parse(&text)).unwrap_or_default()
+        let mut board = std::fs::read_to_string(path(project)).map(|text| Board::parse(&text)).unwrap_or_default();
+        board.floor = std::fs::read_to_string(archive_path(project)).map(|t| Board::parse(&t).cards().map(|c| c.id).max().unwrap_or(0)).unwrap_or(0);
+        board
     }
 
     /// Written back whole (through a file beside it, so a reader never sees half of it).
     pub fn save(&self, project: &Path) -> std::io::Result<()> {
-        let file = path(project);
-        std::fs::create_dir_all(file.parent().expect("in .loom"))?;
-        let part = file.with_extension("md.part");
-        std::fs::write(&part, self.render())?;
-        std::fs::rename(part, file)
+        write_whole(&path(project), &self.render())
+    }
+
+    /// The id a new card gets.
+    fn next_id(&self) -> u32 {
+        self.cards().map(|c| c.id).max().unwrap_or(0).max(self.floor) + 1
     }
 
     pub fn parse(text: &str) -> Board {
@@ -96,7 +132,7 @@ impl Board {
                 }
             }
         }
-        let mut board = Board { lanes, head: if head.trim().is_empty() { HEAD.to_owned() } else { format!("{}\n", head.trim_end()) }, tail: if tail.is_empty() { TAIL.to_owned() } else { tail } };
+        let mut board = Board { lanes, head: if head.trim().is_empty() { HEAD.to_owned() } else { format!("{}\n", head.trim_end()) }, tail: if tail.is_empty() { TAIL.to_owned() } else { tail }, floor: 0 };
         if board.lanes.is_empty() {
             board.lanes = Board::default().lanes;
         }
@@ -150,7 +186,7 @@ impl Board {
             Some(lane) => self.lane_named(lane).ok_or_else(|| format!("no lane {lane}"))?,
             None => 0,
         };
-        let id = self.cards().map(|c| c.id).max().unwrap_or(0) + 1;
+        let id = self.next_id();
         let mut card = Card { id, title, body: body.trim().to_owned(), created: now.to_owned(), by: one_line(by), ..Card::default() };
         stamp(&mut card, &self.lanes[at].title, now);
         self.lanes[at].cards.push(card);
@@ -271,7 +307,7 @@ pub fn log_turn(project: &Path, session: &str, card: Option<u32>, title: &str, f
     let (lane, at) = match found {
         Some(spot) => spot,
         None => {
-            let id = board.cards().map(|c| c.id).max().unwrap_or(0) + 1;
+            let id = board.next_id();
             let card = Card { id, title: one_line(title), done: true, created: now.to_owned(), started: now.to_owned(), by: one_line(title), session: session.to_owned(), ..Card::default() };
             board.lanes[done].cards.push(card);
             (done, board.lanes[done].cards.len() - 1)
@@ -308,6 +344,7 @@ pub fn act(project: &Path, method: &str, params: &serde_json::Value, by: &str) -
     let now = now();
     let changed = match method {
         "board" => None,
+        "board_archive" => return Some(archive(project).map(|n| json!({ "archived": n }))),
         "board_add" => Some(board.add(params["lane"].as_str(), params["title"].as_str().unwrap_or(""), params["body"].as_str().unwrap_or(""), by, &now).map(|id| json!({ "card": id }))),
         "board_move" => Some(card().and_then(|c| board.move_card(c, params["lane"].as_str().ok_or("which lane?")?, params["before"].as_u64().map(|b| b as u32), &now)).map(|()| json!({}))),
         "board_edit" => Some(card().and_then(|c| board.edit(c, params["title"].as_str(), params["body"].as_str(), params["note"].as_str())).map(|()| json!({}))),
@@ -327,7 +364,7 @@ pub fn act(project: &Path, method: &str, params: &serde_json::Value, by: &str) -
 /// their own project's board through their loom tools (workspace.rs), bridges none.
 pub fn serve() {
     use crate::api::{Error, Principal};
-    for method in ["board", "board_add", "board_move", "board_edit", "board_remove"] {
+    for method in ["board", "board_add", "board_move", "board_edit", "board_remove", "board_archive"] {
         crate::api::hub().handle(method, move |who, params| {
             if !matches!(who, Principal::Window | Principal::Cli) {
                 return Err(Error::Forbidden("a project's board, but from loom's window or the CLI (agents: their loom tools)".into()));
@@ -380,6 +417,25 @@ mod tests {
         assert_eq!(cards.len(), 1);
         assert_eq!((cards[0].body.as_str(), cards[0].finished.as_str(), cards[0].done), ("Files: a.rs, b.rs", "2026-11-10 11:00", true));
         assert_eq!(board.lanes[3].cards[0].session, "s1", "in Done, its conversation kept");
+        let _ = std::fs::remove_dir_all(&project);
+    }
+
+    #[test]
+    fn done_is_archived_and_its_ids_are_not_given_again() {
+        let project = std::env::temp_dir().join(format!("loom-board-archive-{}", std::process::id()));
+        std::fs::create_dir_all(&project).unwrap();
+        let mut board = Board::default();
+        let a = board.add(Some("Done"), "Old", "", "you", "2026-11-10 10:00").unwrap();
+        let b = board.add(Some("To do"), "Open", "", "you", "2026-11-10 10:00").unwrap();
+        board.save(&project).unwrap();
+        assert_eq!(archive(&project), Ok(1));
+        assert_eq!(archive(&project), Ok(0), "nothing left in Done");
+        let board = Board::load(&project);
+        assert_eq!(board.cards().map(|c| c.id).collect::<Vec<_>>(), vec![b]);
+        let kept = Board::parse(&std::fs::read_to_string(archive_path(&project)).unwrap());
+        assert_eq!((kept.lanes[0].title.as_str(), kept.cards().map(|c| c.id).collect::<Vec<_>>()), ("Archived", vec![a]));
+        let mut board = Board::load(&project);
+        assert!(board.add(None, "New", "", "you", "2026-11-10 11:00").unwrap() > a.max(b));
         let _ = std::fs::remove_dir_all(&project);
     }
 

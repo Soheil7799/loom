@@ -1430,6 +1430,16 @@ Who: window, cli. Result: `{agent}`.
 | `project` | string |  |
 | `card` | integer |  |
 
+### `board_archive`
+
+Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids.
+
+Who: window, cli. Result: `{archived}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+
 ### `board_remove`
 
 A card taken off the board.

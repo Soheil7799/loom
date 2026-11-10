@@ -167,6 +167,19 @@ impl BoardView {
         add.set_popover(Some(&self.new_card(&name)));
         head.append(&label);
         head.append(&count);
+        if name.eq_ignore_ascii_case("done") && !cards.is_empty() {
+            let archive = gtk::Button::builder().icon_name("folder-download-symbolic").tooltip_text("Archive these cards: moved to .loom/board-archive.md").build();
+            archive.add_css_class("flat");
+            archive.update_property(&[gtk::accessible::Property::Label("Archive Done's cards")]);
+            let weak = Rc::downgrade(self);
+            archive.connect_clicked(move |button| {
+                button.set_sensitive(false);
+                if let Some(view) = weak.upgrade() {
+                    view.act("board_archive", json!({}));
+                }
+            });
+            head.append(&archive);
+        }
         head.append(&add);
         column.append(&head);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 8);

@@ -3696,6 +3696,27 @@
       },
       "result": "{agent}"
     },
+    "board_archive": {
+      "description": "Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          }
+        },
+        "required": [
+          "project"
+        ]
+      },
+      "result": "{archived}"
+    },
     "board_remove": {
       "description": "A card taken off the board.",
       "who": [

@@ -253,6 +253,7 @@ pub const COMMANDS: &[Command] = &[
         later: false,
         about: "Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it.",
     },
+    Command { name: "board_archive", who: PEOPLE, params: &[("project", "string", true, "")], result: "{archived}", later: false, about: "Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids." },
     Command { name: "board_remove", who: PEOPLE, params: &[("project", "string", true, ""), ("card", "integer", true, "")], result: "{}", later: false, about: "A card taken off the board." },
     Command { name: "ask_done", who: PEOPLE, params: &[("id", "string", true, "an `asks` item")], result: "{}", later: false, about: "An ask answered: a file filled in (the agent goes on), or one seen (it goes)." },
     Command { name: "ask_cancel", who: PEOPLE, params: &[("id", "string", true, "an `edit` item of `asks`")], result: "{}", later: false, about: "A file the user won't fill in: the agent hears they cancelled; the ask goes." },
