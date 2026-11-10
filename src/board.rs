@@ -31,7 +31,6 @@ impl BoardView {
         let place = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Start).build();
         place.add_css_class("dim");
         place.add_css_class("small");
-        place.add_css_class("mono");
         let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
         heading.add_css_class("board-heading");
         heading.append(&title);
@@ -59,7 +58,9 @@ impl BoardView {
         *self.project.borrow_mut() = project.to_owned();
         self.title.set_label(name);
         let file = loom_core::board::path(project);
-        self.place.set_label(&file.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1));
+        // the file in a tooltip; under the name, how the lanes stand (draw)
+        self.title.set_tooltip_text(Some(&file.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1)));
+        self.place.set_label("");
         // Changed by anyone (an agent, Obsidian): drawn again once the write is done.
         let monitor = gio::File::for_path(&file).monitor_file(gio::FileMonitorFlags::WATCH_MOVES, None::<&gio::Cancellable>).ok();
         if let Some(monitor) = &monitor {
@@ -114,6 +115,8 @@ impl BoardView {
             self.lanes.remove(&child);
         }
         let lanes: Vec<String> = board["lanes"].as_array().into_iter().flatten().filter_map(|l| l["title"].as_str().map(str::to_owned)).collect();
+        let summary: Vec<String> = board["lanes"].as_array().into_iter().flatten().map(|l| format!("{} {}", l["cards"].as_array().map_or(0, Vec::len), l["title"].as_str().unwrap_or_default().to_lowercase())).collect();
+        self.place.set_label(&summary.join(" · "));
         for lane in board["lanes"].as_array().into_iter().flatten() {
             self.lanes.append(&self.lane(lane, &lanes));
         }
@@ -124,7 +127,12 @@ impl BoardView {
         let cards = lane["cards"].as_array().cloned().unwrap_or_default();
         let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
         column.add_css_class("board-lane");
+        // its own colour by name (a dot beside the name: never colour alone)
+        column.add_css_class(&format!("lane-{}", name.to_lowercase().replace(' ', "-")));
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let dot = gtk::Label::new(Some("●"));
+        dot.add_css_class("board-lane-dot");
+        head.append(&dot);
         let label = gtk::Label::builder().label(&name).xalign(0.0).hexpand(true).build();
         label.add_css_class("board-lane-title");
         let count = gtk::Label::new(Some(&cards.len().to_string()));
@@ -140,6 +148,11 @@ impl BoardView {
         let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         for card in &cards {
             list.append(&self.card(card, all, &name));
+        }
+        if cards.is_empty() {
+            let empty = gtk::Label::builder().label("Nothing here yet").tooltip_text("Drop a card here, or press + above").build();
+            empty.add_css_class("board-empty");
+            list.append(&empty);
         }
         let scroller = gtk::ScrolledWindow::builder().child(&list).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
         column.append(&scroller);
@@ -166,21 +179,28 @@ impl BoardView {
         let title = gtk::Label::builder().label(card["title"].as_str().unwrap_or_default()).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
         title.add_css_class("board-card-title");
         inner.append(&title);
-        let body = card["body"].as_str().unwrap_or_default();
-        if !body.is_empty() {
-            let excerpt = gtk::Label::builder().label(body).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).lines(2).ellipsize(pango::EllipsizeMode::End).build();
+        // Done: its title alone (the rest is in its editor). Else two lines of its description
+        // (as one paragraph: `lines` caps each) and a quiet line of when and who.
+        let done = card["done"] == true;
+        let body = card["body"].as_str().unwrap_or_default().split_whitespace().collect::<Vec<_>>().join(" ");
+        if !done && !body.is_empty() {
+            let excerpt = gtk::Label::builder().label(&body).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).lines(2).ellipsize(pango::EllipsizeMode::End).build();
             excerpt.add_css_class("dim");
             excerpt.add_css_class("small");
             inner.append(&excerpt);
         }
-        let when = [("done", "finished"), ("started", "started"), ("created", "created")].iter().find_map(|(word, key)| card[*key].as_str().filter(|t| !t.is_empty()).map(|t| format!("{word} {t}")));
-        let by = card["by"].as_str().filter(|b| !b.is_empty()).map(|b| format!("by {b}"));
-        let line = [Some(format!("c{id}")), when, by].into_iter().flatten().collect::<Vec<_>>().join(" · ");
-        let meta = gtk::Label::builder().label(&line).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
-        meta.add_css_class("dim");
-        meta.add_css_class("small");
-        meta.add_css_class("board-card-meta");
-        inner.append(&meta);
+        if !done {
+            let when = [("done", "finished"), ("started", "started"), ("created", "created")].iter().find_map(|(word, key)| card[*key].as_str().filter(|t| !t.is_empty()).map(|t| format!("{word} {}", when(t))));
+            let by = card["by"].as_str().filter(|b| !b.is_empty() && *b != "you").map(|b| format!("by {b}"));
+            let words = [when, by].into_iter().flatten().map(|w| glib::markup_escape_text(&w).to_string()).collect::<Vec<_>>();
+            let markup = std::iter::once(format!("<span font_family=\"JetBrains Mono\" alpha=\"55%\">c{id}</span>")).chain(words).collect::<Vec<_>>().join(" · ");
+            let meta = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+            meta.set_markup(&markup);
+            meta.add_css_class("dim");
+            meta.add_css_class("small");
+            meta.add_css_class("board-card-meta");
+            inner.append(&meta);
+        }
         // A plain button (a MenuButton loses wrapped text's height): it opens its popover.
         let button = gtk::Button::builder().child(&inner).build();
         button.add_css_class("board-card");
@@ -296,6 +316,24 @@ impl BoardView {
             shut.popdown();
         });
         popover
+    }
+}
+
+/// A card's time ("YYYY-MM-DD HH:MM") as read: "today 13:15", "yesterday", "9 Nov".
+fn when(at: &str) -> String {
+    let (date, time) = at.split_once(' ').unwrap_or((at, ""));
+    let day = |offset: i32| glib::DateTime::now_local().and_then(|d| d.add_days(offset)).and_then(|d| d.format("%Y-%m-%d")).map(|d| d.to_string()).unwrap_or_default();
+    if date == day(0) {
+        return format!("today {time}");
+    }
+    if date == day(-1) {
+        return "yesterday".to_owned();
+    }
+    let months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    let mut parts = date.split('-').skip(1);
+    match (parts.next().and_then(|m| m.parse::<usize>().ok()), parts.next().and_then(|d| d.parse::<u32>().ok())) {
+        (Some(m @ 1..=12), Some(d)) => format!("{d} {}", months[m - 1]),
+        _ => at.to_owned(),
     }
 }
 

@@ -64,7 +64,7 @@ impl Page {
         heading.append(&side);
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).build();
         list.add_css_class("history");
-        let filter = gtk::SearchEntry::builder().placeholder_text("Filter past conversations (type to filter)").build();
+        let filter = gtk::SearchEntry::builder().placeholder_text("Filter conversations").build();
         filter.add_css_class("history-filter");
         let note = gtk::Label::builder().xalign(0.0).wrap(true).build();
         note.add_css_class("dim");
