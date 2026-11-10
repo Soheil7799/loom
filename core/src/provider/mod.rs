@@ -44,6 +44,12 @@ pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
     claude::read_back(session, cwd)
 }
 
+/// The conversations of `sessions` whose words hold every word of `query`, each with a line
+/// of it. Reads Claude Code's files: off the UI's thread.
+pub fn search(sessions: &[String], query: &str) -> Vec<(String, String)> {
+    claude::search(sessions, query)
+}
+
 /// What runs an agent, as a command line (for an error that names it).
 pub fn program() -> String {
     match acp::chosen() {

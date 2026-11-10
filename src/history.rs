@@ -35,6 +35,11 @@ pub struct Page {
     /// Answers for an earlier project are dropped (and its listing stopped).
     round: Cell<u64>,
     filter: gtk::SearchEntry,
+    /// Conversations whose words (not only their title) hold what is typed: session → a
+    /// line of it. `searched`: for which words.
+    said: RefCell<std::collections::HashMap<String, String>>,
+    searched: RefCell<String>,
+    search_due: RefCell<Option<glib::SourceId>>,
     me: RefCell<std::rc::Weak<Page>>,
     listing: RefCell<Option<std::rc::Weak<Conn>>>,
     pub on_new: Callback<PathBuf>,
@@ -95,6 +100,9 @@ impl Page {
             rows: RefCell::default(),
             round: Cell::new(0),
             filter: filter.clone(),
+            said: RefCell::default(),
+            searched: RefCell::default(),
+            search_due: RefCell::default(),
             me: RefCell::default(),
             listing: RefCell::default(),
             on_new: RefCell::default(),
@@ -113,12 +121,13 @@ impl Page {
             let rows = page.rows.borrow();
             let Some(past) = rows.get(row.index() as usize - 1) else { return true };
             let title = format!("{} {}", past.title.as_deref().unwrap_or(""), past.cwd.display()).to_lowercase();
-            words.split_whitespace().all(|w| title.contains(w))
+            words.split_whitespace().all(|w| title.contains(w)) || (*page.searched.borrow() == words.trim() && page.said.borrow().contains_key(&past.session_id))
         });
         let weak = Rc::downgrade(&page);
         filter.connect_search_changed(move |_| {
             if let Some(page) = weak.upgrade() {
                 page.list.invalidate_filter();
+                page.search_soon();
             }
         });
         // Enter in the filter opens the first match; Down goes to the list.
@@ -188,6 +197,55 @@ impl Page {
         *self.listing.borrow_mut() = listing;
     }
 
+    /// What is typed looked for in the conversations' words too, once typing pauses (they
+    /// are read off the window's thread; the first time, all of them).
+    fn search_soon(self: &Rc<Self>) {
+        if let Some(due) = self.search_due.take() {
+            due.remove();
+        }
+        let words = self.filter.text().to_lowercase().trim().to_owned();
+        if words.chars().count() < 3 {
+            self.said.borrow_mut().clear();
+            self.searched.borrow_mut().clear();
+            self.tips();
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        let due = glib::timeout_add_local_once(std::time::Duration::from_millis(300), move || {
+            let Some(page) = weak.upgrade() else { return };
+            page.search_due.take();
+            let sessions: Vec<String> = page.rows.borrow().iter().map(|p| p.session_id.clone()).collect();
+            page.note.set_label("Searching what was said…");
+            page.note.set_visible(true);
+            let weak = Rc::downgrade(&page);
+            glib::spawn_future_local(async move {
+                let asked = words.clone();
+                let found = gio::spawn_blocking(move || loom_core::provider::search(&sessions, &asked)).await.unwrap_or_default();
+                let Some(page) = weak.upgrade() else { return };
+                // typed on since: that search's turn
+                if page.filter.text().to_lowercase().trim() != words {
+                    return;
+                }
+                *page.said.borrow_mut() = found.into_iter().collect();
+                *page.searched.borrow_mut() = words;
+                page.note.set_visible(false);
+                page.tips();
+                page.list.invalidate_filter();
+            });
+        });
+        *self.search_due.borrow_mut() = Some(due);
+    }
+
+    /// Each row found by its words says where, in its tooltip.
+    fn tips(&self) {
+        let said = self.said.borrow();
+        for (i, past) in self.rows.borrow().iter().enumerate() {
+            if let Some(row) = self.list.row_at_index(i as i32 + 1) {
+                row.set_tooltip_text(said.get(&past.session_id).map(|line| format!("…{line}…")).as_deref());
+            }
+        }
+    }
+
     /// Of `all` the conversations, this project's, listed.
     fn show_mine(&self, all: Vec<Past>) {
         // Compared as real folders: one opened through a symlink (~/Projects/hr →
@@ -204,6 +262,9 @@ impl Page {
         self.note.set_label(if mine.is_empty() { "No past conversations here yet." } else { "" });
         self.note.set_visible(mine.is_empty());
         self.fill(&mine);
+        // their words read now, so the first search doesn't wait seconds for them
+        let sessions: Vec<String> = mine.iter().map(|p| p.session_id.clone()).collect();
+        gio::spawn_blocking(move || loom_core::provider::search(&sessions, ""));
         *self.rows.borrow_mut() = mine;
     }
 

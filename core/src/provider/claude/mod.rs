@@ -7,6 +7,11 @@
 mod tools;
 mod transcripts;
 
+/// See `provider::search`.
+pub fn search(sessions: &[String], query: &str) -> Vec<(String, String)> {
+    transcripts::search(sessions, query)
+}
+
 /// See `provider::read_back`.
 pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
     transcripts::replay(session, cwd)

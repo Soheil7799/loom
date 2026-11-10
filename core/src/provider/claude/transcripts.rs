@@ -334,3 +334,71 @@ mod tests {
         assert_eq!(updates[3]["messageId"], "m1");
     }
 }
+
+/// What was said in conversation files (users' and Claude's words, no tools), lowercased:
+/// kept by file and its time, so only files that changed are read again.
+static SAID: std::sync::Mutex<Option<HashMap<PathBuf, (std::time::SystemTime, String)>>> = std::sync::Mutex::new(None);
+
+/// The conversations among `sessions` whose words hold every word of `query`, with a line
+/// of each around the first word. Reads files (the first time: all of them): off the UI's
+/// thread. An empty `query` only reads them, ahead of a search.
+pub fn search(sessions: &[String], query: &str) -> Vec<(String, String)> {
+    let words: Vec<String> = query.to_lowercase().split_whitespace().map(str::to_owned).collect();
+    let mut held = SAID.lock().unwrap_or_else(|e| e.into_inner());
+    let said = held.get_or_insert_with(HashMap::new);
+    let mut found = Vec::new();
+    for session in sessions {
+        let Some(path) = file(session) else { continue };
+        let Some(time) = std::fs::metadata(&path).and_then(|m| m.modified()).ok() else { continue };
+        if said.get(&path).is_none_or(|(at, _)| *at != time) {
+            let text = std::fs::read_to_string(&path).map(|t| words_of(&t)).unwrap_or_default();
+            said.insert(path.clone(), (time, text));
+        }
+        let text = &said[&path].1;
+        if words.is_empty() {
+            continue;
+        }
+        if let Some(at) = words.iter().all(|w| text.contains(w.as_str())).then(|| text.find(words[0].as_str())).flatten() {
+            let start = text[..at].rfind('\n').map_or(0, |n| n + 1).max(text.floor_char_boundary(at.saturating_sub(60)));
+            let end = text[at..].find('\n').map_or(text.len(), |n| at + n).min(text.floor_char_boundary(at + 120));
+            found.push((session.clone(), text[start..end].trim().to_owned()));
+        }
+    }
+    found
+}
+
+/// A conversation file's text as said: each user's and Claude's message, a line apart, lowercased.
+fn words_of(jsonl: &str) -> String {
+    let mut out = String::new();
+    for line in jsonl.lines().filter(|l| l.contains("\"user\"") || l.contains("\"assistant\"")) {
+        let Ok(entry) = serde_json::from_str::<Value>(line) else { continue };
+        if entry["type"] != "user" && entry["type"] != "assistant" {
+            continue;
+        }
+        let content = &entry["message"]["content"];
+        let texts: Vec<&str> = match content.as_str() {
+            Some(text) => vec![text],
+            None => content.as_array().into_iter().flatten().filter(|b| b["type"] == "text").filter_map(|b| b["text"].as_str()).collect(),
+        };
+        for text in texts {
+            out.push_str(&text.to_lowercase());
+            out.push('\n');
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod search_tests {
+    #[test]
+    fn what_was_said_is_found_not_the_tools() {
+        let jsonl = [
+            r#"{"type":"user","message":{"role":"user","content":"Why is the Board so SLOW?"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"It redraws twice."},{"type":"tool_use","name":"Read","input":{"file":"secret.rs"}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"fn main() {}"}]}}"#,
+        ]
+        .join("\n");
+        let said = super::words_of(&jsonl);
+        assert_eq!(said, "why is the board so slow?\nit redraws twice.\n");
+    }
+}
