@@ -46,6 +46,7 @@ pub struct App {
     welcome: gtk::Box,
     /// A project's page: new conversation, or a past one.
     history: Rc<crate::history::Page>,
+    board: Rc<crate::board::BoardView>,
     /// Every agent on one page, and the scheduled prompts.
     overview: Rc<crate::overview::Overview>,
     pinned_box: gtk::Box,
@@ -337,6 +338,8 @@ impl App {
         chat_stack.add_named(&welcome, Some("empty"));
         let history = crate::history::Page::new();
         chat_stack.add_named(&history.root, Some("project"));
+        let board = crate::board::BoardView::new();
+        chat_stack.add_named(&board.root, Some("board"));
         let overview = crate::overview::Overview::new();
         chat_stack.add_named(&overview.root, Some("overview"));
         let hub = crate::hub::Hub::new();
@@ -494,6 +497,7 @@ impl App {
             overview,
             welcome,
             history,
+            board,
             pinned_box,
             dock_stack,
             bar_stack,
@@ -1190,6 +1194,7 @@ impl App {
         let mut choices = vec![
             act("New agent… (or resume one)", "Ctrl+N", |a| a.new_agent(false)),
             act("Open a project folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
+            act("This project's board", "", |a| a.show_board(&a.current_project())),
             act("Reopen the last closed agent", "Ctrl+Shift+T", |a| a.reopen_closed()),
             act("Rename this agent or project", "F2", |a| a.begin_rename()),
             act("Copy this conversation (fork)", "", |a| {
@@ -2188,6 +2193,12 @@ impl App {
 
     fn wire_history(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
+        *self.history.on_board.borrow_mut() = Some(Rc::new(move |project: PathBuf| {
+            if let Some(app) = weak.upgrade() {
+                app.show_board(&project);
+            }
+        }));
+        let weak = Rc::downgrade(self);
         *self.history.on_new.borrow_mut() = Some(Rc::new(move |cwd| {
             if let Some(app) = weak.upgrade() {
                 app.start_agent_in(cwd);
@@ -2521,6 +2532,16 @@ impl App {
         self.files.set_repos(Vec::new());
         self.refresh_sidebar();
         self.history.grab_focus();
+    }
+
+    /// `project`'s board (`.loom/board.md`), in the middle.
+    pub fn show_board(self: &Rc<Self>, project: &Path) {
+        self.leave_notes();
+        self.board.show(project, &self.project_label(project));
+        self.chat_stack.set_visible_child_name("board");
+        let tray = self.tray_for(project);
+        self.show_tray(project, &tray);
+        self.refresh_sidebar();
     }
 
     /// Picks up a past conversation (or goes to it, when it is open already).
@@ -2880,11 +2901,12 @@ impl App {
             Some(path) => {
                 let p = || path.clone();
                 let collapsed = self.remote_projects().iter().any(|p| p["id"].as_str() == Some(&*path.to_string_lossy()) && p["collapsed"] == true);
-                let (p1, p2, p3, p4, p5, p6, p7) = (p(), p(), p(), p(), p(), p(), p());
+                let (p1, p2, p3, p4, p5, p6, p7, p8) = (p(), p(), p(), p(), p(), p(), p(), p());
                 let list = self.list.clone();
                 Menu::new()
                     .item("New agent here", on(Box::new(move |app| app.start_agent_in(p1.clone()))))
                     .item("Conversations…", on(Box::new(move |app| app.show_project(&p2, &p2))))
+                    .item("Board", on(Box::new(move |app| app.show_board(&p8))))
                     .section()
                     .item("Open in the file manager", move || crate::menu::launch(&list, &p3))
                     .item("Copy its path", {

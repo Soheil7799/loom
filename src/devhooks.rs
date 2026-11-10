@@ -29,6 +29,7 @@
 //! - `stop`: what Esc does while the focused agent works (through the chat)
 //! - `agent:<n>`: focus the n-th agent (from 1) · `row:<n>`: open sidebar row n (from 0)
 //! - `new:<folder>`: start an agent in a folder
+//! - `board:<folder>`: that project's board
 //! - `name:<folder>=<name>`: names a project (empty: its folder's name)
 //! - `pick:<n>`: row n of the project page (0: new conversation)
 //! - `project:<folder>`: that folder's project page (new or past conversations)
@@ -343,7 +344,8 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 let (_, height, _, _) = child.measure(gtk::Orientation::Vertical, width);
                 child.allocate(width.max(1), height.max(1), -1, None);
                 let snap = gtk::Snapshot::new();
-                popover.snapshot_child(&child, &snap);
+                // (its child sits in the popover's own contents box)
+                child.parent().ok_or("no parent")?.snapshot_child(&child, &snap);
                 let node = snap.to_node().ok_or("nothing drawn")?;
                 let renderer = popover.renderer().ok_or("no renderer")?;
                 renderer.render_texture(&node, None).save_to_png(format!("{argument}-{}.png", i + 1)).map_err(|e| e.to_string())?;
@@ -395,6 +397,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
+        "board" => app.show_board(Path::new(argument)),
         "name" => {
             let (path, name) = argument.split_once('=').ok_or("name:<folder>=<name>")?;
             app.name_project(Path::new(path), name);

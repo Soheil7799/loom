@@ -588,3 +588,16 @@ popover.tip > contents { padding: 5px 9px; border-radius: 8px; }
 popover.tip label { font-size: 0.9em; }
 window.loom tooltip, tooltip.background { background-color: @popover_bg_color; color: @popover_fg_color; border-radius: 8px; padding: 5px 9px; border: 1px solid alpha(@window_fg_color, 0.08); box-shadow: 0 2px 8px @loom_shadow; }
 tooltip label { font-size: 0.9em; }
+
+/* A project's board (board.rs): lanes side by side, cards as the sidebar's cards. */
+.board-heading { padding: 14px 22px 8px 22px; }
+.board-problem { margin: 0 22px; color: @loom_err; }
+.board-lanes { padding: 8px 22px 18px 22px; }
+.board-lane { min-width: 270px; padding: 10px; border-radius: 12px; background: alpha(@window_fg_color, 0.04); }
+.board-lane-title { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }
+button.board-card { padding: 9px 11px; border-radius: 10px; background: alpha(@window_fg_color, 0.06); box-shadow: 0 1px 3px @loom_shadow; font-weight: normal; }
+button.board-card:hover { background: alpha(@window_fg_color, 0.1); }
+button.board-card.done .board-card-title { opacity: 0.7; }
+.board-card-title { font-weight: 500; }
+.board-editor { padding: 6px; }
+textview.board-body, textview.board-body text { background: alpha(@window_fg_color, 0.04); border-radius: 8px; padding: 6px; }

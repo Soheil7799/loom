@@ -33,6 +33,8 @@ pub struct Page {
     me: RefCell<std::rc::Weak<Page>>,
     listing: RefCell<Option<std::rc::Weak<Conn>>>,
     pub on_new: Callback<PathBuf>,
+    /// Its board opened (the project's folder).
+    pub on_board: Callback<PathBuf>,
     pub on_resume: Callback<Past>,
     /// Is this conversation open in loom already? (shown as such; picking it goes there)
     pub is_open: RefCell<Option<Rc<dyn Fn(&str) -> bool>>>,
@@ -51,9 +53,16 @@ impl Page {
         let place = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Start).build();
         place.add_css_class("dim");
         place.add_css_class("small");
-        let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        heading.append(&title);
-        heading.append(&place);
+        let names = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        names.set_hexpand(true);
+        names.append(&title);
+        names.append(&place);
+        let board = gtk::Button::with_label("Board");
+        board.set_valign(gtk::Align::Center);
+        board.set_tooltip_text(Some("This project's board: what is to do, in progress and done"));
+        let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        heading.append(&names);
+        heading.append(&board);
         let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Browse).build();
         list.add_css_class("history");
         let filter = gtk::SearchEntry::builder().placeholder_text("Filter past conversations (type to filter)").build();
@@ -85,10 +94,19 @@ impl Page {
             me: RefCell::default(),
             listing: RefCell::default(),
             on_new: RefCell::default(),
+            on_board: RefCell::default(),
             on_resume: RefCell::default(),
             is_open: RefCell::default(),
         });
         *page.me.borrow_mut() = Rc::downgrade(&page);
+        let weak = Rc::downgrade(&page);
+        board.connect_clicked(move |_| {
+            let Some(page) = weak.upgrade() else { return };
+            let callback = page.on_board.borrow().clone();
+            if let Some(callback) = callback {
+                callback(page.project.borrow().clone());
+            }
+        });
         // Rows whose title has every word typed (the "New conversation" row always stays).
         let weak = Rc::downgrade(&page);
         page.list.set_filter_func(move |row| {
