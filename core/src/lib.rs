@@ -7,6 +7,7 @@ pub mod api;
 pub mod asks;
 pub mod audit;
 pub mod bridges;
+pub mod board;
 pub mod changes;
 pub mod compacted;
 pub mod files;

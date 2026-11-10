@@ -178,6 +178,38 @@ fn the_strict_sandbox_keeps_an_agent_off_the_session_bus() {
     assert!(replied(&entries, "bus blocked"), "{entries:#?}");
 }
 
+#[test]
+fn a_projects_board_is_a_file_in_it() {
+    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
+    let (d, mut c) = start("Board", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let project = d.root.join("project");
+    assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&project).status().unwrap().success());
+    // a project of the sidebar's: one with an agent in it
+    let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "Fix the tooltip", "body": "It opens under the panel." }))["card"].clone();
+    command(&mut c, "board_move", json!({ "project": project, "card": card, "lane": "Done" }));
+    let board = command(&mut c, "board", json!({ "project": project }));
+    let done = &board["lanes"][3];
+    assert_eq!((done["title"].as_str(), done["cards"][0]["title"].as_str(), done["cards"][0]["done"].as_bool()), (Some("Done"), Some("Fix the tooltip"), Some(true)), "{board}");
+    assert!(!done["cards"][0]["finished"].as_str().unwrap_or_default().is_empty());
+    let file = std::fs::read_to_string(project.join(".loom/board.md")).unwrap();
+    assert!(file.contains("- [x] Fix the tooltip\n\tIt opens under the panel.\n"), "{file}");
+    // only the sidebar's projects
+    let elsewhere = c.command(&new_id(), "board", json!({ "project": d.root.join("vault") }));
+    assert!(elsewhere.is_err(), "{elsewhere:?}");
+    // An agent's turn that writes a file (by a shell command) logs itself in Done.
+    command(&mut c, "send", json!({ "agent": agent, "text": "write" }));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let board = command(&mut c, "board", json!({ "project": project }));
+        if board["lanes"][3]["cards"].as_array().unwrap().iter().any(|card| card["body"] == "Files: made.txt") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the turn never logged itself: {board}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+}
+
 fn agent_tests() -> bool {
     std::env::var_os("LOOM_E2E_AGENT").is_some()
 }

@@ -185,6 +185,36 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
             "name": "loom_agents",
             "description": "The other agents open in loom: title, project, status.",
             "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "loom_board",
+            "description": "This project's board (the user's kanban: Backlog, To do, Doing, Done), its cards with their ids, descriptions and dates. Look here for what to work on and what is in progress.",
+            "inputSchema": { "type": "object", "properties": {} }
+        },
+        {
+            "name": "loom_board_add",
+            "description": "File a card on this project's board: a bug or a review finding you won't fix now, a follow-up, a task the user gave. Say what and where (file:line), and why, in the description.",
+            "inputSchema": { "type": "object", "properties": {
+                "title": { "type": "string", "description": "Short: what is to be done" },
+                "body": { "type": "string", "description": "The details: where, why, how to fix" },
+                "lane": { "type": "string", "description": "Backlog (default), To do, Doing or Done" }
+            }, "required": ["title"] }
+        },
+        {
+            "name": "loom_board_move",
+            "description": "Move a card: to Doing when you start on it, to Done when it is finished (dated automatically).",
+            "inputSchema": { "type": "object", "properties": {
+                "card": { "type": "integer" },
+                "lane": { "type": "string", "description": "Backlog, To do, Doing or Done" }
+            }, "required": ["card", "lane"] }
+        },
+        {
+            "name": "loom_board_note",
+            "description": "Add a line to a card's description: what was done (the commit), what is left.",
+            "inputSchema": { "type": "object", "properties": {
+                "card": { "type": "integer" },
+                "note": { "type": "string" }
+            }, "required": ["card", "note"] }
         }
     ]);
     // The user's notes, only when they have them on.
@@ -348,6 +378,10 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_edit" => edit(socket, agent, args, cancelled),
         "loom_notify" => call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
         "loom_agents" => call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
+        "loom_board" => call(socket, agent, "board", json!({})).map(|v| pretty(&v)),
+        "loom_board_add" => call(socket, agent, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),
+        "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| "Moved.".to_owned()),
+        "loom_board_note" => call(socket, agent, "board_edit", json!({ "card": args["card"], "note": args["note"] })).map(|_| "Noted.".to_owned()),
         tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
         tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, agent, tool, args),
         other => Err(format!("unknown tool {other}")),

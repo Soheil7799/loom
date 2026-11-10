@@ -28,7 +28,7 @@ const READ: u64 = 2 << 20;
 const BYTES: u64 = 10 << 20;
 
 /// The sidebar's projects (their folders), read on the core's thread.
-fn projects() -> Vec<PathBuf> {
+pub(crate) fn projects() -> Vec<PathBuf> {
     crate::api::hub().store("projects").items().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect()
 }
 

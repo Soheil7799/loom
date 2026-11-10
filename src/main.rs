@@ -7,6 +7,7 @@ use loom_core::bridges;
 use loom_core::provider;
 use loom_core::agent;
 mod app;
+mod board;
 mod chat;
 mod chat_view;
 mod cheatsheet;
