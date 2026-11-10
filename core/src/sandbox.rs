@@ -16,6 +16,8 @@ use std::path::{Path, PathBuf};
 const CREATE_RULESET_VERSION: u32 = 1 << 0;
 const ACCESS_FS_RESOLVE_UNIX: u64 = 1 << 16;
 const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+/// Signals only to processes in the same sandbox (killing loomd would undo the scopes).
+const SCOPE_SIGNAL: u64 = 1 << 1;
 const RULE_PATH_BENEATH: i32 = 1;
 /// The ABI with ACCESS_FS_RESOLVE_UNIX (the one that matters here).
 const ABI_NEEDED: i64 = 9;
@@ -53,7 +55,11 @@ pub fn allowed(env: impl Fn(&str) -> Option<String>) -> Vec<PathBuf> {
     allow.extend(env("SSH_AUTH_SOCK").and_then(parent));
     allow.extend(env("XDG_RUNTIME_DIR").map(|d| Path::new(&d).join("gnupg")));
     allow.extend(env("HOME").map(|h| Path::new(&h).join(".gnupg")));
-    allow.retain(|p| p.is_dir());
+    // Never the runtime folder or one above it (an SSH agent socket right in it would let in
+    // the bus and systemd's socket beside it).
+    // SAFETY: getuid can't fail.
+    let runtime = env("XDG_RUNTIME_DIR").map_or_else(|| PathBuf::from(format!("/run/user/{}", unsafe { libc::getuid() })), PathBuf::from);
+    allow.retain(|p| p.is_dir() && !runtime.starts_with(p));
     allow
 }
 
@@ -62,7 +68,7 @@ pub fn enter(allow: &[PathBuf]) -> Result<(), String> {
     if !available() {
         return Err(format!("the strict sandbox needs Landlock ABI {ABI_NEEDED} (this kernel has {})", abi()));
     }
-    let attr = RulesetAttr { handled_access_fs: ACCESS_FS_RESOLVE_UNIX, handled_access_net: 0, scoped: SCOPE_ABSTRACT_UNIX_SOCKET };
+    let attr = RulesetAttr { handled_access_fs: ACCESS_FS_RESOLVE_UNIX, handled_access_net: 0, scoped: SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL };
     // SAFETY: a valid attr of its own size.
     let ruleset = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attr, std::mem::size_of::<RulesetAttr>(), 0u32) } as i32;
     if ruleset < 0 {
@@ -92,12 +98,15 @@ pub fn enter(allow: &[PathBuf]) -> Result<(), String> {
     if entered { Ok(()) } else { Err(format!("landlock_restrict_self: {err}")) }
 }
 
-/// `program` as run under the sandbox, when the setting is on (and `loom` can be found).
+/// `program` as run under the sandbox, when the setting is on. Fails closed: with no `loom`
+/// to enter it, what runs only says so and fails.
 pub fn wrap(program: &[String]) -> Vec<String> {
-    if !crate::settings::get().strict_sandbox || program.is_empty() {
+    if !crate::settings::strict_sandbox() || program.is_empty() {
         return program.to_vec();
     }
-    let Some(loom) = crate::paths::loom_program() else { return program.to_vec() };
+    let Some(loom) = crate::paths::loom_program() else {
+        return ["sh", "-c", "echo 'loom sandbox: the loom program is not beside loomd, so nothing runs' >&2; exit 1"].map(str::to_owned).to_vec();
+    };
     let mut wrapped = vec![loom.to_string_lossy().into_owned(), "sandbox".to_owned(), "--".to_owned()];
     wrapped.extend_from_slice(program);
     wrapped
@@ -128,6 +137,22 @@ pub fn run(args: &[String]) -> i32 {
 mod tests {
     use super::*;
     use std::os::unix::net::{UnixListener, UnixStream};
+
+    #[test]
+    fn an_ssh_agent_right_in_the_runtime_folder_opens_nothing() {
+        let root = std::env::temp_dir().join(format!("loom-allowed-{}", std::process::id()));
+        let (runtime, loom) = (root.join("run"), root.join("run/loom"));
+        std::fs::create_dir_all(&loom).unwrap();
+        let env = |name: &str| match name {
+            "XDG_RUNTIME_DIR" => Some(runtime.to_string_lossy().into_owned()),
+            "LOOM_SOCKET" => Some(loom.join("loom-api.sock").to_string_lossy().into_owned()),
+            // systemd's ssh-agent.service: the socket right in the runtime folder
+            "SSH_AUTH_SOCK" => Some(runtime.join("ssh-agent.socket").to_string_lossy().into_owned()),
+            _ => None,
+        };
+        assert_eq!(allowed(env), vec![loom.clone()]);
+        let _ = std::fs::remove_dir_all(&root);
+    }
 
     /// In a child process (the sandbox can't be left): a socket outside what is allowed is
     /// refused, one inside is reached.

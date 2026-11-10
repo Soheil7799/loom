@@ -107,7 +107,8 @@ fn under_systemd(program: &Path, log: &Path, app_id: &str) -> bool {
     }
     run.arg("-p").arg(format!("StandardOutput=append:{}", log.display()));
     run.arg("-p").arg(format!("StandardError=append:{}", log.display()));
-    for (name, value) in std::env::vars() {
+    // (vars() would panic on a name or value that isn't UTF-8: those are left out)
+    for (name, value) in std::env::vars_os().filter_map(|(n, v)| Some((n.into_string().ok()?, v.into_string().ok()?))) {
         // The window's own switch is not loomd's; systemd refuses control characters.
         if name == "LOOM_CONTROL" || value.chars().any(char::is_control) {
             continue;

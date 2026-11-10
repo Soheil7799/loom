@@ -67,7 +67,10 @@ session bus, no systemd: no new unit. They also lose sudo (no new privileges), `
 --user`, notifications, gsettings, podman and portals; run those in the tray yourself (your
 own tray commands are not sandboxed). What still escapes is a file
 it edits that something else runs later outside it (your `.bashrc`, a git hook you trigger).
-Only loom's window turns it off.
+loom's own settings file is one of them: the API takes the switch only from loom's window,
+but an agent can still write `"strictSandbox": false` into `settings.json`, which loomd reads
+when it next starts. An SSH agent whose socket sits right in the runtime folder (systemd's
+`ssh-agent.service`) stays out of reach: allowing its folder would let in the bus beside it.
 
 ## The web page
 

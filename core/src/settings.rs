@@ -137,6 +137,15 @@ thread_local! {
     static LISTENERS: RefCell<Vec<Rc<dyn Fn(&Settings) -> bool>>> = const { RefCell::new(Vec::new()) };
 }
 
+/// The strict sandbox's switch for every thread: a job restarted from its waiting thread
+/// (where `get` gives the defaults) must still be held to it.
+static STRICT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Whether agents run in the strict sandbox (any thread).
+pub fn strict_sandbox() -> bool {
+    STRICT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// Reads the settings for `app_id` (a test instance keeps its own file).
 pub fn init(app_id: &str) {
     let name = match app_id.rsplit('.').next() {
@@ -148,6 +157,7 @@ pub fn init(app_id: &str) {
     FILE.with(|f| *f.borrow_mut() = Some(file));
     crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
     publish(&settings);
+    STRICT.store(settings.strict_sandbox, std::sync::atomic::Ordering::SeqCst);
     CURRENT.with(|c| *c.borrow_mut() = Some(settings));
     crate::api::hub().handle("set_settings", |who, params| {
         if !matches!(who, crate::api::Principal::Window | crate::api::Principal::Cli) {
@@ -296,6 +306,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
     if settings == before {
         return;
     }
+    STRICT.store(settings.strict_sandbox, std::sync::atomic::Ordering::SeqCst);
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
     crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
     publish(&settings);
