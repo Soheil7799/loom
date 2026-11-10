@@ -319,6 +319,8 @@ pub struct Agent {
     /// The files this turn changed (for the board), and whether it used the board itself.
     turn_files: RefCell<Vec<PathBuf>>,
     board_used: Cell<bool>,
+    /// The board card it was started from (Work on this), until its work is logged on it.
+    pub card: Cell<Option<u32>>,
     /// Its folder's git changes when the turn began (read in the background): what a shell
     /// command wrote is what differs at the turn's end.
     turn_changes: RefCell<TurnChanges>,
@@ -436,6 +438,7 @@ impl Agent {
             files: RefCell::default(),
             turn_files: RefCell::default(),
             board_used: Cell::new(false),
+            card: Cell::new(None),
             turn_changes: RefCell::new(TurnChanges::None),
             repos: RefCell::default(),
             repo_status: RefCell::default(),
@@ -765,8 +768,10 @@ impl Agent {
         let files = self.turn_files.borrow().clone();
         let Some(session) = self.session_id().filter(|_| !self.board_used.get() && !files.is_empty()) else { return };
         let shown: Vec<String> = files.iter().map(|f| f.strip_prefix(&self.project).unwrap_or(f).to_string_lossy().into_owned()).collect();
-        if let Err(err) = crate::board::log_turn(&self.project, &session, &self.title(), &shown, &crate::board::now()) {
-            crate::log::debug!(format!("agent {}", self.id), "board: {err}");
+        match crate::board::log_turn(&self.project, &session, self.card.get(), &self.title(), &shown, &crate::board::now()) {
+            // tied to its conversation now: found by that from here on
+            Ok(()) => self.card.set(None),
+            Err(err) => crate::log::debug!(format!("agent {}", self.id), "board: {err}"),
         }
     }
 

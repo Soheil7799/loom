@@ -3670,6 +3670,32 @@
       },
       "result": "{}"
     },
+    "board_work": {
+      "description": "Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          },
+          "card": {
+            "type": "integer",
+            "description": ""
+          }
+        },
+        "required": [
+          "project",
+          "card"
+        ]
+      },
+      "result": "{agent}"
+    },
     "board_remove": {
       "description": "A card taken off the board.",
       "who": [

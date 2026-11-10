@@ -479,6 +479,29 @@ fn commands(daemon: &Rc<Daemon>) {
         Ok(json!({ "agent": agent.id.to_string() }))
     });
     let weak = Rc::downgrade(daemon);
+    hub.handle("board_work", move |who, params| {
+        if !human(who) {
+            return Err(Error::Forbidden("starting agents".into()));
+        }
+        let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
+        let project = params["project"].as_str().ok_or_else(|| Error::Invalid("which project?".into()))?;
+        let project = loom_core::project_files::inside(project, &loom_core::project_files::projects()).map_err(|_| Error::Forbidden("only a project of the sidebar's".into()))?;
+        let id = params["card"].as_u64().ok_or_else(|| Error::Invalid("which card?".into()))? as u32;
+        let board = loom_core::board::Board::load(&project);
+        let card = board.cards().find(|c| c.id == id).ok_or_else(|| Error::NotFound(format!("card c{id}")))?;
+        let mut message = format!("Work on card c{id} of this project's board: {}", card.title);
+        if !card.body.trim().is_empty() {
+            message.push_str(&format!("\n\n{}", card.body.trim()));
+        }
+        message.push_str(&format!("\n\nWhen it is done, note what you did on c{id} and move it to Done (loom_board_note, loom_board_move)."));
+        loom_core::board::act(&project, "board_move", &json!({ "card": id, "lane": "Doing" }), "you").expect("a board command").map_err(Error::Invalid)?;
+        let agent = daemon.ws.add_agent(Saved::new(project));
+        agent.card.set(Some(id));
+        agent.submit_with(message, Vec::new());
+        daemon.ws.publish_agents();
+        Ok(json!({ "agent": agent.id.to_string() }))
+    });
+    let weak = Rc::downgrade(daemon);
     hub.handle("close_agent", move |who, params| {
         if !human(who) {
             return Err(Error::Forbidden("closing agents".into()));

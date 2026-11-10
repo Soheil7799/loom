@@ -28,7 +28,7 @@ const READ: u64 = 2 << 20;
 const BYTES: u64 = 10 << 20;
 
 /// The sidebar's projects (their folders), read on the core's thread.
-pub(crate) fn projects() -> Vec<PathBuf> {
+pub fn projects() -> Vec<PathBuf> {
     crate::api::hub().store("projects").items().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect()
 }
 
@@ -36,7 +36,7 @@ pub(crate) fn projects() -> Vec<PathBuf> {
 /// (a dangling one too: written through, it would make its target wherever that is).
 // (what is read or written is opened by `open_checked`, which refuses it if it is not this
 // path any more: a link swapped in between)
-pub(crate) fn inside(path: &str, projects: &[PathBuf]) -> Result<PathBuf, Error> {
+pub fn inside(path: &str, projects: &[PathBuf]) -> Result<PathBuf, Error> {
     let path = Path::new(path);
     if !path.is_absolute() {
         return Err(Error::Invalid(format!("{} is not an absolute path", path.display())));

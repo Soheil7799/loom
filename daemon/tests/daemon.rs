@@ -208,6 +208,23 @@ fn a_projects_board_is_a_file_in_it() {
         assert!(Instant::now() < deadline, "the turn never logged itself: {board}");
         std::thread::sleep(Duration::from_millis(250));
     }
+    // Work on this: an agent starts on a card, the card goes to Doing and its work is logged
+    // on it (no card of its own).
+    std::fs::remove_file(project.join("made.txt")).unwrap();
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "write the file again" }))["card"].clone();
+    let worker = command(&mut c, "board_work", json!({ "project": project, "card": card }))["agent"].as_str().unwrap().to_owned();
+    until(&mut c, &format!("conversation/{worker}"), Duration::from_secs(15), "the agent's reply", |e| replied(e, "wrote"));
+    let deadline = Instant::now() + Duration::from_secs(20);
+    loop {
+        let board = command(&mut c, "board", json!({ "project": project }));
+        let doing = board["lanes"][2]["cards"].as_array().unwrap().clone();
+        if doing.iter().any(|c| c["id"] == card && c["body"] == "Files: made.txt") {
+            assert_eq!(board["lanes"][3]["cards"].as_array().unwrap().len(), 2, "no card of its own: {board}");
+            break;
+        }
+        assert!(Instant::now() < deadline, "the card never got its work: {board}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
 }
 
 fn agent_tests() -> bool {

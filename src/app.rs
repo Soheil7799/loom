@@ -595,6 +595,12 @@ impl App {
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
         let weak = Rc::downgrade(&this);
+        *this.board.on_agent.borrow_mut() = Some(Rc::new(move |id| {
+            if let Some(app) = weak.upgrade() {
+                app.focus_remote(id);
+            }
+        }));
+        let weak = Rc::downgrade(&this);
         crate::conn::on_refused(move |text| {
             if let Some(app) = weak.upgrade()
                 && !app.toast_waits()

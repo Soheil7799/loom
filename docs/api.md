@@ -1419,6 +1419,17 @@ Who: window, cli. Result: `{}`.
 | `body` | string? | its whole description |
 | `note` | string? | added below its description |
 
+### `board_work`
+
+Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it.
+
+Who: window, cli. Result: `{agent}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+| `card` | integer |  |
+
 ### `board_remove`
 
 A card taken off the board.

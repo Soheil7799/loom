@@ -21,6 +21,8 @@ pub struct BoardView {
     me: RefCell<Weak<BoardView>>,
     /// The board as last drawn (an action and the file's monitor both reload it: drawn once).
     drawn: RefCell<Value>,
+    /// An agent started on a card (Work on this): the window opens it.
+    pub on_agent: RefCell<Option<Rc<dyn Fn(u32)>>>,
 }
 
 impl BoardView {
@@ -45,7 +47,7 @@ impl BoardView {
         root.append(&heading);
         root.append(&problem);
         root.append(&scroller);
-        let view = Rc::new(BoardView { root, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default() });
+        let view = Rc::new(BoardView { root, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default(), on_agent: RefCell::default() });
         *view.me.borrow_mut() = Rc::downgrade(&view);
         view
     }
@@ -320,6 +322,35 @@ impl BoardView {
         let save = gtk::Button::builder().label("Save").hexpand(true).halign(gtk::Align::End).build();
         save.add_css_class("suggested-action");
         actions.append(&delete);
+        if card["done"] != true {
+            let work = gtk::Button::with_label("Work on this");
+            work.set_tooltip_text(Some("An agent starts on it: the card is its first message, and it moves to Doing"));
+            let (weak, shut) = (Rc::downgrade(self), popover.clone());
+            work.connect_clicked(move |work| {
+                let Some(view) = weak.upgrade() else { return };
+                work.set_sensitive(false);
+                work.set_label("Starting…");
+                let (weak, work, shut) = (Rc::downgrade(&view), work.clone(), shut.clone());
+                let project = view.project.borrow().clone();
+                crate::conn::command_result("board", "board_work", json!({ "project": project, "card": id }), move |answer| {
+                    work.set_sensitive(true);
+                    work.set_label("Work on this");
+                    let Some(view) = weak.upgrade() else { return };
+                    match answer {
+                        Ok(answer) => {
+                            shut.popdown();
+                            view.reload();
+                            let told = view.on_agent.borrow().clone();
+                            if let (Some(told), Some(agent)) = (told, answer["agent"].as_str().and_then(|a| a.parse().ok())) {
+                                told(agent);
+                            }
+                        }
+                        Err(err) => view.say(&err.to_string()),
+                    }
+                });
+            });
+            actions.append(&work);
+        }
         actions.append(&save);
         box_.append(&actions);
         let (weak, shut) = (Rc::downgrade(self), popover.clone());
