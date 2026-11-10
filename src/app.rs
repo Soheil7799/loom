@@ -22,6 +22,7 @@ use crate::settings;
 use crate::state::{self};
 
 /// What a sidebar row stands for.
+#[derive(Clone)]
 enum Row {
     Project(PathBuf),
     /// One of loomd's agents (the window as its client).
@@ -110,6 +111,9 @@ pub struct App {
     sidebar_due: Cell<bool>,
     /// Each project's first and last sidebar rows (where a drop line shows).
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
+    /// Open projects' cards (name, first and last agent row): their names drawn up the left.
+    cards: RefCell<Vec<(PathBuf, String, gtk::ListBoxRow, gtk::ListBoxRow)>>,
+    card_names: crate::tube::Tube,
     /// loomd's agents opened in the window (its client), and the one in view.
     remote_agents: RefCell<HashMap<u32, Rc<crate::remote_agent::RemoteAgent>>>,
     remote_focused: Cell<Option<u32>>,
@@ -263,7 +267,12 @@ impl App {
         let menu = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).build();
         menu.add_css_class("menu");
         menu.set_parent(&list);
-        let list_scroller = gtk::ScrolledWindow::builder().child(&list).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        // An open project's name runs up its card's left edge, drawn over the list (its rows stay
+        // the list's own: keys, menus and drag work as on any row).
+        let card_names = crate::tube::Tube::new();
+        let with_names = gtk::Overlay::builder().child(&list).build();
+        with_names.add_overlay(&card_names);
+        let list_scroller = gtk::ScrolledWindow::builder().child(&with_names).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         let notes_chat = crate::notes_chat::NotesChat::new();
         // Back to the agents, with how many work and wait meanwhile.
         let notes_back = gtk::Button::builder().child(&gtk::Label::builder().label("←  Agents").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build()).tooltip_text("Back to the agents (Ctrl+Shift+M)").build();
@@ -337,9 +346,17 @@ impl App {
         welcome.add_css_class("chat");
         chat_stack.add_named(&welcome, Some("empty"));
         let history = crate::history::Page::new();
-        chat_stack.add_named(&history.root, Some("project"));
+        // A project's page: its board, and its conversations in a sidebar on the right.
         let board = crate::board::BoardView::new();
-        chat_stack.add_named(&board.root, Some("board"));
+        board.root.set_hexpand(true);
+        history.root.add_css_class("project-side");
+        history.root.set_size_request(340, -1);
+        history.root.set_hexpand(false);
+        let project_page = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        project_page.add_css_class("project-page-split");
+        project_page.append(&board.root);
+        project_page.append(&history.root);
+        chat_stack.add_named(&project_page, Some("project"));
         let overview = crate::overview::Overview::new();
         chat_stack.add_named(&overview.root, Some("overview"));
         let hub = crate::hub::Hub::new();
@@ -536,6 +553,8 @@ impl App {
             files_hidden_for_overview: Cell::new(false),
             hub: hub.clone(),
             project_edges: RefCell::default(),
+            cards: RefCell::default(),
+            card_names,
             running: RefCell::default(),
             running_rows: RefCell::default(),
             sidebar_feeds: RefCell::default(),
@@ -649,10 +668,31 @@ impl App {
                 app.refresh_inbox();
             }
         });
+        // A click on an open project's name (its card's left edge): its page.
+        let click = gtk::GestureClick::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let weak = Rc::downgrade(self);
+        click.connect_pressed(move |gesture, _, x, y| {
+            let Some(app) = weak.upgrade() else { return };
+            if let Some(path) = app.card_at(x, y) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                app.show_project(&path, &path);
+            }
+        });
+        self.list.add_controller(click);
+        let weak = Rc::downgrade(self);
+        self.card_names.set_draw(move |area, snapshot| {
+            if let Some(app) = weak.upgrade() {
+                app.draw_card_names(area, snapshot);
+            }
+        });
         // Right-click (or the Menu key) on a project or agent: its menu.
         let weak = Rc::downgrade(self);
         crate::menu::on_right_click(&self.list, move |x, y| {
             let Some(app) = weak.upgrade() else { return };
+            // an open project's name, up its card's edge: the project's menu
+            if let Some(path) = app.card_at(x, y) {
+                return app.project_menu(&path, x, y);
+            }
             match app.list.row_at_y(y as i32) {
                 // A heading (Running, Projects): no menu of its own.
                 Some(row) if matches!(app.rows.borrow().get(row.index() as usize), Some(Row::Heading)) => {}
@@ -1194,7 +1234,10 @@ impl App {
         let mut choices = vec![
             act("New agent… (or resume one)", "Ctrl+N", |a| a.new_agent(false)),
             act("Open a project folder…", "Ctrl+Shift+N", |a| a.new_agent(true)),
-            act("This project's board", "", |a| a.show_board(&a.current_project())),
+            act("This project's page: its board and conversations", "", |a| {
+                let project = a.current_project();
+                a.show_project(&project, &project);
+            }),
             act("Reopen the last closed agent", "Ctrl+Shift+T", |a| a.reopen_closed()),
             act("Rename this agent or project", "F2", |a| a.begin_rename()),
             act("Copy this conversation (fork)", "", |a| {
@@ -2194,12 +2237,6 @@ impl App {
 
     fn wire_history(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        *self.history.on_board.borrow_mut() = Some(Rc::new(move |project: PathBuf| {
-            if let Some(app) = weak.upgrade() {
-                app.show_board(&project);
-            }
-        }));
-        let weak = Rc::downgrade(self);
         *self.history.on_new.borrow_mut() = Some(Rc::new(move |cwd| {
             if let Some(app) = weak.upgrade() {
                 app.start_agent_in(cwd);
@@ -2246,6 +2283,7 @@ impl App {
         if self.showing_project().is_some_and(|p| p == path) {
             let shown = if name.is_empty() { path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default() } else { name.to_owned() };
             self.history.set_name(&shown);
+            self.board.set_name(&shown);
         }
     }
 
@@ -2526,6 +2564,7 @@ impl App {
         self.leave_notes();
         self.chat_stack.set_visible_child_name("project");
         self.history.show(project, cwd, &self.project_label(project));
+        self.board.show(project, &self.project_label(project));
         let tray = self.tray_for(project);
         self.show_tray(project, &tray);
         self.files.show(cwd, project, &[]);
@@ -2533,16 +2572,6 @@ impl App {
         self.files.set_repos(Vec::new());
         self.refresh_sidebar();
         self.history.grab_focus();
-    }
-
-    /// `project`'s board (`.loom/board.md`), in the middle.
-    pub fn show_board(self: &Rc<Self>, project: &Path) {
-        self.leave_notes();
-        self.board.show(project, &self.project_label(project));
-        self.chat_stack.set_visible_child_name("board");
-        let tray = self.tray_for(project);
-        self.show_tray(project, &tray);
-        self.refresh_sidebar();
     }
 
     /// Picks up a past conversation (or goes to it, when it is open already).
@@ -2872,7 +2901,17 @@ impl App {
 
     /// The right-click menu of row `index` (None: the empty part of the list), at (x, y) in
     /// the list.
+    /// Project `path`'s menu at (x, y) in the list (an open project has no row of its own).
+    fn project_menu(self: &Rc<Self>, path: &Path, x: f64, y: f64) {
+        self.row_menu_for(Some(Row::Project(path.to_owned())), x, y);
+    }
+
     fn row_menu(self: &Rc<Self>, index: Option<usize>, x: f64, y: f64) {
+        let row = index.and_then(|i| self.rows.borrow().get(i).cloned());
+        self.row_menu_for(row, x, y);
+    }
+
+    fn row_menu_for(self: &Rc<Self>, row: Option<Row>, x: f64, y: f64) {
         use crate::menu::Menu;
         let weak = Rc::downgrade(self);
         // An action on the app, run if it is still there.
@@ -2884,14 +2923,14 @@ impl App {
                 }
             }
         };
-        let row = index.and_then(|i| match self.rows.borrow().get(i) {
-            Some(Row::Project(path)) => Some(path.clone()),
-            _ => None,
-        });
-        let remote = index.and_then(|i| match self.rows.borrow().get(i) {
+        let remote = match &row {
             Some(Row::Remote(id)) => Some(*id),
             _ => None,
-        });
+        };
+        let row = match row {
+            Some(Row::Project(path)) => Some(path),
+            _ => None,
+        };
         if let Some(id) = remote {
             if let Some(menu) = self.remote_menu(id) {
                 menu.popup(&self.list, x, y);
@@ -2902,12 +2941,11 @@ impl App {
             Some(path) => {
                 let p = || path.clone();
                 let collapsed = self.remote_projects().iter().any(|p| p["id"].as_str() == Some(&*path.to_string_lossy()) && p["collapsed"] == true);
-                let (p1, p2, p3, p4, p5, p6, p7, p8) = (p(), p(), p(), p(), p(), p(), p(), p());
+                let (p1, p2, p3, p4, p5, p6, p7) = (p(), p(), p(), p(), p(), p(), p());
                 let list = self.list.clone();
                 Menu::new()
                     .item("New agent here", on(Box::new(move |app| app.start_agent_in(p1.clone()))))
-                    .item("Conversations…", on(Box::new(move |app| app.show_project(&p2, &p2))))
-                    .item("Board", on(Box::new(move |app| app.show_board(&p8))))
+                    .item("Board and conversations…", on(Box::new(move |app| app.show_project(&p2, &p2))))
                     .section()
                     .item("Open in the file manager", move || crate::menu::launch(&list, &p3))
                     .item("Copy its path", {
@@ -3141,41 +3179,50 @@ impl App {
             rows.push(Row::Heading);
         }
         *self.running_rows.borrow_mut() = running_rows;
+        let mut cards = Vec::new();
         for project in &projects {
             let mine: Vec<&SideAgent> = agents.iter().filter(|a| a.project == project.path).collect();
-            // Each project a card: its header on top, its agents inside, the last one closing it
-            // (closed, or with none, the header is the whole card).
-            let header = self.project_row(project, &mine);
+            // Closed (or with no agents): one pill, its name. Open: a card of its agents, its
+            // name up the left edge (drawn by `draw_card_names`; a click there opens its page).
             if project.collapsed || mine.is_empty() {
+                let header = self.project_row(project, &mine);
                 header.add_css_class("alone");
-            }
-            self.project_drop_zone(&header, &project.path, true);
-            self.list.append(&header);
-            rows.push(Row::Project(project.path.clone()));
-            let mut last = header.clone();
-            if project.collapsed {
-                edges.insert(project.path.clone(), (header, last));
+                self.project_drop_zone(&header, &project.path, true);
+                self.list.append(&header);
+                rows.push(Row::Project(project.path.clone()));
+                edges.insert(project.path.clone(), (header.clone(), header));
                 continue;
             }
             let count = mine.len();
             let alike = |agent: &SideAgent| mine.iter().filter(|a| a.title == agent.title).count() > 1;
             let alike: Vec<bool> = mine.iter().map(|a| alike(a)).collect();
+            let mut first = None;
+            let mut last = None;
             for (i, item) in mine.into_iter().enumerate() {
                 let row = agent_row(item, alike[i], asked.contains(&item.id));
+                row.add_css_class("in-card");
+                if i == 0 {
+                    row.add_css_class("first");
+                    first = Some(row.clone());
+                }
                 if i + 1 == count {
                     row.add_css_class("last");
-                    last = row.clone();
+                    last = Some(row.clone());
                 }
-                self.project_drop_zone(&row, &project.path, false);
+                self.project_drop_zone(&row, &project.path, i == 0);
                 self.list.append(&row);
                 if focused == Some(item.id) {
                     self.list.select_row(Some(&row));
                 }
                 rows.push(Row::Remote(item.id));
             }
-            edges.insert(project.path.clone(), (header, last));
+            let (Some(first), Some(last)) = (first, last) else { continue };
+            cards.push((project.path.clone(), project.name.clone(), first.clone(), last.clone()));
+            edges.insert(project.path.clone(), (first, last));
         }
         *self.project_edges.borrow_mut() = edges;
+        *self.cards.borrow_mut() = cards;
+        self.card_names.queue_draw();
         if projects.is_empty() {
             let hint = gtk::Label::builder()
                 .label("No projects yet.\nCtrl+Shift+N starts an agent in a folder.")
@@ -3203,11 +3250,48 @@ impl App {
         }
     }
 
+    /// The open projects' names, each up its card's left edge (bottom to top, as a book's spine).
+    fn draw_card_names(&self, area: &crate::tube::Tube, snapshot: &gtk::Snapshot) {
+        use gtk::graphene::Point;
+        let color = self.list.color();
+        for (_, name, first, last) in self.cards.borrow().iter() {
+            // the rows' own edges (compute_point gives their content's, inside the padding)
+            let (Some(top), Some(bottom)) = (first.compute_bounds(area), last.compute_bounds(area)) else { continue };
+            let height = bottom.y() + bottom.height() - top.y();
+            let layout = self.list.create_pango_layout(Some(&name.to_uppercase()));
+            let mut font = pango::FontDescription::new();
+            font.set_weight(pango::Weight::Bold);
+            font.set_size(8 * pango::SCALE);
+            layout.set_font_description(Some(&font));
+            let attrs = pango::AttrList::new();
+            attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
+            layout.set_attributes(Some(&attrs));
+            layout.set_width(((height - 8.0).max(10.0) * pango::SCALE as f32) as i32);
+            layout.set_ellipsize(pango::EllipsizeMode::End);
+            let (_, text) = layout.pixel_extents();
+            snapshot.save();
+            // the strip: CARD_STRIP wide at the card's left, the name centred in it
+            snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - text.height() as f32) / 2.0, top.y() + (height + text.width() as f32) / 2.0));
+            snapshot.rotate(-90.0);
+            snapshot.append_layout(&layout, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.78));
+            snapshot.restore();
+        }
+    }
+
+    /// The open project whose card's name strip is at (x, y) in the list, if one is.
+    fn card_at(&self, x: f64, y: f64) -> Option<PathBuf> {
+        self.cards.borrow().iter().find_map(|(path, _, first, last)| {
+            let (top, bottom) = (first.compute_bounds(&self.list)?, last.compute_bounds(&self.list)?);
+            let inside = x >= f64::from(top.x()) && x <= f64::from(top.x() + CARD_STRIP) && y >= f64::from(top.y()) && y <= f64::from(bottom.y() + bottom.height());
+            inside.then(|| path.clone())
+        })
+    }
+
     /// Where the first project's card starts in the sidebar list (None before it is laid out).
     fn projects_top(&self) -> Option<f64> {
         let mut child = self.list.first_child();
         while let Some(row) = child {
-            if row.has_css_class("project-row") {
+            if row.has_css_class("project-row") || row.has_css_class("first") {
                 return row.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| f64::from(p.y()));
             }
             child = row.next_sibling();
@@ -3651,6 +3735,9 @@ fn tip_above(widget: &impl IsA<gtk::Widget>) {
     widget.add_controller(click);
 }
 
+/// How wide an open project's name strip is, at its card's left.
+const CARD_STRIP: f32 = 26.0;
+
 fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -3711,6 +3798,8 @@ fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxR
     }
     let row = gtk::ListBoxRow::builder().child(&line).build();
     row.add_css_class("agent-row");
+    // the pill's tint: what it is doing (as its bead)
+    row.add_css_class(&format!("state-{}", if status == Status::Idle && agent.unseen { "done" } else { status.css() }));
     row
 }
 

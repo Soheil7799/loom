@@ -48,10 +48,15 @@ impl BoardView {
         view
     }
 
+    /// The project's name as shown (renamed in the sidebar).
+    pub fn set_name(&self, name: &str) {
+        self.title.set_label(name);
+    }
+
     /// `project`'s board (`name`: as the sidebar calls it), followed from now on.
     pub fn show(self: &Rc<Self>, project: &Path, name: &str) {
         *self.project.borrow_mut() = project.to_owned();
-        self.title.set_label(&format!("{name} · board"));
+        self.title.set_label(name);
         let file = loom_core::board::path(project);
         self.place.set_label(&file.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1));
         // Changed by anyone (an agent, Obsidian): drawn again once the write is done.

@@ -397,7 +397,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
-        "board" => app.show_board(Path::new(argument)),
+        "board" => app.show_project(Path::new(argument), Path::new(argument)),
         "name" => {
             let (path, name) = argument.split_once('=').ok_or("name:<folder>=<name>")?;
             app.name_project(Path::new(path), name);
