@@ -1924,10 +1924,9 @@ impl Chat {
     }
 
     /// Images sent with a message, under it.
-    pub fn user_images(&self, pngs: &[glib::Bytes]) {
-        if pngs.is_empty() {
-            return;
-        }
+    /// A row for a message's pictures, in its place at the end of the chat (filled now, or as
+    /// they come).
+    fn images_row(&self) -> gtk::FlowBox {
         // They wrap onto more lines: in one row, several would hold the chat wider than the window.
         let row = gtk::FlowBox::builder()
             .selection_mode(gtk::SelectionMode::None)
@@ -1937,27 +1936,33 @@ impl Chat {
             .can_focus(false)
             .build();
         row.add_css_class("msg-images");
-        for png in pngs {
-            let Some(picture) = thumbnail(png, 360, 220) else { continue };
-            picture.add_css_class("msg-image");
-            picture.set_tooltip_text(Some("Full size"));
-            let click = gtk::GestureClick::new();
-            let (full, held) = (png.clone(), picture.downgrade());
-            click.connect_released(move |_, _, _, _| {
-                if let Some(picture) = held.upgrade() {
-                    show_picture(&picture, &full);
-                }
-            });
-            picture.add_controller(click);
-            picture.set_halign(gtk::Align::Start);
-            row.insert(&picture, -1);
-            if let Some(cell) = picture.parent() {
-                cell.set_can_focus(false);
-            }
-        }
         self.list.append(&row);
         *self.last.borrow_mut() = Last::None;
+        row
     }
+}
+
+/// One picture into a message's row of them (clicked: full size).
+fn add_image(row: &gtk::FlowBox, png: &glib::Bytes) {
+    let Some(picture) = thumbnail(png, 360, 220) else { return };
+    picture.add_css_class("msg-image");
+    picture.set_tooltip_text(Some("Full size"));
+    let click = gtk::GestureClick::new();
+    let (full, held) = (png.clone(), picture.downgrade());
+    click.connect_released(move |_, _, _, _| {
+        if let Some(picture) = held.upgrade() {
+            show_picture(&picture, &full);
+        }
+    });
+    picture.add_controller(click);
+    picture.set_halign(gtk::Align::Start);
+    row.insert(&picture, -1);
+    if let Some(cell) = picture.parent() {
+        cell.set_can_focus(false);
+    }
+}
+
+impl Chat {
 
     // ---- slash commands -------------------------------------------------------------------
 
@@ -2515,9 +2520,17 @@ impl Chat {
         if images.len() <= drawn {
             return;
         }
-        let pngs: Vec<glib::Bytes> = images[drawn..].iter().filter_map(|i| loom_core::api::blobs::get(i.as_str()?)).map(|png| glib::Bytes::from(&png[..])).collect();
         self.entry_images.borrow_mut().insert(id.to_owned(), images.len());
-        self.user_images(&pngs);
+        // loomd keeps the pictures: asked for, each drawn into the row made in its place now
+        let row = self.images_row();
+        for blob in images[drawn..].iter().filter_map(Value::as_str) {
+            let row = row.clone();
+            crate::conn::command_then("chat", "blob", serde_json::json!({ "id": blob }), move |answer| {
+                if let Some(png) = answer.and_then(|a| loom_core::bridges::host::decode(a["data"].as_str()?)) {
+                    add_image(&row, &glib::Bytes::from_owned(png));
+                }
+            });
+        }
     }
 
     /// A tool entry of the core's conversation (warp): its card, as ACP's update would draw

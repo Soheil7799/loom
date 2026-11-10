@@ -319,6 +319,26 @@ impl RemoteAgent {
     /// The chat's buttons and keys, as commands to loomd.
     fn wire(self: &Rc<Self>) {
         let chat = &self.chat;
+        // What is typed is loomd's draft too (kept when the window closes), a moment after the
+        // typing stops; sending empties the input, and so the draft (it came back each time).
+        let typing: Rc<RefCell<Option<gtk::glib::SourceId>>> = Rc::default();
+        let weak = Rc::downgrade(self);
+        chat.input.buffer().connect_changed(move |_| {
+            let weak = weak.clone();
+            let slot = typing.clone();
+            let source = gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(800), move || {
+                slot.borrow_mut().take();
+                let Some(agent) = weak.upgrade() else { return };
+                let text = agent.chat.draft();
+                if *agent.draft.borrow() != text {
+                    *agent.draft.borrow_mut() = text.clone();
+                    agent.send("set_draft", json!({ "text": text }));
+                }
+            });
+            if let Some(old) = typing.borrow_mut().replace(source) {
+                old.remove();
+            }
+        });
         let me = |f: fn(&RemoteAgent)| {
             let weak: Weak<RemoteAgent> = Rc::downgrade(self);
             Rc::new(move |()| {
