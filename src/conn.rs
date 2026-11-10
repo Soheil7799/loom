@@ -32,15 +32,37 @@ pub fn subscribe(resource: &str, ready: impl Fn() + 'static) -> Option<Sub> {
     loomd().map(|remote| remote.subscribe(resource, ready))
 }
 
-/// Does command `method` as the window; a refusal is logged under `who`.
+type Tell = Box<dyn Fn(&str)>;
+
+thread_local! {
+    /// Where a refusal nobody else handles is shown (the window's toast), set at start.
+    static REFUSED: RefCell<Option<Tell>> = const { RefCell::new(None) };
+}
+
+/// `text` shown to the user (the window's toast): something they did didn't work.
+pub fn tell(text: &str) {
+    REFUSED.with_borrow(|show| show.as_ref().map(|show| show(text)));
+}
+
+/// Refusals of `command` and `command_then` are shown through `show` from now on.
+pub fn on_refused(show: impl Fn(&str) + 'static) {
+    REFUSED.with_borrow_mut(|r| *r = Some(Box::new(show)));
+}
+
+/// Does command `method` as the window; a refusal is logged under `who` and shown.
 pub fn command(who: &str, method: &str, params: Value) {
     command_then(who, method, params, |_| {});
 }
 
 /// Does command `method` as the window, then `then` with what it answered (a refusal is
-/// logged under `who` too).
+/// logged under `who` and shown too).
 pub fn command_then(who: &str, method: &str, params: Value, then: impl FnOnce(Option<Value>) + 'static) {
-    command_result(who, method, params, move |result| then(result.ok()));
+    command_result(who, method, params, move |result| {
+        if let Err(err) = &result {
+            tell(&format!("That didn't work: {err}"));
+        }
+        then(result.ok());
+    });
 }
 
 /// Does command `method` as the window, then `then` with its answer or why it was refused

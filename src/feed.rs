@@ -59,6 +59,7 @@ impl Feed {
 }
 
 /// An agent as the sidebar draws it (the `agents` resource's item).
+#[derive(Clone, PartialEq)]
 pub struct SideAgent {
     pub id: u32,
     pub title: String,
@@ -91,6 +92,7 @@ impl SideAgent {
 }
 
 /// A project as the sidebar draws it (the `projects` resource's item).
+#[derive(Clone, PartialEq)]
 pub struct SideProject {
     pub path: PathBuf,
     pub name: String,

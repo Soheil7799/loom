@@ -13,6 +13,11 @@ use loom_core::provider::Conn;
 
 pub use loom_core::history::*;
 
+thread_local! {
+    /// Every kept conversation, as last listed.
+    static LAST: RefCell<Option<Vec<Past>>> = const { RefCell::new(None) };
+}
+
 type Callback<T> = RefCell<Option<Rc<dyn Fn(T)>>>;
 
 /// The page: the project's name, "New conversation", and its past conversations.
@@ -146,10 +151,19 @@ impl Page {
         self.set_name(name);
         self.place.set_label(&project.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1));
         self.place.set_tooltip_text(Some(&project.to_string_lossy()));
-        self.rows.borrow_mut().clear();
         self.filter.set_text("");
-        self.fill(&[]);
-        self.note.set_label("Looking for past conversations…");
+        // The last listing at once (any project's: it lists them all), then the agent
+        // program's fresh one, drawn only if it differs.
+        let last = LAST.with_borrow(Clone::clone);
+        match &last {
+            Some(all) => self.show_mine(all.clone()),
+            None => {
+                self.rows.borrow_mut().clear();
+                self.fill(&[]);
+                self.note.set_label("Looking for past conversations…");
+                self.note.set_visible(true);
+            }
+        }
         let round = self.round.get() + 1;
         self.round.set(round);
         if let Some(old) = self.listing.take().and_then(|w| w.upgrade()) {
@@ -158,33 +172,39 @@ impl Page {
         let weak = Rc::downgrade(self);
         let listing = list(move |result| {
             let Some(page) = weak.upgrade() else { return };
-            if page.round.get() != round {
-                return;
-            }
             match result {
                 Ok(all) => {
-                    let project = page.project.borrow().clone();
-                    // Compared as real folders: one opened through a symlink (~/Projects/hr →
-                    // faratamin/personnel) is recorded under the link's name.
-                    let project = real(&project);
-                    let mine: Vec<Past> = all
-                        .into_iter()
-                        .map(|mut p| {
-                            p.cwd = real(&p.cwd);
-                            p
-                        })
-                        .filter(|p| p.cwd.starts_with(&project) && real(&crate::app::project_of(&p.cwd)) == project)
-                        .collect();
-                    page.note.set_label(if mine.is_empty() { "No past conversations here yet." } else { "" });
-                    page.note.set_visible(mine.is_empty());
-                    page.fill(&mine);
-                    *page.rows.borrow_mut() = mine;
+                    let changed = LAST.with_borrow(|l| l.as_ref() != Some(&all));
+                    LAST.with_borrow_mut(|l| *l = Some(all.clone()));
+                    if page.round.get() == round && changed {
+                        page.show_mine(all);
+                    }
                 }
-                Err(err) => page.note.set_label(&format!("Past conversations could not be listed: {err}.")),
+                // Said only where nothing was shown instead.
+                Err(err) if page.round.get() == round && last.is_none() => page.note.set_label(&format!("Past conversations could not be listed: {err}.")),
+                Err(_) => {}
             }
         });
         *self.listing.borrow_mut() = listing;
-        self.note.set_visible(true);
+    }
+
+    /// Of `all` the conversations, this project's, listed.
+    fn show_mine(&self, all: Vec<Past>) {
+        // Compared as real folders: one opened through a symlink (~/Projects/hr →
+        // faratamin/personnel) is recorded under the link's name.
+        let project = real(&self.project.borrow());
+        let mine: Vec<Past> = all
+            .into_iter()
+            .map(|mut p| {
+                p.cwd = real(&p.cwd);
+                p
+            })
+            .filter(|p| p.cwd.starts_with(&project) && real(&crate::app::project_of(&p.cwd)) == project)
+            .collect();
+        self.note.set_label(if mine.is_empty() { "No past conversations here yet." } else { "" });
+        self.note.set_visible(mine.is_empty());
+        self.fill(&mine);
+        *self.rows.borrow_mut() = mine;
     }
 
     fn fill(&self, past: &[Past]) {

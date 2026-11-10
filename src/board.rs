@@ -19,6 +19,8 @@ pub struct BoardView {
     project: RefCell<PathBuf>,
     monitor: RefCell<Option<gio::FileMonitor>>,
     me: RefCell<Weak<BoardView>>,
+    /// The board as last drawn (an action and the file's monitor both reload it: drawn once).
+    drawn: RefCell<Value>,
 }
 
 impl BoardView {
@@ -43,7 +45,7 @@ impl BoardView {
         root.append(&heading);
         root.append(&problem);
         root.append(&scroller);
-        let view = Rc::new(BoardView { root, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default() });
+        let view = Rc::new(BoardView { root, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default() });
         *view.me.borrow_mut() = Rc::downgrade(&view);
         view
     }
@@ -61,6 +63,11 @@ impl BoardView {
         // the file in a tooltip; under the name, how the lanes stand (draw)
         self.title.set_tooltip_text(Some(&file.to_string_lossy().replacen(&*glib::home_dir().to_string_lossy(), "~", 1)));
         self.place.set_label("");
+        // Another project's lanes don't stay up under this one's name while it loads.
+        while let Some(child) = self.lanes.first_child() {
+            self.lanes.remove(&child);
+        }
+        self.drawn.take();
         // Changed by anyone (an agent, Obsidian): drawn again once the write is done.
         let monitor = gio::File::for_path(&file).monitor_file(gio::FileMonitorFlags::WATCH_MOVES, None::<&gio::Cancellable>).ok();
         if let Some(monitor) = &monitor {
@@ -111,14 +118,28 @@ impl BoardView {
     }
 
     fn draw(self: &Rc<Self>, board: &Value) {
+        if *self.drawn.borrow() == *board {
+            return;
+        }
+        *self.drawn.borrow_mut() = board.clone();
+        // Each lane scrolled where it was, by name.
+        let mut scrolled = std::collections::HashMap::new();
         while let Some(child) = self.lanes.first_child() {
+            let name = child.widget_name().to_string();
+            if let Some(scroller) = child.last_child().and_downcast::<gtk::ScrolledWindow>() {
+                scrolled.insert(name, scroller.vadjustment().value());
+            }
             self.lanes.remove(&child);
         }
         let lanes: Vec<String> = board["lanes"].as_array().into_iter().flatten().filter_map(|l| l["title"].as_str().map(str::to_owned)).collect();
         let summary: Vec<String> = board["lanes"].as_array().into_iter().flatten().map(|l| format!("{} {}", l["cards"].as_array().map_or(0, Vec::len), l["title"].as_str().unwrap_or_default().to_lowercase())).collect();
         self.place.set_label(&summary.join(" · "));
         for lane in board["lanes"].as_array().into_iter().flatten() {
-            self.lanes.append(&self.lane(lane, &lanes));
+            let column = self.lane(lane, &lanes);
+            if let Some(&at) = scrolled.get(column.widget_name().as_str()).filter(|at| **at > 0.0) {
+                keep_scrolled(&column, at);
+            }
+            self.lanes.append(&column);
         }
     }
 
@@ -127,6 +148,7 @@ impl BoardView {
         let cards = lane["cards"].as_array().cloned().unwrap_or_default();
         let column = gtk::Box::new(gtk::Orientation::Vertical, 8);
         column.add_css_class("board-lane");
+        column.set_widget_name(&name);
         // its own colour by name (a dot beside the name: never colour alone)
         column.add_css_class(&format!("lane-{}", name.to_lowercase().replace(' ', "-")));
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -354,4 +376,21 @@ fn fields(title: &str, body: &str) -> (gtk::Entry, gtk::TextView, gtk::Box) {
 fn text_of(view: &gtk::TextView) -> String {
     let buffer = view.buffer();
     buffer.text(&buffer.start_iter(), &buffer.end_iter(), false).to_string()
+}
+
+/// `column`'s lane scrolled to `at` once its cards are laid out far enough (until then its
+/// scroller can't go there).
+fn keep_scrolled(column: &gtk::Box, at: f64) {
+    let Some(scroller) = column.last_child().and_downcast::<gtk::ScrolledWindow>() else { return };
+    let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+    let once = handler.clone();
+    let id = scroller.vadjustment().connect_changed(move |adjustment| {
+        if adjustment.upper() - adjustment.page_size() >= at {
+            adjustment.set_value(at);
+            if let Some(id) = once.borrow_mut().take() {
+                adjustment.disconnect(id);
+            }
+        }
+    });
+    *handler.borrow_mut() = Some(id);
 }

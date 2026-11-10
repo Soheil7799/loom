@@ -13,7 +13,7 @@ use serde_json::{Value, json};
 use crate::provider::Conn;
 
 /// A conversation Claude Code kept.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Past {
     pub session_id: String,
     pub cwd: PathBuf,

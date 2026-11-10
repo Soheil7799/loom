@@ -736,3 +736,7 @@ box.notice.choice { background: alpha(@window_fg_color, 0.08); box-shadow: 0 1px
 .agents row.agent-row.in-card:selected > box .dot.idle { background: alpha(@window_bg_color, 0.55); }
 .agents row.agent-row.in-card:selected > box .dot.suspended { box-shadow: inset 0 0 0 1.5px alpha(@window_bg_color, 0.65); }
 .project-side .project-column { padding: 6px 12px; }
+
+/* Pressed: loom's own button and row fills replace the theme's, its pressed look with them;
+   a press darkens whatever fill it has (a fill, never a stroke). */
+button:active, menubutton > button:active, row.activatable:active { filter: brightness(0.82); }

@@ -91,6 +91,7 @@ pub struct App {
     /// "<agent> needs you", over the window while that agent is out of view.
     toast: gtk::Revealer,
     toast_label: gtk::Label,
+    toast_go: gtk::Button,
     /// The toast is a question (it goes once answered).
     toast_question: Cell<bool>,
     toast_timeout: RefCell<Option<glib::SourceId>>,
@@ -109,6 +110,9 @@ pub struct App {
     sidebar_feeds: RefCell<Option<(Feed, Feed)>>,
     /// Something new waits in them: drawn once the window is idle.
     sidebar_due: Cell<bool>,
+    /// What the sidebar's rows were last built from: `agents` changing only in what they
+    /// don't show (a file edited, the options) doesn't rebuild them under the pointer.
+    sidebar_drawn: RefCell<Option<(Vec<SideAgent>, Vec<SideProject>)>>,
     /// Each project's first and last sidebar rows (where a drop line shows).
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// Open projects' cards (name, first and last agent row): their names drawn up the left.
@@ -558,6 +562,7 @@ impl App {
             scale_css,
             toast,
             toast_label,
+            toast_go: toast_go.clone(),
             toast_question: Cell::new(false),
             toast_timeout: RefCell::default(),
             overview_due: Cell::new(false),
@@ -571,6 +576,7 @@ impl App {
             running_rows: RefCell::default(),
             sidebar_feeds: RefCell::default(),
             sidebar_due: Cell::new(false),
+            sidebar_drawn: RefCell::default(),
             remote_agents: RefCell::default(),
             remote_focused: Cell::new(None),
             remote_status: RefCell::default(),
@@ -588,6 +594,15 @@ impl App {
         });
         this.follow_sidebar();
         this.wire_toast(&toast_go, &toast_close);
+        let weak = Rc::downgrade(&this);
+        crate::conn::on_refused(move |text| {
+            if let Some(app) = weak.upgrade()
+                && !app.toast_waits()
+            {
+                app.toast_remote.set(None);
+                app.reveal_toast(text, false);
+            }
+        });
         this.wire_hub();
         let weak = Rc::downgrade(&this);
         *this.files.on_request.borrow_mut() = Some(Rc::new(move |id, done| {
@@ -1463,7 +1478,7 @@ impl App {
             self.hide_toast();
         }
         // its header from the `agents` item, and the row marked
-        self.draw_sidebar();
+        self.refresh_sidebar();
         if let Some(project) = agent.project() {
             self.show_tray(&project, &self.tray_for(&project));
         }
@@ -1499,7 +1514,7 @@ impl App {
         self.pinned_box.set_visible(true);
         self.pinned_remote.set(Some(id));
         // its header from `agents`
-        self.draw_sidebar();
+        self.refresh_sidebar();
         self.tell_looking();
     }
 
@@ -1527,7 +1542,7 @@ impl App {
     fn tell_looking(&self) {
         let beside = self.pinned_remote.get().filter(|_| self.window.is_active());
         let agents: Vec<String> = self.remote_looked_at().into_iter().chain(beside).map(|id| id.to_string()).collect();
-        crate::conn::command("window", "set_looking", json!({ "active": self.window.is_active(), "agents": agents }));
+        crate::conn::command_result("window", "set_looking", json!({ "active": self.window.is_active(), "agents": agents }), |_| {});
     }
 
     /// The window as loomd's client: what it shows told to loomd, and loomd's `asks` acted on.
@@ -2809,6 +2824,8 @@ impl App {
 
     fn reveal_toast(self: &Rc<Self>, text: &str, question: bool) {
         self.toast_label.set_label(text);
+        // "Show" only where there is an agent to show
+        self.toast_go.set_visible(self.toast_remote.get().is_some());
         self.toast_question.set(question);
         self.toast.set_reveal_child(true);
         if let Some(old) = self.toast_timeout.take() {
@@ -2879,7 +2896,7 @@ impl App {
                 crate::log::write("loomd", &err);
             }
         } else {
-            crate::conn::command("window", "set_looking", json!({ "active": false, "agents": [] }));
+            crate::conn::command_result("window", "set_looking", json!({ "active": false, "agents": [] }), |_| {});
         }
         glib::Propagation::Proceed
     }
@@ -3098,6 +3115,7 @@ impl App {
 
     /// The sidebar drawn now (from what loomd last sent).
     fn refresh_sidebar(self: &Rc<Self>) {
+        self.sidebar_drawn.take();
         self.draw_sidebar();
     }
 
@@ -3158,6 +3176,11 @@ impl App {
                 label.set_label(&text);
             }
         }
+        let built_from = Some((agents.clone(), projects.clone()));
+        if *self.sidebar_drawn.borrow() == built_from {
+            return;
+        }
+        *self.sidebar_drawn.borrow_mut() = built_from;
         // Rebuilt in place: the list stays scrolled where it was (the projects where they were,
         // whatever the Running list above them gained or lost).
         let scroll = self.list.parent().and_then(|v| v.parent()).and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment());

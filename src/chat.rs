@@ -2554,8 +2554,9 @@ impl Chat {
         let row = self.images_row();
         for blob in images[drawn..].iter().filter_map(Value::as_str) {
             let row = row.clone();
-            crate::conn::command_then("chat", "blob", serde_json::json!({ "id": blob }), move |answer| {
-                if let Some(png) = answer.and_then(|a| loom_core::bridges::host::decode(a["data"].as_str()?)) {
+            // (a picture no longer kept: left out, quietly)
+            crate::conn::command_result("chat", "blob", serde_json::json!({ "id": blob }), move |answer| {
+                if let Some(png) = answer.ok().and_then(|a| loom_core::bridges::host::decode(a["data"].as_str()?)) {
                     add_image(&row, &glib::Bytes::from_owned(png));
                 }
             });

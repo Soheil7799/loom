@@ -898,6 +898,19 @@ impl Files {
         // The waiting bar shows only over the file it is about.
         let asked = self.request.borrow().as_ref().is_some_and(|(_, p)| p == path);
         self.request_bar.set_visible(asked);
+        // Past this a text file would take seconds to load and highlight on the window's
+        // thread: shown as another app's file instead, by its first bytes.
+        const BIG: u64 = 8 << 20;
+        if let Some(size) = std::fs::metadata(path).ok().map(|m| m.len()).filter(|len| *len > BIG) {
+            use std::io::Read;
+            let mut head = Vec::new();
+            let _ = std::fs::File::open(path).and_then(|f| f.take(4096).read_to_end(&mut head));
+            let shown = self.show_other(path, &head);
+            if shown && self.editor_stack.visible_child_name().as_deref() == Some("other") {
+                self.other_label.set_label(&format!("This file is {} MB: too big to open here.", size >> 20));
+            }
+            return shown;
+        }
         let text = match std::fs::read(path) {
             Ok(bytes) => match String::from_utf8(bytes) {
                 Ok(text) => text,
@@ -2343,20 +2356,35 @@ fn drop_into(into: impl Fn() -> Option<PathBuf> + 'static) -> gtk::DropTarget {
     target.connect_drop(move |_, value, _, _| {
         let (Ok(files), Some(dir)) = (value.get::<gdk::FileList>(), into()) else { return false };
         let root = TREE_ROOT.with(|r| r.borrow().clone());
-        for file in files.files() {
-            let Some(path) = file.path() else { continue };
-            // Onto itself, or into a folder inside itself: nothing to do.
-            if path.parent() == Some(dir.as_path()) || dir.starts_with(&path) {
-                continue;
+        let paths: Vec<PathBuf> = files.files().iter().filter_map(|f| f.path()).collect();
+        // Off the window's thread: a big folder copies without freezing it.
+        glib::spawn_future_local(async move {
+            let failed = gio::spawn_blocking(move || {
+                let mut failed = Vec::new();
+                for path in paths {
+                    // Onto itself, or into a folder inside itself: nothing to do.
+                    if path.parent() == Some(dir.as_path()) || dir.starts_with(&path) {
+                        continue;
+                    }
+                    let Some(name) = path.file_name() else { continue };
+                    let destination = free_name(&dir.join(name));
+                    let moved = !root.as_os_str().is_empty() && path.starts_with(&root);
+                    let result = if moved { std::fs::rename(&path, &destination) } else { copy_all(&path, &destination) };
+                    if let Err(err) = result {
+                        failed.push(format!("Could not {} {}: {err}", if moved { "move" } else { "copy" }, name.to_string_lossy()));
+                    }
+                }
+                failed
+            })
+            .await
+            .unwrap_or_else(|_| vec!["The copy stopped halfway.".to_owned()]);
+            for text in &failed {
+                crate::log::write("files", text);
             }
-            let Some(name) = path.file_name() else { continue };
-            let destination = free_name(&dir.join(name));
-            let moved = !root.as_os_str().is_empty() && path.starts_with(&root);
-            let result = if moved { std::fs::rename(&path, &destination) } else { copy_all(&path, &destination) };
-            if let Err(err) = result {
-                crate::log::write("files", &format!("could not {} {} to {}: {err}", if moved { "move" } else { "copy" }, path.display(), destination.display()));
+            if let Some(first) = failed.first() {
+                crate::conn::tell(first);
             }
-        }
+        });
         true
     });
     target
