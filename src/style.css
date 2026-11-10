@@ -674,3 +674,39 @@ button.board-card.done .board-card-title { opacity: 0.6; font-weight: 400; }
 .side-title { font-size: 1.05em; font-weight: 600; text-transform: none; letter-spacing: 0; opacity: 0.9; padding: 18px 4px 8px 4px; }
 list.history row { padding: 8px 12px; }
 .project-side .history-note { padding: 0 12px; }
+
+/* No strokes (Soheil, 2026-11-10: "I hate this highlight you use everywhere"): emphasis is a
+   tinted or brighter fill, depth a soft shadow; never a coloured or hairline outline. Kept:
+   the keyboard focus ring, the lines inside tables and diffs, the rules between regions. */
+.msg-user, .composer, .composer:focus-within, .attachment, .msg-image, .prefs-group, .prefs-status,
+.cheat-card, .overview-card, .hunk, button.latest, .find-bar, .scratch, .prefix-hint, .toast,
+window.loom tooltip, tooltip.background, box.notice.error, box.notice.choice, .hub-card.ask,
+.permission-card { border: none; }
+.composer:focus-within { background: alpha(@window_fg_color, 0.08); }
+.composer.shell-mode, .composer.shell-mode:focus-within { border: none; background: alpha(@loom_shell, 0.12); }
+box.notice.error { background: alpha(@loom_err, 0.13); }
+.permission-card { background: alpha(@loom_wait, 0.14); }
+.overview-card.needs-you { border: none; background: alpha(@loom_wait, 0.12); }
+.prefs-status.ok { border: none; background: alpha(@loom_ok, 0.1); }
+.prefs-status.failed { border: none; background: alpha(@loom_err, 0.1); }
+.hub-card.ask { background: alpha(@accent_color, 0.1); }
+.hub-card button.chosen { border-color: transparent; background: alpha(@accent_color, 0.22); }
+.edit-request { border-bottom: none; }
+.since-looked { border-top: none; padding-top: 0; }
+.chat.active .header { border-bottom-color: @loom_line; }
+.segmented button.tab.news { box-shadow: none; background: alpha(@accent_color, 0.18); }
+list.hunk-lines row:hover { box-shadow: none; background: alpha(@accent_color, 0.1); }
+.composer-bar button.mode.bypass-mode { box-shadow: none; background: alpha(@loom_err, 0.16); }
+/* the sidebar's cards: the open agent a brighter pill, a waiting one a stronger tint */
+.agents row.agent-row.in-card:selected > box { box-shadow: 0 2px 8px @loom_shadow; background: alpha(@window_fg_color, 0.16); }
+.agents row.agent-row.in-card.state-blocked > box { box-shadow: 0 1px 2px @loom_shadow; background: alpha(@loom_wait, 0.26); }
+.agents row.agent-row.in-card.state-blocked:selected > box { background: alpha(@loom_wait, 0.34); }
+.agents row.agent-row.in-card.state-working:selected > box { background: alpha(@loom_run, 0.26); }
+.agents row.agent-row.in-card.state-done:selected > box { background: alpha(@loom_ok, 0.2); }
+/* the board: lanes and cards by fill alone */
+.board-lane, .board-lane.lane-doing { box-shadow: none; }
+.board-lane.lane-doing { background: alpha(@loom_run, 0.07); }
+button.board-card { box-shadow: 0 1px 3px @loom_shadow; }
+.lane-doing button.board-card { box-shadow: 0 1px 3px @loom_shadow; background: alpha(@loom_run, 0.14); }
+.board-empty { border: none; background: alpha(@window_fg_color, 0.03); }
+.project-side { border-left: none; background: alpha(black, 0.06); }

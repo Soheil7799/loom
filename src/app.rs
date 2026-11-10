@@ -671,14 +671,15 @@ impl App {
         // An open project's name (its card's left edge): clicked, its page; dragged, the project
         // moves (dropped on another, as a closed one's pill is).
         let press = gtk::GestureDrag::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
-        let held: Rc<RefCell<Option<(PathBuf, bool)>>> = Rc::default();
+        // (the project, whether it was pressed on its ▾, whether it is being dragged)
+        let held: Rc<RefCell<Option<(PathBuf, bool, bool)>>> = Rc::default();
         let (weak, grab) = (Rc::downgrade(self), held.clone());
         press.connect_drag_begin(move |gesture, x, y| {
             let Some(app) = weak.upgrade() else { return };
             match app.card_at(x, y) {
-                Some(path) => {
+                Some((path, fold)) => {
                     gesture.set_state(gtk::EventSequenceState::Claimed);
-                    *grab.borrow_mut() = Some((path, false));
+                    *grab.borrow_mut() = Some((path, fold, false));
                 }
                 None => {
                     gesture.set_state(gtk::EventSequenceState::Denied);
@@ -689,7 +690,7 @@ impl App {
         press.connect_drag_update(move |gesture, dx, dy| {
             let Some(app) = weak.upgrade() else { return };
             let mut held = moving.borrow_mut();
-            let Some((path, started)) = held.as_mut() else { return };
+            let Some((path, _, started)) = held.as_mut() else { return };
             if *started || dx.hypot(dy) < 8.0 {
                 return;
             }
@@ -706,8 +707,10 @@ impl App {
         let weak = Rc::downgrade(self);
         press.connect_drag_end(move |_, _, _| {
             // not moved: a click
-            if let (Some(app), Some((path, false))) = (weak.upgrade(), held.borrow_mut().take()) {
-                app.show_project(&path, &path);
+            match (weak.upgrade(), held.borrow_mut().take()) {
+                (Some(app), Some((path, true, false))) => app.toggle_collapsed(&path),
+                (Some(app), Some((path, false, false))) => app.show_project(&path, &path),
+                _ => {}
             }
         });
         self.list.add_controller(press);
@@ -722,7 +725,7 @@ impl App {
         crate::menu::on_right_click(&self.list, move |x, y| {
             let Some(app) = weak.upgrade() else { return };
             // an open project's name, up its card's edge: the project's menu
-            if let Some(path) = app.card_at(x, y) {
+            if let Some((path, _)) = app.card_at(x, y) {
                 return app.project_menu(&path, x, y);
             }
             match app.list.row_at_y(y as i32) {
@@ -3312,26 +3315,32 @@ impl App {
             let attrs = pango::AttrList::new();
             attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
             layout.set_attributes(Some(&attrs));
-            layout.set_width(((height - 12.0).max(10.0) * pango::SCALE as f32) as i32);
+            // the ▾ at the top folds it; the name centred in the rest
+            let room = height - CARD_FOLD;
+            layout.set_width(((room - 10.0).max(10.0) * pango::SCALE as f32) as i32);
             layout.set_ellipsize(pango::EllipsizeMode::End);
             let (_, text) = layout.pixel_extents();
-            // a faint tab the length of the card: where the name is, and where to click
-            snapshot.append_color(&gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.06), &gtk::graphene::Rect::new(top.x() + 4.0, top.y() + 10.0, CARD_STRIP - 6.0, height - 20.0));
+            let fold = self.list.create_pango_layout(Some("▾"));
+            let (_, mark) = fold.pixel_extents();
             snapshot.save();
-            // the strip: CARD_STRIP wide at the card's left, the name centred in it
-            snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - text.height() as f32) / 2.0, top.y() + (height + text.width() as f32) / 2.0));
+            snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - mark.width() as f32) / 2.0, top.y() + (CARD_FOLD - mark.height() as f32) / 2.0 + 4.0));
+            snapshot.append_layout(&fold, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.55));
+            snapshot.restore();
+            snapshot.save();
+            snapshot.translate(&Point::new(top.x() + 2.0 + (CARD_STRIP - text.height() as f32) / 2.0, top.y() + CARD_FOLD + (room + text.width() as f32) / 2.0));
             snapshot.rotate(-90.0);
-            snapshot.append_layout(&layout, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.9));
+            snapshot.append_layout(&layout, &gdk::RGBA::new(color.red(), color.green(), color.blue(), 0.85));
             snapshot.restore();
         }
     }
 
-    /// The open project whose card's name strip is at (x, y) in the list, if one is.
-    fn card_at(&self, x: f64, y: f64) -> Option<PathBuf> {
+    /// The open project whose card's name strip is at (x, y) in the list, if one is, and
+    /// whether (x, y) is on its ▾ (which folds it).
+    fn card_at(&self, x: f64, y: f64) -> Option<(PathBuf, bool)> {
         self.cards.borrow().iter().find_map(|(path, _, first, last)| {
             let (top, bottom) = (first.compute_bounds(&self.list)?, last.compute_bounds(&self.list)?);
             let inside = x >= f64::from(top.x()) && x <= f64::from(top.x() + CARD_STRIP) && y >= f64::from(top.y()) && y <= f64::from(bottom.y() + bottom.height());
-            inside.then(|| path.clone())
+            inside.then(|| (path.clone(), y < f64::from(top.y() + CARD_FOLD)))
         })
     }
 
@@ -3783,8 +3792,10 @@ fn tip_above(widget: &impl IsA<gtk::Widget>) {
     widget.add_controller(click);
 }
 
-/// How wide an open project's name strip is, at its card's left.
+/// How wide an open project's name strip is, at its card's left, and how tall its ▾ (at the
+/// top: folds it).
 const CARD_STRIP: f32 = 26.0;
+const CARD_FOLD: f32 = 22.0;
 
 fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
