@@ -305,6 +305,9 @@ pub struct Agent {
     subs: RefCell<Vec<Rc<Sub>>>,
     asked: Cell<u64>,
     files: RefCell<Vec<(PathBuf, Mark)>>,
+    /// The files this turn changed (for the board), and whether it used the board itself.
+    turn_files: RefCell<Vec<PathBuf>>,
+    board_used: Cell<bool>,
     /// Its folder's git changes when the turn began (read in the background): what a shell
     /// command wrote is what differs at the turn's end.
     turn_changes: RefCell<TurnChanges>,
@@ -420,6 +423,8 @@ impl Agent {
             subs: RefCell::default(),
             asked: Cell::new(0),
             files: RefCell::default(),
+            turn_files: RefCell::default(),
+            board_used: Cell::new(false),
             turn_changes: RefCell::new(TurnChanges::None),
             repos: RefCell::default(),
             repo_status: RefCell::default(),
@@ -739,6 +744,21 @@ impl Agent {
         self.files.borrow().clone()
     }
 
+    /// It used its project's board this turn (its own cards say what it did).
+    pub(crate) fn used_board(&self) {
+        self.board_used.set(true);
+    }
+
+    /// The turn's work on its project's board (if it has one), unless it kept the board itself.
+    fn log_on_board(&self) {
+        let files = self.turn_files.borrow().clone();
+        let Some(session) = self.session_id().filter(|_| !self.board_used.get() && !files.is_empty()) else { return };
+        let shown: Vec<String> = files.iter().map(|f| f.strip_prefix(&self.project).unwrap_or(f).to_string_lossy().into_owned()).collect();
+        if let Err(err) = crate::board::log_turn(&self.project, &session, &self.title(), &shown, &crate::board::now()) {
+            crate::log::debug!(format!("agent {}", self.id), "board: {err}");
+        }
+    }
+
     /// Its folder's git changes now, kept for the turn's end (off the main loop).
     fn read_turn_changes(self: &Rc<Self>) {
         let Some(repo) = crate::repos::repo_of(&self.cwd) else { return };
@@ -779,12 +799,14 @@ impl Agent {
             let mut added = false;
             for (path, mark) in new {
                 if !files.iter().any(|(p, _)| *p == path) {
+                    agent.turn_files.borrow_mut().push(path.clone());
                     files.insert(0, (path, mark));
                     added = true;
                 }
             }
             drop(files);
             if added {
+                agent.log_on_board();
                 agent.emit(Event::Files);
                 // its count in `agents` too (the edit tools' files arrive before the turn's end)
                 agent.emit(Event::Changed);
@@ -1324,6 +1346,7 @@ impl Agent {
             self.view.turn_done(started.elapsed().as_secs());
             self.last_turn.set(Instant::now());
             self.note_shell_files();
+            self.log_on_board();
             self.emit(Event::TurnEnded);
             self.done_owed.set(true);
             self.settle_done(true);
@@ -1885,6 +1908,8 @@ impl Agent {
         self.context.borrow_mut().clear();
         self.reply.borrow_mut().clear();
         self.wrote.set(false);
+        self.turn_files.borrow_mut().clear();
+        self.board_used.set(false);
         // Compacting before resting is loom's doing, not the conversation's.
         let quiet = self.resting.get();
         if !quiet {
@@ -1956,6 +1981,7 @@ impl Agent {
                 agent.last_took.set(started.elapsed().as_secs());
                 agent.mark_used();
                 agent.note_shell_files();
+                agent.log_on_board();
                 agent.emit(Event::TurnEnded);
                 // a queued message goes first: "done" is for the end of all of it
                 agent.done_owed.set(true);
@@ -3036,6 +3062,14 @@ impl Agent {
             Some("completed") => {
                 if let Some(writes) = self.planned.borrow_mut().remove(&id) {
                     let mut files = self.files.borrow_mut();
+                    if !self.replaying.get() {
+                        let mut turn = self.turn_files.borrow_mut();
+                        for (path, _) in &writes {
+                            if !turn.contains(path) {
+                                turn.push(path.clone());
+                            }
+                        }
+                    }
                     for (path, mark) in writes {
                         match files.iter().position(|(p, _)| *p == path) {
                             // Created stays created; the newest change goes on top.

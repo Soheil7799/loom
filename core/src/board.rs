@@ -24,6 +24,8 @@ pub struct Card {
     pub finished: String,
     /// Who filed it: "you", an agent's title, "review"…
     pub by: String,
+    /// The conversation whose work it logs (filled in by loom: `log_turn`).
+    pub session: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -224,6 +226,9 @@ fn meta(card: &Card) -> String {
     if !card.by.is_empty() {
         parts.push(format!("by {}", card.by));
     }
+    if !card.session.is_empty() {
+        parts.push(format!("session {}", card.session));
+    }
     format!("— {}", parts.join(" · "))
 }
 
@@ -241,10 +246,51 @@ fn read_meta(card: &mut Card, line: &str) -> bool {
             "started" => card.started = value,
             "done" => card.finished = value,
             "by" => card.by = value,
+            "session" => card.session = value,
             _ => {}
         }
     }
     true
+}
+
+/// A finished turn's work on `project`'s board, if it has one: conversation `session`'s card
+/// (made in Done the first time, titled as the agent) gets the files it changed; while it
+/// is in Done its date moves on. A board the user moved it off of keeps it where it is.
+pub fn log_turn(project: &Path, session: &str, title: &str, files: &[String], now: &str) -> std::io::Result<()> {
+    if files.is_empty() || !path(project).exists() {
+        return Ok(());
+    }
+    let mut board = Board::load(project);
+    let done = board.lanes.iter().position(|l| l.title.eq_ignore_ascii_case("done")).unwrap_or(board.lanes.len() - 1);
+    let found = board.lanes.iter().enumerate().find_map(|(l, lane)| lane.cards.iter().position(|c| c.session == session).map(|c| (l, c)));
+    let (lane, at) = match found {
+        Some(spot) => spot,
+        None => {
+            let id = board.cards().map(|c| c.id).max().unwrap_or(0) + 1;
+            let card = Card { id, title: one_line(title), done: true, created: now.to_owned(), started: now.to_owned(), by: one_line(title), session: session.to_owned(), ..Card::default() };
+            board.lanes[done].cards.push(card);
+            (done, board.lanes[done].cards.len() - 1)
+        }
+    };
+    let card = &mut board.lanes[lane].cards[at];
+    let mut lines: Vec<String> = card.body.lines().map(str::to_owned).collect();
+    let listed = lines.iter().position(|l| l.starts_with("Files: "));
+    let mut all: Vec<String> = listed.map(|i| lines[i]["Files: ".len()..].split(", ").map(str::to_owned).collect()).unwrap_or_default();
+    for file in files {
+        if !all.contains(file) {
+            all.push(file.clone());
+        }
+    }
+    let line = format!("Files: {}", all.join(", "));
+    match listed {
+        Some(i) => lines[i] = line,
+        None => lines.push(line),
+    }
+    card.body = lines.join("\n");
+    if lane == done {
+        card.finished = now.to_owned();
+    }
+    board.save(project)
 }
 
 /// A board command on `project`'s board (`by`: who it is filed as): `board` reads it,
@@ -313,6 +359,23 @@ mod tests {
         board.move_card(a, "Backlog", Some(b), "2026-11-10 16:00").unwrap_or_else(|e| panic!("{e}"));
         let card = board.cards().find(|c| c.id == a).unwrap();
         assert!(!card.done && card.finished.is_empty() && card.started == "2026-11-10 14:00");
+    }
+
+    #[test]
+    fn a_turns_work_logs_itself_once_per_conversation_where_there_is_a_board() {
+        let project = std::env::temp_dir().join(format!("loom-board-log-{}", std::process::id()));
+        std::fs::create_dir_all(&project).unwrap();
+        log_turn(&project, "s1", "Fix it", &["a.rs".into()], "2026-11-10 10:00").unwrap();
+        assert!(!path(&project).exists(), "no board, none made");
+        Board::default().save(&project).unwrap();
+        log_turn(&project, "s1", "Fix it", &["a.rs".into()], "2026-11-10 10:00").unwrap();
+        log_turn(&project, "s1", "Fix it", &["b.rs".into(), "a.rs".into()], "2026-11-10 11:00").unwrap();
+        let board = Board::load(&project);
+        let cards: Vec<&Card> = board.cards().collect();
+        assert_eq!(cards.len(), 1);
+        assert_eq!((cards[0].body.as_str(), cards[0].finished.as_str(), cards[0].done), ("Files: a.rs, b.rs", "2026-11-10 11:00", true));
+        assert_eq!(board.lanes[3].cards[0].session, "s1", "in Done, its conversation kept");
+        let _ = std::fs::remove_dir_all(&project);
     }
 
     #[test]

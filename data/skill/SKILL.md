@@ -78,6 +78,20 @@ decide about…", "what's my rent", "how did I fix the Wi-Fi last time"), look t
 their links), `loom_note_read(note)` reads one in full. Don't write to the vault yourself:
 loom keeps it.
 
+## The project's board
+
+Each project has a board (`.loom/board.md`, a kanban the user tracks work on: Backlog, To do,
+Doing, Done). `loom_board()` shows it, cards with their ids. Keep it true as you work:
+
+- Starting on a card's task: `loom_board_move(card, "Doing")`; finished:
+  `loom_board_note(card, "what was done, the commit")`, then `loom_board_move(card, "Done")`.
+- Something found and not fixed now (a review finding, a bug beside your task, a follow-up):
+  `loom_board_add(title, body)` files it in the Backlog, with where (file:line), why and the fix.
+- A task the user gives that is bigger than this turn: file it, then move it as you go.
+
+Don't edit `.loom/board.md` yourself: the tools date the cards. Work you finish with no card
+is logged on the board by loom anyway.
+
 ## Other agents
 
 `loom_agents()` lists the agents open in loom (title, project, status), e.g. to avoid editing

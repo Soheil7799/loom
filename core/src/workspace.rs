@@ -476,6 +476,9 @@ impl Workspace {
             // Its project's board (board.rs), filed as the agent.
             m @ ("board" | "board_add" | "board_move" | "board_edit") => (|| {
                 let agent = agent.as_ref().ok_or_else(gone)?;
+                if m != "board" {
+                    agent.used_board();
+                }
                 crate::board::act(&agent.project, m, params, &agent.title()).expect("a board command")
             })(),
             // The Notes vault, for the MCP server's note tools (null: Notes is off).
