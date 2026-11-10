@@ -97,9 +97,9 @@ pub trait View {
     fn tool(&self, update: &Value);
     fn tool_output(&self, id: &str, data: &str);
     fn tool_exit(&self, id: &str, code: Option<i64>);
-    fn tool_button(&self, id: &str, label: &str, tip: &str, action: Rc<dyn Fn()>);
-    fn open_tool(&self, id: &str);
-    fn go_to_tool(&self, id: &str);
+    fn tool_button(&self, _id: &str, _label: &str, _tip: &str, _action: Rc<dyn Fn()>) {}
+    fn open_tool(&self, _id: &str) {}
+    fn go_to_tool(&self, _id: &str) {}
     fn set_plan(&self, entries: &Value);
     fn turn_done(&self, seconds: u64);
     fn turn_undo(&self, undo: Rc<dyn Fn()>);
@@ -113,17 +113,17 @@ pub trait View {
     fn workflow(&self, tool_id: &str, launch: Launch, live: bool, alive: Box<dyn Fn() -> bool>, on_changed: Rc<dyn Fn()>, on_stop: Rc<dyn Fn()>) -> Rc<dyn Workflow>;
 
     // Around it: the header, the strip, the usage.
-    fn set_cwd(&self, cwd: &Path);
-    fn set_title(&self, title: &str, place: &str, full: &str);
-    fn set_state(&self, text: &str, class: &str);
-    fn set_mode(&self, mode: &str);
-    fn set_starting(&self, text: Option<&str>);
-    fn set_working(&self, since: Option<Instant>);
-    fn set_options(&self, options: &Value);
+    fn set_cwd(&self, _cwd: &Path) {}
+    fn set_title(&self, _title: &str, _place: &str, _full: &str) {}
+    fn set_state(&self, _text: &str, _class: &str) {}
+    fn set_mode(&self, _mode: &str) {}
+    fn set_starting(&self, _text: Option<&str>) {}
+    fn set_working(&self, _since: Option<Instant>) {}
+    fn set_options(&self, _options: &Value) {}
     fn set_commands(&self, commands: Vec<(String, String)>);
     fn set_suggestion(&self, text: Option<String>);
-    fn set_show_thinking(&self, show: bool);
-    fn set_workflow_note(&self, note: Option<String>);
+    fn set_show_thinking(&self, _show: bool) {}
+    fn set_workflow_note(&self, _note: Option<String>) {}
     fn set_usage(&self, used: u64, size: u64);
     fn set_spend(&self, cost: Option<String>, limit: Option<(String, String)>);
     fn set_limits(&self, limits: Value);
@@ -137,8 +137,8 @@ pub trait View {
     // The input.
     fn draft(&self) -> String;
     fn set_draft(&self, text: &str);
-    fn focus_input(&self);
-    fn show_queued(&self, messages: &[String]);
+    fn focus_input(&self) {}
+    fn show_queued(&self, _messages: &[String]) {}
     /// A message taken back from the queue, into the input.
     fn unqueue(&self, text: &str, images: Vec<Png>);
     fn restore_unsent(&self, messages: Vec<(String, Vec<Png>)>);
@@ -147,9 +147,9 @@ pub trait View {
     /// A view of subagent `id`'s conversation (read only).
     fn sub_view(&self, id: &str) -> Rc<dyn View>;
     /// `view` shown in place of the conversation.
-    fn show_aside(&self, view: &Rc<dyn View>, title: &str);
-    fn show_main(&self);
-    fn open_uri(&self, uri: &str);
+    fn show_aside(&self, _view: &Rc<dyn View>, _title: &str) {}
+    fn show_main(&self) {}
+    fn open_uri(&self, _uri: &str) {}
     /// Job `id` (of the agent's project) shown.
     fn show_job(&self, id: Id);
 }

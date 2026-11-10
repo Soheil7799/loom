@@ -20,7 +20,6 @@ use crate::rt::Timer;
 use crate::state::Saved;
 
 pub mod commands;
-pub mod headless;
 pub mod form;
 pub mod transcript;
 pub mod view;
@@ -378,13 +377,13 @@ pub fn close_resources(id: u32) {
 
 impl Agent {
     /// Agent `id` from `saved`, in `project` (see repos::project_of).
-    pub fn new(id: u32, saved: Saved, project: PathBuf, jobs: Jobs, view: Rc<dyn View>) -> Rc<Agent> {
+    pub fn new(id: u32, saved: Saved, project: PathBuf, jobs: Jobs) -> Rc<Agent> {
         let draft = saved.draft.clone();
         // Saved before loom kept it: when its conversation was last written.
         let used = if saved.used > 0 { saved.used } else { saved.session_id.as_deref().and_then(crate::state::session_written).unwrap_or(0) };
         // A conversation to come: its view will hold it whole.
         let new_conversation = saved.session_id.is_none();
-        let recorded = Rc::new(transcript::Recorded::new(view));
+        let recorded = Rc::new(transcript::Recorded::new());
         recorded.publish(id);
         let agent = Rc::new(Agent {
             id,

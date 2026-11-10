@@ -9,7 +9,6 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::agent::view::View;
 use crate::agent::{Agent, Event, Status};
 use crate::jobs::Jobs;
 use crate::schedule::{self, Schedule};
@@ -19,7 +18,7 @@ use crate::state::{self, Layout, Project, Saved};
 /// What the workspace needs of the UI.
 pub trait Host {
     /// A new agent's view, and its project's jobs.
-    fn agent_parts(&self, project: &Path) -> (Jobs, Rc<dyn View>);
+    fn agent_jobs(&self, project: &Path) -> Jobs;
     /// A new agent, to place in the UI.
     fn agent_added(&self, agent: &Rc<Agent>);
     /// Something happened to an agent.
@@ -214,8 +213,8 @@ impl Workspace {
         let project = crate::repos::project_of(&saved.cwd);
         self.ensure_project(&project);
         let host = self.host().expect("a workspace with a UI");
-        let (jobs, view) = host.agent_parts(&project);
-        let agent = Agent::new(id, saved, project, jobs, view);
+        let jobs = host.agent_jobs(&project);
+        let agent = Agent::new(id, saved, project, jobs);
         agent.view.set_show_thinking(settings::get().show_thinking);
         let weak = Rc::downgrade(&host);
         let ws = self.me.clone();

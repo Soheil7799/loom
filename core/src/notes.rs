@@ -47,6 +47,21 @@ pub struct Hit {
     pub backlinks: Vec<String>,
 }
 
+/// loomd's one index of the vault, shared by Scribe and a paired device's browsing.
+static SHARED: std::sync::Mutex<Option<Index>> = std::sync::Mutex::new(None);
+
+/// Uses loomd's index of the vault at `root`, refreshed first. The lock is held only for
+/// `use_it`: never call a model inside it.
+pub fn shared<T>(root: &Path, use_it: impl FnOnce(&Index) -> T) -> T {
+    let mut held = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_ref().is_none_or(|index| index.root() != root) {
+        *held = Some(Index::new(root));
+    }
+    let index = held.as_mut().expect("set above");
+    index.refresh();
+    use_it(index)
+}
+
 impl Index {
     pub fn new(root: &Path) -> Index {
         Index { root: root.to_owned(), notes: HashMap::new(), names: HashMap::new(), links: HashMap::new(), backlinks: HashMap::new() }

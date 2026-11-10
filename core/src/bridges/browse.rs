@@ -5,28 +5,12 @@
 //! them off the UI's thread.
 
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
 
-use crate::notes::Index;
 
 pub const OUTSIDE: &str = "That is not in the vault.";
-
-/// The vault's index, kept between requests and refreshed from the files' times (as the MCP
-/// server keeps its own).
-static INDEX: Mutex<Option<Index>> = Mutex::new(None);
-
-fn with_index<T>(root: &Path, use_it: impl FnOnce(&Index) -> T) -> T {
-    let mut held = INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    let index = match held.take() {
-        Some(index) if index.root() == root => held.insert(index),
-        _ => held.insert(Index::new(root)),
-    };
-    index.refresh();
-    use_it(index)
-}
 
 /// Where `relative` is in the vault at `root`: checked to be in it, not hidden, and there.
 fn place(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -121,7 +105,7 @@ pub fn read(root: &Path, path: &str) -> Result<Value, String> {
         return Ok(read);
     }
     let links = crate::notes::wikilinks(read["text"].as_str().unwrap_or(""));
-    with_index(&root, |index| {
+    crate::notes::shared(&root, |index| {
         read["title"] = json!(index.title(&at).unwrap_or_else(|| stem(&file)));
         read["tags"] = json!(index.tags(&at));
         read["links"] = links.iter().map(|target| json!({ "target": target, "path": index.resolve(target) })).collect();
@@ -140,7 +124,7 @@ pub fn read(root: &Path, path: &str) -> Result<Value, String> {
 /// `notes_search {query, limit}`: notes with every word, names first, then the newest.
 pub fn search(root: &Path, query: &str, limit: usize) -> Result<Value, String> {
     let root = root.canonicalize().map_err(|_| "The vault folder is not there.".to_owned())?;
-    let found = with_index(&root, |index| {
+    let found = crate::notes::shared(&root, |index| {
         index.matching(query, limit).into_iter().map(|(path, title)| (index.modified(&path), path, title)).collect::<Vec<_>>()
     });
     let results: Vec<Value> = found

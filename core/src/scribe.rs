@@ -15,8 +15,6 @@ use serde_json::{Value, json};
 use crate::journal::Entry;
 use crate::topics::{Apply, Topic};
 
-/// The vault's index, kept between checks.
-static INDEX: std::sync::Mutex<Option<crate::notes::Index>> = std::sync::Mutex::new(None);
 
 /// An excerpt sent at once: about this many characters of conversation.
 /// The model and effort Scribe's calls use (Settings → Notes): set on the main thread, read
@@ -223,12 +221,6 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
         report.upto = entries.last().map_or(0, |e| e.end);
         return report;
     }
-    // One index, kept between checks (only notes that changed are read again).
-    let mut held = INDEX.lock().unwrap_or_else(|e| e.into_inner());
-    if held.as_ref().is_none_or(|index| index.root() != vault) {
-        *held = Some(crate::notes::Index::new(vault));
-    }
-    let Some(index) = held.as_mut() else { return report };
     for chunk in pieces(session, entries) {
         // A piece is done topic by topic: a check that stopped halfway (a call failed, the
         // day's limit) does the topics it had not done, and only those, the next time.
@@ -279,8 +271,7 @@ pub fn check(vault: &Path, session: &str, entries: &[Entry], calls_left: usize) 
                 report.failed = Some("Today's limit of note checks is reached (Settings → Notes).".to_owned());
                 return report;
             }
-            index.refresh();
-            let notes = candidates(vault, index, topic, &about);
+            let notes = crate::notes::shared(vault, |index| candidates(vault, index, topic, &about));
             let (proposals, questions) = match edit(topic, &notes, &excerpt) {
                 Ok(found) => found,
                 Err(why) => {
@@ -340,9 +331,7 @@ pub fn answer(vault: &Path, question: &Question, answer: &str) -> Report {
         report.failed = Some(format!("There is no topic {} any more.", question.topic));
         return report;
     };
-    let mut index = crate::notes::Index::new(vault);
-    index.refresh();
-    let notes = candidates(vault, &index, &topic, &question.question);
+    let notes = crate::notes::shared(vault, |index| candidates(vault, index, &topic, &question.question));
     let excerpt = format!("{}\n\nUSER (answering the notes keeper's question \"{}\"): {answer}", question.excerpt, question.question);
     match edit(&topic, &notes, &excerpt) {
         Ok((proposals, _)) => {

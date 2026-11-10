@@ -136,7 +136,7 @@ impl Daemon {
 }
 
 impl Host for Daemon {
-    fn agent_parts(&self, project: &Path) -> (Jobs, Rc<dyn loom_core::agent::view::View>) {
+    fn agent_jobs(&self, project: &Path) -> Jobs {
         let jobs = self
             .jobs
             .borrow_mut()
@@ -148,7 +148,7 @@ impl Host for Daemon {
                 jobs
             })
             .clone();
-        (jobs, loom_core::agent::headless::Headless::new())
+        jobs
     }
 
     fn agent_added(&self, agent: &Rc<Agent>) {

@@ -112,7 +112,7 @@ impl Notes {
             jobs
         }).clone();
         let project = loom_core::repos::project_of(&vault);
-        let agent = Agent::new(id, saved, project, jobs, loom_core::agent::headless::Headless::new());
+        let agent = Agent::new(id, saved, project, jobs);
         let before = prepare(&agent, &vault, scope.as_ref());
         agent.read_back_when_followed();
         let me = self.me.clone();
