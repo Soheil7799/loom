@@ -1451,7 +1451,11 @@ impl Files {
             }
             if let Ok(more) = found {
                 files.graph_more.set(more.len() == GRAPH_PAGE);
-                files.graph_data.borrow_mut().extend(more);
+                // a commit made since the last page shifted the list: what is shown isn't again
+                let mut data = files.graph_data.borrow_mut();
+                let seen: std::collections::HashSet<String> = data.iter().map(|c| c.hash.clone()).collect();
+                data.extend(more.into_iter().filter(|c| !seen.contains(&c.hash)));
+                drop(data);
                 files.show_graph();
             }
         });

@@ -31,7 +31,9 @@
     try {
       const got = (await command("git_log", { repo, limit: PAGE, skip: reset ? 0 : commits.length, all: true })).commits as Commit[];
       if (mine !== asked) return;
-      commits = reset ? got : [...commits, ...got];
+      // a commit made since the last page shifted the list: what is shown already isn't again
+      const seen = new Set(reset ? [] : commits.map((c) => c.hash));
+      commits = reset ? got : [...commits, ...got.filter((c) => !c.hash || !seen.has(c.hash))];
       more = got.length === PAGE;
       problem = "";
     } catch (e) { if (mine === asked) problem = (e as Error).message; }

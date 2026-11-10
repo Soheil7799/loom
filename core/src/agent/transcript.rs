@@ -136,7 +136,6 @@ impl Transcript {
         self.meta[i].id.clone()
     }
 
-    /// Question `id` settled: answered (`answer` "→ …") or dropped (any other words).
     /// The conversation as Markdown: what was said, by whom (tools and thoughts left out).
     pub fn markdown(&self) -> String {
         let mut out = String::new();
@@ -159,6 +158,7 @@ impl Transcript {
         self.entries.iter().rev().find(|(_, e)| e["kind"] == "agent").and_then(|(_, e)| e["text"].as_str())
     }
 
+    /// Question `id` settled: answered (`answer` "→ …") or dropped (any other words).
     fn settled(&mut self, id: &str, answer: &str) {
         let Some(i) = self.meta.iter().position(|m| m.id == id) else { return };
         self.meta[i].status = if answer.starts_with('→') { "done" } else { "cancelled" };

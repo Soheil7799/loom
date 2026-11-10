@@ -12,6 +12,7 @@
 //! - `toast:<text>`: the in-window notice, about the focused agent
 //! - `snapchat:<file.png>`: the focused chat's whole message list, scrolled or not
 //! - `snap:<file.png>`: save a picture of the window (works on an unseen workspace)
+//! - `snapnode:<file.node>`: its render nodes, for `gtk4-rendernode-tool benchmark`
 //! - `snappop:<prefix>`: pictures of the open popovers
 //! - `snapall:<prefix>`: pictures of the other windows (settings…), <prefix>-1.png…
 //! - `scratch`, `files`, `switcher`, `inbox`, `help`, `peek`: what their keys do
@@ -325,6 +326,14 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         "scrollinfo" => eprintln!("SCROLL {}", app.chat_in_view().ok_or("no agent")?.scroll_info()),
         "toast" => app.show_remote_toast(app.remote_view().ok_or("no agent")?.id, argument, false),
         "snap" => snapshot(app.window.upcast_ref(), argument)?,
+        // The window's render nodes, serialized (gtk4-rendernode-tool benchmark times them).
+        "snapnode" => {
+            let content = lay_out(app.window.upcast_ref())?;
+            let snap = gtk::Snapshot::new();
+            app.window.snapshot_child(&content, &snap);
+            let node = snap.to_node().ok_or("nothing was drawn")?;
+            std::fs::write(argument, node.serialize()).map_err(|e| e.to_string())?;
+        }
         "snapchat" => {
             let list = app.chat_in_view().ok_or("no agent")?.messages();
             lay_out(app.window.upcast_ref())?;

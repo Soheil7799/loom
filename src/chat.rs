@@ -982,6 +982,35 @@ impl Chat {
     }
 
     /// To the bottom, and following it again.
+    /// Everything drawn of the conversation gone (its entries are to come again, maybe under
+    /// the same ids for other things): the list emptied, and what it was kept by.
+    pub fn start_over(&self) {
+        let mut child = self.list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if widget != *self.earlier.upcast_ref::<gtk::Widget>() {
+                self.list.remove(&widget);
+            }
+        }
+        self.earlier.set_visible(false);
+        self.earlier_draw.take();
+        *self.last.borrow_mut() = Last::None;
+        self.group.take();
+        self.turn_start.take();
+        self.turn_steps.set(0);
+        self.turn_result.take();
+        self.tools.borrow_mut().clear();
+        self.entries.borrow_mut().clear();
+        self.drawn.borrow_mut().clear();
+        self.cards.borrow_mut().clear();
+        self.entry_images.borrow_mut().clear();
+        self.entry_forms.borrow_mut().clear();
+        self.messages.borrow_mut().clear();
+        self.thoughts.borrow_mut().clear();
+        self.seen.take();
+        self.since.take();
+    }
+
     /// `count` earlier messages not drawn yet: offered at the top, drawn by `draw` when the
     /// button is pressed or the reader scrolls to the top.
     pub fn offer_earlier(self: &Rc<Self>, count: usize, draw: Rc<dyn Fn()>) {

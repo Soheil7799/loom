@@ -101,6 +101,11 @@ impl Notes {
         let id = self.next.get();
         self.next.set(id + 1);
         let saved = saved_for(&vault, session, scope.as_ref());
+        // made for the vault now: another chosen in Settings since gets jobs of its own
+        // (their commands run in it)
+        if self.jobs.borrow().as_ref().is_some_and(|jobs| jobs.cwd() != vault) {
+            self.jobs.borrow_mut().take();
+        }
         let jobs = self.jobs.borrow_mut().get_or_insert_with(|| {
             let (jobs, events) = Jobs::new(vault.clone());
             drop(loom_core::jobs_api::published(&jobs, events));

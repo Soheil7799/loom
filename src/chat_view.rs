@@ -82,6 +82,12 @@ impl Follow {
                         }
                     }
                 }
+                // Forget what was drawn: a fresh snapshot follows (a /clear, a conversation
+                // read back again, loomd started again with its entries numbered anew).
+                Body::Resync { .. } if matches!(self.of, Of::Conversation) => {
+                    self.held.borrow_mut().clear();
+                    chat.start_over();
+                }
                 _ => {}
             }
         }
