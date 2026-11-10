@@ -174,7 +174,7 @@ pub struct Chat {
     /// The plan's steps shown (else its one line).
     plan_open: Rc<Cell<bool>>,
     mcp_alert: gtk::Button,
-    tube: gtk::DrawingArea,
+    tube: crate::tube::Tube,
     /// Your message pinned over the top while its turn is read, and where its bubble is.
     pinned_ask: gtk::Button,
     pinned_at: Cell<f64>,
@@ -425,7 +425,7 @@ impl Chat {
         clamp.set_layout_manager(Some(crate::column::ColumnLayout::new(800)));
         // The tube down the left, as the web page's: a bead at each of your messages, a mark
         // where a question waits or something failed, a ring at the end while Claude works.
-        let tube = gtk::DrawingArea::builder().can_target(false).build();
+        let tube = crate::tube::Tube::new();
         let with_tube = gtk::Overlay::builder().child(&clamp).build();
         with_tube.add_overlay(&tube);
         let scroller = gtk::ScrolledWindow::builder()
@@ -1068,9 +1068,9 @@ impl Chat {
 
     fn wire(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
-        self.tube.set_draw_func(move |area, cr, _, _| {
+        self.tube.set_draw(move |tube, snapshot| {
             if let Some(chat) = weak.upgrade() {
-                chat.draw_tube(area, cr);
+                chat.draw_tube(tube, snapshot);
             }
         });
         // Drawn again as the conversation grows, folds or opens.
@@ -1465,13 +1465,16 @@ impl Chat {
         }
     }
 
-    /// The tube: a line down the list's left margin from your first message, its marks.
-    fn draw_tube(&self, area: &gtk::DrawingArea, cr: &gtk::cairo::Context) {
-        let Some(origin) = self.list.compute_point(area, &gtk::graphene::Point::new(0.0, 0.0)) else { return };
+    /// The tube: a line down the list's left margin from your first message, its marks. In
+    /// render nodes (crate::tube): the GPU draws them, however tall the conversation.
+    fn draw_tube(&self, area: &crate::tube::Tube, snapshot: &gtk::Snapshot) {
+        use gtk::graphene::{Point, Rect};
+        let Some(origin) = self.list.compute_point(area, &Point::new(0.0, 0.0)) else { return };
         // left of the column, in the free margin (never off the edge in a narrow window)
-        let x = (f64::from(origin.x()) - 16.0).max(8.0);
-        let accent = (0.48, 0.64, 0.97);
-        let mut marks: Vec<(f64, &str)> = Vec::new();
+        let x = (origin.x() - 16.0).max(8.0);
+        let rgba = |r: f32, g: f32, b: f32, a: f32| gdk::RGBA::new(r, g, b, a);
+        let accent = rgba(0.48, 0.64, 0.97, 1.0);
+        let mut marks: Vec<(f32, &str)> = Vec::new();
         let mut end = None;
         let mut child = self.list.first_child();
         while let Some(widget) = child {
@@ -1479,9 +1482,9 @@ impl Chat {
             if !widget.is_visible() {
                 continue;
             }
-            let Some(at) = widget.compute_point(area, &gtk::graphene::Point::new(0.0, 0.0)) else { continue };
-            let y = f64::from(at.y());
-            end = Some(y + f64::from(widget.height()));
+            let Some(at) = widget.compute_point(area, &Point::new(0.0, 0.0)) else { continue };
+            let y = at.y();
+            end = Some(y + widget.height() as f32);
             if widget.has_css_class("msg-wrap-user") {
                 marks.push((y + 22.0, "turn"));
             } else if widget.has_css_class("permission-card") {
@@ -1491,40 +1494,30 @@ impl Chat {
             }
         }
         let (Some(first), Some(end)) = (marks.iter().find(|(_, k)| *k == "turn").map(|(y, _)| *y), end) else { return };
-        cr.set_line_width(3.0);
-        cr.set_source_rgba(accent.0, accent.1, accent.2, 0.28);
-        cr.move_to(x, first);
-        cr.line_to(x, end);
-        let _ = cr.stroke();
+        snapshot.append_color(&rgba(0.48, 0.64, 0.97, 0.28), &Rect::new(x - 1.5, first, 3.0, end - first));
+        let dot = |y: f32, r: f32, color: &gdk::RGBA| {
+            let rect = Rect::new(x - r, y - r, 2.0 * r, 2.0 * r);
+            snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(rect, r));
+            snapshot.append_color(color, &rect);
+            snapshot.pop();
+        };
         for (y, kind) in marks {
             match kind {
-                "turn" => {
-                    cr.set_source_rgb(accent.0, accent.1, accent.2);
-                    cr.arc(x, y, 5.0, 0.0, std::f64::consts::TAU);
-                    let _ = cr.fill();
-                }
+                "turn" => dot(y, 5.0, &accent),
                 "wait" => {
                     // a diamond: waits for you
-                    cr.set_source_rgb(0.88, 0.69, 0.41);
-                    cr.move_to(x, y - 6.0);
-                    cr.line_to(x + 6.0, y);
-                    cr.line_to(x, y + 6.0);
-                    cr.line_to(x - 6.0, y);
-                    cr.close_path();
-                    let _ = cr.fill();
+                    snapshot.save();
+                    snapshot.translate(&Point::new(x, y));
+                    snapshot.rotate(45.0);
+                    snapshot.append_color(&rgba(0.88, 0.69, 0.41, 1.0), &Rect::new(-4.25, -4.25, 8.5, 8.5));
+                    snapshot.restore();
                 }
-                _ => {
-                    cr.set_source_rgb(0.97, 0.46, 0.56);
-                    cr.arc(x, y, 4.5, 0.0, std::f64::consts::TAU);
-                    let _ = cr.fill();
-                }
+                _ => dot(y, 4.5, &rgba(0.97, 0.46, 0.56, 1.0)),
             }
         }
         if self.working_since.get().is_some() {
-            cr.set_source_rgb(accent.0, accent.1, accent.2);
-            cr.set_line_width(2.0);
-            cr.arc(x, end - 8.0, 5.0, 0.0, std::f64::consts::TAU);
-            let _ = cr.stroke();
+            let ring = gtk::gsk::RoundedRect::from_rect(Rect::new(x - 6.0, end - 14.0, 12.0, 12.0), 6.0);
+            snapshot.append_border(&ring, &[2.0; 4], &[accent; 4]);
         }
     }
 

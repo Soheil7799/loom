@@ -47,6 +47,7 @@ use loom_core::state;
 use loom_core::stt;
 mod term;
 mod theme;
+mod tube;
 mod workflow;
 
 use gtk::{gdk, gio, glib, prelude::*};
