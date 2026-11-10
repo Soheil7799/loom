@@ -1746,6 +1746,28 @@
       },
       "result": "{}"
     },
+    "background": {
+      "description": "Ctrl+B D: what its running turn runs goes on in the background (a notice says so if the agent program can't).",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      },
+      "result": "{}"
+    },
     "send_now": {
       "description": "Ctrl+Enter: its queued messages go into the running turn now (or as the next prompt).",
       "who": [

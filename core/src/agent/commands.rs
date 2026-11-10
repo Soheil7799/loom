@@ -233,6 +233,11 @@ fn handle() {
         Ok(json!({}))
     });
     // Ctrl+Enter: the queued messages go into the running turn now.
+    // Ctrl+B D: what runs in the turn goes on in the background (the agent can be talked to).
+    hub.handle("background", |who, params| {
+        target(who, params, "send work to the background")?.background_now();
+        Ok(json!({}))
+    });
     hub.handle("send_now", |who, params| {
         target(who, params, "send messages")?.send_waiting_now();
         Ok(json!({}))

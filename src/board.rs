@@ -139,7 +139,7 @@ impl BoardView {
         column.append(&head);
         let list = gtk::Box::new(gtk::Orientation::Vertical, 8);
         for card in &cards {
-            list.append(&self.card(card, all));
+            list.append(&self.card(card, all, &name));
         }
         let scroller = gtk::ScrolledWindow::builder().child(&list).vexpand(true).hscrollbar_policy(gtk::PolicyType::Never).build();
         column.append(&scroller);
@@ -160,7 +160,7 @@ impl BoardView {
         column
     }
 
-    fn card(self: &Rc<Self>, card: &Value, lanes: &[String]) -> gtk::Button {
+    fn card(self: &Rc<Self>, card: &Value, lanes: &[String], lane: &str) -> gtk::Button {
         let id = card["id"].as_u64().unwrap_or(0);
         let inner = gtk::Box::new(gtk::Orientation::Vertical, 4);
         let title = gtk::Label::builder().label(card["title"].as_str().unwrap_or_default()).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
@@ -201,6 +201,20 @@ impl BoardView {
         let shown = button.clone();
         source.connect_drag_begin(move |source, _| source.set_icon(Some(&gtk::WidgetPaintable::new(Some(&shown))), 12, 12));
         button.add_controller(source);
+        // Another card dropped on this one goes before it, in this lane.
+        let target = gtk::DropTarget::new(glib::Type::STRING, gdk::DragAction::MOVE);
+        let (weak, lane) = (Rc::downgrade(self), lane.to_owned());
+        target.connect_drop(move |_, value, _, _| {
+            let dropped = value.get::<String>().ok().and_then(|v| v.strip_prefix("loom-card:")?.parse::<u64>().ok());
+            match (weak.upgrade(), dropped) {
+                (Some(view), Some(dropped)) if dropped != id => {
+                    view.act("board_move", json!({ "card": dropped, "lane": lane, "before": id }));
+                    true
+                }
+                _ => false,
+            }
+        });
+        button.add_controller(target);
         button
     }
 

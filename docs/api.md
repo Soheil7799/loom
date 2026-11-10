@@ -580,6 +580,16 @@ Who: window, cli, bridge. Result: `{}`.
 | `agent` | string? | the agent's id |
 | `all` | boolean? | every agent (Mark all seen) |
 
+### `background`
+
+Ctrl+B D: what its running turn runs goes on in the background (a notice says so if the agent program can't).
+
+Who: window, cli, bridge. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+
 ### `send_now`
 
 Ctrl+Enter: its queued messages go into the running turn now (or as the next prompt).

@@ -668,17 +668,49 @@ impl App {
                 app.refresh_inbox();
             }
         });
-        // A click on an open project's name (its card's left edge): its page.
-        let click = gtk::GestureClick::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
-        let weak = Rc::downgrade(self);
-        click.connect_pressed(move |gesture, _, x, y| {
+        // An open project's name (its card's left edge): clicked, its page; dragged, the project
+        // moves (dropped on another, as a closed one's pill is).
+        let press = gtk::GestureDrag::builder().button(1).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let held: Rc<RefCell<Option<(PathBuf, bool)>>> = Rc::default();
+        let (weak, grab) = (Rc::downgrade(self), held.clone());
+        press.connect_drag_begin(move |gesture, x, y| {
             let Some(app) = weak.upgrade() else { return };
-            if let Some(path) = app.card_at(x, y) {
-                gesture.set_state(gtk::EventSequenceState::Claimed);
+            match app.card_at(x, y) {
+                Some(path) => {
+                    gesture.set_state(gtk::EventSequenceState::Claimed);
+                    *grab.borrow_mut() = Some((path, false));
+                }
+                None => {
+                    gesture.set_state(gtk::EventSequenceState::Denied);
+                }
+            }
+        });
+        let (weak, moving) = (Rc::downgrade(self), held.clone());
+        press.connect_drag_update(move |gesture, dx, dy| {
+            let Some(app) = weak.upgrade() else { return };
+            let mut held = moving.borrow_mut();
+            let Some((path, started)) = held.as_mut() else { return };
+            if *started || dx.hypot(dy) < 8.0 {
+                return;
+            }
+            *started = true;
+            let (Some(surface), Some(device)) = (app.list.native().and_then(|n| n.surface()), gesture.device()) else { return };
+            let content = gdk::ContentProvider::for_value(&format!("loom-project:{}", path.to_string_lossy()).to_value());
+            if let Some(drag) = gdk::Drag::begin(&surface, &device, &content, gdk::DragAction::MOVE, -dx, -dy) {
+                let first = app.cards.borrow().iter().find(|c| c.0 == *path).map(|c| c.2.clone());
+                if let Some(first) = first {
+                    gtk::DragIcon::set_from_paintable(&drag, &gtk::WidgetPaintable::new(Some(&first)), 12, 12);
+                }
+            }
+        });
+        let weak = Rc::downgrade(self);
+        press.connect_drag_end(move |_, _, _| {
+            // not moved: a click
+            if let (Some(app), Some((path, false))) = (weak.upgrade(), held.borrow_mut().take()) {
                 app.show_project(&path, &path);
             }
         });
-        self.list.add_controller(click);
+        self.list.add_controller(press);
         let weak = Rc::downgrade(self);
         self.card_names.set_draw(move |area, snapshot| {
             if let Some(app) = weak.upgrade() {
@@ -1016,6 +1048,9 @@ impl App {
             (false, gdk::Key::c) => self.new_agent(false),
             (true, gdk::Key::n | gdk::Key::c) => self.new_agent(true),
             (_, gdk::Key::x) => self.close_focused(),
+            (_, gdk::Key::d) => {
+                self.remote_do("background", json!({}));
+            }
             (_, gdk::Key::z) => self.zoom(),
             (_, gdk::Key::b) => self.sidebar.set_visible(!self.sidebar.is_visible()),
             (_, gdk::Key::f | gdk::Key::e) => self.toggle_panel(),
@@ -2515,6 +2550,17 @@ impl App {
 
     /// The overview's cards and scheduled prompts, wired to what they do.
     fn wire_overview(self: &Rc<Self>) {
+        // A card's right-click: its agent's menu, as in the sidebar. The cards are rebuilt as
+        // agents change: the menu hangs off the page.
+        let weak = Rc::downgrade(self);
+        *self.overview.on_menu.borrow_mut() = Some(Rc::new(move |(id, card, x, y): (u32, gtk::Widget, f64, f64)| {
+            let Some(app) = weak.upgrade() else { return };
+            let page = app.overview.root.clone();
+            let (x, y) = card.compute_point(&page, &gtk::graphene::Point::new(x as f32, y as f32)).map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())));
+            if let Some(menu) = app.remote_menu(id) {
+                menu.popup(&page, x, y);
+            }
+        }));
         // Scribe's line: the Notes tab, beside the agent last looked at.
         let weak = Rc::downgrade(self);
         *self.overview.on_scribe.borrow_mut() = Some(Rc::new(move |()| {
