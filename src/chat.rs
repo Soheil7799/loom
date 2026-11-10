@@ -167,6 +167,10 @@ pub struct Chat {
     /// The turn going on: your message that opened it, its tool calls so far, and Claude's
     /// last message in it (a finished turn folds to one line of it when the next one opens).
     turn_start: RefCell<Option<gtk::Widget>>,
+    /// The first child of `list`: a long conversation opens on its latest turns, this draws
+    /// the ones before (`offer_earlier`).
+    earlier: gtk::Button,
+    earlier_draw: RefCell<Option<Rc<dyn Fn()>>>,
     /// The plan's steps shown (else its one line).
     plan_open: Rc<Cell<bool>>,
     mcp_alert: gtk::Button,
@@ -260,6 +264,9 @@ struct Message {
     id: RefCell<Option<String>>,
     /// Its entry in the conversation, when drawn from entries (loomd's: rewound by it).
     entry: RefCell<Option<String>>,
+    /// An agent message's segments as drawn, one widget each in `body`: what is the same
+    /// next time is kept (a streaming reply redraws only its growing end).
+    shown: RefCell<Vec<Segment>>,
 }
 
 struct ToolCard {
@@ -409,6 +416,9 @@ impl Chat {
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 16);
         list.add_css_class("messages");
+        let earlier = gtk::Button::builder().visible(false).halign(gtk::Align::Center).build();
+        earlier.add_css_class("earlier");
+        list.append(&earlier);
         let clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
         clamp.append(&list);
         // About 75 characters a line: long lines are hard to follow back.
@@ -641,6 +651,8 @@ impl Chat {
             last: RefCell::new(Last::None),
             group: RefCell::default(),
             turn_start: RefCell::default(),
+            earlier,
+            earlier_draw: RefCell::default(),
             plan_open: Rc::default(),
             mcp_alert,
             tube,
@@ -970,6 +982,83 @@ impl Chat {
     }
 
     /// To the bottom, and following it again.
+    /// `count` earlier messages not drawn yet: offered at the top, drawn by `draw` when the
+    /// button is pressed or the reader scrolls to the top.
+    pub fn offer_earlier(self: &Rc<Self>, count: usize, draw: Rc<dyn Fn()>) {
+        self.earlier.set_label(&format!("{count} earlier messages"));
+        self.earlier.set_visible(true);
+        *self.earlier_draw.borrow_mut() = Some(draw);
+        if self.earlier.has_css_class("wired") {
+            return;
+        }
+        self.earlier.add_css_class("wired");
+        let weak = Rc::downgrade(self);
+        self.earlier.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.draw_earlier_now();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        self.scroller.vadjustment().connect_value_changed(move |adj| {
+            let Some(chat) = weak.upgrade() else { return };
+            // at the top of a chat that scrolls, not the first layout's 0
+            if adj.value() <= 0.0 && adj.upper() > adj.page_size() && !chat.stick.get() && chat.earlier.is_visible() {
+                chat.draw_earlier_now();
+            }
+        });
+    }
+
+    fn draw_earlier_now(&self) {
+        let Some(draw) = self.earlier_draw.take() else { return };
+        self.earlier.set_visible(false);
+        self.draw_earlier(|| draw());
+    }
+
+    /// What `draw` adds (older entries, appended as any) moved above what is drawn, the
+    /// reader's place kept; the latest turn's state is left as it was.
+    pub fn draw_earlier(&self, draw: impl FnOnce()) {
+        let marker = self.list.last_child();
+        let before = self.messages.borrow().len();
+        let last = self.last.replace(Last::None);
+        let group = self.group.take();
+        let turn = (self.turn_start.take(), self.turn_steps.replace(0), self.turn_result.take());
+        let adj = self.scroller.vadjustment();
+        let (upper, value) = (adj.upper(), adj.value());
+        draw();
+        *self.last.borrow_mut() = last;
+        *self.group.borrow_mut() = group;
+        *self.turn_start.borrow_mut() = turn.0;
+        self.turn_steps.set(turn.1);
+        *self.turn_result.borrow_mut() = turn.2;
+        let mut added = Vec::new();
+        let mut child = marker.and_then(|m| m.next_sibling());
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            added.push(widget);
+        }
+        let mut after: gtk::Widget = self.earlier.clone().upcast();
+        for widget in added {
+            self.list.reorder_child_after(&widget, Some(&after));
+            after = widget;
+        }
+        let mut messages = self.messages.borrow_mut();
+        let older = messages.split_off(before);
+        messages.splice(0..0, older);
+        // Where the reader was: as far from the end as before, once the new height is known
+        // (an idle callback can come before the layout).
+        let from_end = upper - value;
+        let handler: Rc<RefCell<Option<glib::SignalHandlerId>>> = Rc::default();
+        let held = handler.clone();
+        *handler.borrow_mut() = Some(adj.connect_changed(move |adj| {
+            if adj.upper() > upper {
+                adj.set_value(adj.upper() - from_end);
+                if let Some(id) = held.borrow_mut().take() {
+                    adj.disconnect(id);
+                }
+            }
+        }));
+    }
+
     pub fn scroll_to_latest(&self) {
         self.stick.set(true);
         let adj = self.scroller.vadjustment();
@@ -2580,7 +2669,7 @@ impl Chat {
         expander.add_css_class("summary");
         expander.set_child(Some(&body));
         self.list.append(&expander);
-        Rc::new(Message { kind: Kind::Agent, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() })
+        Rc::new(Message { kind: Kind::Agent, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default(), shown: RefCell::default() })
     }
 
     fn message(&self, kind: Kind) -> Rc<Message> {
@@ -2608,7 +2697,7 @@ impl Chat {
                 copy.set_tooltip_text(Some("Copy the message (Markdown)"));
                 wrap.add_overlay(&copy);
                 self.list.append(&wrap);
-                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() });
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default(), shown: RefCell::default() });
                 *self.turn_result.borrow_mut() = Some(message.clone());
                 message_menu(&wrap, &message, &self.input, vec![("Copy the whole message", copy.clone())]);
                 let weak = Rc::downgrade(&message);
@@ -2646,7 +2735,7 @@ impl Chat {
                 wrap.add_overlay(&actions);
                 self.list.append(&wrap);
                 *self.turn_start.borrow_mut() = Some(wrap.clone().upcast());
-                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() });
+                let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default(), shown: RefCell::default() });
                 message_menu(
                     &wrap,
                     &message,
@@ -2697,7 +2786,7 @@ impl Chat {
                 self.list.append(&expander);
             }
         }
-        Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default() })
+        Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default(), shown: RefCell::default() })
     }
 
     /// A block of its own in the conversation, after what is there (a workflow's card).
@@ -3522,12 +3611,12 @@ impl PermissionCard {
 
 impl Message {
     /// Re-renders while text streams in: every 60 ms for short text, less often as it grows
-    /// (each render parses the whole message), up to every 600 ms.
+    /// (each render parses the whole message; only what changed is drawn again), up to 200 ms.
     fn render_soon(self: &Rc<Self>) {
         if self.scheduled.replace(true) {
             return;
         }
-        let delay = (60 + self.text.borrow().len() as u64 / 40).min(600);
+        let delay = (60 + self.text.borrow().len() as u64 / 100).min(200);
         let message = self.clone();
         glib::timeout_add_local_once(Duration::from_millis(delay), move || {
             message.scheduled.set(false);
@@ -3536,47 +3625,67 @@ impl Message {
     }
 
     fn render(&self) {
+        let text = self.text.borrow();
+        if self.kind == Kind::Agent {
+            return self.render_agent(&text);
+        }
         while let Some(child) = self.body.first_child() {
             self.body.remove(&child);
         }
-        let text = self.text.borrow();
-        if self.kind != Kind::Agent {
-            // What people type, and thinking, are shown as written; `!command` runs a
-            // resumed conversation carries come back as their command lines.
-            let (commands, rest) = split_shell_runs(&text);
-            for command in commands {
-                let line = gtk::Label::builder().label(format!("! {command}")).xalign(0.0).wrap(true).build();
-                line.set_wrap_mode(pango::WrapMode::WordChar);
-                line.add_css_class("shell-line");
-                self.body.append(&line);
-            }
-            if rest.trim().is_empty() {
-                return;
-            }
-            // Thinking as written; what the user sent as Markdown (code boxes, lines, lists…),
-            // their line breaks kept.
-            if self.kind == Kind::User {
-                for segment in markdown::typed_segments(rest.trim()) {
-                    match segment {
-                        Segment::Text(markup) => self.body.append(&text_label(&markup)),
-                        Segment::Code { code, .. } => self.body.append(&code_label(&code)),
-                        Segment::Table(rows) => self.body.append(&table_view(&rows)),
-                        Segment::Rule => self.body.append(&rule_view()),
-                    }
-                }
-            } else {
-                self.body.append(&text_label(&glib::markup_escape_text(rest.trim())));
-            }
+        self.shown.borrow_mut().clear();
+        // What people type, and thinking, are shown as written; `!command` runs a
+        // resumed conversation carries come back as their command lines.
+        let (commands, rest) = split_shell_runs(&text);
+        for command in commands {
+            let line = gtk::Label::builder().label(format!("! {command}")).xalign(0.0).wrap(true).build();
+            line.set_wrap_mode(pango::WrapMode::WordChar);
+            line.add_css_class("shell-line");
+            self.body.append(&line);
+        }
+        if rest.trim().is_empty() {
             return;
         }
-        for segment in markdown::segments(&text) {
-            match segment {
-                Segment::Text(markup) => self.body.append(&text_label(&markup)),
-                Segment::Code { code, .. } => self.body.append(&code_label(&code)),
-                Segment::Table(rows) => self.body.append(&table_view(&rows)),
-                Segment::Rule => self.body.append(&rule_view()),
+        // Thinking as written; what the user sent as Markdown (code boxes, lines, lists…),
+        // their line breaks kept.
+        if self.kind == Kind::User {
+            for segment in markdown::typed_segments(rest.trim()) {
+                match segment {
+                    Segment::Text(markup) => self.body.append(&text_label(&markup)),
+                    Segment::Code { code, .. } => self.body.append(&code_label(&code)),
+                    Segment::Table(rows) => self.body.append(&table_view(&rows)),
+                    Segment::Rule => self.body.append(&rule_view()),
+                }
             }
+        } else {
+            self.body.append(&text_label(&glib::markup_escape_text(rest.trim())));
         }
+    }
+
+    /// An agent's message drawn from its Markdown: the segments that came out the same as last
+    /// time keep their widgets, the rest are drawn anew.
+    fn render_agent(&self, text: &str) {
+        let segments = markdown::segments(text);
+        let mut shown = self.shown.borrow_mut();
+        let mut children = Vec::new();
+        let mut child = self.body.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            children.push(widget);
+        }
+        // (something else in the body: all drawn again)
+        let keep = if children.len() == shown.len() { shown.iter().zip(&segments).take_while(|(a, b)| a == b).count() } else { 0 };
+        for widget in &children[keep..] {
+            self.body.remove(widget);
+        }
+        for segment in &segments[keep..] {
+            self.body.append(&match segment {
+                Segment::Text(markup) => text_label(markup).upcast::<gtk::Widget>(),
+                Segment::Code { code, .. } => code_label(code).upcast(),
+                Segment::Table(rows) => table_view(rows).upcast(),
+                Segment::Rule => rule_view().upcast(),
+            });
+        }
+        *shown = segments;
     }
 }
 

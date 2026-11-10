@@ -2069,9 +2069,10 @@ impl App {
             _ => {
                 let here = here.map(|(_, cwd)| cwd);
                 let dialog = gtk::FileDialog::builder().title("Open a project folder").modal(true).build();
-                if let Some(cwd) = here {
-                    dialog.set_initial_folder(Some(&gio::File::for_path(project_of(&cwd).parent().unwrap_or(&cwd))));
-                }
+                // Always a folder to start in: GTK's chooser otherwise opens on "Recent", reading
+                // the whole recent-files list first (seconds, with a long one).
+                let start = here.map(|cwd| project_of(&cwd).parent().unwrap_or(&cwd).to_owned()).unwrap_or_else(glib::home_dir);
+                dialog.set_initial_folder(Some(&gio::File::for_path(start)));
                 let weak = Rc::downgrade(self);
                 dialog.select_folder(Some(&self.window), None::<&gio::Cancellable>, move |result| {
                     if let (Some(app), Ok(folder)) = (weak.upgrade(), result)
