@@ -24,7 +24,7 @@
       { title: "Behaviour", rows: [
         { key: "sort_by_urgency", title: "Agents that need you first", detail: "One waiting for your answer moves to the top of its project until answered.", kind: "switch" },
         { key: "start_on_overview", title: "When loom starts", detail: "The overview shows every agent at a glance and resumes none until you open it.", kind: "select", options: [[true, "The overview"], [false, "The last agent"]] },
-        { key: "show_running", title: "Running agents above the projects", detail: "A list of the agents running now (each also stays in its project). Ctrl+1…9 go by it.", kind: "switch" },
+        { key: "show_running", title: "Running section open", detail: "In the window's sidebar, the agents running now, above the projects. Folded, its header still counts who needs you. Ctrl+1…9 go by it.", kind: "switch" },
         { key: "cycle_running", title: "Ctrl+Tab cycles running agents only", detail: "Suspended ones are skipped, so passing one doesn't wake it.", kind: "switch" },
         { key: "confirm_quit", title: "Confirm quitting while agents work", kind: "switch" },
         { key: "scratch_autohide", title: "Hide the scratch terminal when it loses focus", kind: "switch" },

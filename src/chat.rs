@@ -217,6 +217,8 @@ pub struct Chat {
     attachments: RefCell<Vec<glib::Bytes>>,
     attach_box: gtk::Box,
     pub on_cancel: Callback<()>,
+    /// The project's name in the header clicked: its page.
+    pub on_project: Callback<()>,
     pub on_cycle_mode: Callback<()>,
     /// A session setting picked: (its id, the value).
     pub on_option: Callback<(String, String)>,
@@ -334,16 +336,24 @@ impl Chat {
         names.set_hexpand(true);
         let title = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         title.add_css_class("title");
-        let place = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Middle).build();
-        place.add_css_class("place");
+        // A breadcrumb: the project (a button to its page), then the agent.
+        let place = gtk::Label::builder().xalign(0.0).max_width_chars(24).ellipsize(pango::EllipsizeMode::End).build();
+        let crumb = gtk::Button::builder().child(&place).valign(gtk::Align::Center).build();
+        crumb.add_css_class("flat");
+        crumb.add_css_class("crumb");
+        crumb.set_cursor_from_name(Some("pointer"));
+        let separator = gtk::Label::new(Some("›"));
+        separator.add_css_class("crumb-sep");
         let title_line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         dot.add_css_class("dot");
         dot.set_valign(gtk::Align::Center);
+        title_line.append(&crumb);
+        title_line.append(&separator);
         title_line.append(&dot);
         title_line.append(&title);
         names.append(&title_line);
-        names.append(&place);
+        names.set_valign(gtk::Align::Center);
         // The state as a pill right after the title, where the eye already is.
         let state = gtk::Label::builder().valign(gtk::Align::Center).visible(false).build();
         state.add_css_class("state-pill");
@@ -698,11 +708,18 @@ impl Chat {
             find_at: Cell::new(None),
             attach_box,
             on_cancel: RefCell::default(),
+            on_project: RefCell::default(),
             on_cycle_mode: RefCell::default(),
             on_option: RefCell::default(),
             on_answer: RefCell::default(),
         });
         chat.wire();
+        let weak = Rc::downgrade(&chat);
+        crumb.connect_clicked(move |_| {
+            if let Some(chat) = weak.upgrade() {
+                chat.call(&chat.on_project, ());
+            }
+        });
         // /compact sent on its own: what is being typed, and images attached, stay for the next
         // message. Only between turns (the button is not shown during one).
         let weak = Rc::downgrade(&chat);
@@ -2104,9 +2121,15 @@ impl Chat {
     /// `place` is shown; `full` (the whole path) is its tooltip.
     pub fn set_title(&self, title: &str, place: &str, full: &str) {
         self.title.set_label(title);
+        self.title.set_tooltip_text(Some(title));
         self.place.set_label(place);
-        self.place.set_tooltip_text(Some(full));
+        let page = self.on_project.borrow().is_some();
+        self.place.set_tooltip_text(Some(&if page { format!("{full}: its board and conversations") } else { full.to_owned() }));
+        if let Some(crumb) = self.place.parent() {
+            crumb.set_sensitive(page);
+        }
     }
+
 
     /// `text` beside the title, and the status dot (a css class: working, blocked…).
     pub fn set_state(&self, text: &str, class: &str) {

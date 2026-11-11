@@ -345,8 +345,8 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
     row(&behaviour, "When loom starts", "The overview shows every agent at a glance and resumes none until you open it.", &start);
     row(
         &behaviour,
-        "Running agents above the projects",
-        "A list of the agents running now (each also stays in its project). Ctrl+1…9 go by it; drag to reorder; ☕ keeps one awake.",
+        "Running section open",
+        "The agents running now, above the projects. Folded, its header still counts who needs you. Ctrl+1…9 go by it; drag to reorder; ☕ keeps one awake.",
         &switch(s.show_running, |s, on| s.show_running = on),
     );
     row(

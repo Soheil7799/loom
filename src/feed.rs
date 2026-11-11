@@ -72,6 +72,8 @@ pub struct SideAgent {
     pub place: String,
     pub edited: usize,
     pub awake: bool,
+    /// Why its last turn failed (empty: it didn't).
+    pub failed: String,
 }
 
 impl SideAgent {
@@ -87,6 +89,7 @@ impl SideAgent {
             place: item["place"].as_str().unwrap_or_default().to_owned(),
             edited: item["edited"].as_u64().unwrap_or(0) as usize,
             awake: item["awake"].as_bool().unwrap_or(false),
+            failed: item["failed"]["why"].as_str().unwrap_or_default().to_owned(),
         })
     }
 }

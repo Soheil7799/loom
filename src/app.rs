@@ -27,8 +27,6 @@ enum Row {
     Project(PathBuf),
     /// One of loomd's agents (the window as its client).
     Remote(u32),
-    /// A heading (Running, Projects): nothing to open.
-    Heading,
 }
 
 pub struct App {
@@ -106,13 +104,22 @@ pub struct App {
     running: RefCell<Vec<u32>>,
     /// The Running list's rows, in order (for its drop lines).
     running_rows: RefCell<Vec<gtk::ListBoxRow>>,
+    /// The Running section's list (its rows in `running`'s order) and the sections' parts.
+    run_list: gtk::ListBox,
+    run_scroller: gtk::ScrolledWindow,
+    list_scroller: gtk::ScrolledWindow,
+    run_head: SectionHead,
+    proj_head: SectionHead,
+    sections_filler: gtk::Box,
+    /// Running's tallest while Projects is open (half the sidebar), in pixels.
+    run_cap: Cell<i32>,
     /// What the sidebar draws: its copies of the core's `agents` and `projects`.
     sidebar_feeds: RefCell<Option<(Feed, Feed)>>,
     /// Something new waits in them: drawn once the window is idle.
     sidebar_due: Cell<bool>,
     /// What the sidebar's rows were last built from: `agents` changing only in what they
     /// don't show (a file edited, the options) doesn't rebuild them under the pointer.
-    sidebar_drawn: RefCell<Option<(Vec<SideAgent>, Vec<SideProject>)>>,
+    sidebar_drawn: RefCell<Option<(Vec<SideAgent>, Vec<SideProject>, Vec<(u32, String)>)>>,
     /// Each project's first and last sidebar rows (where a drop line shows).
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// Open projects' cards (name, first and last agent row): their names drawn up the left.
@@ -291,6 +298,27 @@ impl App {
             Some(gdk::Rectangle::new(top.x() as i32 + 2, y as i32, CARD_STRIP as i32, h.max(1.0) as i32))
         });
         let list_scroller = gtk::ScrolledWindow::builder().child(&with_names).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
+        // Two sections, folded from their headers (as VS Code's): Running, sized to its rows up
+        // to half the sidebar, and the projects under it.
+        let run_list = gtk::ListBox::new();
+        run_list.add_css_class("agents");
+        run_list.add_css_class("running-list");
+        let none = gtk::Label::builder().label("Nothing running now.").xalign(0.0).valign(gtk::Align::Start).build();
+        none.add_css_class("dim");
+        none.add_css_class("small");
+        none.add_css_class("running-none");
+        run_list.set_placeholder(Some(&none));
+        let run_scroller = gtk::ScrolledWindow::builder().child(&run_list).hscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build();
+        run_scroller.add_css_class("running-pane");
+        let run_head = SectionHead::new("RUNNING", true);
+        let proj_head = SectionHead::new("PROJECTS", false);
+        let sections_filler = gtk::Box::builder().vexpand(true).visible(false).build();
+        let sections = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        sections.append(&run_head.root);
+        sections.append(&run_scroller);
+        sections.append(&proj_head.root);
+        sections.append(&list_scroller);
+        sections.append(&sections_filler);
         let notes_chat = crate::notes_chat::NotesChat::new();
         // Back to the agents, with how many work and wait meanwhile.
         let notes_back = gtk::Button::builder().child(&gtk::Label::builder().label("←  Agents").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build()).tooltip_text("Back to the agents (Ctrl+Shift+M)").build();
@@ -298,7 +326,7 @@ impl App {
         notes_back.add_css_class("notes-back");
         notes_chat.side.append(&notes_back);
         let side_stack = gtk::Stack::builder().vexpand(true).build();
-        side_stack.add_named(&list_scroller, Some("agents"));
+        side_stack.add_named(&sections, Some("agents"));
         side_stack.add_named(&notes_chat.side, Some("notes"));
         sidebar.append(&side_stack);
         let bottom = gtk::Box::new(gtk::Orientation::Horizontal, 2);
@@ -577,6 +605,13 @@ impl App {
             card_spots,
             running: RefCell::default(),
             running_rows: RefCell::default(),
+            run_list,
+            run_scroller,
+            list_scroller,
+            run_head,
+            proj_head,
+            sections_filler,
+            run_cap: Cell::new(300),
             sidebar_feeds: RefCell::default(),
             sidebar_due: Cell::new(false),
             sidebar_drawn: RefCell::default(),
@@ -687,6 +722,45 @@ impl App {
             let Some(app) = weak.upgrade() else { return };
             app.activate_row(row.index() as usize);
         });
+        // The Running section: its rows in `running`'s order.
+        let weak = Rc::downgrade(self);
+        self.run_list.connect_row_activated(move |_, row| {
+            let Some(app) = weak.upgrade() else { return };
+            let id = app.running.borrow().get(row.index() as usize).copied();
+            if let Some(id) = id {
+                app.focus_remote(id);
+            }
+        });
+        let weak = Rc::downgrade(self);
+        crate::menu::on_right_click(&self.run_list, move |x, y| {
+            let Some(app) = weak.upgrade() else { return };
+            let id = app.run_list.row_at_y(y as i32).and_then(|row| app.running.borrow().get(row.index() as usize).copied());
+            if let Some(menu) = id.and_then(|id| app.remote_menu(id)) {
+                menu.popup(&app.run_list, x, y);
+            }
+        });
+        self.run_head.toggle.connect_clicked(|_| crate::prefs::update(|s| s.show_running = !s.show_running));
+        self.proj_head.toggle.connect_clicked(|_| crate::prefs::update(|s| s.projects_open = !s.projects_open));
+        for (tool, collapsed) in self.proj_head.tools.iter().zip([true, false]) {
+            let weak = Rc::downgrade(self);
+            tool.connect_clicked(move |_| {
+                if let Some(app) = weak.upgrade() {
+                    app.collapse_all(collapsed);
+                }
+            });
+        }
+        // Running's height: up to half the sidebar (the window's, less its top and bottom).
+        let weak = Rc::downgrade(self);
+        self.window.connect_realize(move |window| {
+            let weak = weak.clone();
+            let Some(surface) = window.surface() else { return };
+            surface.connect_layout(move |_, _, height| {
+                if let Some(app) = weak.upgrade() {
+                    app.run_cap.set(((height - 140) / 2).max(120));
+                    app.apply_sections();
+                }
+            });
+        });
         let weak = Rc::downgrade(self);
         new_button.connect_clicked(move |_| {
             if let Some(app) = weak.upgrade() {
@@ -710,8 +784,6 @@ impl App {
         crate::menu::on_right_click(&self.list, move |x, y| {
             let Some(app) = weak.upgrade() else { return };
             match app.list.row_at_y(y as i32) {
-                // A heading (Running, Projects): no menu of its own.
-                Some(row) if matches!(app.rows.borrow().get(row.index() as usize), Some(Row::Heading)) => {}
                 Some(row) => app.row_menu(Some(row.index() as usize), x, y),
                 None => app.row_menu(None, x, y),
             }
@@ -1076,9 +1148,9 @@ impl App {
     }
 
     pub fn focus_nth(self: &Rc<Self>, index: usize) {
-        // The Running list's numbers, when it is shown; else the sidebar's order.
+        // The Running list's numbers (folded or not); none running, the sidebar's order.
         let running = self.running_ids();
-        let list = if settings::get().show_running && !running.is_empty() { running } else { self.ids_in_order() };
+        let list = if running.is_empty() { self.ids_in_order() } else { running };
         if let Some(id) = list.get(index) {
             self.focus_id(*id);
         }
@@ -1506,6 +1578,13 @@ impl App {
                     app.expect_copy.set(true);
                 }
             }));
+            // The header's project name: its page.
+            let (weak, of) = (self.me.borrow().clone(), Rc::downgrade(&agent));
+            *agent.chat.on_project.borrow_mut() = Some(Rc::new(move |()| {
+                if let (Some(app), Some(project)) = (weak.upgrade(), of.upgrade().and_then(|a| a.project())) {
+                    app.show_project(&project, &project);
+                }
+            }));
             self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
             self.remote_agents.borrow_mut().insert(id, agent.clone());
             agent
@@ -1533,6 +1612,13 @@ impl App {
         let id = self.pinned_remote.take()?;
         if let Some(agent) = self.remote_agents.borrow().get(&id).cloned() {
             self.pinned_box.remove(&agent.chat.root);
+            // The header's project name: its page.
+            let (weak, of) = (self.me.borrow().clone(), Rc::downgrade(&agent));
+            *agent.chat.on_project.borrow_mut() = Some(Rc::new(move |()| {
+                if let (Some(app), Some(project)) = (weak.upgrade(), of.upgrade().and_then(|a| a.project())) {
+                    app.show_project(&project, &project);
+                }
+            }));
             self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
         }
         self.pinned_box.set_visible(false);
@@ -1608,6 +1694,8 @@ impl App {
                 if let Some(app) = weak.upgrade() {
                     app.refresh_overview();
                     app.refresh_inbox();
+                    // the Running rows' second lines (its questions, its last words)
+                    app.sidebar_soon();
                 }
             }
         };
@@ -2979,10 +3067,12 @@ impl App {
         let what = match self.rows.borrow().get(index) {
             Some(Row::Project(path)) => Do::Start(path.clone()),
             Some(Row::Remote(id)) => Do::Remote(*id),
-            Some(Row::Heading) | None => return,
+            None => return,
         };
         match what {
             Do::Remote(id) => self.focus_remote(id),
+            // A folded project opens into its card; one with no agents, its page (to start one).
+            Do::Start(path) if self.remote_items().iter().any(|a| a["project_id"].as_str() == Some(&*path.to_string_lossy())) => self.toggle_collapsed(&path),
             Do::Start(path) => self.show_project(&path, &path),
         }
     }
@@ -3187,22 +3277,28 @@ impl App {
         let ready = || {
             let weak = Rc::downgrade(self);
             move || {
-                let Some(app) = weak.upgrade() else { return };
-                if !app.sidebar_due.replace(true) {
-                    let weak = Rc::downgrade(&app);
-                    glib::idle_add_local_once(move || {
-                        if let Some(app) = weak.upgrade()
-                            && app.sidebar_due.get()
-                        {
-                            app.draw_sidebar();
-                        }
-                    });
+                if let Some(app) = weak.upgrade() {
+                    app.sidebar_soon();
                 }
             }
         };
         let agents = Feed::new("agents", ready());
         let projects = Feed::new("projects", ready());
         *self.sidebar_feeds.borrow_mut() = agents.zip(projects);
+    }
+
+    /// The sidebar drawn once the window is idle (what changed since drawn together).
+    fn sidebar_soon(self: &Rc<Self>) {
+        if !self.sidebar_due.replace(true) {
+            let weak = Rc::downgrade(self);
+            glib::idle_add_local_once(move || {
+                if let Some(app) = weak.upgrade()
+                    && app.sidebar_due.get()
+                {
+                    app.draw_sidebar();
+                }
+            });
+        }
     }
 
     /// The sidebar drawn now (from what loomd last sent).
@@ -3268,45 +3364,54 @@ impl App {
                 label.set_label(&text);
             }
         }
-        let built_from = Some((agents.clone(), projects.clone()));
+        let overview = self.overview_items();
+        // Each running row's second line: what it waits on, why it failed, or its last words.
+        let said: Vec<(u32, String)> = agents.iter().filter(|a| a.status != Status::Suspended).map(|a| (a.id, said_line(a, &overview))).collect();
+        let built_from = Some((agents.clone(), projects.clone(), said.clone()));
         if *self.sidebar_drawn.borrow() == built_from {
             return;
         }
         *self.sidebar_drawn.borrow_mut() = built_from;
-        // Rebuilt in place: the list stays scrolled where it was (the projects where they were,
-        // whatever the Running list above them gained or lost).
-        let scroll = self.list.parent().and_then(|v| v.parent()).and_downcast::<gtk::ScrolledWindow>().map(|s| s.vadjustment());
-        let kept = scroll.as_ref().map(|a| a.value());
-        let projects_were = self.projects_top();
-        while let Some(row) = self.list.row_at_index(0) {
-            self.list.remove(&row);
+        self.apply_sections();
+        // Rebuilt in place: each list stays scrolled where it was.
+        let scrolls: Vec<(gtk::Adjustment, f64)> = [&self.run_scroller, &self.list_scroller].iter().map(|s| (s.vadjustment(), s.vadjustment().value())).collect();
+        for list in [&self.list, &self.run_list] {
+            while let Some(row) = list.row_at_index(0) {
+                list.remove(&row);
+            }
         }
         let mut rows = Vec::new();
         let mut edges = HashMap::new();
         let focused = self.remote_focused.get();
         // Conversations Scribe has a question about, by agent (`overview` says whose is whose).
-        let asked: Vec<u32> = self.overview_items().iter().filter(|o| o["session"].as_str().is_some_and(|s| self.hub.asks_about(s))).filter_map(|o| o["id"].as_str()?.parse().ok()).collect();
-        // The running agents, numbered (Ctrl+1…9), each with its ☕; the projects below as
-        // ever (a running agent is in both).
+        let asked: Vec<u32> = overview.iter().filter(|o| o["session"].as_str().is_some_and(|s| self.hub.asks_about(s))).filter_map(|o| o["id"].as_str()?.parse().ok()).collect();
+        // The running agents, numbered (Ctrl+1…9) in the order dragged, each with its ☕. On its
+        // project's card a running one is a dim line: one full row each.
         let order = self.running_order(agents.iter().filter(|a| a.status != Status::Suspended).map(|a| a.id).collect());
         let running: Vec<&SideAgent> = order.iter().filter_map(|id| agents.iter().find(|a| a.id == *id)).collect();
         let mut running_rows = Vec::new();
-        if settings::get().show_running && !running.is_empty() {
-            self.list.append(&heading_row(&format!("RUNNING · {}", running.len()), None));
-            rows.push(Row::Heading);
-            for (i, item) in running.iter().enumerate() {
-                let row = self.running_row(item, i);
-                if focused == Some(item.id) {
-                    row.add_css_class("current");
-                }
-                self.list.append(&row);
-                rows.push(Row::Remote(item.id));
-                running_rows.push(row);
+        for (i, item) in running.iter().enumerate() {
+            let line = said.iter().find(|(id, _)| *id == item.id).map_or("", |(_, line)| line.as_str());
+            let row = self.running_row(item, i, line);
+            if focused == Some(item.id) {
+                row.add_css_class("current");
             }
-            self.list.append(&heading_row("PROJECTS", Some(self)));
-            rows.push(Row::Heading);
+            self.run_list.append(&row);
+            running_rows.push(row);
         }
         *self.running_rows.borrow_mut() = running_rows;
+        self.run_head.title.set_label(&format!("RUNNING · {}", running.len()));
+        let count = |f: &dyn Fn(&SideAgent) -> bool| running.iter().filter(|a| f(a)).count();
+        let counts = [
+            (count(&|a| a.status == Status::Blocked), "waiting"),
+            (count(&|a| a.status == Status::Failed), "failed"),
+            (count(&|a| a.status == Status::Idle && a.unseen), "done"),
+        ];
+        for (label, (n, word)) in self.run_head.counts.iter().zip(counts) {
+            label.set_label(&format!("● {n} {word}"));
+            label.set_visible(n > 0);
+        }
+        self.proj_head.title.set_label(&format!("PROJECTS · {}", projects.len()));
         let mut cards = Vec::new();
         for project in &projects {
             let mine: Vec<&SideAgent> = agents.iter().filter(|a| a.project == project.path).collect();
@@ -3329,6 +3434,11 @@ impl App {
             for (i, item) in mine.into_iter().enumerate() {
                 let row = agent_row(item, alike[i], asked.contains(&item.id));
                 row.add_css_class("in-card");
+                if let Some(at) = order.iter().position(|id| *id == item.id) {
+                    row.add_css_class("in-running");
+                    let key = if at < 9 { format!(" (Ctrl+{})", at + 1) } else { String::new() };
+                    row.set_tooltip_text(Some(&format!("Running: its row is in Running above{key}")));
+                }
                 if i == 0 {
                     row.add_css_class("first");
                     first = Some(row.clone());
@@ -3367,14 +3477,8 @@ impl App {
         if agents.is_empty() {
             self.fill_welcome();
         }
-        if let (Some(adjustment), Some(value)) = (scroll, kept) {
+        for (adjustment, value) in scrolls {
             adjustment.set_value(value);
-            let weak = Rc::downgrade(self);
-            glib::idle_add_local_once(move || {
-                // At the top it stays at the top (a Running list appearing there is to be seen).
-                let shift = if value <= 0.0 { 0.0 } else { weak.upgrade().and_then(|app| Some(app.projects_top()? - projects_were?)).unwrap_or(0.0) };
-                adjustment.set_value(value + shift);
-            });
         }
     }
 
@@ -3407,14 +3511,15 @@ impl App {
                 snapshot.append_layout(&layout, &tube.color());
                 snapshot.restore();
             });
-            let strip = gtk::Button::builder().child(&spine).tooltip_text(format!("{name}: its board and conversations")).build();
+            // Its page is the project's name in the chat's header now: this folds the card.
+            let strip = gtk::Button::builder().child(&spine).tooltip_text(format!("Fold {name} (its board and conversations: its name in the header)")).build();
             strip.add_css_class("card-strip");
             strip.set_cursor_from_name(Some("pointer"));
-            strip.update_property(&[gtk::accessible::Property::Label(&format!("{name}: board and conversations"))]);
+            strip.update_property(&[gtk::accessible::Property::Label(&format!("Fold {name}"))]);
             let (weak, open) = (Rc::downgrade(self), path.clone());
             strip.connect_clicked(move |_| {
                 if let Some(app) = weak.upgrade() {
-                    app.show_project(&open, &open);
+                    app.toggle_collapsed(&open);
                 }
             });
             // dragged onto another project: it goes there (as a closed one's pill)
@@ -3449,16 +3554,18 @@ impl App {
         *self.card_spots.borrow_mut() = spots;
     }
 
-    /// Where the first project's card starts in the sidebar list (None before it is laid out).
-    fn projects_top(&self) -> Option<f64> {
-        let mut child = self.list.first_child();
-        while let Some(row) = child {
-            if row.has_css_class("project-row") || row.has_css_class("first") {
-                return row.compute_point(&self.list, &gtk::graphene::Point::new(0.0, 0.0)).map(|p| f64::from(p.y()));
-            }
-            child = row.next_sibling();
-        }
-        None
+    /// The sections open or folded as the settings say. Projects folded: Running takes the
+    /// height and Projects' header sits at the bottom (as VS Code's folded sections).
+    fn apply_sections(&self) {
+        let s = settings::get();
+        let (run, projects) = (s.show_running, s.projects_open);
+        self.run_head.set_open(run);
+        self.proj_head.set_open(projects);
+        self.run_scroller.set_visible(run);
+        self.list_scroller.set_visible(projects);
+        self.run_scroller.set_vexpand(run && !projects);
+        self.run_scroller.set_max_content_height(if projects { self.run_cap.get() } else { -1 });
+        self.sections_filler.set_visible(!run && !projects);
     }
 
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
@@ -3575,7 +3682,7 @@ impl App {
 
     /// A row of the Running list: its number (Ctrl+1…9), dot, name, project, and the ☕ that
     /// keeps it awake. Dragged, it moves within the list.
-    fn running_row(self: &Rc<Self>, agent: &SideAgent, index: usize) -> gtk::ListBoxRow {
+    fn running_row(self: &Rc<Self>, agent: &SideAgent, index: usize, said: &str) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         let number = gtk::Label::new(Some(&if index < 9 { (index + 1).to_string() } else { String::new() }));
         number.add_css_class("running-number");
@@ -3585,9 +3692,19 @@ impl App {
         let status = agent.status;
         dot.add_css_class(if status == Status::Idle && agent.unseen { "done" } else { status.css() });
         bead_named(&dot, agent);
-        let title = gtk::Label::builder().label(&agent.title).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
+        let title = gtk::Label::builder().label(&agent.title).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         title.add_css_class("agent-title");
-        let project = gtk::Label::builder().label(&agent.project_name).max_width_chars(12).ellipsize(pango::EllipsizeMode::End).build();
+        // under its name: what it waits on, why it failed or what it said last, and when
+        let names = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
+        names.append(&title);
+        if !said.is_empty() {
+            let sub = gtk::Label::builder().label(said).xalign(0.0).ellipsize(pango::EllipsizeMode::End).tooltip_text(said).build();
+            sub.add_css_class("dim");
+            sub.add_css_class("small");
+            sub.add_css_class("agent-sub");
+            names.append(&sub);
+        }
+        let project = gtk::Label::builder().label(&agent.project_name).max_width_chars(12).valign(gtk::Align::Start).ellipsize(pango::EllipsizeMode::End).build();
         project.add_css_class("running-project");
         // Not a focus stop: clicked, the sidebar is rebuilt, and focus left on it would land on
         // another row (scrolling the list away).
@@ -3608,7 +3725,7 @@ impl App {
         });
         // its bead first, in line with the projects' beads below; Ctrl+N's number at the end
         line.append(&dot);
-        line.append(&title);
+        line.append(&names);
         line.append(&project);
         line.append(&number);
         line.append(&awake);
@@ -3811,31 +3928,72 @@ impl App {
     }
 }
 
-/// A heading row of the sidebar ("RUNNING · 3", "PROJECTS"); the projects' one carries
-/// collapse-all and expand-all.
-fn heading_row(text: &str, app: Option<&Rc<App>>) -> gtk::ListBoxRow {
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-    let label = gtk::Label::builder().label(text).xalign(0.0).hexpand(true).build();
-    label.add_css_class("project-name");
-    line.append(&label);
-    if let Some(app) = app {
-        for (icon, tip, collapsed) in [("pan-up-symbolic", "Collapse all projects", true), ("pan-down-symbolic", "Expand all projects", false)] {
+/// A sidebar section's header: ▾/▸ and its name (a button that folds it), then, for
+/// Running, how many need you (shown folded too: nothing waiting is out of sight), or the
+/// projects' fold-all and open-all.
+struct SectionHead {
+    root: gtk::Box,
+    toggle: gtk::Button,
+    chevron: gtk::Label,
+    title: gtk::Label,
+    /// Waiting, failed and done (Running only), each hidden at zero.
+    counts: [gtk::Label; 3],
+    /// Fold every project and open every one (Projects only).
+    tools: [gtk::Button; 2],
+}
+
+impl SectionHead {
+    fn new(name: &str, counted: bool) -> SectionHead {
+        let chevron = gtk::Label::new(Some("▾"));
+        chevron.add_css_class("section-chevron");
+        let title = gtk::Label::builder().label(name).xalign(0.0).build();
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        line.set_halign(gtk::Align::Fill);
+        line.append(&chevron);
+        line.append(&title);
+        let counts: [gtk::Label; 3] = ["blocked", "failed", "done"].map(|class| {
+            let label = gtk::Label::builder().visible(false).build();
+            label.add_css_class("section-count");
+            label.add_css_class(class);
+            label
+        });
+        let toggle = gtk::Button::builder().child(&line).hexpand(true).build();
+        toggle.add_css_class("flat");
+        toggle.add_css_class("section-toggle");
+        let root = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+        root.add_css_class("section-head");
+        root.append(&toggle);
+        let tools = [("pan-up-symbolic", "Fold every project"), ("pan-down-symbolic", "Open every project")].map(|(icon, tip)| {
             let button = gtk::Button::from_icon_name(icon);
             button.add_css_class("flat");
             button.add_css_class("heading-button");
             button.set_tooltip_text(Some(tip));
-            let weak = Rc::downgrade(app);
-            button.connect_clicked(move |_| {
-                if let Some(app) = weak.upgrade() {
-                    app.collapse_all(collapsed);
-                }
-            });
-            line.append(&button);
+            button.update_property(&[gtk::accessible::Property::Label(tip)]);
+            button
+        });
+        if counted {
+            let shown = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            shown.set_can_target(false);
+            for label in &counts {
+                shown.append(label);
+            }
+            line.append(&gtk::Box::builder().hexpand(true).build());
+            line.append(&shown);
+        } else {
+            for button in &tools {
+                root.append(button);
+            }
+        }
+        SectionHead { root, toggle, chevron, title, counts, tools }
+    }
+
+    fn set_open(&self, open: bool) {
+        self.chevron.set_label(if open { "▾" } else { "▸" });
+        self.toggle.update_state(&[gtk::accessible::State::Expanded(Some(open))]);
+        for tool in &self.tools {
+            tool.set_visible(open);
         }
     }
-    let row = gtk::ListBoxRow::builder().child(&line).selectable(false).activatable(false).build();
-    row.add_css_class("heading-row");
-    row
 }
 
 /// A bead says its state to a screen reader and on hover, not by its look alone.
@@ -3920,6 +4078,30 @@ fn name_layout(widget: &impl IsA<gtk::Widget>, text: &str, width: i32) -> pango:
         layout.set_ellipsize(pango::EllipsizeMode::End);
     }
     layout
+}
+
+/// A running agent's second line in the sidebar: "waiting: <its question>", "failed: <why>",
+/// "done: <its last words>", or what it works on, then how long ago it was used.
+fn said_line(agent: &SideAgent, overview: &[Value]) -> String {
+    let card = overview.iter().find(|o| o["id"].as_str() == Some(&*agent.id.to_string()));
+    // its first line of text, without markdown's marks
+    let first_line = |v: &Value| {
+        let line = v.as_str().and_then(|t| t.lines().map(|l| l.trim().trim_start_matches(['#', '*', '>', '-', ' '])).find(|l| !l.is_empty()));
+        line.unwrap_or_default().replace(['`', '*'], "")
+    };
+    let reply = card.map(|c| first_line(&c["reply"])).unwrap_or_default();
+    let what = match agent.status {
+        Status::Blocked => format!("waiting: {}", card.map(|c| first_line(&c["waiting"][0])).filter(|q| !q.is_empty()).unwrap_or_else(|| "your answer".to_owned())),
+        Status::Failed if !agent.failed.is_empty() => format!("failed: {}", agent.failed),
+        Status::Idle if agent.unseen && !reply.is_empty() => format!("done: {reply}"),
+        Status::Working | Status::Starting => [agent.status.describe().to_owned(), agent.place.clone()].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · "),
+        _ if !reply.is_empty() => reply,
+        other => other.describe().to_owned(),
+    };
+    match agent.used {
+        0 => what,
+        used => format!("{what} · {}", crate::overview::ago(crate::state::now().saturating_sub(used))),
+    }
 }
 
 fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {

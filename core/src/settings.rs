@@ -39,8 +39,10 @@ pub struct Settings {
     pub suggest_prompts: bool,
     /// Launched, loom shows the overview (no agent resumed until one is opened).
     pub start_on_overview: bool,
-    /// The running agents listed above the projects (Ctrl+1…9 then go by that list).
+    /// The sidebar's Running section open (folded, its header still counts who needs you).
     pub show_running: bool,
+    /// The sidebar's Projects section open (folded, it is a header at the bottom).
+    pub projects_open: bool,
     /// Ctrl+Tab cycles the running agents only (none is woken by passing it).
     pub cycle_running: bool,
     /// The Telegram bot: off unless switched on, and obeys only `telegram_user`.
@@ -109,6 +111,7 @@ impl Default for Settings {
             suggest_prompts: true,
             start_on_overview: true,
             show_running: true,
+            projects_open: true,
             cycle_running: true,
             telegram_enabled: false,
             telegram_token: String::new(),
@@ -403,6 +406,7 @@ fn parse(text: &str) -> Settings {
         suggest_prompts: flag("suggestPrompts", d.suggest_prompts),
         start_on_overview: flag("startOnOverview", d.start_on_overview),
         show_running: flag("showRunning", d.show_running),
+        projects_open: flag("projectsOpen", d.projects_open),
         cycle_running: flag("cycleRunning", d.cycle_running),
         telegram_enabled: flag("telegramEnabled", d.telegram_enabled),
         telegram_token: string("telegramToken", &d.telegram_token),
@@ -457,6 +461,7 @@ fn render(s: &Settings) -> String {
         "suggestPrompts": s.suggest_prompts,
         "startOnOverview": s.start_on_overview,
         "showRunning": s.show_running,
+        "projectsOpen": s.projects_open,
         "cycleRunning": s.cycle_running,
         "telegramEnabled": s.telegram_enabled,
         "telegramToken": s.telegram_token,
