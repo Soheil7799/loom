@@ -259,10 +259,10 @@ pub const COMMANDS: &[Command] = &[
     Command {
         name: "board_work",
         who: PEOPLE,
-        params: &[("project", "string", true, ""), ("card", "integer", true, "")],
+        params: &[("project", "string", true, ""), ("card", "integer", true, ""), ("agent", "string", false, "one of the project's agents to give it to (none: a new agent)")],
         result: "{agent}",
         later: false,
-        about: "Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it.",
+        about: "Puts an agent on a card: a new one, or `agent` (after its turn, if it works). The card's title and description are its message, the card goes to Doing, and the agent's work is logged on it.",
     },
     Command { name: "board_archive", who: PEOPLE, params: &[("project", "string", true, "")], result: "{archived}", later: false, about: "Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids." },
     Command { name: "board_remove", who: PEOPLE, params: &[("project", "string", true, ""), ("card", "integer", true, "")], result: "{}", later: false, about: "A card taken off the board." },

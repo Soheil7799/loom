@@ -227,6 +227,19 @@ fn a_projects_board_is_a_file_in_it() {
         assert!(Instant::now() < deadline, "the card never got its work: {board}");
         std::thread::sleep(Duration::from_millis(250));
     }
+    // Given to an agent already there: that one takes it, no new agent.
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "and once more" }))["card"].clone();
+    let taker = command(&mut c, "board_work", json!({ "project": project, "card": card, "agent": agent }))["agent"].as_str().unwrap().to_owned();
+    assert_eq!(taker, agent);
+    // Not to another project's agent: refused, and the card stays where it was.
+    let other = d.root.join("other");
+    assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&other).status().unwrap().success());
+    let stranger = command(&mut c, "new_agent", json!({ "folder": other }))["agent"].as_str().unwrap().to_owned();
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "not yours" }))["card"].clone();
+    let refused = c.command(&new_id(), "board_work", json!({ "project": project, "card": card, "agent": stranger }));
+    assert!(refused.is_err(), "{refused:?}");
+    let board = command(&mut c, "board", json!({ "project": project }));
+    assert!(board["lanes"][0]["cards"].as_array().unwrap().iter().any(|c| c["id"] == card), "{board}");
 }
 
 fn agent_tests() -> bool {

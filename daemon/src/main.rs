@@ -543,8 +543,20 @@ fn commands(daemon: &Rc<Daemon>) {
             message.push_str(&format!("\n\n{}", card.body.trim()));
         }
         message.push_str(&format!("\n\nWhen it is done, note what you did on c{id} and move it to Done (loom_board_note, loom_board_move)."));
+        // An agent of this project's, given (it takes the card after its turn, if working), or a
+        // new one; checked before the card moves.
+        let given = match params["agent"].as_str() {
+            Some(given) => {
+                let agent = given.parse().ok().and_then(|n| daemon.ws.agent(n)).ok_or_else(|| Error::NotFound(format!("agent {given}")))?;
+                if agent.project != project {
+                    return Err(Error::Invalid(format!("agent {given} is in another project")));
+                }
+                Some(agent)
+            }
+            None => None,
+        };
         loom_core::board::act(&project, "board_move", &json!({ "card": id, "lane": "Doing" }), "you").expect("a board command").map_err(Error::Invalid)?;
-        let agent = daemon.ws.add_agent(Saved::new(project));
+        let agent = given.unwrap_or_else(|| daemon.ws.add_agent(Saved::new(project.clone())));
         agent.card.set(Some(id));
         agent.submit_with(message, Vec::new());
         daemon.ws.publish_agents();

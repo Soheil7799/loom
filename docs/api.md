@@ -1470,7 +1470,7 @@ Who: window, cli. Result: `{}`.
 
 ### `board_work`
 
-Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it.
+Puts an agent on a card: a new one, or `agent` (after its turn, if it works). The card's title and description are its message, the card goes to Doing, and the agent's work is logged on it.
 
 Who: window, cli. Result: `{agent}`.
 
@@ -1478,6 +1478,7 @@ Who: window, cli. Result: `{agent}`.
 |---|---|---|
 | `project` | string |  |
 | `card` | integer |  |
+| `agent` | string? | one of the project's agents to give it to (none: a new agent) |
 
 ### `board_archive`
 

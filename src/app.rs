@@ -642,6 +642,16 @@ impl App {
             }
         }));
         let weak = Rc::downgrade(&this);
+        *this.board.running.borrow_mut() = Some(Rc::new(move |project| {
+            let Some(app) = weak.upgrade() else { return Vec::new() };
+            let project = project.to_string_lossy();
+            app.remote_items()
+                .iter()
+                .filter(|a| a["project_id"].as_str() == Some(&*project) && a["status"] != "suspended")
+                .filter_map(|a| Some((a["id"].as_str()?.parse().ok()?, a["title"].as_str().unwrap_or_default().to_owned())))
+                .collect()
+        }));
+        let weak = Rc::downgrade(&this);
         crate::conn::on_refused(move |text| {
             if let Some(app) = weak.upgrade()
                 && !app.toast_waits()

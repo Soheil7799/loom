@@ -1203,10 +1203,12 @@ export type BoardEditParams = {
   note?: string;
 };
 
-/** Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it. Result: {agent} */
+/** Puts an agent on a card: a new one, or `agent` (after its turn, if it works). The card's title and description are its message, the card goes to Doing, and the agent's work is logged on it. Result: {agent} */
 export type BoardWorkParams = {
   project: string;
   card: number;
+  /** one of the project's agents to give it to (none: a new agent) */
+  agent?: string;
 };
 
 /** Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids. Result: {archived} */

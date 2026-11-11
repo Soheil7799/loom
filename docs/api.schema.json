@@ -3783,7 +3783,7 @@
       "result": "{}"
     },
     "board_work": {
-      "description": "Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it.",
+      "description": "Puts an agent on a card: a new one, or `agent` (after its turn, if it works). The card's title and description are its message, the card goes to Doing, and the agent's work is logged on it.",
       "who": [
         "window",
         "cli"
@@ -3799,6 +3799,10 @@
           "card": {
             "type": "integer",
             "description": ""
+          },
+          "agent": {
+            "type": "string",
+            "description": "one of the project's agents to give it to (none: a new agent)"
           }
         },
         "required": [

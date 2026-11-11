@@ -11,6 +11,8 @@ use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
 type OnAgent = Rc<dyn Fn(u32)>;
+/// A project's running agents (id, title): who else may take a card.
+type Running = Rc<dyn Fn(&Path) -> Vec<(u32, String)>>;
 
 pub struct BoardView {
     pub root: gtk::Box,
@@ -27,6 +29,8 @@ pub struct BoardView {
     drawn: RefCell<Value>,
     /// An agent started on a card (Work on this): the window opens it.
     pub on_agent: RefCell<Option<OnAgent>>,
+    /// The window's running agents, by project (Work on this offers them).
+    pub running: RefCell<Option<Running>>,
 }
 
 impl BoardView {
@@ -59,7 +63,7 @@ impl BoardView {
         root.append(&heading);
         root.append(&problem);
         root.append(&scroller);
-        let view = Rc::new(BoardView { root, back, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default(), on_agent: RefCell::default() });
+        let view = Rc::new(BoardView { root, back, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default(), on_agent: RefCell::default(), running: RefCell::default() });
         *view.me.borrow_mut() = Rc::downgrade(&view);
         view
     }
@@ -357,16 +361,28 @@ impl BoardView {
         save.add_css_class("suggested-action");
         actions.append(&delete);
         if card["done"] != true {
+            // Who works on it: a new agent, or one of the project's running ones.
+            let running = self.running.borrow().clone().map(|f| f(&self.project.borrow())).unwrap_or_default();
+            let mut names = vec!["A new agent".to_owned()];
+            names.extend(running.iter().map(|(_, title)| title.clone()));
+            let names: Vec<&str> = names.iter().map(String::as_str).collect();
+            let who = gtk::DropDown::from_strings(&names);
+            who.set_tooltip_text(Some("Who works on it: a new agent, or a running one (after its turn, if it works)"));
+            who.set_visible(!running.is_empty());
             let work = gtk::Button::with_label("Work on this");
-            work.set_tooltip_text(Some("An agent starts on it: the card is its first message, and it moves to Doing"));
-            let (weak, shut) = (Rc::downgrade(self), popover.clone());
+            work.set_tooltip_text(Some("The agent gets the card as its message, and the card moves to Doing"));
+            let (weak, shut, chosen) = (Rc::downgrade(self), popover.clone(), who.clone());
             work.connect_clicked(move |work| {
                 let Some(view) = weak.upgrade() else { return };
                 work.set_sensitive(false);
                 work.set_label("Starting…");
                 let (weak, work, shut) = (Rc::downgrade(&view), work.clone(), shut.clone());
                 let project = view.project.borrow().clone();
-                crate::conn::command_result("board", "board_work", json!({ "project": project, "card": id }), move |answer| {
+                let mut params = json!({ "project": project, "card": id });
+                if let Some((agent, _)) = (chosen.selected() as usize).checked_sub(1).and_then(|i| running.get(i)) {
+                    params["agent"] = agent.to_string().into();
+                }
+                crate::conn::command_result("board", "board_work", params, move |answer| {
                     work.set_sensitive(true);
                     work.set_label("Work on this");
                     let Some(view) = weak.upgrade() else { return };
@@ -383,6 +399,7 @@ impl BoardView {
                     }
                 });
             });
+            actions.append(&who);
             actions.append(&work);
         }
         actions.append(&save);
