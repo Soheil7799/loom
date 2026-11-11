@@ -37,6 +37,9 @@ const MODES: &[(&str, &str)] = &[
 
 const SCALES: &[(f64, &str)] = &[(0.9, "Small"), (1.0, "Normal"), (1.1, "Large"), (1.25, "Larger"), (1.4, "Largest")];
 
+/// Meaning search's models (embed.rs words the questions for each).
+const EMBED_MODELS: &[(&str, &str)] = &[("embeddinggemma", "embeddinggemma (best on code in loom's tests)"), ("qwen3-embedding:0.6b", "qwen3-embedding 0.6B")];
+
 const COMPACT_TOKENS: &[(u64, &str)] = &[(100_000, "At 100K tokens"), (150_000, "At 150K tokens"), (200_000, "At 200K tokens"), (300_000, "At 300K tokens"), (500_000, "At 500K tokens")];
 const REST_TOKENS: &[(u64, &str)] = &[(50_000, "Over 50K tokens"), (100_000, "Over 100K tokens"), (200_000, "Over 200K tokens"), (400_000, "Over 400K tokens")];
 const IDLE: &[(u64, &str)] = &[(0, "Never"), (5, "After 5 min"), (15, "After 15 min"), (30, "After 30 min"), (45, "After 45 min"), (60, "After 1 hour"), (120, "After 2 hours")];
@@ -436,7 +439,10 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
         &switch(s.embed_code, |s, on| s.embed_code = on),
     );
     row(&meaning, "For the notes", "The note search agents use goes by meaning too.", &switch(s.embed_notes, |s, on| s.embed_notes = on));
-    row_stacked(&meaning, &format!("Model: {}", s.embed_model), "loom starts Ollama when nothing answers and downloads the model when it is missing.", &embeddings_status());
+    let models: Vec<(String, &str)> = EMBED_MODELS.iter().map(|(id, name)| ((*id).to_owned(), *name)).collect();
+    let model = dropdown(&models, s.embed_model.clone(), |m| m.clone(), |s, m| s.embed_model = m);
+    row(&meaning, "Model", "Changing it embeds the code and notes again, once (minutes; the old vectors are kept).", &model);
+    row_stacked(&meaning, "Ollama", "loom starts Ollama when nothing answers and downloads the model when it is missing.", &embeddings_status());
     content.append(&meaning);
 
     let schedules = section("Scheduled prompts");
@@ -1549,7 +1555,7 @@ fn embeddings_status() -> gtk::Box {
                     button.set_label("Refresh");
                 }
                 if let (Some(said), Some(item)) = (said.upgrade(), item) {
-                    said.set_label(item["detail"].as_str().unwrap_or(""));
+                    paint_embeddings(&said, &item);
                 }
             });
         }
@@ -1567,16 +1573,7 @@ fn embeddings_status() -> gtk::Box {
             let Some(f) = held.as_ref() else { return };
             f.update();
             let item = f.items().first().cloned().unwrap_or_default();
-            let state = item["state"].as_str().unwrap_or("off");
-            label.set_label(item["detail"].as_str().unwrap_or("Off: searches go by words."));
-            for class in ["warning", "success"] {
-                label.remove_css_class(class);
-            }
-            match state {
-                "failed" => label.add_css_class("warning"),
-                "ready" => label.add_css_class("success"),
-                _ => {}
-            }
+            paint_embeddings(&label, &item);
         }
     };
     let ready = {
@@ -1588,6 +1585,19 @@ fn embeddings_status() -> gtk::Box {
     };
     ready();
     line
+}
+
+/// The `embeddings` item said: its sentence, green when ready, amber when it failed.
+fn paint_embeddings(label: &gtk::Label, item: &serde_json::Value) {
+    label.set_label(item["detail"].as_str().unwrap_or("Off: searches go by words."));
+    for class in ["meaning-ready", "meaning-failed"] {
+        label.remove_css_class(class);
+    }
+    match item["state"].as_str() {
+        Some("failed") => label.add_css_class("meaning-failed"),
+        Some("ready") => label.add_css_class("meaning-ready"),
+        _ => {}
+    }
 }
 
 /// Opens pairing (a code to scan) or closes it, in loomd.

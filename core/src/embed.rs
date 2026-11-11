@@ -221,6 +221,28 @@ impl Meaning {
     }
 }
 
+/// Scores by meaning for `pieces`, from the search `held` (made anew for another model): Err
+/// says why words alone answer this time.
+pub fn scores_in(held: &Mutex<Option<Meaning>>, model: Model, pieces: &[(u64, String)], query: &str) -> Result<Vec<f32>, String> {
+    let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_ref().is_none_or(|m| *m.model() != model) {
+        *held = Some(Meaning::new(model));
+    }
+    held.as_ref().ok_or("no meaning search")?.scores(pieces, query)
+}
+
+/// The model for the notes when meaning search for them is on and ready (loomd's last check),
+/// for Scribe, which works off the thread the settings are on.
+static NOTES_READY: Mutex<Option<Model>> = Mutex::new(None);
+
+pub fn notes_model() -> Option<Model> {
+    NOTES_READY.lock().unwrap_or_else(|e| e.into_inner()).clone()
+}
+
+fn notes_ready(model: Option<Model>) {
+    *NOTES_READY.lock().unwrap_or_else(|e| e.into_inner()) = model;
+}
+
 /// The order `scores` put the pieces in, best first.
 pub fn order(scores: &[f32]) -> Vec<usize> {
     let mut order: Vec<usize> = (0..scores.len()).collect();
@@ -326,6 +348,7 @@ fn publish(state: &str, detail: &str) -> Value {
 fn check(reply: Option<crate::api::Reply>) {
     let s = crate::settings::get();
     let model = Model::from_settings(&s);
+    notes_ready(None);
     if !(s.embed_code || s.embed_notes) {
         let item = publish("off", "Off: searches go by words.");
         if let Some(reply) = reply {
@@ -343,7 +366,12 @@ fn check(reply: Option<crate::api::Reply>) {
             done = crate::rt::spawn_blocking(move || pull(&asked).and_then(|_| ensure(&asked))).await.unwrap_or_else(|_| Err("the download stopped".into()));
         }
         let item = match done {
-            Ok("ready") => publish("ready", &format!("{} answers at {}: searches go by meaning.", model.name, model.url)),
+            Ok("ready") => {
+                if crate::settings::get().embed_notes {
+                    notes_ready(Some(model.clone()));
+                }
+                publish("ready", &format!("{} answers at {}: searches go by meaning.", model.name, model.url))
+            }
             Ok(_) => publish("failed", &format!("Ollama has no model named {}, even after the download.", model.name)),
             Err(why) => publish("failed", &why),
         };

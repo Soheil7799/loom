@@ -34,15 +34,6 @@ fn meaning_model(socket: &str, agent: u32, which: &str) -> Option<crate::embed::
     Some(crate::embed::Model { url: info["url"].as_str()?.trim_end_matches('/').to_owned(), name: info["model"].as_str()?.to_owned() })
 }
 
-/// Scores by meaning for `pieces`, from `held` (made again for another model): Err says why
-/// words alone answer (off: None).
-fn meaning_scores(held: &Mutex<Option<crate::embed::Meaning>>, model: crate::embed::Model, pieces: &[(u64, String)], query: &str) -> Result<Vec<f32>, String> {
-    let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
-    if held.as_ref().is_none_or(|m| *m.model() != model) {
-        *held = Some(crate::embed::Meaning::new(model));
-    }
-    held.as_ref().ok_or("no meaning search")?.scores(pieces, query)
-}
 
 /// The Notes vault loom has (None: the add-on is off, or no vault chosen).
 fn vault(socket: &str, agent: u32) -> Option<PathBuf> {
@@ -327,7 +318,7 @@ fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     index.refresh();
     let (found, note) = match meaning_model(socket, agent, "code") {
         None => (index.search(query, limit), None),
-        Some(model) => match meaning_scores(&CODE_MEANING, model, &index.texts(), query) {
+        Some(model) => match crate::embed::scores_in(&CODE_MEANING, model, &index.texts(), query) {
             Ok(scores) => (index.search_by_meaning(query, &scores, limit), None),
             Err(why) => (index.search(query, limit), Some(why)),
         },
@@ -380,7 +371,7 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
         Some(model) => {
             let texts = index.texts();
             let keys: Vec<(u64, String)> = texts.into_iter().map(|(_, h, t)| (h, t)).collect();
-            match meaning_scores(&NOTES_MEANING, model, &keys, query) {
+            match crate::embed::scores_in(&NOTES_MEANING, model, &keys, query) {
                 Ok(scores) => index.search_by_meaning(query, &scores, args["folder"].as_str(), limit),
                 Err(why) => {
                     meaning_note = format!("\n\n({why})");

@@ -740,3 +740,7 @@ box.notice.choice { background: alpha(@window_fg_color, 0.08); box-shadow: 0 1px
 /* Pressed: loom's own button and row fills replace the theme's, its pressed look with them;
    a press darkens whatever fill it has (a fill, never a stroke). */
 button:active, menubutton > button:active, row.activatable:active { filter: brightness(0.82); }
+
+/* Meaning search's state in Settings. */
+label.meaning-ready { color: @loom_ok; opacity: 1; }
+label.meaning-failed { color: @loom_warn; opacity: 1; }

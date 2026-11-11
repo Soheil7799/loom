@@ -31,6 +31,8 @@ const CHUNK: usize = 6000;
 
 /// How many notes an edit is shown (the best matches), and how much of each.
 const CANDIDATES: usize = 5;
+/// Meaning search over the vault, for the notes an edit is shown (embed.rs).
+static MEANING: std::sync::Mutex<Option<crate::embed::Meaning>> = std::sync::Mutex::new(None);
 const NOTE_MOST: usize = 8000;
 
 const ROUTE: &str = "You sort excerpts of a person's conversations with their AI agents into the topics of their personal notes.
@@ -452,7 +454,15 @@ fn route(topics: &[Topic], excerpt: &str) -> Result<Vec<(String, String)>, Strin
 /// The notes an edit for `topic` is shown: the best matches in its folder for what the
 /// excerpt is about, and its overview note if it has one. (path, text)
 fn candidates(vault: &Path, index: &crate::notes::Index, topic: &Topic, about: &str) -> Vec<(String, String)> {
-    let mut paths: Vec<String> = index.search(about, Some(&topic.folder), CANDIDATES).into_iter().map(|h| h.path).collect();
+    // By meaning too when it is on for the notes (the best by words still among them: a
+    // month's note is found by its date), else by words.
+    let by_meaning = crate::embed::notes_model().and_then(|model| {
+        let keys: Vec<(u64, String)> = index.texts().into_iter().map(|(_, h, t)| (h, t)).collect();
+        let scores = crate::embed::scores_in(&MEANING, model, &keys, about).ok()?;
+        Some(index.search_by_meaning(about, &scores, Some(&topic.folder), CANDIDATES))
+    });
+    let found = by_meaning.unwrap_or_else(|| index.search(about, Some(&topic.folder), CANDIDATES));
+    let mut paths: Vec<String> = found.into_iter().map(|h| h.path).collect();
     for name in ["Overview", "Index", &topic.name] {
         if let Some(path) = index.resolve(&format!("{}/{name}", topic.folder)) {
             if !paths.contains(&path) {

@@ -46,6 +46,7 @@
       { title: "Meaning search", rows: [
         { key: "embed_code", title: "For the code", detail: "loom_find ranks the code by what a question means, not only by its words: a local model, through Ollama on this machine (started, and the model downloaded, when needed).", kind: "switch" },
         { key: "embed_notes", title: "For the notes", detail: "The note search agents use goes by meaning too.", kind: "switch" },
+        { key: "embed_model", title: "Model", detail: "Changing it embeds the code and notes again, once (minutes; the old vectors are kept).", kind: "select", options: [["embeddinggemma", "embeddinggemma (best on code in loom's tests)"], ["qwen3-embedding:0.6b", "qwen3-embedding 0.6B"]] },
       ] },
     ] },
     { name: "Appearance", sections: [{ title: "Text", rows: [
