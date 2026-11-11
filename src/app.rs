@@ -3509,15 +3509,7 @@ impl App {
         let mut spots = Vec::new();
         for (path, name, first, last) in self.cards.borrow().iter() {
             let label = name.to_uppercase();
-            // one agent: tall enough for its project's name
-            if first == last {
-                let (width, _) = name_layout(&self.list, &label, i32::MAX).pixel_size();
-                first.set_size_request(-1, width + 48);
-                // its pill at its height, in the middle of the taller card
-                if let Some(pill) = first.child() {
-                    pill.set_valign(gtk::Align::Center);
-                }
-            }
+            // As tall as its agents: a longer name is cut short ("…"; in full in the tooltip).
             let spine = crate::tube::Tube::new();
             spine.set_draw(move |tube, snapshot| {
                 let layout = name_layout(tube, &label, tube.height().max(10));
@@ -4081,10 +4073,8 @@ fn name_layout(widget: &impl IsA<gtk::Widget>, text: &str, width: i32) -> pango:
     let attrs = pango::AttrList::new();
     attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
     layout.set_attributes(Some(&attrs));
-    if width < i32::MAX {
-        layout.set_width(width * pango::SCALE);
-        layout.set_ellipsize(pango::EllipsizeMode::End);
-    }
+    layout.set_width(width * pango::SCALE);
+    layout.set_ellipsize(pango::EllipsizeMode::End);
     layout
 }
 
