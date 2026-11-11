@@ -24,16 +24,29 @@ pub fn list() -> Vec<Value> {
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
                 continue;
             }
-            let Some(id) = path.file_stem().and_then(|s| s.to_str()).map(str::to_owned) else { continue };
-            let Ok(meta) = entry.metadata() else { continue };
-            let Some(info) = summary(&path) else { continue };
-            let modified = meta.modified().unwrap_or(std::time::UNIX_EPOCH);
-            let updated = jiff::Timestamp::from_second(modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)).map(|t| t.to_string()).unwrap_or_default();
-            found.push((modified, json!({ "sessionId": id, "cwd": info.0, "title": info.1, "updatedAt": updated })));
+            found.extend(entry_of(&path));
         }
     }
+    newest_first(found)
+}
+
+/// The conversations of `sessions` alone, as `list` gives them (only their files are read).
+pub fn list_of(sessions: &[String]) -> Vec<Value> {
+    newest_first(sessions.iter().filter_map(|s| entry_of(&file(s)?)).collect())
+}
+
+fn newest_first(mut found: Vec<(std::time::SystemTime, Value)>) -> Vec<Value> {
     found.sort_by(|a, b| b.0.cmp(&a.0));
     found.into_iter().map(|(_, v)| v).collect()
+}
+
+/// A conversation's file as `list` gives it, with when it last changed.
+fn entry_of(path: &Path) -> Option<(std::time::SystemTime, Value)> {
+    let id = path.file_stem()?.to_str()?.to_owned();
+    let modified = std::fs::metadata(path).ok()?.modified().unwrap_or(std::time::UNIX_EPOCH);
+    let info = summary(path)?;
+    let updated = jiff::Timestamp::from_second(modified.duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)).map(|t| t.to_string()).unwrap_or_default();
+    Some((modified, json!({ "sessionId": id, "cwd": info.0, "title": info.1, "updatedAt": updated })))
 }
 
 /// How much of a conversation's start and end is read for the list (its folder and first
@@ -315,6 +328,26 @@ mod tests {
         unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
         assert_eq!(user_after("s2", "m1").as_deref(), Some("u2"));
         assert_eq!(user_after("s2", "nope"), None);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn only_the_conversations_asked_for_are_listed() {
+        let _one = CONFIG.lock().unwrap_or_else(|e| e.into_inner());
+        let dir = std::env::temp_dir().join(format!("loom-list-of-{}", std::process::id()));
+        for (folder, id, said) in [("vault", "v1", "passport"), ("vault", "v2", "buddy account"), ("other", "o1", "elsewhere")] {
+            let projects = dir.join("projects").join(folder);
+            std::fs::create_dir_all(&projects).unwrap();
+            let line = format!(r#"{{"type":"user","cwd":"/{folder}","message":{{"content":"{said}"}}}}"#);
+            std::fs::write(projects.join(format!("{id}.jsonl")), line).unwrap();
+        }
+        // SAFETY: the tests that set it hold CONFIG.
+        unsafe { std::env::set_var("CLAUDE_CONFIG_DIR", &dir) };
+        let listed = list_of(&["v2".to_owned(), "v1".to_owned(), "gone".to_owned()]);
+        let mut ids: Vec<&str> = listed.iter().map(|c| c["sessionId"].as_str().unwrap()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["v1", "v2"]);
+        assert!(listed.iter().all(|c| c["cwd"] == "/vault" && c["title"].is_string()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

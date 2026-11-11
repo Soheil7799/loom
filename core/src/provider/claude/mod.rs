@@ -12,6 +12,11 @@ pub fn search(sessions: &[String], query: &str) -> Vec<(String, String)> {
     transcripts::search(sessions, query)
 }
 
+/// See `provider::list_of`.
+pub fn list_of(sessions: &[String]) -> Vec<Value> {
+    transcripts::list_of(sessions)
+}
+
 /// See `provider::read_back`.
 pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
     transcripts::replay(session, cwd)

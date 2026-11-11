@@ -350,6 +350,17 @@ impl NotesChat {
                 let agent = crate::remote_agent::RemoteAgent::new(id);
                 agent.chat.set_hint(&hint(scope.as_ref()));
                 let starters = chat.starters(&agent.chat, &vault, scope.as_ref());
+                // They go with the first message sent, not when loomd's list next changes.
+                let send = agent.chat.on_submit.borrow().clone();
+                let gone = starters.downgrade();
+                *agent.chat.on_submit.borrow_mut() = Some(Rc::new(move |message| {
+                    if let Some(starters) = gone.upgrade() {
+                        starters.set_visible(false);
+                    }
+                    if let Some(send) = &send {
+                        send(message);
+                    }
+                }));
                 let page = gtk::Overlay::builder().child(&agent.chat.root).build();
                 page.add_overlay(&starters);
                 chat.stack.add_child(&page);

@@ -44,6 +44,16 @@ pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
     claude::read_back(session, cwd)
 }
 
+/// Conversations `sessions` as `session/list` gives them (sessionId, cwd, title, updatedAt),
+/// newest first, from Claude Code's files. None: an adapter that keeps its own (ACP's), to be
+/// listed through it. Off the UI's thread.
+pub fn list_of(sessions: &[String]) -> Option<Vec<Value>> {
+    if acp::chosen().is_some() {
+        return None;
+    }
+    Some(claude::list_of(sessions))
+}
+
 /// The conversations of `sessions` whose words hold every word of `query`, each with a line
 /// of it. Reads Claude Code's files: off the UI's thread.
 pub fn search(sessions: &[String], query: &str) -> Vec<(String, String)> {

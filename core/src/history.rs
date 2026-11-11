@@ -25,6 +25,12 @@ pub struct Past {
 
 type Done = Box<dyn FnOnce(Result<Vec<Past>, String>)>;
 
+/// Conversations `sessions` alone, newest first, read from their files (no listing process).
+/// None: an ACP adapter keeps them (`list` then). Off the UI's thread.
+pub fn list_of(sessions: &[String]) -> Option<Vec<Past>> {
+    crate::provider::list_of(sessions).map(|sessions| parse(&json!({ "sessions": sessions })))
+}
+
 /// Every kept conversation, newest first (a few pages at most), or why not. Returns the
 /// listing process, to stop it early when its answer is no longer wanted.
 pub fn list(done: impl FnOnce(Result<Vec<Past>, String>) + 'static) -> Option<std::rc::Weak<Conn>> {
