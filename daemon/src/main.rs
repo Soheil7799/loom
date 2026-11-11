@@ -542,7 +542,7 @@ fn commands(daemon: &Rc<Daemon>) {
         if !card.body.trim().is_empty() {
             message.push_str(&format!("\n\n{}", card.body.trim()));
         }
-        message.push_str(&format!("\n\nWhen it is done, note what you did on c{id} and move it to Done (loom_board_note, loom_board_move), and add or update the concept card of what you touched in .loom/map/ (the loom skill says how)."));
+        message.push_str(&format!("\n\nWhen it is done, note what you did on c{id} and move it to Done (loom_board_note, loom_board_move)."));
         loom_core::board::act(&project, "board_move", &json!({ "card": id, "lane": "Doing" }), "you").expect("a board command").map_err(Error::Invalid)?;
         let agent = daemon.ws.add_agent(Saved::new(project));
         agent.card.set(Some(id));

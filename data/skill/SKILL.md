@@ -39,32 +39,16 @@ dev server). Short, one-shot commands (`git status`, `ls`, a quick grep) stay in
 
 ## Finding your way in the code
 
-- Don't know which file something is in? `loom_find(query)` first, in plain words ("where
-  finished subagent rows are removed", "archive the done lane"). It answers with places
-  (`path:line` and the definition's first line), not code: Read just those lines (`offset`,
-  `limit`), not the whole file. Grep is still best for an exact string you already know.
-- `loom_find` also answers from the project's **concept cards**: one small markdown file per
-  feature in `.loom/map/` of the project folder (next to `.loom/board.md`). A card is the
-  map for the next agent: where a feature lives, in the words people use for it.
-- When you finish work that took searching to find your way (and whenever you move a board
-  card to Done), add or update the card of the feature you touched. Keep it short, pointers
-  not essays; the code stays the truth:
-
-  ```markdown
-  ---
-  title: Subagent strip
-  aliases: [crew, subagent rows, stuck rows]
-  files: [core/src/agent/mod.rs, src/chat.rs, web/src/Conversation.svelte]
-  symbols: [show_sub, crew_set, crew_remove]
-  ---
-  The live rows of subagents above the chat. loomd keeps them in the crew/<agent> store;
-  the window and the web page only draw it. Why it is like this, and gotchas: a row that
-  ends outside a turn is removed; rows stuck from before clear only when loomd restarts.
-  ```
-
-  `files` are relative to the project folder. One card per feature (update it rather than
-  adding a second); name the file after it (`subagent-strip.md`). loom_find marks a card
-  whose files or symbols are gone as possibly out of date: fix or delete it when you see one.
+- **Search with `loom_find` first, not Grep, `grep`, `rg` or `find`.** Any "where is…"
+  question (a feature, a behavior, a concept, a name you aren't sure of) goes to
+  `loom_find(query)` in plain words: "where finished subagent rows are removed", "archive
+  the done lane". It ranks the project's code by what the question means (a local model,
+  when meaning search is on) and by its words. It answers with places (`path:line` and the
+  definition's first line), not code: Read just those lines (`offset`, `limit`), not the
+  whole file.
+- Not it? Ask `loom_find` again in other words before falling back to Grep. Grep (or `rg`)
+  is for an exact string you already know: an error message, a setting's key, every caller
+  of a name you have.
 - A file you have read stays in your context. Don't Read it again unless it changed since
   (you edited it, or a command did). Every message re-reads the whole conversation, so each
   repeated file is paid for again and again.

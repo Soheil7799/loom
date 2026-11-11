@@ -116,7 +116,7 @@ pub fn run() -> i32 {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": format!(
-                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read with loom_open. When the user must put something in a file themselves (an API key, a token, a password, any secret that must not pass through the chat), use loom_edit: it opens the file for them and waits until they are done. To find where something is in the code when you don't know the file, ask loom_find in words before grepping. A file you have read stays in your context: don't Read it again unless it changed since.{}",
+                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read with loom_open. When the user must put something in a file themselves (an API key, a token, a password, any secret that must not pass through the chat), use loom_edit: it opens the file for them and waits until they are done. To find anything in the code (a feature, a behavior, where something is done), ask loom_find in plain words first, not Grep, grep, rg or find: it searches by meaning and answers with path:line. Grep only for an exact string you already know. A file you have read stays in your context: don't Read it again unless it changed since.{}",
                     if notes.is_some() { " The user keeps notes about their life and work (finances, work, study, languages, health, their system's setup…): before answering about their own facts, plans or past decisions, look with loom_note_search and loom_note_read. Don't edit the vault yourself; loom keeps it." } else { "" }
                 )
             })),
@@ -206,7 +206,7 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
         },
         {
             "name": "loom_find",
-            "description": "Find where something is in this project's code when you don't know the file: a feature, a behavior, a concept or a name, in plain words (\"where finished subagent rows are removed\", \"archive the done lane\"). Ranks the project's concept cards (.loom/map: a feature's files, symbols and gotchas) and the definitions (functions, types, doc headings) by their names, doc comments, bodies and paths, and returns places (path:line and the definition's first line), not code: then Read only those lines. One call instead of several Grep and Read rounds; Grep stays best for an exact string you already know.",
+            "description": "Use this first to find anything in this project's code, instead of Grep, grep, rg or find: a feature, a behavior, a concept or a name, in plain words (\"where finished subagent rows are removed\", \"archive the done lane\"). Ranks the definitions (functions, types, doc headings) by what the question means (a local embedding model, when meaning search is on) and by their names, doc comments, bodies and paths, and returns places (path:line and the definition's first line), not code: then Read only those lines. One call instead of several Grep and Read rounds. Not it? Ask again in other words. Grep stays for an exact string you already know (an error message, every caller of a name).",
             "inputSchema": { "type": "object", "properties": {
                 "query": { "type": "string", "description": "What you look for, in words" },
                 "limit": { "type": "integer", "description": "How many places (default 10, at most 25)" }
@@ -476,14 +476,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_find" => find(socket, agent, args),
         "loom_board" => call(socket, agent, "board", json!({})).map(|v| pretty(&v)),
         "loom_board_add" => call(socket, agent, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),
-        "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| {
-            if args["lane"].as_str().is_some_and(|l| l.eq_ignore_ascii_case("done")) {
-                // the moment it knows best where the feature lives: kept for the next agent
-                "Moved. If finding your way took searching, add or update the feature's concept card in the project's .loom/map/ (next to .loom/board.md; the format is in the loom skill), so loom_find answers the next agent at once.".to_owned()
-            } else {
-                "Moved.".to_owned()
-            }
-        }),
+        "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| "Moved.".to_owned()),
         "loom_board_note" => call(socket, agent, "board_edit", json!({ "card": args["card"], "note": args["note"] })).map(|_| "Noted.".to_owned()),
         tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
         tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, agent, tool, args),
