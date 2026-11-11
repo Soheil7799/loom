@@ -37,6 +37,7 @@ const MODES: &[(&str, &str)] = &[
 
 const SCALES: &[(f64, &str)] = &[(0.9, "Small"), (1.0, "Normal"), (1.1, "Large"), (1.25, "Larger"), (1.4, "Largest")];
 
+const COMPACT_TOKENS: &[(u64, &str)] = &[(100_000, "At 100K tokens"), (150_000, "At 150K tokens"), (200_000, "At 200K tokens"), (300_000, "At 300K tokens"), (500_000, "At 500K tokens")];
 const REST_TOKENS: &[(u64, &str)] = &[(50_000, "Over 50K tokens"), (100_000, "Over 100K tokens"), (200_000, "Over 200K tokens"), (400_000, "Over 400K tokens")];
 const IDLE: &[(u64, &str)] = &[(0, "Never"), (5, "After 5 min"), (15, "After 15 min"), (30, "After 30 min"), (45, "After 45 min"), (60, "After 1 hour"), (120, "After 2 hours")];
 
@@ -393,23 +394,16 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
         "After a turn, Claude Code suggests what you'll write next; → or Tab fills it in.",
         &switch(s.suggest_prompts, |s, on| s.suggest_prompts = on),
     );
-    // How full, then on or off.
-    let at = gtk::SpinButton::with_range(10.0, 95.0, 5.0);
-    at.set_value(s.compact_at as f64);
+    // How much, then on or off.
+    let at = dropdown(COMPACT_TOKENS, s.compact_tokens, |t| format!("At {}K tokens", t / 1000), |s, t| s.compact_tokens = t);
     at.set_sensitive(s.compact_alert);
-    at.set_tooltip_text(Some("Percent of the context"));
-    at.connect_value_changed(|b| {
-        let value = b.value() as u64;
-        update(|s| s.compact_at = value);
-    });
     let on = switch(s.compact_alert, |s, on| s.compact_alert = on);
     let spin = at.clone();
     on.connect_active_notify(move |s| spin.set_sensitive(s.is_active()));
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     controls.append(&at);
-    controls.append(&gtk::Label::new(Some("%")));
     controls.append(&on);
-    row(&chat, "Remind me to compact", "Once the context is this full, a Compact button shows by the context meter, top right.", &controls);
+    row(&chat, "Remind me to compact", "Every message re-reads the whole context, so a long conversation costs more each turn. Once it holds this much, the meter turns amber and a Compact button shows by it, top right.", &controls);
     content.append(&chat);
 
     let resting = section("Idle agents");

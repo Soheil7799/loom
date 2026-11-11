@@ -2371,18 +2371,14 @@ impl Chat {
     }
 
     pub fn set_usage(&self, used: u64, size: u64) {
-        let k = |n: u64| if n >= 1000 { format!("{}k", n / 1000) } else { n.to_string() };
         self.spent.borrow_mut().0 = Some((used, size));
-        if size == 0 {
-            self.usage.set_label(&k(used));
-            self.context.set_visible(false);
-            return;
+        // Tokens, not a share: every message re-reads them all, so they are what it costs.
+        self.usage.set_label(&tokens(used));
+        self.context.set_visible(size > 0);
+        if size > 0 {
+            self.context.set_value((used as f64 / size as f64).min(1.0));
         }
-        let share = used as f64 / size as f64;
-        self.usage.set_label(&format!("{}%", (share * 100.0).round() as u32));
-        self.context.set_value(share.min(1.0));
-        self.context.set_visible(true);
-        if share > 0.8 {
+        if self.costly() {
             self.context.add_css_class("full");
         } else {
             self.context.remove_css_class("full");
@@ -2390,17 +2386,23 @@ impl Chat {
         self.show_compact();
     }
 
-    /// The Compact button, when the setting is on and the context is at least that full.
+    /// The context holds as much as the user's Compact setting, or fills 80% of the window.
+    fn costly(&self) -> bool {
+        let Some((used, size)) = self.spent.borrow().0 else { return false };
+        used >= crate::settings::get().compact_tokens || (size > 0 && used * 5 >= size * 4)
+    }
+
+    /// The Compact button, when the setting is on and the context holds that much.
     fn show_compact(&self) {
         let s = crate::settings::get();
-        let share = match self.spent.borrow().0 {
-            Some((used, size)) if size > 0 => used as f64 / size as f64,
-            _ => 0.0,
-        };
-        let percent = (share * 100.0).round() as u64;
-        let show = s.compact_alert && percent >= s.compact_at && self.working_since.get().is_none();
+        let (used, size) = self.spent.borrow().0.unwrap_or((0, 0));
+        let show = s.compact_alert && self.costly() && self.working_since.get().is_none();
         if show {
-            self.compact.set_tooltip_text(Some(&format!("The context is {percent}% full: summarise the conversation so far to make room (/compact)")));
+            let share = if size > 0 { format!(" ({}% of the window)", used * 100 / size) } else { String::new() };
+            self.compact.set_tooltip_text(Some(&format!(
+                "The context holds {}{share}, and every message re-reads all of it. Compact: summarise the conversation so far to start small again (/compact)",
+                tokens(used)
+            )));
         }
         self.compact.set_visible(show);
     }
@@ -4607,4 +4609,13 @@ fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextVie
     click.connect_pressed(move |_, _, x, y| opened(x, y));
     wrap.add_controller(click);
     crate::menu::on_menu_key(wrap, move |x, y| open(x, y));
+}
+
+/// A token count as the meter shows it: "950", "12k", "1.2M".
+fn tokens(n: u64) -> String {
+    match n {
+        0..1000 => n.to_string(),
+        1000..1_000_000 => format!("{}k", n / 1000),
+        _ => format!("{:.1}M", n as f64 / 1e6),
+    }
 }

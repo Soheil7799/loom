@@ -35,8 +35,8 @@
       { title: "Conversation", rows: [
         { key: "show_thinking", title: "Show thinking", detail: "Claude's reasoning, folded under each answer.", kind: "switch" },
         { key: "suggest_prompts", title: "Suggest your next message", detail: "After a turn, Claude Code suggests what you'll write next; → or Tab fills it in.", kind: "switch" },
-        { key: "compact_alert", title: "Remind me to compact", detail: "Once the context is this full, a Compact button shows by the context meter.", kind: "switch" },
-        { key: "compact_at", title: "Context full at (%)", kind: "number", when: "compact_alert" },
+        { key: "compact_alert", title: "Remind me to compact", detail: "Every message re-reads the whole context, so a long conversation costs more each turn. Once it holds this many tokens, the meter turns amber and a Compact button shows by it.", kind: "switch" },
+        { key: "compact_tokens", title: "Compact at (tokens)", kind: "number", when: "compact_alert" },
       ] },
       { title: "Idle agents", rows: [
         { key: "idle_minutes", title: "Suspend idle agents", detail: "Frees an unwatched agent's memory; opening it resumes the conversation.", kind: "select", options: IDLE },

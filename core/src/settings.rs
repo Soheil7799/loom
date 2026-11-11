@@ -74,9 +74,10 @@ pub struct Settings {
     /// Claude Code's default). A topic's own `model:` is used over this one.
     pub scribe_model: String,
     pub scribe_effort: String,
-    /// A Compact button by the context meter once the context is at least this full (%).
+    /// A Compact button by the context meter once the context holds at least this many
+    /// tokens (each message re-reads all of them, so cost grows with it, whatever the window).
     pub compact_alert: bool,
-    pub compact_at: u64,
+    pub compact_tokens: u64,
     /// An idle agent about to be suspended first compacts its conversation, if it holds at
     /// least this many tokens.
     pub rest_compact: bool,
@@ -123,7 +124,7 @@ impl Default for Settings {
             scribe_model: "haiku".to_owned(),
             scribe_effort: String::new(),
             compact_alert: true,
-            compact_at: 80,
+            compact_tokens: 150_000,
             rest_compact: true,
             rest_compact_tokens: 100_000,
         }
@@ -406,7 +407,7 @@ fn parse(text: &str) -> Settings {
         scribe_model: string("scribeModel", &d.scribe_model),
         scribe_effort: string("scribeEffort", &d.scribe_effort),
         compact_alert: flag("compactAlert", d.compact_alert),
-        compact_at: v["compactAt"].as_u64().unwrap_or(d.compact_at).clamp(10, 95),
+        compact_tokens: v["compactTokens"].as_u64().unwrap_or(d.compact_tokens).clamp(20_000, 2_000_000),
         rest_compact: flag("restCompact", d.rest_compact),
         rest_compact_tokens: v["restCompactTokens"].as_u64().unwrap_or(d.rest_compact_tokens),
     }
@@ -451,7 +452,7 @@ fn render(s: &Settings) -> String {
         "scribeModel": s.scribe_model,
         "scribeEffort": s.scribe_effort,
         "compactAlert": s.compact_alert,
-        "compactAt": s.compact_at,
+        "compactTokens": s.compact_tokens,
         "restCompact": s.rest_compact,
         "restCompactTokens": s.rest_compact_tokens,
     }))

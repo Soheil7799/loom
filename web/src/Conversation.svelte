@@ -61,7 +61,7 @@
     os.flatMap((o) => { const x = o as { value?: string; name?: string; options?: unknown[] }; return x.options ? flat(x.options) : x.value ? [{ value: x.value, name: x.name ?? x.value }] : []; });
   const options = $derived(((agent.options ?? []) as Opt[]).filter((o) => o.id !== "mode" && flat(o.options).length));
   let compactAt = $state<number | null>(null);
-  $effect(() => follow("settings", (f) => (compactAt = f.items[0]?.compact_alert ? (f.items[0]?.compact_at ?? 80) : null)));
+  $effect(() => follow("settings", (f) => (compactAt = f.items[0]?.compact_alert ? (f.items[0]?.compact_tokens ?? 150000) : null)));
   // its context and cost, and the account's limits (5-hour, weekly) as Claude Code last said
   let limits = $state.raw<{ kind: string; utilization: number; resets_at?: string }[]>([]);
   $effect(() => follow("usage", (f) => {
@@ -83,6 +83,10 @@
   const busy = $derived(agent.busy || (agent.status === "notes" && entries.slice(entries.map((e) => e.kind).lastIndexOf("user") + 1).some((e) => e.status === "pending" || e.status === "streaming")));
   const st = $derived(stateOf({ ...agent, busy }));
   const context = $derived(usage?.used && usage?.size ? Math.round((usage.used / usage.size) * 100) : null);
+  // tokens, not a share: every message re-reads them all, so they are what it costs
+  const used = $derived(usage?.used ?? 0);
+  const k = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1000 ? `${Math.floor(n / 1000)}k` : `${n}`);
+  const costly = $derived(context !== null && ((compactAt !== null && used >= compactAt) || context >= 80));
   const cost = $derived(usage?.cost as { amount?: number; currency?: string } | undefined);
 
   // "Since you last looked": the newest entry seen here before, kept per agent in this browser.
@@ -353,9 +357,9 @@
       {#if st.shape === "wait"}<span class="needs">waits for you</span>{/if}
     </span>
     <span class="grow"></span>
-    {#if context !== null}<span class="ctx"><span class="bar"><i style:width="{Math.min(context, 100)}%"></i></span>{context}%</span>{/if}
-    {#if context !== null && compactAt !== null && context >= compactAt && agent.status !== "notes"}
-      <button class="chip warn" title="The context is {context}% full: summarise the conversation so far to make room (/compact)" disabled={busy} onclick={() => run(command("send", { agent: agent.id, text: "/compact" }))}>Compact</button>
+    {#if context !== null}<span class="ctx" class:costly title="{k(used)} tokens, {context}% of the window"><span class="bar"><i style:width="{Math.min(context, 100)}%"></i></span>{k(used)}</span>{/if}
+    {#if costly && compactAt !== null && agent.status !== "notes"}
+      <button class="chip warn" title="The context holds {k(used)} ({context}% of the window), and every message re-reads all of it. Compact: summarise the conversation so far to start small again (/compact)" disabled={busy} onclick={() => run(command("send", { agent: agent.id, text: "/compact" }))}>Compact</button>
     {/if}
     {#if limits.length && agent.status !== "notes"}<span class="ctx" title={limits.map((l) => `${limitName(l.kind)}: ${pct(l.utilization)}% used${l.resets_at ? `, resets ${new Date(l.resets_at).toLocaleString()}` : ""}`).join("\n")}>{limits.slice(0, 2).map((l) => `${limitName(l.kind)} ${pct(l.utilization)}%`).join(" · ")}</span>{/if}
     {#if mcpBad.length}<span class="ctx warnmcp" title={mcpBad.map((m) => `${m.name}: ${m.status}${m.error ? ` (${m.error})` : ""}`).join("\n")}>⚠ {mcpBad.length === 1 ? mcpBad[0].name : `${mcpBad.length} tool servers`}</span>{/if}

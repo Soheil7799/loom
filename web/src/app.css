@@ -166,6 +166,8 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .ctx { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; color: var(--quiet); font-variant-numeric: tabular-nums; }
 .ctx .bar { width: 40px; height: 4px; border-radius: 99px; background: color-mix(in srgb, var(--fg) 10%, transparent); overflow: hidden; }
 .ctx .bar i { display: block; height: 100%; background: color-mix(in srgb, var(--fg) 45%, transparent); }
+.ctx.costly { color: var(--wait); }
+.ctx.costly .bar i { background: var(--wait); }
 .messages { flex: 1; overflow: auto; padding: 18px 28px 24px; }
 .column { position: relative; max-width: 744px; margin: 0 auto; padding-left: 30px; display: flex; flex-direction: column; gap: 10px; }
 .turn { display: flex; flex-direction: column; gap: 10px; }
