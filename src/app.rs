@@ -124,7 +124,7 @@ pub struct App {
     project_edges: RefCell<HashMap<PathBuf, (gtk::ListBoxRow, gtk::ListBoxRow)>>,
     /// Open projects' cards (name, first and last agent row): their names drawn up the left.
     cards: RefCell<Vec<(PathBuf, String, gtk::ListBoxRow, gtk::ListBoxRow)>>,
-    /// Over the agent list: each open card's name (a button: its page) and ▾ (folds it).
+    /// Over the agent list: each open card's name (a button that folds it).
     card_layer: gtk::Overlay,
     card_spots: CardSpots,
     /// loomd's agents opened in the window (its client), and the one in view.
@@ -287,15 +287,14 @@ impl App {
         // the list's own: keys, menus and drag work as on any row).
         let with_names = gtk::Overlay::builder().child(&list).build();
         let card_spots: CardSpots = Rc::default();
-        // each over its card's left edge: the ▾ at the top, the name below it
+        // each over its card's left edge, its whole height
         let (spots, under) = (card_spots.clone(), list.clone());
         with_names.connect_get_child_position(move |_, widget| {
             let spots = spots.borrow();
-            let (_, fold, first, last) = spots.iter().find(|s| s.0 == *widget)?;
+            let (_, first, last) = spots.iter().find(|s| s.0 == *widget)?;
             let (top, bottom) = (first.compute_bounds(&under)?, last.compute_bounds(&under)?);
-            let height = bottom.y() + bottom.height() - top.y();
-            let (y, h) = if *fold { (top.y() + 6.0, CARD_FOLD) } else { (top.y() + 6.0 + CARD_FOLD, height - CARD_FOLD - 12.0) };
-            Some(gdk::Rectangle::new(top.x() as i32 + 2, y as i32, CARD_STRIP as i32, h.max(1.0) as i32))
+            let height = bottom.y() + bottom.height() - top.y() - 12.0;
+            Some(gdk::Rectangle::new(top.x() as i32 + 2, top.y() as i32 + 6, CARD_STRIP as i32, height.max(1.0) as i32))
         });
         let list_scroller = gtk::ScrolledWindow::builder().child(&with_names).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         // Two sections, folded from their headers (as VS Code's): Running, sized to its rows up
@@ -3482,7 +3481,7 @@ impl App {
         }
     }
 
-    /// The open cards' name and ▾ buttons, made again with the list (real widgets: in the
+    /// The open cards' name strips, made again with the list (real widgets: in the
     /// focus order and named for screen readers, as drawn text never is).
     // shortcut: they come after the list in Tab order; one focus order with the rows if that bites
     fn card_buttons(self: &Rc<Self>) {
@@ -3495,7 +3494,7 @@ impl App {
             // one agent: tall enough for its project's name
             if first == last {
                 let (width, _) = name_layout(&self.list, &label, i32::MAX).pixel_size();
-                first.set_size_request(-1, width + CARD_FOLD as i32 + 48);
+                first.set_size_request(-1, width + 48);
                 // its pill at its height, in the middle of the taller card
                 if let Some(pill) = first.child() {
                     pill.set_valign(gtk::Align::Center);
@@ -3535,21 +3534,9 @@ impl App {
                 let point = at.compute_point(&app.list, &gtk::graphene::Point::new(x as f32, y as f32)).map_or((x, y), |p| (f64::from(p.x()), f64::from(p.y())));
                 app.project_menu(&menu, point.0, point.1);
             });
-            let fold = gtk::Button::builder().label("▾").tooltip_text(format!("Fold {name}")).build();
-            fold.add_css_class("card-fold");
-            fold.set_cursor_from_name(Some("pointer"));
-            fold.update_property(&[gtk::accessible::Property::Label(&format!("Fold {name}"))]);
-            fold.update_state(&[gtk::accessible::State::Expanded(Some(true))]);
-            let (weak, shut) = (Rc::downgrade(self), path.clone());
-            fold.connect_clicked(move |_| {
-                if let Some(app) = weak.upgrade() {
-                    app.toggle_collapsed(&shut);
-                }
-            });
-            self.card_layer.add_overlay(&fold);
+            strip.update_state(&[gtk::accessible::State::Expanded(Some(true))]);
             self.card_layer.add_overlay(&strip);
-            spots.push((fold.upcast(), true, first.clone(), last.clone()));
-            spots.push((strip.upcast(), false, first.clone(), last.clone()));
+            spots.push((strip.upcast(), first.clone(), last.clone()));
         }
         *self.card_spots.borrow_mut() = spots;
     }
@@ -3571,20 +3558,8 @@ impl App {
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
     fn project_row(self: &Rc<Self>, project: &SideProject, agents: &[&SideAgent]) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let arrow = gtk::Button::with_label(if project.collapsed { "▸" } else { "▾" });
-        arrow.add_css_class("flat");
-        arrow.add_css_class("arrow");
-        arrow.set_tooltip_text(Some(if project.collapsed { "Show its agents" } else { "Hide its agents" }));
-        let weak = Rc::downgrade(self);
-        let path = project.path.clone();
-        arrow.connect_clicked(move |_| {
-            if let Some(app) = weak.upgrade() {
-                app.toggle_collapsed(&path);
-            }
-        });
         let name = gtk::Label::builder().label(&project.name).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         name.add_css_class("project-name");
-        line.append(&arrow);
         line.append(&name);
         let waiting = agents.iter().filter(|a| a.status == Status::Blocked).count();
         let working = agents.iter().filter(|a| matches!(a.status, Status::Working | Status::Starting)).count();
@@ -4055,13 +4030,11 @@ fn tip_above(widget: &impl IsA<gtk::Widget>) {
     widget.add_controller(click);
 }
 
-/// How wide an open project's name strip is, at its card's left, and how tall its ▾ (at the
-/// top: folds it).
+/// How wide an open project's name strip is, at its card's left (a click folds the card).
 const CARD_STRIP: f32 = 26.0;
-const CARD_FOLD: f32 = 26.0;
 
-/// The open cards' buttons over the list: each widget, whether it is the ▾, the card's rows.
-type CardSpots = Rc<RefCell<Vec<(gtk::Widget, bool, gtk::ListBoxRow, gtk::ListBoxRow)>>>;
+/// The open cards' name strips over the list: each widget and its card's first and last rows.
+type CardSpots = Rc<RefCell<Vec<(gtk::Widget, gtk::ListBoxRow, gtk::ListBoxRow)>>>;
 
 /// An open project's name as its card's edge shows it (`width`: the most it may take).
 fn name_layout(widget: &impl IsA<gtk::Widget>, text: &str, width: i32) -> pango::Layout {

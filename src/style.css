@@ -67,8 +67,6 @@ button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7)
 .composer { box-shadow: 0 4px 14px @loom_shadow; }
 .overview-card { box-shadow: 0 2px 6px @loom_shadow; }
 .overview-card:hover { box-shadow: 0 4px 12px @loom_shadow; }
-.project-row button.arrow { opacity: 0.6; font-size: 0.8em; min-width: 16px; min-height: 18px; padding: 0 2px; border-radius: 6px; }
-.project-row button.arrow:hover { opacity: 1; }
 .project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }
 .project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
 .project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
@@ -734,8 +732,6 @@ button.board-card { box-shadow: 0 1px 3px @loom_shadow; }
    conversations a surface of their own; what the no-strokes block left too faint. */
 button.card-strip { background: none; padding: 0; border-radius: 10px; min-width: 0; min-height: 0; box-shadow: none; }
 button.card-strip:hover { background: alpha(@window_fg_color, 0.08); }
-button.card-fold { min-width: 26px; min-height: 26px; padding: 0; border-radius: 8px; background: none; box-shadow: none; color: alpha(@window_fg_color, 0.8); }
-button.card-fold:hover { background: alpha(@window_fg_color, 0.1); }
 .agents row.agent-row.in-card:selected > box,
 .agents row.agent-row.in-card.state-working:selected > box,
 .agents row.agent-row.in-card.state-done:selected > box,
