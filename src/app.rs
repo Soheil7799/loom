@@ -726,10 +726,19 @@ impl App {
         });
         let weak = Rc::downgrade(self);
         self.board.back.connect_clicked(move |_| {
-            if let Some((app, id)) = weak.upgrade().and_then(|app| Some((app.clone(), app.back_to.get()?))) {
-                app.focus_remote(id);
+            if let Some(app) = weak.upgrade() {
+                app.go_back();
             }
         });
+        // The mouse's back button, anywhere in the window: the same.
+        let mouse_back = gtk::GestureClick::builder().button(8).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let weak = Rc::downgrade(self);
+        mouse_back.connect_pressed(move |gesture, _, _, _| {
+            if weak.upgrade().is_some_and(|app| app.go_back()) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+            }
+        });
+        self.window.add_controller(mouse_back);
         // The Running section: its rows in `running`'s order.
         let weak = Rc::downgrade(self);
         self.run_list.connect_row_activated(move |_, row| {
@@ -930,6 +939,10 @@ impl App {
         // Ctrl+B starts the prefix everywhere, terminals included (as in herdr).
         if ctrl && !shift && !alt && base == gdk::Key::b {
             self.start_prefix();
+            return glib::Propagation::Stop;
+        }
+        // The keyboard's Back key: from a project's page to the agent it was opened from.
+        if key == gdk::Key::Back && self.go_back() {
             return glib::Propagation::Stop;
         }
         if key == gdk::Key::F2 && !ctrl && !alt {
@@ -3549,6 +3562,17 @@ impl App {
             spots.push((strip.upcast(), first.clone(), last.clone()));
         }
         *self.card_spots.borrow_mut() = spots;
+    }
+
+    /// From a project's page back to the agent it was opened from (false: not on one, or
+    /// that agent is gone).
+    fn go_back(self: &Rc<Self>) -> bool {
+        let Some(id) = self.back_to.get().filter(|_| self.showing_project().is_some()) else { return false };
+        if self.remote_item(id).is_none() {
+            return false;
+        }
+        self.focus_remote(id);
+        true
     }
 
     /// The sections open or folded as the settings say. Projects folded: Running takes the
