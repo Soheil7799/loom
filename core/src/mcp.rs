@@ -190,7 +190,7 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
         },
         {
             "name": "loom_find",
-            "description": "Find where something is in this project's code when you don't know the file: a feature, a behavior, a concept or a name, in plain words (\"where finished subagent rows are removed\", \"archive the done lane\"). Ranks the definitions (functions, types, doc headings) by their names, doc comments, bodies and paths, and returns places (path:line and the definition's first line), not code: then Read only those lines. One call instead of several Grep and Read rounds; Grep stays best for an exact string you already know.",
+            "description": "Find where something is in this project's code when you don't know the file: a feature, a behavior, a concept or a name, in plain words (\"where finished subagent rows are removed\", \"archive the done lane\"). Ranks the project's concept cards (.loom/map: a feature's files, symbols and gotchas) and the definitions (functions, types, doc headings) by their names, doc comments, bodies and paths, and returns places (path:line and the definition's first line), not code: then Read only those lines. One call instead of several Grep and Read rounds; Grep stays best for an exact string you already know.",
             "inputSchema": { "type": "object", "properties": {
                 "query": { "type": "string", "description": "What you look for, in words" },
                 "limit": { "type": "integer", "description": "How many places (default 10, at most 25)" }
@@ -273,32 +273,38 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
 }
 
 /// loom_note_search / loom_note_read, from the index of the vault loom has now.
-/// loom_find: the places in the agent's project best matching the query.
+/// loom_find: the places in the agent's folder (this process runs in it: a worktree's agent
+/// searches its worktree) and its project's concept cards best matching the query.
 fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     let agents = call(socket, agent, "list_agents", json!({}))?;
     let project = agents.as_array().into_iter().flatten().find(|a| a["you"] == true).and_then(|a| a["project"].as_str()).map(PathBuf::from).ok_or("loom doesn't know this agent's project")?;
+    let root = std::env::current_dir().unwrap_or_else(|_| project.clone());
     let query = args["query"].as_str().unwrap_or("").trim();
     if query.is_empty() {
         return Err("Say what to find.".into());
     }
     let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 25) as usize;
     let mut held = CODE.lock().unwrap_or_else(|e| e.into_inner());
-    if held.as_ref().is_none_or(|index| index.root() != project) {
-        *held = Some(crate::code_search::Index::new(&project));
+    if held.as_ref().is_none_or(|index| index.root() != root) {
+        *held = Some(crate::code_search::Index::new(&root, Some(crate::code_search::map_of(&project))));
     }
     let index = held.as_mut().ok_or("no index")?;
     index.refresh();
     let found = index.search(query, limit);
     if found.is_empty() {
-        return Ok(format!("Nothing in {} matched those words: try others, or Grep for an exact string.", project.display()));
+        return Ok(format!("Nothing in {} matched those words: try others (what the code would call it), or Grep for an exact string.", root.display()));
     }
-    let mut out = format!("In {} (paths relative to it):\n", project.display());
+    let mut out = format!("In {} (paths relative to it):\n", root.display());
     for f in found {
         out.push_str(&format!("{}:{}  {}\n", f.path, f.line, f.head));
         if !f.doc.is_empty() {
             out.push_str(&format!("    {}\n", f.doc));
         }
+        if !f.also.is_empty() {
+            out.push_str(&format!("    also in another checkout: {}\n", f.also.join(", ")));
+        }
     }
+    out.push_str("Not it? Ask again in other words (what the code would call it).");
     Ok(out)
 }
 
@@ -420,7 +426,14 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_find" => find(socket, agent, args),
         "loom_board" => call(socket, agent, "board", json!({})).map(|v| pretty(&v)),
         "loom_board_add" => call(socket, agent, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),
-        "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| "Moved.".to_owned()),
+        "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| {
+            if args["lane"].as_str().is_some_and(|l| l.eq_ignore_ascii_case("done")) {
+                // the moment it knows best where the feature lives: kept for the next agent
+                "Moved. If finding your way took searching, add or update the feature's concept card in the project's .loom/map/ (next to .loom/board.md; the format is in the loom skill), so loom_find answers the next agent at once.".to_owned()
+            } else {
+                "Moved.".to_owned()
+            }
+        }),
         "loom_board_note" => call(socket, agent, "board_edit", json!({ "card": args["card"], "note": args["note"] })).map(|_| "Noted.".to_owned()),
         tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
         tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, agent, tool, args),

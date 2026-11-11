@@ -4,6 +4,11 @@
 //! doc comments and paths weighing more than bodies). It answers with places, never code,
 //! so the agent reads only the lines it needs instead of grepping and reading whole files.
 //!
+//! Concept cards (`<project>/.loom/map/*.md`, written by agents when they finish work) are
+//! searched with the code and weigh more: a feature in people's words (aliases), all its
+//! files and symbols at once, and why it is like this. A card naming a file or symbol that
+//! is gone is said to be possibly out of date; the code stays the truth.
+//!
 //! Plain Rust, in the MCP server's process; refreshed from the files' times on each search.
 
 use std::collections::HashMap;
@@ -28,6 +33,8 @@ struct Piece {
     doc: String,
     terms: Vec<(String, u32)>,
     len: u32,
+    /// A concept card's own (its files and symbols, checked when it is found).
+    card: Option<(Vec<String>, Vec<String>)>,
 }
 
 struct File {
@@ -37,6 +44,8 @@ struct File {
 
 pub struct Index {
     root: PathBuf,
+    /// The project's concept cards (`<project>/.loom/map`), searched with the code.
+    map: Option<PathBuf>,
     files: HashMap<String, File>,
     /// term → (file, piece, count), rebuilt when a file changed.
     postings: HashMap<String, Vec<(usize, usize, u32)>>,
@@ -44,18 +53,26 @@ pub struct Index {
     average: f64,
 }
 
-/// One answer: `path:line`, its definition line, the first line of its doc comment.
+/// One answer: `path:line`, its definition line, the first line of its doc comment, and
+/// the same definition elsewhere (another checkout of the repo).
 #[derive(Debug, PartialEq)]
 pub struct Found {
     pub path: String,
     pub line: usize,
     pub head: String,
     pub doc: String,
+    pub also: Vec<String>,
+}
+
+/// Where a project's concept cards are.
+pub fn map_of(project: &Path) -> PathBuf {
+    project.join(".loom").join("map")
 }
 
 impl Index {
-    pub fn new(root: &Path) -> Index {
-        Index { root: root.to_path_buf(), files: HashMap::new(), postings: HashMap::new(), order: Vec::new(), average: 1.0 }
+    /// The code under `root` (the agent's folder), and the cards in `map`.
+    pub fn new(root: &Path, map: Option<PathBuf>) -> Index {
+        Index { root: root.to_path_buf(), map, files: HashMap::new(), postings: HashMap::new(), order: Vec::new(), average: 1.0 }
     }
 
     pub fn root(&self) -> &Path {
@@ -64,27 +81,41 @@ impl Index {
 
     /// Changed files read again, gone ones dropped.
     pub fn refresh(&mut self) {
-        let listed: Vec<String> = crate::quickopen::list_files(&self.root)
+        // as shown (relative to root), and where it is
+        let mut listed: Vec<(String, PathBuf)> = crate::quickopen::list_files(&self.root)
             .into_iter()
-            .filter(|f| !f.ends_with('/') && Path::new(f).extension().is_some_and(|e| SOURCE.contains(&e.to_string_lossy().to_lowercase().as_str())))
+            // not folders, nor what lies in dot-folders (notes, caches, tools' state)
+            .filter(|f| !f.ends_with('/') && !f.split('/').any(|part| part.starts_with('.')))
+            .filter(|f| Path::new(f).extension().is_some_and(|e| SOURCE.contains(&e.to_string_lossy().to_lowercase().as_str())))
+            .map(|f| (f.clone(), self.root.join(&f)))
             .collect();
-        let mut changed = self.files.len() != listed.len() || listed.iter().any(|f| !self.files.contains_key(f));
+        if let Some(map) = &self.map {
+            for entry in std::fs::read_dir(map).into_iter().flatten().flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|e| e == "md") {
+                    let shown = path.strip_prefix(&self.root).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| path.to_string_lossy().into_owned());
+                    listed.push((shown, path));
+                }
+            }
+        }
+        let mut changed = self.files.len() != listed.len() || listed.iter().any(|(f, _)| !self.files.contains_key(f));
         let mut kept = HashMap::with_capacity(listed.len());
-        for path in listed {
-            let Ok(meta) = std::fs::metadata(self.root.join(&path)) else { continue };
+        for (shown, path) in listed {
+            let Ok(meta) = std::fs::metadata(&path) else { continue };
             if meta.len() > BIGGEST {
                 continue;
             }
             let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
-            match self.files.remove(&path) {
+            match self.files.remove(&shown) {
                 Some(file) if file.stamp == stamp => {
-                    kept.insert(path, file);
+                    kept.insert(shown, file);
                 }
                 _ => {
                     changed = true;
-                    let text = std::fs::read(self.root.join(&path)).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
-                    let pieces = pieces(&path, &text);
-                    kept.insert(path, File { stamp, pieces });
+                    let text = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
+                    let is_card = self.map.as_ref().is_some_and(|m| path.starts_with(m));
+                    let pieces = if is_card { card(&path, &text).into_iter().collect() } else { pieces(&shown, &text) };
+                    kept.insert(shown, File { stamp, pieces });
                 }
             }
         }
@@ -115,7 +146,8 @@ impl Index {
         self.files.values().map(|f| f.pieces.len()).sum()
     }
 
-    /// The pieces best matching `query`, at most `limit`, at most 3 from one file.
+    /// The pieces best matching `query`, at most `limit`, at most 3 from one file; one
+    /// definition met again in another checkout (same file name and line) is said once.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Found> {
         let mut terms = words(query);
         terms.sort();
@@ -134,21 +166,91 @@ impl Index {
         let mut ranked: Vec<_> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
         let mut per_file: HashMap<usize, usize> = HashMap::new();
-        let mut found = Vec::new();
+        let mut found: Vec<Found> = Vec::new();
         for ((f, p), _) in ranked {
+            let path = &self.order[f];
+            let piece = &self.files[path].pieces[p];
+            let name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_owned();
+            if let Some(same) = found.iter_mut().find(|x| x.head == piece.head && x.doc == piece.doc && name(&x.path) == name(path)) {
+                same.also.push(format!("{path}:{}", piece.line));
+                continue;
+            }
+            if found.len() == limit {
+                continue;
+            }
             let seen = per_file.entry(f).or_default();
             if *seen == 3 {
                 continue;
             }
             *seen += 1;
-            let piece = &self.files[&self.order[f]].pieces[p];
-            found.push(Found { path: self.order[f].clone(), line: piece.line, head: piece.head.clone(), doc: piece.doc.clone() });
-            if found.len() == limit {
-                break;
+            let mut head = piece.head.clone();
+            if let Some((files, symbols)) = &piece.card {
+                let gone: Vec<&str> = self.gone(files, symbols);
+                if !gone.is_empty() {
+                    head.push_str(&format!(" (may be out of date: {} not found)", gone.join(", ")));
+                }
             }
+            found.push(Found { path: path.clone(), line: piece.line, head, doc: piece.doc.clone(), also: Vec::new() });
         }
         found
     }
+
+    /// What a card names that isn't there any more: files (relative to the project) and
+    /// symbols no definition is named after.
+    fn gone<'a>(&self, files: &'a [String], symbols: &'a [String]) -> Vec<&'a str> {
+        let project = self.map.as_ref().and_then(|m| m.parent()?.parent());
+        let mut gone: Vec<&str> = files.iter().filter(|f| project.is_some_and(|p| !p.join(f).exists())).map(String::as_str).collect();
+        for symbol in symbols {
+            let last = symbol.rsplit("::").next().unwrap_or(symbol);
+            let defined = self.files.values().flat_map(|f| &f.pieces).any(|p| p.card.is_none() && p.head.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == last));
+            if !defined {
+                gone.push(symbol);
+            }
+        }
+        gone
+    }
+}
+
+/// A concept card (a feature, in the words people use for it): front matter with `title`,
+/// `aliases`, `files`, `symbols` (lists as `[a, b]` or `- a` lines), then what it is, why
+/// and its gotchas. Weighs more than code: it is the map, written for finding.
+fn card(path: &Path, text: &str) -> Option<Piece> {
+    let mut fields: HashMap<String, Vec<String>> = HashMap::new();
+    let mut body = text;
+    if let Some(rest) = text.strip_prefix("---\n") {
+        let (front, after) = rest.split_once("\n---").unwrap_or((rest, ""));
+        body = after.trim_start_matches(['-', '\n']);
+        let mut key = String::new();
+        for line in front.lines() {
+            if let Some(item) = line.trim_start().strip_prefix("- ") {
+                fields.entry(key.clone()).or_default().push(item.trim().trim_matches(['"', '\'']).to_owned());
+            } else if let Some((k, v)) = line.split_once(':') {
+                key = k.trim().to_lowercase();
+                let v = v.trim().trim_start_matches('[').trim_end_matches(']');
+                fields.entry(key.clone()).or_default().extend(v.split(',').map(|x| x.trim().trim_matches(['"', '\'']).to_owned()).filter(|x| !x.is_empty()));
+            }
+        }
+    }
+    let one = |k: &str| fields.get(k).cloned().unwrap_or_default();
+    let stem = path.file_stem()?.to_string_lossy().replace(['-', '_'], " ");
+    let title = one("title").first().cloned().unwrap_or(stem);
+    let (aliases, files, symbols) = (one("aliases"), one("files"), one("symbols"));
+    let summary = body.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#')).unwrap_or("");
+    let mut counts: HashMap<String, u32> = HashMap::new();
+    for (text, weight) in [(format!("{title} {}", aliases.join(" ")), 8), (format!("{} {}", files.join(" "), symbols.join(" ")), 4), (body.to_owned(), 2)] {
+        for w in words(&text) {
+            *counts.entry(w).or_default() += weight;
+        }
+    }
+    let mut doc = summary.chars().take(200).collect::<String>();
+    if !files.is_empty() {
+        doc.push_str(&format!("\n    files: {}", files.join(", ")));
+    }
+    if !symbols.is_empty() {
+        doc.push_str(&format!("\n    symbols: {}", symbols.join(", ")));
+    }
+    let len = counts.values().sum::<u32>() / 2;
+    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), len, card: Some((files, symbols)) })
 }
 
 /// `text` cut at its definitions: each from its line to the next one's, with the comment
@@ -189,7 +291,7 @@ fn pieces(path: &str, text: &str) -> Vec<Piece> {
             ("(the file's start)".to_owned(), own.first().map(|d| d.chars().take(140).collect()).unwrap_or_default())
         };
         let len = counts.values().sum();
-        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len });
+        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len, card: None });
     }
     out
 }
@@ -294,7 +396,7 @@ mod tests {
         .unwrap();
         std::fs::write(root.join("web.ts"), "export function archiveDone(board: Board) {\n  // the Done lane, moved to the archive\n}\n").unwrap();
         std::fs::write(root.join("README.md"), "# loom\n\n## Board\n\nCards in lanes.\n").unwrap();
-        let mut index = Index::new(&root);
+        let mut index = Index::new(&root, None);
         index.refresh();
         fn top(index: &Index, q: &str) -> Option<(String, usize)> {
             index.search(q, 3).into_iter().next().map(|f| (f.path, f.line))
@@ -307,6 +409,40 @@ mod tests {
         std::fs::write(root.join("web.ts"), "export function wipeLane() {}\n").unwrap();
         index.refresh();
         assert_eq!(top(&index, "wipe lane"), Some(("web.ts".into(), 1)));
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn cards_answer_in_peoples_words_and_say_when_they_are_out_of_date() {
+        let root = std::env::temp_dir().join(format!("loom-cards-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let code = "/// Its row in the strip, gone once it ended.\nfn show_sub(&self) {}\n";
+        for dir in ["app/core", "app-copy/core", ".remember"] {
+            std::fs::create_dir_all(root.join(dir)).unwrap();
+        }
+        std::fs::write(root.join("app/core/agent.rs"), code).unwrap();
+        // the same repo checked out twice (a worktree): said once
+        std::fs::write(root.join("app-copy/core/agent.rs"), code).unwrap();
+        // a dot-folder's notes are not code
+        std::fs::write(root.join(".remember/today.md"), "# stuck subagent rows\n").unwrap();
+        let map = map_of(&root);
+        std::fs::create_dir_all(&map).unwrap();
+        std::fs::write(
+            map.join("subagent-strip.md"),
+            "---\ntitle: Subagent strip\naliases: [stuck rows, crew]\nfiles: [app/core/agent.rs]\nsymbols:\n  - show_sub\n---\nSubagents' live rows above the chat; loomd keeps them.\n",
+        )
+        .unwrap();
+        std::fs::write(map.join("old.md"), "---\nfiles: [app/gone.rs]\nsymbols: [vanished_fn]\n---\nThe old pairing flow.\n").unwrap();
+        let mut index = Index::new(&root, Some(map.clone()));
+        index.refresh();
+        let found = index.search("stuck rows", 5);
+        assert_eq!(found[0].head, "card: Subagent strip");
+        assert!(found[0].doc.contains("files: app/core/agent.rs"), "{}", found[0].doc);
+        assert!(found.iter().all(|f| !f.path.starts_with(".remember")), "{found:?}");
+        let code = index.search("row strip ended", 5);
+        let sub = code.iter().find(|f| f.head.starts_with("fn show_sub")).expect("show_sub");
+        assert_eq!(sub.also.len(), 1, "{code:?}");
+        assert_eq!(index.search("old pairing flow", 1)[0].head, "card: old (may be out of date: app/gone.rs, vanished_fn not found)");
         let _ = std::fs::remove_dir_all(&root);
     }
 }
