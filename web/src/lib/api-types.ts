@@ -753,6 +753,26 @@ export type NewAgentParams = {
   folder: string;
 };
 
+/** Starts an agent in a worktree of its own: a new branch from what the project has checked out, in <parent>/<project>.worktrees/<branch>. Its agents stay on the project's card. Result: {agent} */
+export type NewWorktreeAgentParams = {
+  /** the project's id (its folder) */
+  project: string;
+  /** the new branch's name */
+  branch: string;
+};
+
+/** Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone. Result: {said} */
+export type WorktreeMergeParams = {
+  /** the agent's id */
+  agent: string;
+};
+
+/** Closes an agent and removes its worktree, and its branch once merged (an unmerged branch is kept). Refused while it works or has changes not committed. Result: {said} */
+export type WorktreeRemoveParams = {
+  /** the agent's id */
+  agent: string;
+};
+
 /** Renames a project. Result: {} */
 export type RenameProjectParams = {
   /** the project's id (its folder) */
@@ -1167,6 +1187,17 @@ export type BoardEditParams = {
   note?: string;
 };
 
+/** Starts an agent on a card: its title and description are the agent's first message, the card goes to Doing, and the agent's work is logged on it. Result: {agent} */
+export type BoardWorkParams = {
+  project: string;
+  card: number;
+};
+
+/** Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids. Result: {archived} */
+export type BoardArchiveParams = {
+  project: string;
+};
+
 /** A card taken off the board. Result: {} */
 export type BoardRemoveParams = {
   project: string;
@@ -1253,6 +1284,9 @@ export interface Commands {
   "loomd_stop": LoomdStopParams;
   "set_looking": SetLookingParams;
   "new_agent": NewAgentParams;
+  "new_worktree_agent": NewWorktreeAgentParams;
+  "worktree_merge": WorktreeMergeParams;
+  "worktree_remove": WorktreeRemoveParams;
   "rename_project": RenameProjectParams;
   "set_collapsed": SetCollapsedParams;
   "remove_project": RemoveProjectParams;
@@ -1309,6 +1343,8 @@ export interface Commands {
   "board_add": BoardAddParams;
   "board_move": BoardMoveParams;
   "board_edit": BoardEditParams;
+  "board_work": BoardWorkParams;
+  "board_archive": BoardArchiveParams;
   "board_remove": BoardRemoveParams;
   "ask_done": AskDoneParams;
   "ask_cancel": AskCancelParams;
