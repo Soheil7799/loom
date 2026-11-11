@@ -9,6 +9,7 @@ pub mod audit;
 pub mod bridges;
 pub mod board;
 pub mod changes;
+pub mod code_search;
 pub mod compacted;
 pub mod files;
 pub mod control;

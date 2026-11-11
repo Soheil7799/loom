@@ -37,6 +37,16 @@ Two of a kind at once get a short qualifier (`dev-api`, `dev-web`), never `dev-2
 name again reruns that job; pass `restart: true` to replace one that is still running (a stale
 dev server). Short, one-shot commands (`git status`, `ls`, a quick grep) stay in Bash.
 
+## Finding your way in the code
+
+- Don't know which file something is in? `loom_find(query)` first, in plain words ("where
+  finished subagent rows are removed", "archive the done lane"). It answers with places
+  (`path:line` and the definition's first line), not code: Read just those lines (`offset`,
+  `limit`), not the whole file. Grep is still best for an exact string you already know.
+- A file you have read stays in your context. Don't Read it again unless it changed since
+  (you edited it, or a command did). Every message re-reads the whole conversation, so each
+  repeated file is paid for again and again.
+
 ## Show the user a file
 
 `loom_open(path)` opens a file in loom's editor panel without taking their keyboard: use it
