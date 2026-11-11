@@ -18,8 +18,14 @@ use std::time::SystemTime;
 /// Files worth searching, by extension.
 const SOURCE: &[&str] = &[
     "rs", "ts", "tsx", "js", "jsx", "mjs", "cjs", "svelte", "vue", "astro", "py", "go", "java", "kt", "kts", "swift", "c", "h", "cc", "cpp", "hpp", "cs", "rb", "php", "lua", "sh",
-    "bash", "zsh", "zig", "dart", "scala", "ex", "exs", "sql", "md", "nix", "ml", "hs", "jl", "r", "css", "scss",
+    "bash", "zsh", "zig", "dart", "scala", "ex", "exs", "sql", "md", "nix", "ml", "hs", "jl", "r", "css", "scss", "less",
+    // configuration and markup: their sections and keys are what they define
+    "json", "jsonc", "toml", "yaml", "yml", "ini", "conf", "service", "desktop", "html", "htm", "xml", "kdl", "fish", "ps1", "proto", "graphql", "txt",
 ];
+/// Written by tools, read by nobody: not searched.
+const LOCKS: &[&str] = &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "Cargo.lock", "composer.lock", "Gemfile.lock", "poetry.lock"];
+/// Lines shown under an answer (the definition's next lines: often enough not to Read).
+const PEEK: usize = 5;
 const BIGGEST: u64 = 512 * 1024;
 /// Words of a body counted, at most (a long function is about its start).
 const BODY_LINES: usize = 80;
@@ -37,6 +43,8 @@ struct Piece {
     card: Option<(Vec<String>, Vec<String>)>,
     /// What meaning search embeds: its path, doc comment and first lines.
     text: String,
+    /// The lines after its first (shown under the answer, so it often needs no Read).
+    peek: Vec<String>,
 }
 
 struct File {
@@ -64,6 +72,8 @@ pub struct Found {
     pub head: String,
     pub doc: String,
     pub also: Vec<String>,
+    /// The lines after its first.
+    pub peek: Vec<String>,
 }
 
 /// Where a project's concept cards are.
@@ -89,6 +99,7 @@ impl Index {
             // not folders, nor what lies in dot-folders (notes, caches, tools' state)
             .filter(|f| !f.ends_with('/') && !f.split('/').any(|part| part.starts_with('.')))
             .filter(|f| Path::new(f).extension().is_some_and(|e| SOURCE.contains(&e.to_string_lossy().to_lowercase().as_str())))
+            .filter(|f| !LOCKS.contains(&f.rsplit('/').next().unwrap_or(f)) && !f.contains(".min."))
             .map(|f| (f.clone(), self.root.join(&f)))
             .collect();
         if let Some(map) = &self.map {
@@ -243,9 +254,39 @@ impl Index {
                     head.push_str(&format!(" (may be out of date: {} not found)", gone.join(", ")));
                 }
             }
-            found.push(Found { path: path.clone(), line: piece.line, head, doc: piece.doc.clone(), also: Vec::new() });
+            found.push(Found { path: path.clone(), line: piece.line, head, doc: piece.doc.clone(), also: Vec::new(), peek: piece.peek.clone() });
         }
         found
+    }
+
+    /// Where `name` (one identifier or string, as written) is used: `path:line` and the line,
+    /// at most `limit`, definitions left out (they are the answers above it).
+    pub fn used_at(&self, name: &str, limit: usize) -> Vec<(String, usize, String)> {
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
+        let mut out = Vec::new();
+        for path in &self.order {
+            if self.files[path].pieces.iter().any(|p| p.card.is_some()) {
+                continue;
+            }
+            let defined: Vec<usize> = self.files[path].pieces.iter().map(|p| p.line).collect();
+            let Ok(text) = std::fs::read_to_string(self.root.join(path)) else { continue };
+            for (i, line) in text.lines().enumerate() {
+                if defined.contains(&(i + 1)) {
+                    continue;
+                }
+                // the name whole: not inside a longer identifier
+                let whole = line.match_indices(name).any(|(at, _)| {
+                    !line[..at].chars().next_back().is_some_and(ident) && !line[at + name.len()..].chars().next().is_some_and(ident)
+                });
+                if whole {
+                    out.push((path.clone(), i + 1, line.trim().chars().take(160).collect()));
+                    if out.len() == limit {
+                        return out;
+                    }
+                }
+            }
+        }
+        out
     }
 
     /// What a card names that isn't there any more: files (relative to the project) and
@@ -304,15 +345,15 @@ fn card(path: &Path, text: &str) -> Option<Piece> {
     }
     let len = counts.values().sum::<u32>() / 2;
     let text: String = text.chars().take(4000).collect();
-    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), len, card: Some((files, symbols)), text })
+    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), len, card: Some((files, symbols)), text, peek: Vec::new() })
 }
 
 /// `text` cut at its definitions: each from its line to the next one's, with the comment
 /// right above it; what comes before the first (a module's own comment) is a piece too.
 fn pieces(path: &str, text: &str) -> Vec<Piece> {
     let lines: Vec<&str> = text.lines().collect();
-    let markdown = path.ends_with(".md");
-    let starts: Vec<usize> = (0..lines.len()).filter(|&i| if markdown { lines[i].starts_with('#') } else { defines(lines[i]) }).collect();
+    let kind = path.rsplit('.').next().unwrap_or("").to_lowercase();
+    let starts: Vec<usize> = (0..lines.len()).filter(|&i| starts_one(&kind, lines[i])).collect();
     let mut bounds = vec![0];
     bounds.extend(starts.iter().copied().filter(|&s| s > 0));
     let path_words = words(path);
@@ -346,9 +387,70 @@ fn pieces(path: &str, text: &str) -> Vec<Piece> {
         };
         let len = counts.values().sum();
         let text = format!("{path}\n{}", lines[above..end.min(start + 40)].join("\n"));
-        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len, card: None, text });
+        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len, card: None, text, peek: peek(&lines, start, end) });
+    }
+    // Names given as strings (an API command's handler, a match arm on a name, a spec entry):
+    // pieces of their own over the lines that follow, beside the function they are in.
+    for (i, line) in lines.iter().enumerate() {
+        if starts.contains(&i) || !registers(line) {
+            continue;
+        }
+        // its lines: up to 16, not into the next definition
+        let end = starts.iter().copied().find(|&s| s > i).unwrap_or(lines.len()).min(i + 16);
+        let mut above = i;
+        while above > 0 && i - above < 6 && comment(lines[above - 1]) {
+            above -= 1;
+        }
+        let doc_lines: Vec<&str> = lines[above..i].iter().map(|l| uncomment(l)).filter(|l| !l.is_empty()).collect();
+        let mut counts: HashMap<String, u32> = HashMap::new();
+        for (list, weight) in [(&words(line), 3), (&words(&doc_lines.join(" ")), 2), (&path_words, 1), (&words(&lines[i..end].join("\n")), 1)] {
+            for w in list {
+                *counts.entry(w.clone()).or_default() += weight;
+            }
+        }
+        let len = counts.values().sum();
+        let text = format!("{path}\n{}", lines[above..end].join("\n"));
+        let doc = doc_lines.first().map(|d| d.chars().take(140).collect()).unwrap_or_default();
+        out.push(Piece { line: i + 1, head: line.trim().chars().take(140).collect(), doc, terms: counts.into_iter().collect(), len, card: None, text, peek: peek(&lines, i, end) });
     }
     out
+}
+
+/// The non-blank lines after line `start`, before `end` (at most `PEEK`, each cut short).
+fn peek(lines: &[&str], start: usize, end: usize) -> Vec<String> {
+    lines[(start + 1).min(end)..end].iter().filter(|l| !l.trim().is_empty()).take(PEEK).map(|l| l.trim_end().chars().take(160).collect()).collect()
+}
+
+/// A line that starts a piece, by the file's kind: a heading, a CSS rule, a config section or
+/// top-level key, else a definition.
+fn starts_one(kind: &str, line: &str) -> bool {
+    let top = !line.starts_with([' ', '\t']);
+    let t = line.trim();
+    match kind {
+        "md" => line.starts_with('#'),
+        "css" | "scss" | "less" => top && !t.is_empty() && !t.starts_with(['}', '/', '*']) && (t.contains('{') || t.starts_with("@define-color") || t.starts_with('$')),
+        "toml" | "ini" | "conf" | "service" | "desktop" => top && t.starts_with('['),
+        "yaml" | "yml" => top && !t.starts_with(['#', '-']) && t.contains(':'),
+        "json" | "jsonc" => line.len() - line.trim_start().len() <= 2 && t.starts_with('"') && t.contains("\":"),
+        "html" | "htm" | "xml" => t.starts_with('<') && (t.contains(" id=") || t.starts_with("<template") || t.starts_with("<script") || t.starts_with("<style") || t.starts_with("<section")),
+        "txt" => false,
+        _ => defines(line),
+    }
+}
+
+/// A line that gives something a name as a string: a handler registered by it (`handle("x"`),
+/// an entry of a table by it (`name: "x"`), a match arm or case on it (`"x" =>`, `case "x"`).
+fn registers(line: &str) -> bool {
+    let t = line.trim_start();
+    let indent = line.len() - t.len();
+    if indent > 24 || t.starts_with("//") {
+        return false;
+    }
+    const CALLS: &[&str] = &["handle(\"", "handle_later(\"", "route(\"", "register(\"", "addEventListener(\"", ".on(\"", ".get(\"/", ".post(\"/"];
+    CALLS.iter().any(|c| t.contains(c))
+        || t.contains("{ name: \"")
+        || (t.starts_with('"') && (t.contains("\" =>") || t.contains("\" | \"")))
+        || t.starts_with("case \"")
 }
 
 /// A line that starts a definition, in most languages: a keyword first, after modifiers,
@@ -498,6 +600,36 @@ mod tests {
         let sub = code.iter().find(|f| f.head.starts_with("fn show_sub")).expect("show_sub");
         assert_eq!(sub.also.len(), 1, "{code:?}");
         assert_eq!(index.search("old pairing flow", 1)[0].head, "card: old (may be out of date: app/gone.rs, vanished_fn not found)");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn names_given_as_strings_css_and_config_are_found_with_where_they_are_used() {
+        let root = std::env::temp_dir().join(format!("loom-everything-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(
+            root.join("daemon.rs"),
+            "fn serve(hub: &Hub) {\n    // The window says what it shows.\n    hub.handle(\"set_looking\", |who, params| {\n        mark_seen(params);\n    });\n}\n\nfn act(name: &str) {\n    match name {\n        \"palette\" => open_palette(),\n        _ => {}\n    }\n}\n",
+        )
+        .unwrap();
+        std::fs::write(root.join("window.rs"), "fn tell() {\n    command(\"window\", \"set_looking\", json);\n}\n").unwrap();
+        std::fs::write(root.join("style.css"), "/* the chips */\nbutton.chip-picker.chosen { color: blue; }\n.sidebar { background: none; }\n").unwrap();
+        std::fs::write(root.join("Cargo.toml"), "[package]\nname = \"loom\"\n\n[dependencies]\ngtk = \"4\"\n").unwrap();
+        std::fs::write(root.join("Cargo.lock"), "[[package]]\nname = \"set_looking\"\n").unwrap();
+        let mut index = Index::new(&root, None);
+        index.refresh();
+        let first = |q: &str| index.search(q, 3).into_iter().next().map(|f| (f.path, f.line, f.head)).unwrap();
+        // a handler registered by its name, and its next lines under it
+        assert_eq!(first("set_looking"), ("daemon.rs".into(), 3, "hub.handle(\"set_looking\", |who, params| {".into()));
+        assert_eq!(index.search("set_looking", 1)[0].peek, ["        mark_seen(params);", "    });", "}"]);
+        assert_eq!(first("palette").1, 10);
+        assert_eq!(first("chosen chip picker").0, "style.css");
+        assert_eq!(first("dependencies"), ("Cargo.toml".into(), 4, "[dependencies]".into()));
+        // where a name is used: not its definition, not inside a longer name, never a lock file
+        let used = index.used_at("set_looking", 10);
+        assert_eq!(used, [("window.rs".to_owned(), 2, "command(\"window\", \"set_looking\", json);".to_owned())]);
+        assert!(index.used_at("set_look", 10).is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 

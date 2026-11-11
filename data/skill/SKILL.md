@@ -39,16 +39,16 @@ dev server). Short, one-shot commands (`git status`, `ls`, a quick grep) stay in
 
 ## Finding your way in the code
 
-- **Search with `loom_find` first, not Grep, `grep`, `rg` or `find`.** Any "where is…"
-  question (a feature, a behavior, a concept, a name you aren't sure of) goes to
-  `loom_find(query)` in plain words: "where finished subagent rows are removed", "archive
-  the done lane". It ranks the project's code by what the question means (a local model,
-  when meaning search is on) and by its words. It answers with places (`path:line` and the
-  definition's first line), not code: Read just those lines (`offset`, `limit`), not the
-  whole file.
-- Not it? Ask `loom_find` again in other words before falling back to Grep. Grep (or `rg`)
-  is for an exact string you already know: an error message, a setting's key, every caller
-  of a name you have.
+- **Search with `loom_find` first, not Grep, `grep`, `rg` or `find`.** It searches the whole
+  project by what you mean (a local model, when meaning search is on) and by words: code,
+  handlers registered by a string name, CSS rules, config sections and keys, docs' headings.
+  - A question in plain words: "where finished subagent rows are removed", "archive the done
+    lane".
+  - An exact name (`focus_remote`, `"set_looking"`): its definition, and where it is used.
+  It answers with places (`path:line` and the first line); the best five come with their next
+  lines, often all you need. Read only the lines you still need (`offset`, `limit`).
+- Not it? Ask `loom_find` again in other words before falling back. Grep (or `rg`) is for
+  text in the middle of lines: part of an error message, a regex.
 - A file you have read stays in your context. Don't Read it again unless it changed since
   (you edited it, or a command did). Every message re-reads the whole conversation, so each
   repeated file is paid for again and again.

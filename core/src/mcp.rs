@@ -116,7 +116,7 @@ pub fn run() -> i32 {
                 "capabilities": { "tools": {} },
                 "serverInfo": { "name": "loom", "version": env!("CARGO_PKG_VERSION") },
                 "instructions": format!(
-                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read with loom_open. When the user must put something in a file themselves (an API key, a token, a password, any secret that must not pass through the chat), use loom_edit: it opens the file for them and waits until they are done. To find anything in the code (a feature, a behavior, where something is done), ask loom_find in plain words first, not Grep, grep, rg or find: it searches by meaning and answers with path:line. Grep only for an exact string you already know. A file you have read stays in your context: don't Read it again unless it changed since.{}",
+                    "You run inside loom, the user's agent workspace. Long-running or streaming commands (dev servers, watchers, builds, test suites, log tails, installs) go to loom's job tray with loom_run, where the user sees them, not to Bash. Read them with loom_output and loom_wait. Show the user a file you wrote for them to read with loom_open. When the user must put something in a file themselves (an API key, a token, a password, any secret that must not pass through the chat), use loom_edit: it opens the file for them and waits until they are done. To find anything in the project (a feature, a behavior, where something is done, an exact name and where it is used), ask loom_find first, not Grep, grep, rg or find: it searches by meaning with a local model and answers with path:line and the lines that follow. Grep only for text in the middle of lines (part of an error message, a regex). A file you have read stays in your context: don't Read it again unless it changed since.{}",
                     if notes.is_some() { " The user keeps notes about their life and work (finances, work, study, languages, health, their system's setup…): before answering about their own facts, plans or past decisions, look with loom_note_search and loom_note_read. Don't edit the vault yourself; loom keeps it." } else { "" }
                 )
             })),
@@ -206,7 +206,7 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
         },
         {
             "name": "loom_find",
-            "description": "Use this first to find anything in this project's code, instead of Grep, grep, rg or find: a feature, a behavior, a concept or a name, in plain words (\"where finished subagent rows are removed\", \"archive the done lane\"). Ranks the definitions (functions, types, doc headings) by what the question means (a local embedding model, when meaning search is on) and by their names, doc comments, bodies and paths, and returns places (path:line and the definition's first line), not code: then Read only those lines. One call instead of several Grep and Read rounds. Not it? Ask again in other words. Grep stays for an exact string you already know (an error message, every caller of a name).",
+            "description": "Use this first to find anything in this project, instead of Grep, grep, rg or find: a feature, a behavior, a concept in plain words (\"where finished subagent rows are removed\", \"archive the done lane\"), or an exact name. It searches the code (functions, types, handlers registered by a string name, match arms on names), CSS rules, config (JSON, TOML, YAML sections and keys) and docs' headings, ranked by what the question means (a local embedding model, when meaning search is on) and by their words. It answers with places (path:line and the first line), the best five with their next lines (often enough: no Read needed), and for one exact name (an identifier or a string) also where it is used. Read only the lines you still need. Not it? Ask again in other words. Grep stays for text inside lines (an error message's middle, a regex).",
             "inputSchema": { "type": "object", "properties": {
                 "query": { "type": "string", "description": "What you look for, in words" },
                 "limit": { "type": "integer", "description": "How many places (default 10, at most 25)" }
@@ -330,13 +330,30 @@ fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     if let Some(note) = note {
         out.push_str(&format!("({note})\n"));
     }
-    for f in found {
+    for (i, f) in found.iter().enumerate() {
         out.push_str(&format!("{}:{}  {}\n", f.path, f.line, f.head));
         if !f.doc.is_empty() {
             out.push_str(&format!("    {}\n", f.doc));
         }
         if !f.also.is_empty() {
             out.push_str(&format!("    also in another checkout: {}\n", f.also.join(", ")));
+        }
+        // the best ones with their next lines: often all that was needed, no Read after
+        if i < 5 {
+            for line in &f.peek {
+                out.push_str(&format!("    | {line}\n"));
+            }
+        }
+    }
+    // One exact name asked (an identifier, a string): where it is used, too.
+    let name = query.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    if !name.contains(char::is_whitespace) && name.chars().count() >= 3 && name.chars().any(char::is_alphanumeric) {
+        let used = index.used_at(name, 15);
+        if !used.is_empty() {
+            out.push_str(&format!("Used at ({}{}):\n", used.len(), if used.len() == 15 { ", the first" } else { "" }));
+            for (path, line, text) in used {
+                out.push_str(&format!("{path}:{line}  {text}\n"));
+            }
         }
     }
     out.push_str("Not it? Ask again in other words (what the code would call it).");
