@@ -482,6 +482,11 @@ impl Workspace {
             })(),
             // The Notes vault, for the MCP server's note tools (null: Notes is off).
             "notes_info" => Ok(json!({ "vault": crate::vault::current().map(|v| v.to_string_lossy().into_owned()) })),
+            // Meaning search as Settings has it, for loom_find and the note search.
+            "embed_info" => {
+                let s = crate::settings::get();
+                Ok(json!({ "code": s.embed_code, "notes": s.embed_notes, "model": s.embed_model, "url": s.embed_url }))
+            }
             "list_agents" => Ok(json!(
                 self.agents_in_order()
                     .iter()

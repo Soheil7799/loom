@@ -35,6 +35,8 @@ struct Piece {
     len: u32,
     /// A concept card's own (its files and symbols, checked when it is found).
     card: Option<(Vec<String>, Vec<String>)>,
+    /// What meaning search embeds: its path, doc comment and first lines.
+    text: String,
 }
 
 struct File {
@@ -55,7 +57,7 @@ pub struct Index {
 
 /// One answer: `path:line`, its definition line, the first line of its doc comment, and
 /// the same definition elsewhere (another checkout of the repo).
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Found {
     pub path: String,
     pub line: usize,
@@ -149,6 +151,11 @@ impl Index {
     /// The pieces best matching `query`, at most `limit`, at most 3 from one file; one
     /// definition met again in another checkout (same file name and line) is said once.
     pub fn search(&self, query: &str, limit: usize) -> Vec<Found> {
+        self.answers(self.by_words(query), limit)
+    }
+
+    /// The pieces in the order their words match `query`, best first (those matching at all).
+    fn by_words(&self, query: &str) -> Vec<(usize, usize)> {
         let mut terms = words(query);
         terms.sort();
         terms.dedup();
@@ -165,9 +172,55 @@ impl Index {
         }
         let mut ranked: Vec<_> = scores.into_iter().collect();
         ranked.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+        ranked.into_iter().map(|(at, _)| at).collect()
+    }
+
+    /// Every piece's key and text for meaning search, in the order `search_by_meaning` takes
+    /// their scores.
+    pub fn texts(&self) -> Vec<(u64, String)> {
+        self.all().map(|(_, _, piece)| (crate::embed::hash(&piece.text), piece.text.clone())).collect()
+    }
+
+    fn all(&self) -> impl Iterator<Item = (usize, usize, &Piece)> {
+        self.order.iter().enumerate().flat_map(move |(f, path)| self.files[path].pieces.iter().enumerate().map(move |(p, piece)| (f, p, piece)))
+    }
+
+    /// The best by meaning (`scores`, one per piece as `texts` gave them), then the best by
+    /// words that meaning missed (an exact name the agent knows): `limit` in all.
+    pub fn search_by_meaning(&self, query: &str, scores: &[f32], limit: usize) -> Vec<Found> {
+        let at: Vec<(usize, usize)> = self.all().map(|(f, p, _)| (f, p)).collect();
+        let meaning: Vec<(usize, usize)> = crate::embed::order(scores).into_iter().filter_map(|i| at.get(i).copied()).collect();
+        let by_words = self.answers(self.by_words(query), limit);
+        // a definition named by every word asked (`pub fn archive`) is what was meant
+        let asked = words(query);
+        let tokens = |t: &str| t.split(|c: char| !(c.is_alphanumeric() || c == '_')).map(str::to_lowercase).filter(|w| !w.is_empty()).collect::<Vec<_>>();
+        let exact: Vec<String> = tokens(query).into_iter().filter(|w| w.len() > 2 && !["pub", "fn", "fun", "func", "def", "class", "struct", "type", "function"].contains(&w.as_str())).collect();
+        let covers = |f: &&Found| !asked.is_empty() && { let head = words(&f.head); asked.iter().all(|w| head.contains(w)) };
+        // the one whose name is a word asked (`archive`, not `archive_path`), else any covering them
+        let named = by_words.iter().take(5).filter(covers).find(|f| !exact.is_empty() && exact.iter().all(|w| tokens(&f.head).contains(w))).or_else(|| by_words.first().filter(covers));
+        let mut found: Vec<Found> = named.into_iter().cloned().collect();
+        for f in self.answers(meaning, limit.saturating_sub(2).max(1)) {
+            if !found.iter().any(|x| x.path == f.path && x.line == f.line) {
+                found.push(f);
+            }
+        }
+        for extra in by_words {
+            if found.len() >= limit {
+                break;
+            }
+            if !found.iter().any(|f| f.path == extra.path && f.line == extra.line) {
+                found.push(extra);
+            }
+        }
+        found
+    }
+
+    /// `ranked` said as answers: at most `limit`, at most 3 from one file; one definition met
+    /// again in another checkout (same file name and line) said once.
+    fn answers(&self, ranked: Vec<(usize, usize)>, limit: usize) -> Vec<Found> {
         let mut per_file: HashMap<usize, usize> = HashMap::new();
         let mut found: Vec<Found> = Vec::new();
-        for ((f, p), _) in ranked {
+        for (f, p) in ranked {
             let path = &self.order[f];
             let piece = &self.files[path].pieces[p];
             let name = |p: &str| p.rsplit('/').next().unwrap_or(p).to_owned();
@@ -250,7 +303,8 @@ fn card(path: &Path, text: &str) -> Option<Piece> {
         doc.push_str(&format!("\n    symbols: {}", symbols.join(", ")));
     }
     let len = counts.values().sum::<u32>() / 2;
-    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), len, card: Some((files, symbols)) })
+    let text: String = text.chars().take(4000).collect();
+    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), len, card: Some((files, symbols)), text })
 }
 
 /// `text` cut at its definitions: each from its line to the next one's, with the comment
@@ -291,7 +345,8 @@ fn pieces(path: &str, text: &str) -> Vec<Piece> {
             ("(the file's start)".to_owned(), own.first().map(|d| d.chars().take(140).collect()).unwrap_or_default())
         };
         let len = counts.values().sum();
-        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len, card: None });
+        let text = format!("{path}\n{}", lines[above..end.min(start + 40)].join("\n"));
+        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len, card: None, text });
     }
     out
 }
@@ -443,6 +498,24 @@ mod tests {
         let sub = code.iter().find(|f| f.head.starts_with("fn show_sub")).expect("show_sub");
         assert_eq!(sub.also.len(), 1, "{code:?}");
         assert_eq!(index.search("old pairing flow", 1)[0].head, "card: old (may be out of date: app/gone.rs, vanished_fn not found)");
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn meaning_leads_but_a_definition_named_by_every_word_asked_comes_first() {
+        let root = std::env::temp_dir().join(format!("loom-meaning-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("a.rs"), "pub fn archive_path() {}\n\npub fn archive() {}\n\npub fn tidy_lanes() {}\n\npub fn unrelated() {}\n").unwrap();
+        let mut index = Index::new(&root, None);
+        index.refresh();
+        let heads: Vec<String> = index.all().map(|(_, _, p)| p.head.clone()).collect();
+        // meaning likes tidy_lanes best
+        let scores: Vec<f32> = heads.iter().map(|h| if h.contains("tidy_lanes") { 0.9 } else if h.contains("unrelated") { 0.5 } else { 0.1 }).collect();
+        let order = |q: &str| index.search_by_meaning(q, &scores, 3).into_iter().map(|f| f.head).collect::<Vec<_>>();
+        assert_eq!(order("clean up the board")[0], "pub fn tidy_lanes() {}");
+        assert_eq!(order("pub fn archive")[0], "pub fn archive() {}");
+        assert_eq!(order("pub fn archive")[1], "pub fn tidy_lanes() {}");
         let _ = std::fs::remove_dir_all(&root);
     }
 }

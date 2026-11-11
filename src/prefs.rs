@@ -428,6 +428,17 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     idle.connect_selected_notify(move |d| compact.set_visible(d.selected() != 0));
     content.append(&resting);
 
+    let meaning = section("Meaning search");
+    row(
+        &meaning,
+        "For the code",
+        "loom_find ranks the code by what a question means, not only by its words. A local model does it, through Ollama on this machine.",
+        &switch(s.embed_code, |s, on| s.embed_code = on),
+    );
+    row(&meaning, "For the notes", "The note search agents use goes by meaning too.", &switch(s.embed_notes, |s, on| s.embed_notes = on));
+    row_stacked(&meaning, &format!("Model: {}", s.embed_model), "loom starts Ollama when nothing answers and downloads the model when it is missing.", &embeddings_status());
+    content.append(&meaning);
+
     let schedules = section("Scheduled prompts");
     let open = flat_button("Open the overview");
     let w = window.clone();
@@ -1514,6 +1525,69 @@ fn watch_bridge(name: &'static str, f: impl Fn(&serde_json::Value) -> bool + 'st
     let followed = crate::feed::Feed::new("bridges", ready()).zip(crate::feed::Feed::new("pairing", ready()));
     *feeds.borrow_mut() = followed;
     draw();
+}
+
+/// Meaning search's state as loomd says it (`embeddings`), and Refresh to check again (Ollama
+/// started, the model downloaded).
+fn embeddings_status() -> gtk::Box {
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let said = gtk::Label::builder().xalign(0.0).wrap(true).hexpand(true).css_classes(["dim-label"]).build();
+    let refresh = gtk::Button::with_label("Refresh");
+    refresh.set_tooltip_text(Some("Check again: start Ollama, download the model if it is missing"));
+    line.append(&said);
+    line.append(&refresh);
+    refresh.connect_clicked({
+        let said = said.downgrade();
+        move |button| {
+            button.set_sensitive(false);
+            button.set_label("Checking…");
+            let button = button.downgrade();
+            let said = said.clone();
+            crate::conn::command_then("settings", "embeddings_check", serde_json::json!({}), move |item| {
+                if let Some(button) = button.upgrade() {
+                    button.set_sensitive(true);
+                    button.set_label("Refresh");
+                }
+                if let (Some(said), Some(item)) = (said.upgrade(), item) {
+                    said.set_label(item["detail"].as_str().unwrap_or(""));
+                }
+            });
+        }
+    });
+    // Followed for as long as the label is there.
+    let feed: Rc<std::cell::RefCell<Option<crate::feed::Feed>>> = Rc::default();
+    let draw = {
+        let (feed, said) = (feed.clone(), said.downgrade());
+        move || {
+            let Some(label) = said.upgrade() else {
+                feed.borrow_mut().take();
+                return;
+            };
+            let held = feed.borrow();
+            let Some(f) = held.as_ref() else { return };
+            f.update();
+            let item = f.items().first().cloned().unwrap_or_default();
+            let state = item["state"].as_str().unwrap_or("off");
+            label.set_label(item["detail"].as_str().unwrap_or("Off: searches go by words."));
+            for class in ["warning", "success"] {
+                label.remove_css_class(class);
+            }
+            match state {
+                "failed" => label.add_css_class("warning"),
+                "ready" => label.add_css_class("success"),
+                _ => {}
+            }
+        }
+    };
+    let ready = {
+        let draw = Rc::new(draw);
+        let first = draw.clone();
+        let made = crate::feed::Feed::new("embeddings", move || draw());
+        *feed.borrow_mut() = made;
+        first
+    };
+    ready();
+    line
 }
 
 /// Opens pairing (a code to scan) or closes it, in loomd.

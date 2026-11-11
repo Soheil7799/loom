@@ -23,6 +23,26 @@ const PROTOCOL: &str = "2025-06-18";
 static NOTES: Mutex<Option<crate::notes::Index>> = Mutex::new(None);
 /// The project's code, for loom_find (kept by this process, refreshed at each search).
 static CODE: Mutex<Option<crate::code_search::Index>> = Mutex::new(None);
+/// Meaning search for the code and for the notes, when Settings has it on (embed.rs).
+static CODE_MEANING: Mutex<Option<crate::embed::Meaning>> = Mutex::new(None);
+static NOTES_MEANING: Mutex<Option<crate::embed::Meaning>> = Mutex::new(None);
+
+/// The model, if meaning search is on for `which` ("code", "notes"), as loom's settings say.
+fn meaning_model(socket: &str, agent: u32, which: &str) -> Option<crate::embed::Model> {
+    let info = call(socket, agent, "embed_info", json!({})).ok()?;
+    info[which].as_bool().filter(|on| *on)?;
+    Some(crate::embed::Model { url: info["url"].as_str()?.trim_end_matches('/').to_owned(), name: info["model"].as_str()?.to_owned() })
+}
+
+/// Scores by meaning for `pieces`, from `held` (made again for another model): Err says why
+/// words alone answer (off: None).
+fn meaning_scores(held: &Mutex<Option<crate::embed::Meaning>>, model: crate::embed::Model, pieces: &[(u64, String)], query: &str) -> Result<Vec<f32>, String> {
+    let mut held = held.lock().unwrap_or_else(|e| e.into_inner());
+    if held.as_ref().is_none_or(|m| *m.model() != model) {
+        *held = Some(crate::embed::Meaning::new(model));
+    }
+    held.as_ref().ok_or("no meaning search")?.scores(pieces, query)
+}
 
 /// The Notes vault loom has (None: the add-on is off, or no vault chosen).
 fn vault(socket: &str, agent: u32) -> Option<PathBuf> {
@@ -92,6 +112,11 @@ pub fn run() -> i32 {
                 send(&stdout, json!({ "jsonrpc": "2.0", "id": id, "result": result }));
             });
             continue;
+        }
+        if method == "initialize" {
+            // meaning search's vectors made while the agent starts, not at its first search
+            let socket = socket.clone();
+            std::thread::spawn(move || warm(&socket, agent));
         }
         let notes = matches!(method, "initialize" | "tools/list").then(|| vault(&socket, agent)).flatten();
         let reply = match method {
@@ -273,6 +298,16 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
 }
 
 /// loom_note_search / loom_note_read, from the index of the vault loom has now.
+/// Meaning search's indexing started for the code and the notes, when Settings has it on.
+fn warm(socket: &str, agent: u32) {
+    if meaning_model(socket, agent, "code").is_some() {
+        let _ = find(socket, agent, &json!({ "query": "warm up", "limit": 1 }));
+    }
+    if meaning_model(socket, agent, "notes").is_some() && vault(socket, agent).is_some() {
+        let _ = note_tool(socket, agent, "loom_note_search", &json!({ "query": "warm up", "limit": 1 }));
+    }
+}
+
 /// loom_find: the places in the agent's folder (this process runs in it: a worktree's agent
 /// searches its worktree) and its project's concept cards best matching the query.
 fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
@@ -290,11 +325,20 @@ fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     }
     let index = held.as_mut().ok_or("no index")?;
     index.refresh();
-    let found = index.search(query, limit);
+    let (found, note) = match meaning_model(socket, agent, "code") {
+        None => (index.search(query, limit), None),
+        Some(model) => match meaning_scores(&CODE_MEANING, model, &index.texts(), query) {
+            Ok(scores) => (index.search_by_meaning(query, &scores, limit), None),
+            Err(why) => (index.search(query, limit), Some(why)),
+        },
+    };
     if found.is_empty() {
         return Ok(format!("Nothing in {} matched those words: try others (what the code would call it), or Grep for an exact string.", root.display()));
     }
     let mut out = format!("In {} (paths relative to it):\n", root.display());
+    if let Some(note) = note {
+        out.push_str(&format!("({note})\n"));
+    }
     for f in found {
         out.push_str(&format!("{}:{}  {}\n", f.path, f.line, f.head));
         if !f.doc.is_empty() {
@@ -330,7 +374,21 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
     }
     let query = args["query"].as_str().unwrap_or("");
     let limit = args["limit"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
-    let hits = index.search(query, args["folder"].as_str(), limit);
+    let mut meaning_note = String::new();
+    let hits = match meaning_model(socket, agent, "notes") {
+        None => index.search(query, args["folder"].as_str(), limit),
+        Some(model) => {
+            let texts = index.texts();
+            let keys: Vec<(u64, String)> = texts.into_iter().map(|(_, h, t)| (h, t)).collect();
+            match meaning_scores(&NOTES_MEANING, model, &keys, query) {
+                Ok(scores) => index.search_by_meaning(query, &scores, args["folder"].as_str(), limit),
+                Err(why) => {
+                    meaning_note = format!("\n\n({why})");
+                    index.search(query, args["folder"].as_str(), limit)
+                }
+            }
+        }
+    };
     // Conflict copies are not searched: said, so they are not taken for missing notes.
     let copies = crate::vault::conflicts(&vault).len();
     let left_out = if copies == 0 {
@@ -346,7 +404,8 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
         .map(|h| format!("{} ({})\n{}\nLinks to: {} · Linked from: {}", h.path, h.title, h.snippet, list_or_none(&h.links), list_or_none(&h.backlinks)))
         .collect::<Vec<_>>()
         .join("\n\n")
-        + &left_out)
+        + &left_out
+        + &meaning_note)
 }
 
 /// loom_note_topics / loom_note_list / loom_note_recent: what the vault holds, read from its

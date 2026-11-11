@@ -153,6 +153,16 @@ export type JobItem = {
   offset: number;
 };
 
+/** How meaning search stands (Settings' embed_code and embed_notes): Ollama and its model. */
+export type EmbeddingsItem = {
+  /** `status` */
+  id: string;
+  /** off, checking, pulling, ready, failed */
+  state: string;
+  /** a sentence for people */
+  detail: string;
+};
+
 /** One item: every setting by its snake_case name; secrets only as `<name>_set`. */
 export type SettingsItem = {
   /** `settings` */
@@ -439,6 +449,7 @@ export interface Resources {
   "usage": UsageItem;
   "jobs": JobsItem;
   "job/<id>": JobItem;
+  "embeddings": EmbeddingsItem;
   "settings": SettingsItem;
   "vault/<folder>": VaultItem;
   "note/<path>": NoteItem;
@@ -759,6 +770,11 @@ export type NewWorktreeAgentParams = {
   project: string;
   /** the new branch's name */
   branch: string;
+};
+
+/** Checks meaning search again (Settings' Refresh): starts Ollama when nothing answers on this machine, downloads the model when it is missing. Result: the `embeddings` item */
+export type EmbeddingsCheckParams = {
+
 };
 
 /** Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone. Result: {said} */
@@ -1285,6 +1301,7 @@ export interface Commands {
   "set_looking": SetLookingParams;
   "new_agent": NewAgentParams;
   "new_worktree_agent": NewWorktreeAgentParams;
+  "embeddings_check": EmbeddingsCheckParams;
   "worktree_merge": WorktreeMergeParams;
   "worktree_remove": WorktreeRemoveParams;
   "rename_project": RenameProjectParams;

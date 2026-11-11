@@ -364,6 +364,8 @@ async fn run() -> u8 {
     // Pictures sent in: any format phones send, as PNG.
     daemon.bridges.attach(&ws, std::sync::Arc::new(to_png));
     notes.refresh();
+    // Meaning search (Settings): Ollama started and the model pulled when it is on.
+    loom_core::embed::serve();
     let bridges = daemon.bridges.clone();
     loom_core::settings::on_change(move |s| bridges.apply(s));
     // Next-message suggestions switched on or off: the agents running are told (as the

@@ -43,6 +43,10 @@
         { key: "rest_compact", title: "Compact before suspending", detail: "Sums up its conversation first, so resuming it is quick and cheap. Never the open agent, nor one waiting on you.", kind: "switch", when: "idle_minutes" },
         { key: "rest_compact_tokens", title: "When its context is", kind: "select", options: TOKENS, when: "rest_compact" },
       ] },
+      { title: "Meaning search", rows: [
+        { key: "embed_code", title: "For the code", detail: "loom_find ranks the code by what a question means, not only by its words: a local model, through Ollama on this machine (started, and the model downloaded, when needed).", kind: "switch" },
+        { key: "embed_notes", title: "For the notes", detail: "The note search agents use goes by meaning too.", kind: "switch" },
+      ] },
     ] },
     { name: "Appearance", sections: [{ title: "Text", rows: [
       { key: "text_scale", title: "Conversation text size", detail: "loom's window; this page follows your browser's zoom.", kind: "select", options: SCALES },

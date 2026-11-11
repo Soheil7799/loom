@@ -148,6 +148,7 @@ pub const COMMANDS: &[Command] = &[
         later: true,
         about: "Starts an agent in a worktree of its own: a new branch from what the project has checked out, in <parent>/<project>.worktrees/<branch>. Its agents stay on the project's card.",
     },
+    Command { name: "embeddings_check", who: PEOPLE, params: &[], result: "the `embeddings` item", later: true, about: "Checks meaning search again (Settings' Refresh): starts Ollama when nothing answers on this machine, downloads the model when it is missing." },
     Command { name: "worktree_merge", who: PEOPLE, params: &[("agent", "string", true, "the agent's id")], result: "{said}", later: true, about: "Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone." },
     Command { name: "worktree_remove", who: PEOPLE, params: &[("agent", "string", true, "the agent's id")], result: "{said}", later: true, about: "Closes an agent and removes its worktree, and its branch once merged (an unmerged branch is kept). Refused while it works or has changes not committed." },
     Command { name: "rename_project", who: PEOPLE, params: &[("project", "string", true, "the project's id (its folder)"), ("name", "string", true, "its new name (empty: the folder's)")], result: "{}", later: false, about: "Renames a project." },
@@ -357,6 +358,12 @@ pub const RESOURCES: &[Resource] = &[
         who: ALL_BUT_AGENTS,
         item: &[("id", "string", true, "`output`"), ("rows", "integer", true, ""), ("cols", "integer", true, ""), ("screen", "string", true, "base64 terminal bytes drawing its screen"), ("offset", "integer", true, "the stream's byte the screen is at")],
         about: "A job's terminal: its screen, then `bytes` ops at their offsets (drop what the screen holds; past it, resync). A new run: an `upsert`.",
+    },
+    Resource {
+        name: "embeddings",
+        who: ALL_BUT_AGENTS,
+        item: &[("id", "string", true, "`status`"), ("state", "string", true, "off, checking, pulling, ready, failed"), ("detail", "string", true, "a sentence for people")],
+        about: "How meaning search stands (Settings' embed_code and embed_notes): Ollama and its model.",
     },
     Resource { name: "settings", who: ALL_BUT_AGENTS, item: &[("id", "string", true, "`settings`")], about: "One item: every setting by its snake_case name; secrets only as `<name>_set`." },
     Resource {

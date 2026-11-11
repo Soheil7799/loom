@@ -82,6 +82,12 @@ pub struct Settings {
     /// least this many tokens.
     pub rest_compact: bool,
     pub rest_compact_tokens: u64,
+    /// Meaning search (embed.rs) for loom_find and for the note search, off by default; the
+    /// model and where Ollama answers.
+    pub embed_code: bool,
+    pub embed_notes: bool,
+    pub embed_model: String,
+    pub embed_url: String,
 }
 
 impl Default for Settings {
@@ -127,6 +133,10 @@ impl Default for Settings {
             compact_tokens: 150_000,
             rest_compact: true,
             rest_compact_tokens: 100_000,
+            embed_code: false,
+            embed_notes: false,
+            embed_model: "embeddinggemma".to_owned(),
+            embed_url: "http://127.0.0.1:11434".to_owned(),
         }
     }
 }
@@ -410,6 +420,10 @@ fn parse(text: &str) -> Settings {
         compact_tokens: v["compactTokens"].as_u64().unwrap_or(d.compact_tokens).clamp(20_000, 2_000_000),
         rest_compact: flag("restCompact", d.rest_compact),
         rest_compact_tokens: v["restCompactTokens"].as_u64().unwrap_or(d.rest_compact_tokens),
+        embed_code: flag("embedCode", d.embed_code),
+        embed_notes: flag("embedNotes", d.embed_notes),
+        embed_model: string("embedModel", &d.embed_model),
+        embed_url: string("embedUrl", &d.embed_url),
     }
 }
 
@@ -455,6 +469,10 @@ fn render(s: &Settings) -> String {
         "compactTokens": s.compact_tokens,
         "restCompact": s.rest_compact,
         "restCompactTokens": s.rest_compact_tokens,
+        "embedCode": s.embed_code,
+        "embedNotes": s.embed_notes,
+        "embedModel": s.embed_model,
+        "embedUrl": s.embed_url,
     }))
     .unwrap_or_default()
 }

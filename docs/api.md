@@ -145,6 +145,18 @@ Who: window, cli, bridge.
 | `screen` | string | base64 terminal bytes drawing its screen |
 | `offset` | integer | the stream's byte the screen is at |
 
+### `embeddings`
+
+How meaning search stands (Settings' embed_code and embed_notes): Ollama and its model.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | `status` |
+| `state` | string | off, checking, pulling, ready, failed |
+| `detail` | string | a sentence for people |
+
 ### `settings`
 
 One item: every setting by its snake_case name; secrets only as `<name>_set`.
@@ -835,6 +847,12 @@ Who: window, cli. Result: `{agent}`, once done.
 |---|---|---|
 | `project` | string | the project's id (its folder) |
 | `branch` | string | the new branch's name |
+
+### `embeddings_check`
+
+Checks meaning search again (Settings' Refresh): starts Ollama when nothing answers on this machine, downloads the model when it is missing.
+
+Who: window, cli. Result: `the `embeddings` item`, once done.
 
 ### `worktree_merge`
 

@@ -2,6 +2,9 @@
 //! Windows) draw the same thing. Nothing here knows about widgets or a main loop: work runs
 //! on its own threads and reports over channels.
 
+// The settings file is one json! of every setting, deeper than the default allows.
+#![recursion_limit = "256"]
+
 pub mod agent;
 pub mod api;
 pub mod asks;
@@ -13,6 +16,7 @@ pub mod code_search;
 pub mod compacted;
 pub mod files;
 pub mod control;
+pub mod embed;
 pub mod history;
 pub mod hub;
 pub mod jobs;

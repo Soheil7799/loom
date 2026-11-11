@@ -195,17 +195,57 @@ impl Index {
         scored.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(b.1)));
         scored.truncate(limit);
         // Only the few kept are read for their lines.
-        scored
-            .into_iter()
-            .map(|(score, path)| Hit {
-                path: path.clone(),
-                title: self.notes[path].title.clone(),
-                score,
-                snippet: snippet(&std::fs::read_to_string(self.root.join(path)).unwrap_or_default(), &words),
-                links: self.links.get(path).cloned().unwrap_or_default(),
-                backlinks: self.backlinks(path),
+        scored.into_iter().map(|(score, path)| self.hit(path, score, &words)).collect()
+    }
+
+    fn hit(&self, path: &str, score: u32, words: &[String]) -> Hit {
+        Hit {
+            path: path.to_owned(),
+            title: self.notes[path].title.clone(),
+            score,
+            snippet: snippet(&std::fs::read_to_string(self.root.join(path)).unwrap_or_default(), words),
+            links: self.links.get(path).cloned().unwrap_or_default(),
+            backlinks: self.backlinks(path),
+        }
+    }
+
+    /// Every note's path, key and text for meaning search (its title and start), sorted by
+    /// path: the order `search_by_meaning` takes their scores in.
+    pub fn texts(&self) -> Vec<(String, u64, String)> {
+        let mut all: Vec<(String, u64, String)> = self
+            .notes
+            .iter()
+            .map(|(path, note)| {
+                let text = format!("{}\n{}", note.title, note.lower.chars().take(3000).collect::<String>());
+                (path.clone(), crate::embed::hash(&text), text)
             })
-            .collect()
+            .collect();
+        all.sort_by(|a, b| a.0.cmp(&b.0));
+        all
+    }
+
+    /// The notes nearest `query` by meaning (`scores` in `texts`' order), then the best by
+    /// words that meaning missed: `limit` in all, within `folder`.
+    pub fn search_by_meaning(&self, query: &str, scores: &[f32], folder: Option<&str>, limit: usize) -> Vec<Hit> {
+        let words: Vec<String> = query.split(|c: char| !c.is_alphanumeric()).filter(|w| w.chars().count() >= 2).map(str::to_lowercase).collect();
+        let inside = folder.map(|f| f.trim_matches('/').to_lowercase()).filter(|f| !f.is_empty());
+        let paths: Vec<String> = self.texts().into_iter().map(|(p, _, _)| p).collect();
+        let mut hits: Vec<Hit> = crate::embed::order(scores)
+            .into_iter()
+            .filter_map(|i| paths.get(i))
+            .filter(|p| inside.as_ref().is_none_or(|f| p.to_lowercase().starts_with(&format!("{f}/"))))
+            .take(limit.saturating_sub(2).max(1))
+            .map(|p| self.hit(p, 0, &words))
+            .collect();
+        for extra in self.search(query, folder, limit) {
+            if hits.len() >= limit {
+                break;
+            }
+            if !hits.iter().any(|h| h.path == extra.path) {
+                hits.push(extra);
+            }
+        }
+        hits
     }
 
     /// A note's title (its file name, as `[[links]]` name it), by path.

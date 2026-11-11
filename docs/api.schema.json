@@ -634,6 +634,36 @@
         ]
       }
     },
+    "embeddings": {
+      "description": "How meaning search stands (Settings' embed_code and embed_notes): Ollama and its model.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "`status`"
+          },
+          "state": {
+            "type": "string",
+            "description": "off, checking, pulling, ready, failed"
+          },
+          "detail": {
+            "type": "string",
+            "description": "a sentence for people"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "detail"
+        ]
+      }
+    },
     "settings": {
       "description": "One item: every setting by its snake_case name; secrets only as `<name>_set`.",
       "who": [
@@ -2338,6 +2368,20 @@
         ]
       },
       "result": "{agent}"
+    },
+    "embeddings_check": {
+      "description": "Checks meaning search again (Settings' Refresh): starts Ollama when nothing answers on this machine, downloads the model when it is missing.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {},
+        "required": []
+      },
+      "result": "the `embeddings` item"
     },
     "worktree_merge": {
       "description": "Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone.",
