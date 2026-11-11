@@ -291,6 +291,7 @@ impl Workspace {
                     "edited": agent.files().len(),
                     "awake": agent.awake.get(),
                     "options": agent.options(),
+                    "chosen": agent.chosen_options(),
                     "stalled": agent.stalled(STALLED),
                     "looking": self.looking.borrow().as_ref().is_some_and(|f| f(agent)),
                     "mode": agent.modes().0,
@@ -317,7 +318,7 @@ impl Workspace {
             .map(|a| {
                 let (commands, suggestion) = a.composer();
                 let commands: Vec<Value> = commands.into_iter().map(|(name, about)| json!({ "name": name, "about": about })).collect();
-                json!({ "id": a.id.to_string(), "draft": a.view.draft(), "queued": a.queued(), "commands": commands, "suggestion": suggestion })
+                json!({ "id": a.id.to_string(), "draft": a.view.draft(), "draft_images": a.view.draft_images(), "queued": a.queued(), "commands": commands, "suggestion": suggestion })
             })
             .collect();
         crate::api::hub().store("inputs").set(inputs);
@@ -626,7 +627,7 @@ impl Workspace {
                 return Ok(json!({ "agent": open.id.to_string() }));
             }
             // A folder gone since: its project, else home (as the window resumes it).
-            let saved = Saved { cwd: start_folder(&folder), session_id: Some(session.to_owned()), title: params["title"].as_str().unwrap_or("").to_owned(), named: false, draft: String::new(), dirs: Vec::new(), used: state::now(), awake: false };
+            let saved = Saved { cwd: start_folder(&folder), session_id: Some(session.to_owned()), title: params["title"].as_str().unwrap_or("").to_owned(), named: false, draft: String::new(), dirs: Vec::new(), used: state::now(), awake: false, options: Value::Null, chosen: json!({}) };
             let agent = ws.add_agent(saved);
             Ok(json!({ "agent": agent.id.to_string() }))
         });
@@ -700,7 +701,7 @@ impl Workspace {
         let agent = match &schedule.session_id {
             Some(session) => self.agent_with_session(session).unwrap_or_else(|| {
                 self.closed.borrow_mut().retain(|c| c.session_id.as_deref() != Some(session.as_str()));
-                self.add_agent(Saved { cwd, session_id: Some(session.clone()), title: schedule.title.clone(), named: false, draft: String::new(), used: state::now(), awake: false, dirs: Vec::new() })
+                self.add_agent(Saved { cwd, session_id: Some(session.clone()), title: schedule.title.clone(), named: false, draft: String::new(), used: state::now(), awake: false, dirs: Vec::new(), options: Value::Null, chosen: json!({}) })
             }),
             None => self.add_agent(Saved::new(cwd)),
         };

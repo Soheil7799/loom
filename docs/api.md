@@ -45,6 +45,7 @@ Who: window, cli, bridge, agent.
 | `edited` | integer | files it changed |
 | `awake` | boolean | kept from resting |
 | `options` | array? | the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` |
+| `chosen` | array? | the ids of the settings among `options` the agent has a choice of its own for (kept for it, applied whenever it starts); the rest follow the settings' defaults |
 | `stalled` | boolean? | a turn quiet for 3 minutes, no tool running |
 | `looking` | boolean? | the user has it in front of them in loom |
 | `mode` | string? | its permission mode |
@@ -89,6 +90,7 @@ Who: window, cli, bridge, agent (its own).
 | `locations` | array? | files a tool touched |
 | `output` | string? | a tool's output (its last 16,000 characters) |
 | `exit` | integer? | a command's exit code |
+| `opened` | integer? | grows each time it is to be shown open (a `!command`'s output) |
 | `parent` | string? | the task a tool is part of |
 | `detail` | string? | a question's detail |
 | `markdown` | boolean? | a question's detail is Markdown (a plan to approve) |
@@ -302,6 +304,7 @@ Who: window, cli, bridge.
 | `members` | array | {label, phase, done} |
 | `task` | string | its task's id |
 | `dir` | string | the folder of its agents' transcripts (on loomd's computer) |
+| `unanswered` | integer | its stops that went unanswered: Stop is offered again when it grows |
 
 ### `mcp`
 
@@ -313,6 +316,18 @@ Who: window, cli, bridge.
 |---|---|---|
 | `id` | string | an agent's id |
 | `servers` | array | {name, status, error} |
+
+### `uris_shown`
+
+A web page an agent's MCP server asked the user to open (its sign-in): a client opens it.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | an agent's id |
+| `uri` | string | a page an MCP server asked to open, the user accepting |
+| `n` | integer | grows each time |
 
 ### `jobs_shown`
 
@@ -336,6 +351,7 @@ Who: window, cli.
 |---|---|---|
 | `id` | string | an agent's id |
 | `draft` | string | what waits in its input (a rewind's message, one taken back) |
+| `draft_images` | array | the pictures of the messages taken back (blob ids, `blob`): attached again with the draft |
 | `queued` | array | its messages waiting for the turn to end, in order (`unqueue`) |
 | `commands` | array | its slash commands: {name, about} |
 | `suggestion` | string? | the next message it suggests (Tab takes it) |

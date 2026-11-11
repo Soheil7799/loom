@@ -222,6 +222,15 @@ impl Hub {
         hub
     }
 
+    /// The conversation the window shows (its session, once it has one; none: no agent).
+    pub fn set_current(&self, session: Option<String>, title: &str) {
+        let now = session.map(|s| (s, title.to_owned()));
+        if *self.current.borrow() != now {
+            *self.current.borrow_mut() = now;
+            self.refresh_head();
+        }
+    }
+
     fn refresh_head(&self) {
         let current = self.current.borrow().clone();
         match (self.core.on(), current) {

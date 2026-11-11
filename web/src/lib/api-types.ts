@@ -31,6 +31,8 @@ export type AgentsItem = {
   awake: boolean;
   /** the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` */
   options?: unknown[];
+  /** the ids of the settings among `options` the agent has a choice of its own for (kept for it, applied whenever it starts); the rest follow the settings' defaults */
+  chosen?: unknown[];
   /** a turn quiet for 3 minutes, no tool running */
   stalled?: boolean;
   /** the user has it in front of them in loom */
@@ -90,6 +92,8 @@ export type ConversationItem = {
   output?: string;
   /** a command's exit code */
   exit?: number;
+  /** grows each time it is to be shown open (a `!command`'s output) */
+  opened?: number;
   /** the task a tool is part of */
   parent?: string;
   /** a question's detail */
@@ -290,6 +294,8 @@ export type WorkflowsItem = {
   task: string;
   /** the folder of its agents' transcripts (on loomd's computer) */
   dir: string;
+  /** its stops that went unanswered: Stop is offered again when it grows */
+  unanswered: number;
 };
 
 /** Each agent's MCP servers, as its process last said. */
@@ -298,6 +304,16 @@ export type McpItem = {
   id: string;
   /** {name, status, error} */
   servers: unknown[];
+};
+
+/** A web page an agent's MCP server asked the user to open (its sign-in): a client opens it. */
+export type UrisShownItem = {
+  /** an agent's id */
+  id: string;
+  /** a page an MCP server asked to open, the user accepting */
+  uri: string;
+  /** grows each time */
+  n: number;
 };
 
 /** A job an agent brings forward for the user: a client opens it. */
@@ -316,6 +332,8 @@ export type InputsItem = {
   id: string;
   /** what waits in its input (a rewind's message, one taken back) */
   draft: string;
+  /** the pictures of the messages taken back (blob ids, `blob`): attached again with the draft */
+  draft_images: unknown[];
   /** its messages waiting for the turn to end, in order (`unqueue`) */
   queued: unknown[];
   /** its slash commands: {name, about} */
@@ -461,6 +479,7 @@ export interface Resources {
   "plan/<agent>": PlanItem;
   "workflows/<agent>": WorkflowsItem;
   "mcp": McpItem;
+  "uris_shown": UrisShownItem;
   "jobs_shown": JobsShownItem;
   "inputs": InputsItem;
   "closed": ClosedItem;

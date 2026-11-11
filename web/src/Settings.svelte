@@ -39,7 +39,7 @@
         { key: "compact_tokens", title: "Compact at (tokens)", kind: "number", when: "compact_alert" },
       ] },
       { title: "Idle agents", rows: [
-        { key: "idle_minutes", title: "Suspend idle agents", detail: "Frees an unwatched agent's memory; opening it resumes the conversation.", kind: "select", options: IDLE },
+        { key: "idle_minutes", title: "Suspend idle agents", detail: "Frees an unwatched agent's memory. Opening it shows its conversation; it starts again with your next message.", kind: "select", options: IDLE },
         { key: "rest_compact", title: "Compact before suspending", detail: "Sums up its conversation first, so resuming it is quick and cheap. Never the open agent, nor one waiting on you.", kind: "switch", when: "idle_minutes" },
         { key: "rest_compact_tokens", title: "When its context is", kind: "select", options: TOKENS, when: "rest_compact" },
       ] },

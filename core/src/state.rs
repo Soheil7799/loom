@@ -21,11 +21,17 @@ pub struct Saved {
     pub used: u64,
     /// Kept awake: never suspended for being idle.
     pub awake: bool,
+    /// Its session's settings as last known (ACP's configOptions: model, effort…), shown
+    /// while it rests.
+    pub options: serde_json::Value,
+    /// Its own choices among them (option id → value), applied whenever it starts; the
+    /// settings' defaults go for the rest.
+    pub chosen: serde_json::Value,
 }
 
 impl Saved {
     pub fn new(cwd: PathBuf) -> Saved {
-        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new(), used: now(), awake: false }
+        Saved { cwd, session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new(), used: now(), awake: false, options: serde_json::Value::Null, chosen: serde_json::json!({}) }
     }
 }
 
@@ -105,6 +111,8 @@ fn saved(a: &Value) -> Option<Saved> {
         dirs: a["dirs"].as_array().into_iter().flatten().filter_map(|d| d.as_str().map(PathBuf::from)).collect(),
         used: a["used"].as_u64().unwrap_or(0),
         awake: a["awake"].as_bool().unwrap_or(false),
+        options: a["options"].clone(),
+        chosen: if a["chosen"].is_object() { a["chosen"].clone() } else { json!({}) },
     })
 }
 
@@ -132,7 +140,7 @@ pub fn claude_file(session: &str) -> Option<PathBuf> {
 }
 
 fn saved_json(a: &Saved) -> Value {
-    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(), "used": a.used, "awake": a.awake })
+    json!({ "cwd": a.cwd.to_string_lossy(), "sessionId": a.session_id, "title": a.title, "named": a.named, "draft": a.draft, "dirs": a.dirs.iter().map(|d| d.to_string_lossy()).collect::<Vec<_>>(), "used": a.used, "awake": a.awake, "options": a.options, "chosen": a.chosen })
 }
 
 fn parse(text: &str) -> Layout {
@@ -199,7 +207,7 @@ mod tests {
     #[test]
     fn saved_layouts_read_back() {
         let agents = vec![
-            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()], used: 1_700_000_000, awake: true },
+            Saved { cwd: "/home/x/p".into(), session_id: Some("abc".into()), title: "Fix it".into(), named: true, draft: "and then".into(), dirs: vec!["/home/x/q".into()], used: 1_700_000_000, awake: true, options: json!([{ "id": "model", "currentValue": "opus" }]), chosen: json!({ "model": "opus" }) },
             Saved::new("/tmp".into()),
         ];
         let layout = Layout {

@@ -365,6 +365,13 @@ impl Transcript {
             self.change(i, |entry| entry["exit"] = json!(code));
         }
     }
+
+    /// Tool `id` to be shown open (a `!command`'s output): `opened` grows each time.
+    fn open_tool(&mut self, id: &str) {
+        if let Some(&i) = self.tools.get(id) {
+            self.change(i, |entry| entry["opened"] = json!(entry["opened"].as_u64().unwrap_or(0) + 1));
+        }
+    }
 }
 
 /// `text` cut to its last `keep` bytes (at a character's start).
@@ -396,6 +403,8 @@ pub struct Recorded {
     shown: std::cell::Cell<u64>,
     /// What is in its input, not sent yet.
     draft: RefCell<String>,
+    /// Pictures of messages taken back (blob ids), for the input to attach again.
+    draft_images: RefCell<Vec<String>>,
 }
 
 /// The core API's `usage` resource: the account's limits (`{id: "account", kind: "account",
@@ -446,6 +455,7 @@ impl Recorded {
         // shared by every agent, there from the first one on
         crate::api::hub().store("mcp");
         crate::api::hub().store("jobs_shown");
+        crate::api::hub().store("uris_shown");
         let usage = crate::api::hub().store(USAGE);
         let account = account_limits();
         if !account.is_null() && usage.get("account").is_none() {
@@ -504,18 +514,21 @@ impl Recorded {
 
     pub fn new() -> Recorded {
         let transcript = Transcript { epoch: crate::rt::uuid(), ..Transcript::default() };
-        Recorded { transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default(), commands: RefCell::default(), suggestion: RefCell::default(), shown: std::cell::Cell::new(0), draft: RefCell::default() }
+        Recorded { transcript: Rc::new(RefCell::new(transcript)), usage: RefCell::new(json!({})), agent: RefCell::default(), actions: RefCell::default(), commands: RefCell::default(), suggestion: RefCell::default(), shown: std::cell::Cell::new(0), draft: RefCell::default(), draft_images: RefCell::default() }
     }
 
     /// Messages taken back: before what is in the draft, a blank line between each (as the
     /// window's input has them).
-    fn put_back(&self, texts: &[String]) {
-        let mut parts: Vec<String> = texts.iter().filter(|t| !t.trim().is_empty()).cloned().collect();
+    fn put_back(&self, messages: Vec<(String, Vec<Png>)>) {
+        let mut parts: Vec<String> = messages.iter().map(|(t, _)| t).filter(|t| !t.trim().is_empty()).cloned().collect();
         let draft = self.draft.borrow().clone();
         if !draft.trim().is_empty() {
             parts.push(draft);
         }
         *self.draft.borrow_mut() = parts.join("\n\n");
+        // their pictures too: kept as blobs, for the input to attach again
+        let images = messages.into_iter().flat_map(|(_, images)| images).map(crate::api::blobs::put);
+        self.draft_images.borrow_mut().extend(images);
     }
 }
 
@@ -687,6 +700,9 @@ impl View for Recorded {
     fn tool_exit(&self, id: &str, code: Option<i64>) {
         self.transcript.borrow_mut().tool_exit(id, code);
     }
+    fn open_tool(&self, id: &str) {
+        self.transcript.borrow_mut().open_tool(id);
+    }
     fn set_plan(&self, entries: &Value) {
         if let Some(id) = self.agent.borrow().as_ref() {
             let items = entries.as_array().into_iter().flatten().enumerate().map(|(i, e)| json!({ "id": i.to_string(), "content": e["content"], "status": e["status"], "priority": e["priority"] })).collect();
@@ -713,7 +729,7 @@ impl View for Recorded {
     fn workflow(&self, tool_id: &str, launch: Launch, live: bool, _alive: Box<dyn Fn() -> bool>, _on_changed: Rc<dyn Fn()>, _on_stop: Rc<dyn Fn()>) -> Rc<dyn Workflow> {
         let store = self.agent.borrow().as_ref().map(|id| crate::api::hub().store(&format!("workflows/{id}")));
         let progress = Rc::new(RefCell::new(crate::workflow::Progress::new(&launch, live)));
-        let recorded = Rc::new(RecordedWorkflow { tool_id: tool_id.to_owned(), progress, store, launch });
+        let recorded = Rc::new(RecordedWorkflow { tool_id: tool_id.to_owned(), progress, store, launch, unanswered: std::cell::Cell::new(0) });
         recorded.publish();
         // followed from its files while it runs, as the window's card is
         let weak = Rc::downgrade(&recorded);
@@ -791,13 +807,17 @@ impl View for Recorded {
     }
     fn set_draft(&self, text: &str) {
         *self.draft.borrow_mut() = text.to_owned();
+        // the input took what was put back (its pictures are attached there now)
+        self.draft_images.borrow_mut().clear();
     }
-    fn unqueue(&self, text: &str, _images: Vec<Png>) {
-        self.put_back(&[text.to_owned()]);
+    fn draft_images(&self) -> Vec<String> {
+        self.draft_images.borrow().clone()
+    }
+    fn unqueue(&self, text: &str, images: Vec<Png>) {
+        self.put_back(vec![(text.to_owned(), images)]);
     }
     fn restore_unsent(&self, messages: Vec<(String, Vec<Png>)>) {
-        let texts: Vec<String> = messages.into_iter().map(|(text, _)| text).collect();
-        self.put_back(&texts);
+        self.put_back(messages);
     }
 
     // A subagent's conversation: published beside its agent's (`subagent/<agent>/<id>`), for
@@ -808,6 +828,13 @@ impl View for Recorded {
         let Some(agent) = self.agent.borrow().clone() else { return Rc::new(recorded) };
         recorded.transcript.borrow_mut().publish_to(crate::api::hub().store(&format!("subagent/{agent}/{id}")));
         Rc::new(recorded)
+    }
+    fn open_uri(&self, uri: &str) {
+        // a page an MCP server asked to open (accepted by the user): a client opens it
+        if let Some(agent) = self.agent.borrow().as_ref() {
+            self.shown.set(self.shown.get() + 1);
+            crate::api::hub().store("uris_shown").upsert(json!({ "id": agent, "uri": uri, "n": self.shown.get() }));
+        }
     }
     fn show_job(&self, id: Id) {
         // the job it opened for the user (a login): a client brings it forward
@@ -1138,6 +1165,8 @@ struct RecordedWorkflow {
     progress: Rc<RefCell<crate::workflow::Progress>>,
     store: Option<Store>,
     launch: Launch,
+    /// Stops asked of it that went unanswered (each grows it: a client offers Stop again).
+    unanswered: std::cell::Cell<u64>,
 }
 
 impl RecordedWorkflow {
@@ -1153,7 +1182,7 @@ impl RecordedWorkflow {
         };
         let members: Vec<Value> = p.members.iter().map(|m| json!({ "label": m.label, "phase": m.phase, "done": m.result.is_some() })).collect();
         let (done, all) = p.counts();
-        store.upsert(json!({ "id": self.tool_id, "name": self.launch.name, "summary": self.launch.summary, "task": self.launch.task, "dir": self.launch.dir.to_string_lossy(), "running": !p.done(), "state": state, "done": done, "agents": all, "members": members }));
+        store.upsert(json!({ "id": self.tool_id, "name": self.launch.name, "summary": self.launch.summary, "task": self.launch.task, "dir": self.launch.dir.to_string_lossy(), "running": !p.done(), "state": state, "done": done, "agents": all, "members": members, "unanswered": self.unanswered.get() }));
     }
 }
 
@@ -1173,7 +1202,12 @@ impl Workflow for RecordedWorkflow {
     fn counts(&self) -> (usize, usize) {
         self.progress.borrow().counts()
     }
-    fn stop_unanswered(&self) {}
+    fn stop_unanswered(&self) {
+        if !self.progress.borrow().done() {
+            self.unanswered.set(self.unanswered.get() + 1);
+            self.publish();
+        }
+    }
     fn ended(&self, status: &str, output: Option<std::path::PathBuf>) {
         self.progress.borrow_mut().ended(status, output, true);
         self.publish();

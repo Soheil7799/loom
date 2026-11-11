@@ -170,6 +170,7 @@ pub struct Chat {
     /// The first child of `list`: a long conversation opens on its latest turns, this draws
     /// the ones before (`offer_earlier`).
     earlier: gtk::Button,
+    starting: gtk::Label,
     earlier_draw: RefCell<Option<Rc<dyn Fn()>>>,
     /// The plan's steps shown (else its one line).
     plan_open: Rc<Cell<bool>>,
@@ -286,6 +287,8 @@ struct ToolCard {
     /// A command's output (its last 200 KB, as the terminal got it) and how it ended.
     output: RefCell<String>,
     exit: Cell<Option<Option<i64>>>,
+    /// How many times loomd asked for it open (its entry's `opened`), as last seen.
+    opened: Cell<u64>,
     output_button: RefCell<Option<gtk::Button>>,
     rendering: Cell<bool>,
     has_open: Cell<bool>,
@@ -429,6 +432,11 @@ impl Chat {
         let earlier = gtk::Button::builder().visible(false).halign(gtk::Align::Center).build();
         earlier.add_css_class("earlier");
         list.append(&earlier);
+        // "Starting Claude in …", while an empty conversation waits for it
+        let starting = gtk::Label::builder().visible(false).halign(gtk::Align::Center).build();
+        starting.add_css_class("starting-note");
+        starting.add_css_class("dim");
+        list.append(&starting);
         let clamp = gtk::Box::new(gtk::Orientation::Vertical, 0);
         clamp.append(&list);
         // About 75 characters a line: long lines are hard to follow back.
@@ -662,6 +670,7 @@ impl Chat {
             group: RefCell::default(),
             turn_start: RefCell::default(),
             earlier,
+            starting,
             earlier_draw: RefCell::default(),
             plan_open: Rc::default(),
             mcp_alert,
@@ -1005,7 +1014,7 @@ impl Chat {
         let mut child = self.list.first_child();
         while let Some(widget) = child {
             child = widget.next_sibling();
-            if widget != *self.earlier.upcast_ref::<gtk::Widget>() {
+            if widget != *self.earlier.upcast_ref::<gtk::Widget>() && widget != *self.starting.upcast_ref::<gtk::Widget>() {
                 self.list.remove(&widget);
             }
         }
@@ -2131,6 +2140,14 @@ impl Chat {
     }
 
 
+    /// "Starting Claude in …" while it starts (`None`: not starting); shown only in an empty
+    /// conversation (a resumed one fills in by itself).
+    pub fn set_starting(&self, text: Option<&str>) {
+        self.starting.set_label(text.unwrap_or(""));
+        let empty = self.starting.next_sibling().is_none();
+        self.starting.set_visible(text.is_some() && empty);
+    }
+
     /// `text` beside the title, and the status dot (a css class: working, blocked…).
     pub fn set_state(&self, text: &str, class: &str) {
         self.state.set_label(text);
@@ -2167,7 +2184,9 @@ impl Chat {
     /// Session settings as chips, each with its menu: "Model · Opus 5.5", "Effort · High · Fast"
     /// (effort and speed, one menu), "Agent · …". All shown (nothing behind a "⋯"); the menus
     /// open upwards, the box being at the window's bottom. The mode has its own pill.
-    pub fn set_options(&self, options: &Value) {
+    /// The session's settings as chips; `chosen`: those the agent has its own choice for
+    /// (tinted: the rest follow the settings' defaults).
+    pub fn set_options(&self, options: &Value, chosen: &[String]) {
         while let Some(child) = self.options.first_child() {
             self.options.remove(&child);
         }
@@ -2215,6 +2234,11 @@ impl Chat {
             let button = gtk::MenuButton::builder().label(&label).popover(&popover).build();
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
+            let own = chosen.iter().any(|c| c == id) || (joined && effort.is_some_and(|e| std::ptr::eq(*option, e)) && fast.is_some_and(|f| chosen.iter().any(|c| f["id"].as_str() == Some(c))));
+            if own {
+                button.add_css_class("chosen");
+                tip.push_str(" · this agent's own choice (Settings → Agents has the default)");
+            }
             button.set_tooltip_text(Some(&tip));
             self.options.append(&button);
         }
@@ -2625,6 +2649,11 @@ impl Chat {
         }
         if item.get("exit").is_some() && card.exit.get() != Some(item["exit"].as_i64()) {
             self.tool_exit(call, item["exit"].as_i64());
+        }
+        // A `!command`: shown open as it starts and again with its output (as loomd asks).
+        let opened = item["opened"].as_u64().unwrap_or(0);
+        if opened > card.opened.replace(opened) {
+            self.open_tool(call);
         }
         // A subagent's launch card, drawn from entries: "open" reads its conversation (once).
         let mut child = card.actions.first_child();
@@ -3917,6 +3946,7 @@ impl ToolCard {
             content: RefCell::default(),
             output: RefCell::default(),
             exit: Cell::new(None),
+            opened: Cell::new(0),
             output_button: RefCell::default(),
             rendering: Cell::new(false),
             has_open: Cell::new(false),

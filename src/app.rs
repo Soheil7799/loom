@@ -137,6 +137,14 @@ pub struct App {
     /// loomd's `asks`, followed: the ones acted on, whether the first came, and the edit the
     /// files panel waits on (its number).
     asks_feed: RefCell<Option<Feed>>,
+    /// Jobs an agent brings forward for the user (a login): each `n` seen, by agent.
+    shown_feed: RefCell<Option<Feed>>,
+    shown_seen: RefCell<HashMap<String, u64>>,
+    shown_started: Cell<bool>,
+    /// Web pages an agent's MCP server asked to open: each `n` seen, by agent.
+    uris_feed: RefCell<Option<Feed>>,
+    uris_seen: RefCell<HashMap<String, u64>>,
+    uris_started: Cell<bool>,
     /// loomd's settings: this window's copy follows them (a change made in Settings, here or
     /// elsewhere, reaches what the window draws).
     settings_feed: RefCell<Option<Feed>>,
@@ -154,6 +162,10 @@ pub struct App {
     previous_remote: Cell<Option<u32>>,
     /// The agent the project page was opened from (its back button).
     back_to: Cell<Option<u32>>,
+    /// The first view after start was chosen (the overview or the last agent).
+    started: Cell<bool>,
+    /// The agent whose files the files panel shows, and how many it had then.
+    fed_files: Cell<(u32, usize)>,
     /// A copy was asked of loomd (rewind, fork): the next new agent it lists is shown.
     expect_copy: Cell<bool>,
 }
@@ -216,7 +228,16 @@ fn loomd_differs(hello: &Value, mine: &str) -> Option<usize> {
 impl App {
     pub fn new(app: &gtk::Application) -> Rc<App> {
         let app_id = app.application_id().map(|id| id.to_string()).unwrap_or_default();
-        let window = gtk::ApplicationWindow::builder().application(app).title("loom").default_width(1360).default_height(860).build();
+        // As it was left (its size, maximized); the first time, loom's own size.
+        let kept = window_state(&app_id);
+        let (width, height) = match (kept["width"].as_i64(), kept["height"].as_i64()) {
+            (Some(w), Some(h)) if w > 200 && h > 200 => (w as i32, h as i32),
+            _ => (1360, 860),
+        };
+        let window = gtk::ApplicationWindow::builder().application(app).title("loom").default_width(width).default_height(height).build();
+        if kept["maximized"] == true {
+            window.maximize();
+        }
         window.add_css_class("loom");
 
         // Left: projects and their agents.
@@ -621,6 +642,12 @@ impl App {
             remote_status: RefCell::default(),
             toast_remote: Cell::new(None),
             asks_feed: RefCell::default(),
+            shown_feed: RefCell::default(),
+            shown_seen: RefCell::default(),
+            shown_started: Cell::new(false),
+            uris_feed: RefCell::default(),
+            uris_seen: RefCell::default(),
+            uris_started: Cell::new(false),
             settings_feed: RefCell::default(),
             asks_seen: RefCell::default(),
             asks_started: Cell::new(false),
@@ -631,6 +658,8 @@ impl App {
             pinned_remote: Cell::new(None),
             previous_remote: Cell::new(None),
             back_to: Cell::new(None),
+            fed_files: Cell::new((0, 0)),
+            started: Cell::new(false),
             expect_copy: Cell::new(false),
         });
         this.follow_sidebar();
@@ -879,6 +908,7 @@ impl App {
         let weak = Rc::downgrade(self);
         self.window.connect_close_request(move |_| {
             let Some(app) = weak.upgrade() else { return glib::Propagation::Proceed };
+            app.keep_window_state();
             app.close_request()
         });
 
@@ -1310,7 +1340,8 @@ impl App {
 
     /// The scratch terminal opens where the agent works: its latest repo, else the project.
     fn toggle_scratch(self: &Rc<Self>) {
-        let place = self.current_project();
+        // where the agent in view works (its worktree, its repo), else the project in view
+        let place = self.remote_view().and_then(|a| a.cwd()).unwrap_or_else(|| self.current_project());
         if !self.scratch.toggle(&place) {
             self.focus_input();
         }
@@ -1612,6 +1643,15 @@ impl App {
         }
         agent.chat.returned();
         self.chat_stack.set_visible_child(&agent.chat.root);
+        // The files panel back, if the overview closed it; then fed with this agent's files.
+        if self.files_hidden_for_overview.take() {
+            self.files.root.set_visible(true);
+        }
+        self.feed_files(id);
+        self.tell_hub(id);
+        self.mark_active();
+        // kept at once (not only on a clean close): the agent in view for the next start
+        self.keep_window_state();
         if self.toast_remote.get() == Some(id) {
             self.hide_toast();
         }
@@ -1621,6 +1661,106 @@ impl App {
             self.show_tray(&project, &self.tray_for(&project));
         }
         agent.chat.input.grab_focus();
+        // A sidebar row takes the focus back on release: the input gets it again after.
+        let input = agent.chat.input.downgrade();
+        glib::idle_add_local_once(move || {
+            if let Some(input) = input.upgrade()
+                && input.is_mapped()
+            {
+                input.grab_focus();
+            }
+        });
+    }
+
+    /// The files panel shows agent `id`'s: the files it created or changed (loomd's `changes`),
+    /// its folder, its project's tree, and its repos first in Changes.
+    fn feed_files(self: &Rc<Self>, id: u32) {
+        let Some(item) = self.remote_item(id) else { return };
+        let (cwd, project) = (PathBuf::from(item["cwd"].as_str().unwrap_or_default()), PathBuf::from(item["project_id"].as_str().unwrap_or_default()));
+        let edited = item["edited"].as_u64().unwrap_or(0) as usize;
+        // The first file it touches opens the panel (as when it was the window's own agent).
+        let (was, before) = self.fed_files.replace((id, edited));
+        if was == id && before == 0 && edited > 0 {
+            self.files.root.set_visible(true);
+        }
+        if edited == 0 {
+            self.files.show(&cwd, &project, &[]);
+            self.files.set_repos(Vec::new());
+            return;
+        }
+        let weak = Rc::downgrade(self);
+        crate::conn::command_result("window", "changes", json!({ "agent": id.to_string() }), move |answer| {
+            let Some(app) = weak.upgrade() else { return };
+            if app.remote_in_view() != Some(id) {
+                return;
+            }
+            let files = answer.ok().and_then(|a| a["files"].as_array().cloned()).unwrap_or_default();
+            let entries: Vec<(PathBuf, loom_core::agent::Mark)> = files
+                .iter()
+                .filter_map(|f| {
+                    let mark = if f["mark"] == "created" { loom_core::agent::Mark::Created } else { loom_core::agent::Mark::Changed };
+                    Some((PathBuf::from(f["path"].as_str()?), mark))
+                })
+                .collect();
+            let mut repos: Vec<PathBuf> = Vec::new();
+            for repo in files.iter().filter_map(|f| f["repo"].as_str()).map(PathBuf::from) {
+                if !repos.contains(&repo) {
+                    repos.push(repo);
+                }
+            }
+            app.files.show(&cwd, &project, &entries);
+            app.files.set_repos(repos);
+        });
+    }
+
+    /// A job an agent opened for the user (Claude's login): brought forward in its project's
+    /// tray, once per time it asks (`n` grows); those there before the window started stay.
+    fn jobs_shown(self: &Rc<Self>) {
+        let items = {
+            let held = self.shown_feed.borrow();
+            let Some(feed) = held.as_ref() else { return };
+            feed.update();
+            feed.items().clone()
+        };
+        // the first copy: what was asked before this window started, not brought up again
+        let first = !self.shown_started.replace(true);
+        for item in items {
+            let (Some(agent), Some(n)) = (item["id"].as_str(), item["n"].as_u64()) else { continue };
+            let before = self.shown_seen.borrow_mut().insert(agent.to_owned(), n).unwrap_or(0);
+            let job = item["job"].as_str().and_then(|j| j.parse().ok());
+            let project = agent.parse().ok().and_then(|a| self.remote_project(a));
+            if let (false, Some(job), Some(project)) = (first, job, project)
+                && n > before
+            {
+                self.tray_for(&project).peek_id(job);
+            }
+        }
+    }
+
+    /// A web page an MCP server asked to open (the user chose "open"): opened in the browser,
+    /// once per time (`n` grows); only http(s), and not those from before the window started.
+    fn uris_shown(self: &Rc<Self>) {
+        let items = {
+            let held = self.uris_feed.borrow();
+            let Some(feed) = held.as_ref() else { return };
+            feed.update();
+            feed.items().clone()
+        };
+        let first = !self.uris_started.replace(true);
+        for item in items {
+            let (Some(agent), Some(n), Some(uri)) = (item["id"].as_str(), item["n"].as_u64(), item["uri"].as_str()) else { continue };
+            let before = self.uris_seen.borrow_mut().insert(agent.to_owned(), n).unwrap_or(0);
+            if !first && n > before && (uri.starts_with("https://") || uri.starts_with("http://")) {
+                gtk::UriLauncher::new(uri).launch(Some(&self.window), None::<&gio::Cancellable>, |_| {});
+            }
+        }
+    }
+
+    /// The Notes panel's "this conversation": the agent in view's (its session, once it has one).
+    fn tell_hub(&self, id: u32) {
+        let session = self.overview_items().into_iter().find(|o| o["id"].as_str() == Some(&*id.to_string())).and_then(|o| o["session"].as_str().map(str::to_owned));
+        let title = self.remote_item(id).and_then(|i| i["title"].as_str().map(str::to_owned)).unwrap_or_default();
+        self.hub.set_current(session, &title);
     }
 
     /// loomd's agent `id`'s chat here (made, in the stack, the first time).
@@ -1658,6 +1798,7 @@ impl App {
         self.pinned_box.append(&agent.chat.root);
         self.pinned_box.set_visible(true);
         self.pinned_remote.set(Some(id));
+        self.mark_active();
         // its header from `agents`
         self.refresh_sidebar();
         self.tell_looking();
@@ -1668,18 +1809,87 @@ impl App {
         let id = self.pinned_remote.take()?;
         if let Some(agent) = self.remote_agents.borrow().get(&id).cloned() {
             self.pinned_box.remove(&agent.chat.root);
-            // The header's project name: its page.
-            let (weak, of) = (self.me.borrow().clone(), Rc::downgrade(&agent));
-            *agent.chat.on_project.borrow_mut() = Some(Rc::new(move |()| {
-                if let (Some(app), Some(project)) = (weak.upgrade(), of.upgrade().and_then(|a| a.project())) {
-                    app.show_project(&project, &project);
-                }
-            }));
             self.chat_stack.add_named(&agent.chat.root, Some(&format!("remote-{id}")));
         }
         self.pinned_box.set_visible(false);
+        self.mark_active();
         self.tell_looking();
         Some(id)
+    }
+
+    /// The window as it is (size, maximized, the agents in view by session and id), for its
+    /// next start.
+    fn keep_window_state(&self) {
+        let session = |id: Option<u32>| {
+            let id = id?.to_string();
+            self.overview_items().into_iter().find(|o| o["id"].as_str() == Some(&*id))?["session"].as_str().map(str::to_owned)
+        };
+        let (width, height) = self.window.default_size();
+        let state = json!({
+            "width": width,
+            "height": height,
+            "maximized": self.window.is_maximized(),
+            "agent": self.remote_in_view().map(|id| id.to_string()),
+            "session": session(self.remote_in_view()),
+            "pinned": session(self.pinned_remote.get()),
+        });
+        let path = window_state_path(&self.app_id);
+        if let Some(dir) = path.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        let _ = std::fs::write(path, state.to_string());
+    }
+
+    /// loomd's agents came the first time: the overview, or the agent (and the one beside) in
+    /// view when the window last closed, as the settings say.
+    fn first_view(self: &Rc<Self>) {
+        if self.started.get() || self.notes_mode.get() {
+            return;
+        }
+        // once, on loomd's first whole list (none: nothing to choose, the welcome stays)
+        let synced = self.overview_feeds.borrow().as_ref().is_some_and(|(o, _)| {
+            o.update();
+            o.synced()
+        });
+        if !synced {
+            return;
+        }
+        self.started.set(true);
+        let ids: Vec<(u32, Option<String>)> = self
+            .overview_items()
+            .iter()
+            .filter_map(|o| Some((o["id"].as_str()?.parse().ok()?, o["session"].as_str().map(str::to_owned))))
+            .collect();
+        if ids.is_empty() {
+            return;
+        }
+        let kept = window_state(&self.app_id);
+        let find = |session: &Value, id: &Value| {
+            let by_session = session.as_str().and_then(|s| ids.iter().find(|(_, own)| own.as_deref() == Some(s)));
+            by_session.or_else(|| id.as_str().and_then(|i| i.parse::<u32>().ok()).and_then(|i| ids.iter().find(|(own, _)| *own == i))).map(|(id, _)| *id)
+        };
+        match find(&kept["session"], &kept["agent"]) {
+            Some(id) if !settings::get().start_on_overview => {
+                self.focus_remote(id);
+                if let Some(beside) = find(&kept["pinned"], &Value::Null).filter(|b| *b != id) {
+                    self.pin_remote(beside);
+                }
+            }
+            _ => self.show_overview(),
+        }
+    }
+
+    /// Side by side, the pane with the keyboard is marked (`active`), the other dimmed.
+    fn mark_active(&self) {
+        let (focused, pinned) = (self.remote_focused.get(), self.pinned_remote.get());
+        for (id, agent) in self.remote_agents.borrow().iter() {
+            let root = &agent.chat.root;
+            root.remove_css_class("active");
+            root.remove_css_class("inactive");
+            if pinned.is_some() {
+                root.add_css_class(if focused == Some(*id) { "active" } else { "inactive" });
+            }
+        }
     }
 
     /// loomd's agent in view, if the window is in use and shows one.
@@ -1752,11 +1962,24 @@ impl App {
                     app.refresh_inbox();
                     // the Running rows' second lines (its questions, its last words)
                     app.sidebar_soon();
+                    app.first_view();
                 }
             }
         };
         *self.overview_feeds.borrow_mut() = Feed::new("overview", ready()).zip(Feed::new("schedules", ready()));
         *self.closed_feed.borrow_mut() = Feed::new("closed", || {});
+        let weak = Rc::downgrade(self);
+        *self.uris_feed.borrow_mut() = Feed::new("uris_shown", move || {
+            if let Some(app) = weak.upgrade() {
+                app.uris_shown();
+            }
+        });
+        let weak = Rc::downgrade(self);
+        *self.shown_feed.borrow_mut() = Feed::new("jobs_shown", move || {
+            if let Some(app) = weak.upgrade() {
+                app.jobs_shown();
+            }
+        });
         let weak = Rc::downgrade(self);
         *self.asks_feed.borrow_mut() = Feed::new("asks", move || {
             if let Some(app) = weak.upgrade() {
@@ -3386,6 +3609,8 @@ impl App {
             agents.update();
             projects.update();
             for item in agents.items().iter() {
+                // its session settings: what Settings' defaults offer
+                crate::prefs::seen_options(&item["options"]);
                 let Some(id) = item["id"].as_str().and_then(|id| id.parse::<u32>().ok()) else { continue };
                 if let Some(agent) = self.remote_agents.borrow().get(&id).cloned() {
                     agent.update(item);
@@ -3411,6 +3636,14 @@ impl App {
             self.focus_remote(id);
         }
         self.refresh_title();
+        // The agent in view: its files again when it touched more, and its session for Notes.
+        if let Some(id) = self.remote_in_view() {
+            let edited = agents.iter().find(|a| a.id == id).map_or(0, |a| a.edited);
+            if self.fed_files.get() != (id, edited) {
+                self.feed_files(id);
+            }
+            self.tell_hub(id);
+        }
         if self.notes_mode.get() {
             let (mut working, mut waiting) = (0, 0);
             for agent in &agents {
@@ -4280,4 +4513,13 @@ mod loomd_tests {
         assert_eq!(loomd_differs(&hello("0.4.0", &all), "0.5.0"), Some(0), "another version");
         assert_eq!(loomd_differs(&hello("0.5.0", &all[1..]), "0.5.0"), Some(1), "the same version, a command short");
     }
+}
+
+/// The window's own state file (its size, the agents it showed): the window's, not loomd's.
+fn window_state_path(app_id: &str) -> PathBuf {
+    loom_core::state::dir().join(format!("window-{}.json", app_id.rsplit('.').next().unwrap_or("loom")))
+}
+
+fn window_state(app_id: &str) -> Value {
+    std::fs::read_to_string(window_state_path(app_id)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
 }

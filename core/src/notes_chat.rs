@@ -76,7 +76,7 @@ pub fn saved_for(vault: &Path, session: Option<String>, scope: Option<&Scope>) -
         (None, Some((name, _))) => format!("About {name}"),
         (None, None) => "New chat".to_owned(),
     };
-    Saved { cwd: vault.to_owned(), session_id: session, title, named: false, draft: String::new(), dirs: Vec::new(), used: 0, awake: false }
+    Saved { cwd: vault.to_owned(), session_id: session, title, named: false, draft: String::new(), dirs: Vec::new(), used: 0, awake: false, options: serde_json::Value::Null, chosen: serde_json::json!({}) }
 }
 
 /// What the chat's input says before anything is typed.

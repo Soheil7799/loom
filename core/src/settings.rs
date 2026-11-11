@@ -27,6 +27,9 @@ pub struct Settings {
     pub adapter: String,
     /// Permission mode new agents start in (empty: Claude Code's own default).
     pub default_mode: String,
+    /// The session settings every agent starts with, new or woken (option id → value: the
+    /// model, the effort…), unless it has a choice of its own; none: Claude Code's.
+    pub default_options: std::collections::BTreeMap<String, String>,
     pub show_thinking: bool,
     /// Chat text size, as a factor of the normal one.
     pub text_scale: f64,
@@ -103,6 +106,7 @@ impl Default for Settings {
             strict_sandbox: false,
             adapter: String::new(),
             default_mode: String::new(),
+            default_options: Default::default(),
             show_thinking: true,
             text_scale: 1.0,
             terminal_font: TERMINAL_FONT.to_owned(),
@@ -398,6 +402,7 @@ fn parse(text: &str) -> Settings {
         strict_sandbox: flag("strictSandbox", d.strict_sandbox),
         adapter: string("adapter", &d.adapter),
         default_mode: string("defaultMode", &d.default_mode),
+        default_options: v["defaultOptions"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_else(|| d.default_options.clone()),
         show_thinking: flag("showThinking", d.show_thinking),
         text_scale: v["textScale"].as_f64().filter(|s| (0.7..=1.6).contains(s)).unwrap_or(d.text_scale),
         terminal_font: string("terminalFont", &d.terminal_font),
@@ -453,6 +458,7 @@ fn render(s: &Settings) -> String {
         "strictSandbox": s.strict_sandbox,
         "adapter": s.adapter,
         "defaultMode": s.default_mode,
+        "defaultOptions": s.default_options,
         "showThinking": s.show_thinking,
         "textScale": s.text_scale,
         "terminalFont": s.terminal_font,

@@ -303,6 +303,34 @@ fn dropdown<T: PartialEq + Clone + 'static>(choices: &[(T, &str)], current: T, e
     dropdown
 }
 
+thread_local! {
+    /// The session settings an agent last showed (ACP configOptions): what the defaults offer.
+    static KNOWN_OPTIONS: std::cell::RefCell<serde_json::Value> = const { std::cell::RefCell::new(serde_json::Value::Null) };
+}
+
+/// An agent's session settings, seen: the defaults offer their choices.
+pub fn seen_options(options: &serde_json::Value) {
+    if options.as_array().is_some_and(|o| !o.is_empty()) {
+        KNOWN_OPTIONS.with_borrow_mut(|known| *known = options.clone());
+    }
+}
+
+/// An option's values (flat or in groups): (value, name).
+fn option_values(options: &serde_json::Value) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for entry in options.as_array().into_iter().flatten() {
+        match entry["options"].as_array() {
+            Some(group) => out.extend(option_values(&serde_json::Value::Array(group.clone()))),
+            None => {
+                if let Some(value) = entry["value"].as_str() {
+                    out.push((value.to_owned(), entry["name"].as_str().unwrap_or(value).to_owned()));
+                }
+            }
+        }
+    }
+    out
+}
+
 fn flat_button(label: &str) -> gtk::Button {
     let button = gtk::Button::with_label(label);
     button.add_css_class("prefs-button");
@@ -389,6 +417,35 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     row(&new, "Permission mode", "What a new agent may do without asking. Shift+Tab changes it per agent.", &mode);
     content.append(&new);
 
+    // The session's settings (model, effort…), as Claude Code offers them: known once an agent
+    // has started.
+    let every = section("Every agent, new or woken");
+    let known = KNOWN_OPTIONS.with_borrow(Clone::clone);
+    let options: Vec<&serde_json::Value> = known.as_array().into_iter().flatten().filter(|o| o["id"].as_str().is_some_and(|id| id != "mode")).collect();
+    if options.is_empty() {
+        let hint = gtk::Label::builder().label("The model, the effort and the rest show here once an agent has started.").xalign(0.0).wrap(true).build();
+        hint.add_css_class("dim");
+        every.append(&hint);
+    }
+    for option in options {
+        let Some(id) = option["id"].as_str().map(str::to_owned) else { continue };
+        let mut choices: Vec<(String, String)> = vec![(String::new(), "Claude Code's default".to_owned())];
+        choices.extend(option_values(&option["options"]));
+        let choices: Vec<(String, &str)> = choices.iter().map(|(v, n)| (v.clone(), n.as_str())).collect();
+        let current = s.default_options.get(&id).cloned().unwrap_or_default();
+        let key = id.clone();
+        let pick = dropdown(&choices, current, |v| v.clone(), move |s, v| {
+            if v.is_empty() {
+                s.default_options.remove(&key);
+            } else {
+                s.default_options.insert(key.clone(), v);
+            }
+        });
+        let name = option["name"].as_str().unwrap_or(&id).to_owned();
+        row(&every, &name, "What every agent starts with, new or woken. Changed in an agent, it is kept for that agent (its chip tinted); back at this value, it follows this again.", &pick);
+    }
+    content.append(&every);
+
     let chat = section("Conversation");
     row(&chat, "Show thinking", "Claude's reasoning, folded under each answer.", &switch(s.show_thinking, |s, on| s.show_thinking = on));
     row(
@@ -411,7 +468,7 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
 
     let resting = section("Idle agents");
     let idle = dropdown(IDLE, s.idle_minutes, |m| format!("After {m} min"), |s, m| s.idle_minutes = m);
-    row(&resting, "Suspend idle agents", "Frees an unwatched agent's memory; opening it resumes the conversation.", &idle);
+    row(&resting, "Suspend idle agents", "Frees an unwatched agent's memory. Opening it shows its conversation; it starts again with your next message.", &idle);
     let tokens = dropdown(REST_TOKENS, s.rest_compact_tokens, |t| format!("Over {}K tokens", t / 1000), |s, t| s.rest_compact_tokens = t);
     tokens.set_sensitive(s.rest_compact);
     let on = switch(s.rest_compact, |s, on| s.rest_compact = on);

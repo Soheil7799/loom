@@ -34,6 +34,8 @@ pub struct Run {
     pub on_changed: RefCell<Option<Rc<dyn Fn()>>>,
     /// Its Stop pressed.
     pub on_stop: RefCell<Option<Rc<dyn Fn()>>>,
+    /// The stops loomd says went unanswered, as last seen.
+    unanswered: Cell<u64>,
 }
 
 impl Run {
@@ -88,6 +90,7 @@ impl Run {
             on_open: RefCell::default(),
             on_changed: RefCell::default(),
             on_stop: RefCell::default(),
+            unanswered: Cell::new(0),
         });
         let weak = Rc::downgrade(&run);
         stop.connect_clicked(move |stop| {
@@ -128,6 +131,14 @@ impl Run {
             });
         }
         run
+    }
+
+    /// A stop went unanswered (loomd's count of them, `n`, grew): Stop offered again.
+    pub fn stop_unanswered(&self, n: u64) {
+        if n > self.unanswered.replace(n) && !self.done() {
+            self.stop.set_sensitive(true);
+            self.stop.set_label("Stop");
+        }
     }
 
     /// Over (done, failed, stopped).

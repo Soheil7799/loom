@@ -366,6 +366,29 @@ async fn run() -> u8 {
     notes.refresh();
     // Meaning search (Settings): Ollama started and the model pulled when it is on.
     loom_core::embed::serve();
+    // With the debug log on: memory every 3 minutes, loomd's and each agent's (read off the
+    // main loop; what the window logged when its agents were its own).
+    let (watched, last) = (Rc::downgrade(&daemon), Rc::new(std::cell::Cell::new(None::<u64>)));
+    std::mem::forget(loom_core::rt::every(std::time::Duration::from_secs(180), move || {
+        let Some(daemon) = watched.upgrade() else { return false };
+        if loom_core::log::on() {
+            let agents: Vec<loom_core::memory::AgentInfo> = daemon
+                .ws
+                .agents_in_order()
+                .iter()
+                .map(|a| (a.id, format!("{} · {}", daemon.ws.project_label(&a.project), a.title()), a.status().css().to_owned(), a.adapter_pid()))
+                .collect();
+            let last = last.clone();
+            loom_core::rt::spawn_local(async move {
+                let previous = last.get();
+                if let Ok((text, total)) = loom_core::rt::spawn_blocking(move || loom_core::memory::snapshot(&agents, previous)).await {
+                    last.set(Some(total));
+                    loom_core::log::write("memory", &text);
+                }
+            });
+        }
+        true
+    }));
     let bridges = daemon.bridges.clone();
     loom_core::settings::on_change(move |s| bridges.apply(s));
     // Next-message suggestions switched on or off: the agents running are told (as the
@@ -453,12 +476,16 @@ fn commands(daemon: &Rc<Daemon>) {
         }
         let daemon = weak.upgrade().ok_or_else(|| Error::NotFound("loom".into()))?;
         let active = params["active"].as_bool().ok_or_else(|| Error::Invalid("set_looking needs active".into()))?;
-        let agents = params["agents"].as_array().into_iter().flatten().filter_map(|a| a.as_str()?.parse().ok()).collect();
-        *daemon.looking.borrow_mut() = (active, agents, std::time::Instant::now());
-        // What the window shows in use is seen: its dot goes.
+        let agents: Vec<u32> = params["agents"].as_array().into_iter().flatten().filter_map(|a| a.as_str()?.parse().ok()).collect();
+        let before = std::mem::replace(&mut *daemon.looking.borrow_mut(), (active, agents, std::time::Instant::now()));
+        // What the window shows in use is seen: its dot goes. One just opened there is used
+        // (the palette's and the overview's "last used" order).
         for id in daemon.looking.borrow().1.clone() {
             if let Some(agent) = daemon.ws.agent(id).filter(|_| daemon.looking_at(id)) {
                 agent.mark_seen();
+                if !(before.0 && before.1.contains(&id)) {
+                    agent.mark_used();
+                }
             }
         }
         daemon.publish_soon();

@@ -249,6 +249,8 @@ pub struct Agent {
     named: Cell<bool>,
     /// The session's settings (model, effort…) as the agent describes them.
     config: RefCell<Value>,
+    /// Its own choices of those settings (option id → value): applied whenever it starts.
+    chosen: RefCell<Value>,
     /// The session was opened new (not resumed): the default mode applies.
     fresh: Cell<bool>,
     status: Cell<Status>,
@@ -398,7 +400,9 @@ impl Agent {
             session_id: RefCell::new(saved.session_id),
             title: RefCell::new(saved.title),
             named: Cell::new(saved.named),
-            config: RefCell::new(Value::Null),
+            // as last known: shown (and changed) while it rests
+            config: RefCell::new(saved.options),
+            chosen: RefCell::new(saved.chosen),
             fresh: Cell::new(false),
             status: Cell::new(Status::Suspended),
             conn: RefCell::default(),
@@ -612,6 +616,8 @@ impl Agent {
             dirs: self.dirs.borrow().clone(),
             used: self.used.get(),
             awake: self.awake.get(),
+            options: self.config.borrow().clone(),
+            chosen: self.chosen.borrow().clone(),
         }
     }
 
@@ -1201,7 +1207,58 @@ impl Agent {
         self.is_busy() && self.last_heard.get().elapsed() >= quiet && !crate::api::hub().store(&conversation(self.id)).items().iter().any(|e| e["kind"] == "tool" && matches!(e["status"].as_str(), Some("pending" | "streaming")))
     }
 
+    /// The user's choice of a session setting: kept as this agent's own (back at the settings'
+    /// default, it follows the default again), and applied now if it runs, else when it starts.
     pub fn set_option(self: &Rc<Self>, id: &str, value: &str) {
+        let default = crate::settings::get().default_options.get(id).cloned();
+        {
+            let mut chosen = self.chosen.borrow_mut();
+            if !chosen.is_object() {
+                *chosen = json!({});
+            }
+            if default.as_deref() == Some(value) {
+                chosen.as_object_mut().map(|c| c.remove(id));
+            } else {
+                chosen[id] = json!(value);
+            }
+        }
+        let running = self.ready.get() && self.conn.borrow().is_some();
+        if running {
+            self.apply_option(id, value);
+        } else {
+            // Resting: the setting shown as chosen now; the session gets it as it starts.
+            let mut config = self.config.borrow().clone();
+            for option in config.as_array_mut().into_iter().flatten() {
+                if option["id"] == id {
+                    option["currentValue"] = json!(value);
+                }
+            }
+            self.set_config(&config);
+        }
+    }
+
+    /// Its own choices (or else the settings' defaults) given to the session that just
+    /// started, where they differ from what it has and it offers them.
+    fn apply_chosen(self: &Rc<Self>) {
+        let defaults = crate::settings::get().default_options;
+        let chosen = self.chosen.borrow().clone();
+        let config = self.config.borrow().clone();
+        for option in config.as_array().into_iter().flatten() {
+            let Some(id) = option["id"].as_str() else { continue };
+            let wanted = chosen[id].as_str().map(str::to_owned).or_else(|| defaults.get(id).cloned());
+            let Some(wanted) = wanted.filter(|w| option["currentValue"].as_str() != Some(w)) else { continue };
+            if option_values(option).contains(&wanted) {
+                self.apply_option(id, &wanted);
+            }
+        }
+    }
+
+    /// The ids of the settings it has a choice of its own for.
+    pub fn chosen_options(&self) -> Vec<String> {
+        self.chosen.borrow().as_object().map(|c| c.keys().cloned().collect()).unwrap_or_default()
+    }
+
+    fn apply_option(self: &Rc<Self>, id: &str, value: &str) {
         let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id.borrow().clone()) else { return };
         let weak = Rc::downgrade(self);
         let name = id.to_owned();
@@ -1216,6 +1273,7 @@ impl Agent {
 
     fn session_ready(self: &Rc<Self>, result: &Value) {
         self.set_config(&result["configOptions"]);
+        self.apply_chosen();
         if let Some(modes) = result.get("modes").filter(|m| !m.is_null()) {
             *self.modes.borrow_mut() = modes["availableModes"]
                 .as_array()
@@ -3195,4 +3253,16 @@ mod tests {
             "a file changed before the turn and again in it counts"
         );
     }
+}
+
+/// The values an ACP config option offers (`options`, flat or in groups).
+fn option_values(option: &Value) -> Vec<String> {
+    let mut values = Vec::new();
+    for entry in option["options"].as_array().into_iter().flatten() {
+        match entry["options"].as_array() {
+            Some(group) => values.extend(group.iter().filter_map(|v| v["value"].as_str().map(str::to_owned))),
+            None => values.extend(entry["value"].as_str().map(str::to_owned)),
+        }
+    }
+    values
 }

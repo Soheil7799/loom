@@ -306,6 +306,10 @@
             "type": "array",
             "description": "the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option`"
           },
+          "chosen": {
+            "type": "array",
+            "description": "the ids of the settings among `options` the agent has a choice of its own for (kept for it, applied whenever it starts); the rest follow the settings' defaults"
+          },
           "stalled": {
             "type": "boolean",
             "description": "a turn quiet for 3 minutes, no tool running"
@@ -456,6 +460,10 @@
           "exit": {
             "type": "integer",
             "description": "a command's exit code"
+          },
+          "opened": {
+            "type": "integer",
+            "description": "grows each time it is to be shown open (a `!command`'s output)"
           },
           "parent": {
             "type": "string",
@@ -1052,6 +1060,10 @@
           "dir": {
             "type": "string",
             "description": "the folder of its agents' transcripts (on loomd's computer)"
+          },
+          "unanswered": {
+            "type": "integer",
+            "description": "its stops that went unanswered: Stop is offered again when it grows"
           }
         },
         "required": [
@@ -1063,7 +1075,8 @@
           "agents",
           "members",
           "task",
-          "dir"
+          "dir",
+          "unanswered"
         ]
       }
     },
@@ -1089,6 +1102,36 @@
         "required": [
           "id",
           "servers"
+        ]
+      }
+    },
+    "uris_shown": {
+      "description": "A web page an agent's MCP server asked the user to open (its sign-in): a client opens it.",
+      "who": [
+        "window",
+        "cli",
+        "bridge"
+      ],
+      "item": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "an agent's id"
+          },
+          "uri": {
+            "type": "string",
+            "description": "a page an MCP server asked to open, the user accepting"
+          },
+          "n": {
+            "type": "integer",
+            "description": "grows each time"
+          }
+        },
+        "required": [
+          "id",
+          "uri",
+          "n"
         ]
       }
     },
@@ -1139,6 +1182,10 @@
             "type": "string",
             "description": "what waits in its input (a rewind's message, one taken back)"
           },
+          "draft_images": {
+            "type": "array",
+            "description": "the pictures of the messages taken back (blob ids, `blob`): attached again with the draft"
+          },
           "queued": {
             "type": "array",
             "description": "its messages waiting for the turn to end, in order (`unqueue`)"
@@ -1155,6 +1202,7 @@
         "required": [
           "id",
           "draft",
+          "draft_images",
           "queued",
           "commands"
         ]

@@ -29,6 +29,8 @@ pub struct RemoteAgent {
     since: Cell<Option<Instant>>,
     /// What its input held last as `inputs` gave it (a new draft goes in an empty input).
     draft: RefCell<String>,
+    /// The taken-back pictures `inputs` listed last (each attached once).
+    draft_images: RefCell<Vec<String>>,
     /// Told when it asked loomd for a copy of itself (rewound: the copy is shown once listed).
     pub on_copy: RefCell<Option<Rc<dyn Fn()>>>,
     /// Its workflows' cards, by tool call, each with whether loomd says it still runs.
@@ -55,7 +57,7 @@ impl RemoteAgent {
         let chat = Chat::new();
         chat.draw_from_entries(id);
         chat.set_show_thinking(loom_core::settings::get().show_thinking);
-        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), on_copy: RefCell::default(), runs: RefCell::default(), me: RefCell::default(), sub: RefCell::default() });
+        let agent = Rc::new(RemoteAgent { id, chat, follows: RefCell::default(), feeds: RefCell::default(), item: RefCell::new(Value::Null), since: Cell::new(None), draft: RefCell::default(), draft_images: RefCell::default(), on_copy: RefCell::default(), runs: RefCell::default(), me: RefCell::default(), sub: RefCell::default() });
         *agent.me.borrow_mut() = Rc::downgrade(&agent);
         // Its buttons first: the messages drawn next take their callbacks as they are made.
         agent.wire();
@@ -151,10 +153,13 @@ impl RemoteAgent {
         let place = if text("place").is_empty() { text("project").to_owned() } else { format!("{} / {}", text("project"), text("place")) };
         self.chat.set_title(text("title"), &place, &text("project_id").replace(&*loom_core::paths::home().to_string_lossy(), "~"));
         let status = Status::from_css(text("status"));
+        self.chat.set_starting((status == Status::Starting).then(|| format!("Starting Claude in {place}…")).as_deref());
         self.chat.set_state(if status == Status::Suspended { "" } else { status.describe() }, status.css());
         self.chat.set_mode(text("mode"));
         if let Some(options) = item.get("options") {
-            self.chat.set_options(options);
+            let chosen: Vec<String> = item["chosen"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_owned)).collect();
+            self.chat.set_options(options, &chosen);
+            crate::prefs::seen_options(options);
         }
         if let Some(cwd) = item["cwd"].as_str() {
             self.chat.set_cwd(std::path::Path::new(cwd));
@@ -194,10 +199,26 @@ impl RemoteAgent {
                 self.chat.show_queued(&queued);
                 // A draft given (a rewind's message, one taken back) goes into an empty input.
                 let draft = mine["draft"].as_str().unwrap_or_default().to_owned();
-                if *self.draft.borrow() != draft && !draft.is_empty() && self.chat.draft().is_empty() {
+                let given = *self.draft.borrow() != draft && !draft.is_empty() && self.chat.draft().is_empty();
+                if given {
                     self.chat.input.buffer().set_text(&draft);
                 }
                 *self.draft.borrow_mut() = draft;
+                // and the pictures of the messages taken back, attached again (once each)
+                let images: Vec<String> = mine["draft_images"].as_array().into_iter().flatten().filter_map(|i| i.as_str().map(str::to_owned)).collect();
+                let fresh: Vec<String> = images.iter().filter(|i| !self.draft_images.borrow().contains(i)).cloned().collect();
+                *self.draft_images.borrow_mut() = images;
+                for blob in fresh {
+                    let chat = Rc::downgrade(&self.chat);
+                    crate::conn::command_result(&format!("agent {}", self.id), "blob", json!({ "id": blob }), move |answer| {
+                        let png = answer.ok().and_then(|a| loom_core::bridges::host::decode(a["data"].as_str()?));
+                        if let (Some(chat), Some(png)) = (chat.upgrade(), png)
+                            && let Ok(texture) = gtk::gdk::Texture::from_bytes(&gtk::glib::Bytes::from_owned(png))
+                        {
+                            chat.attach(&texture);
+                        }
+                    });
+                }
             }
             Some(1) => self.chat.set_plan(&Value::Array(items.clone())),
             Some(2) => {
@@ -272,6 +293,7 @@ impl RemoteAgent {
                     run
                 }
             };
+            run.stop_unanswered(item["unanswered"].as_u64().unwrap_or(0));
             // Over, as loomd says (its files may not say so yet).
             if !running && !run.done() {
                 match item["state"].as_str() {

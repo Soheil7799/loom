@@ -136,6 +136,10 @@ pub trait View {
 
     // The input.
     fn draft(&self) -> String;
+    /// Pictures put back with the draft (blob ids: a client attaches them again).
+    fn draft_images(&self) -> Vec<String> {
+        Vec::new()
+    }
     fn set_draft(&self, text: &str);
     fn focus_input(&self) {}
     fn show_queued(&self, _messages: &[String]) {}
