@@ -130,6 +130,9 @@ pub struct App {
     /// loomd's `asks`, followed: the ones acted on, whether the first came, and the edit the
     /// files panel waits on (its number).
     asks_feed: RefCell<Option<Feed>>,
+    /// loomd's settings: this window's copy follows them (a change made in Settings, here or
+    /// elsewhere, reaches what the window draws).
+    settings_feed: RefCell<Option<Feed>>,
     asks_seen: RefCell<std::collections::HashSet<String>>,
     asks_started: Cell<bool>,
     asking_edit: Cell<Option<u64>>,
@@ -582,6 +585,7 @@ impl App {
             remote_status: RefCell::default(),
             toast_remote: Cell::new(None),
             asks_feed: RefCell::default(),
+            settings_feed: RefCell::default(),
             asks_seen: RefCell::default(),
             asks_started: Cell::new(false),
             asking_edit: Cell::new(None),
@@ -1615,6 +1619,27 @@ impl App {
                 app.asks_changed();
             }
         });
+        let weak = Rc::downgrade(self);
+        let feed = Feed::new("settings", move || {
+            if let Some(app) = weak.upgrade() {
+                app.settings_changed();
+            }
+        });
+        *self.settings_feed.borrow_mut() = feed;
+        self.settings_changed();
+    }
+
+    /// loomd's settings taken as this window's (secrets, which the API never gives, kept).
+    fn settings_changed(&self) {
+        let item = {
+            let held = self.settings_feed.borrow();
+            let Some(feed) = held.as_ref() else { return };
+            feed.update();
+            feed.items().first().cloned()
+        };
+        if let Some(item) = item {
+            settings::adopt(loom_core::settings::from_item(&item, &settings::get()));
+        }
     }
 
     /// The questions loomd's agents wait on (`overview` has them): each agent's, answered

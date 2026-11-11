@@ -317,6 +317,18 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
     if settings == before {
         return;
     }
+    set(settings, true);
+}
+
+/// The settings loomd has (a change it made, or another client's), taken by this window as
+/// its own: its listeners told, nothing written (loomd keeps the file).
+pub fn adopt(settings: Settings) {
+    if settings != get() {
+        set(settings, false);
+    }
+}
+
+fn set(settings: Settings, save: bool) {
     STRICT.store(settings.strict_sandbox, std::sync::atomic::Ordering::SeqCst);
     CURRENT.with(|c| *c.borrow_mut() = Some(settings.clone()));
     crate::scribe::choose(&settings.scribe_model, &settings.scribe_effort);
@@ -327,7 +339,7 @@ pub fn update(change: impl FnOnce(&mut Settings)) {
         let text = if settings.remote_key.is_empty() { text } else { text.replace(&settings.remote_key, "…") };
         if settings.stt_key.is_empty() { text } else { text.replace(&settings.stt_key, "…") }
     });
-    if let Some(file) = FILE.with(|f| f.borrow().clone()) {
+    if let Some(file) = FILE.with(|f| f.borrow().clone()).filter(|_| save) {
         if let Some(dir) = file.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
@@ -525,5 +537,21 @@ mod tests {
     fn missing_or_wrong_values_take_the_defaults() {
         let s = parse(r#"{ "idleMinutes": "soon", "textScale": 9 }"#);
         assert_eq!(s, Settings::default());
+    }
+
+    #[test]
+    fn a_window_takes_loomds_settings_as_its_own_and_tells_its_listeners() {
+        let told = Rc::new(std::cell::Cell::new(0));
+        on_change({
+            let told = told.clone();
+            move |_| told.set(told.get() + 1)
+        });
+        let mut theirs = get();
+        theirs.embed_code = !theirs.embed_code;
+        adopt(theirs.clone());
+        assert_eq!((get().embed_code, told.get()), (theirs.embed_code, 1));
+        // the same again changes nothing
+        adopt(theirs);
+        assert_eq!(told.get(), 1);
     }
 }
