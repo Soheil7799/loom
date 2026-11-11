@@ -1344,6 +1344,20 @@ impl App {
 
     /// Ctrl+Shift+P: every action by name, and every agent and project to go to.
     fn palette(self: &Rc<Self>) {
+        let choices = self.palette_choices();
+        self.picker.open("Run a command, or go to an agent…", choices);
+    }
+
+    /// Test instances: runs the palette's entry titled `title` (its start), as picked there.
+    pub fn palette_run(self: &Rc<Self>, title: &str) -> Result<(), String> {
+        let choice = self.palette_choices().into_iter().find(|c| c.title.starts_with(title)).ok_or("no such entry")?;
+        (choice.run)();
+        Ok(())
+    }
+
+    /// The palette's entries: its agents (those waiting on you first), its commands, and the
+    /// conversations closed lately.
+    pub fn palette_choices(self: &Rc<Self>) -> Vec<Choice> {
         let weak = Rc::downgrade(self);
         let act = |title: &str, keys: &str, f: fn(&Rc<App>)| {
             let weak = weak.clone();
@@ -1456,12 +1470,23 @@ impl App {
             let title = item["title"].as_str().filter(|t| !t.is_empty()).unwrap_or("an agent").to_owned();
             let folder = PathBuf::from(item["folder"].as_str().unwrap_or_default());
             choices.push(Choice::new(format!("Reopen {title}"), self.project_label(&project_of(&folder)), move || {
-                if weak.upgrade().is_some() {
-                    crate::conn::command("window", "reopen", json!({ "session": session }));
+                if let Some(app) = weak.upgrade() {
+                    app.reopen(&session);
                 }
             }));
         }
-        self.picker.open("Run a command, or go to an agent…", choices);
+        choices
+    }
+
+    /// Conversation `session`, closed lately, an agent again: opened once loomd made it.
+    fn reopen(self: &Rc<Self>, session: &str) {
+        let weak = Rc::downgrade(self);
+        crate::conn::command_then("window", "reopen", json!({ "session": session }), move |answer| {
+            let id = answer.and_then(|a| a["agent"].as_str().and_then(|a| a.parse::<u32>().ok()));
+            if let (Some(app), Some(id)) = (weak.upgrade(), id) {
+                app.focus_remote(id);
+            }
+        });
     }
 
     /// Ctrl+K: agents and projects.
@@ -2265,7 +2290,9 @@ impl App {
     /// A new agent starts from its project's page (where a past conversation can be picked
     /// up instead): this one's (`choose`: a folder asked for).
     fn new_agent(self: &Rc<Self>, choose: bool) {
-        let here = self.showing_project().map(|p| (p.clone(), p));
+        // The project in view: its page, or the agent's in view (Ctrl+N: its page, to start one).
+        let in_view = self.remote_in_view().and_then(|id| self.remote_item(id)).and_then(|i| i["project_id"].as_str().map(PathBuf::from));
+        let here = self.showing_project().or(in_view).map(|p| (p.clone(), p));
         match here {
             Some((project, cwd)) if !choose => self.show_project(&project, &cwd),
             _ => {
@@ -2819,7 +2846,7 @@ impl App {
             f.items().first().cloned()
         });
         if let Some(session) = newest.and_then(|c| c["id"].as_str().map(str::to_owned)) {
-            crate::conn::command("window", "reopen", json!({ "session": session }));
+            self.reopen(&session);
         }
     }
 

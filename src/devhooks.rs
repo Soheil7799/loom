@@ -403,6 +403,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
                 return Err("no such question or option".into());
             }
         }
+        "palette" if !argument.is_empty() => app.palette_run(argument)?,
         "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),

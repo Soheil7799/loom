@@ -585,6 +585,7 @@ impl Workspace {
             let saved = ws.closed.borrow().iter().find(|c| c.session_id.as_deref() == Some(session)).cloned();
             let saved = saved.ok_or_else(|| Error::NotFound(format!("closed conversation {session}")))?;
             ws.closed.borrow_mut().retain(|c| *c != saved);
+            ws.publish_closed();
             let agent = ws.add_agent(saved);
             Ok(json!({ "agent": agent.id.to_string() }))
         });
