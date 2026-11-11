@@ -14,6 +14,8 @@ type OnAgent = Rc<dyn Fn(u32)>;
 
 pub struct BoardView {
     pub root: gtk::Box,
+    /// "← <agent>": back to the agent the page was opened from (hidden when none).
+    pub back: gtk::Button,
     title: gtk::Label,
     place: gtk::Label,
     lanes: gtk::Box,
@@ -37,8 +39,14 @@ impl BoardView {
         let place = gtk::Label::builder().xalign(0.0).ellipsize(pango::EllipsizeMode::Start).build();
         place.add_css_class("dim");
         place.add_css_class("small");
+        let back_label = gtk::Label::builder().ellipsize(pango::EllipsizeMode::End).max_width_chars(40).build();
+        let back = gtk::Button::builder().child(&back_label).halign(gtk::Align::Start).visible(false).build();
+        back.add_css_class("flat");
+        back.add_css_class("page-back");
+        back.set_cursor_from_name(Some("pointer"));
         let heading = gtk::Box::new(gtk::Orientation::Vertical, 2);
         heading.add_css_class("board-heading");
+        heading.append(&back);
         heading.append(&title);
         heading.append(&place);
         let problem = gtk::Label::builder().xalign(0.0).wrap(true).visible(false).build();
@@ -49,9 +57,18 @@ impl BoardView {
         root.append(&heading);
         root.append(&problem);
         root.append(&scroller);
-        let view = Rc::new(BoardView { root, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default(), on_agent: RefCell::default() });
+        let view = Rc::new(BoardView { root, back, title, place, lanes, problem, project: RefCell::default(), monitor: RefCell::default(), me: RefCell::default(), drawn: RefCell::default(), on_agent: RefCell::default() });
         *view.me.borrow_mut() = Rc::downgrade(&view);
         view
+    }
+
+    /// The back button to `agent` (its title), or none.
+    pub fn set_back(&self, agent: Option<&str>) {
+        self.back.set_visible(agent.is_some());
+        if let (Some(title), Some(label)) = (agent, self.back.child().and_downcast::<gtk::Label>()) {
+            label.set_label(&format!("←  {title}"));
+            self.back.set_tooltip_text(Some(&format!("Back to {title}")));
+        }
     }
 
     /// The project's name as shown (renamed in the sidebar).

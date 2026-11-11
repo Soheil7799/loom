@@ -152,6 +152,8 @@ pub struct App {
     /// loomd's agent shown beside the one in view (Ctrl+\\), and the one in view before.
     pinned_remote: Cell<Option<u32>>,
     previous_remote: Cell<Option<u32>>,
+    /// The agent the project page was opened from (its back button).
+    back_to: Cell<Option<u32>>,
     /// A copy was asked of loomd (rewind, fork): the next new agent it lists is shown.
     expect_copy: Cell<bool>,
 }
@@ -628,6 +630,7 @@ impl App {
             closed_feed: RefCell::default(),
             pinned_remote: Cell::new(None),
             previous_remote: Cell::new(None),
+            back_to: Cell::new(None),
             expect_copy: Cell::new(false),
         });
         this.follow_sidebar();
@@ -720,6 +723,12 @@ impl App {
         self.list.connect_row_activated(move |_, row| {
             let Some(app) = weak.upgrade() else { return };
             app.activate_row(row.index() as usize);
+        });
+        let weak = Rc::downgrade(self);
+        self.board.back.connect_clicked(move |_| {
+            if let Some((app, id)) = weak.upgrade().and_then(|app| Some((app.clone(), app.back_to.get()?))) {
+                app.focus_remote(id);
+            }
         });
         // The Running section: its rows in `running`'s order.
         let weak = Rc::downgrade(self);
@@ -2734,6 +2743,15 @@ impl App {
 
     /// Opens `project`'s page: nothing starts until a conversation is picked there.
     pub fn show_project(self: &Rc<Self>, project: &Path, cwd: &Path) {
+        // Opened from an agent: the page's back button goes to it (from another project's
+        // page, to the same one as before).
+        match self.remote_in_view() {
+            Some(id) => self.back_to.set(Some(id)),
+            None if self.showing_project().is_none() => self.back_to.set(None),
+            None => {}
+        }
+        let back = self.back_to.get().and_then(|id| self.remote_item(id));
+        self.board.set_back(back.as_ref().and_then(|item| item["title"].as_str()));
         self.leave_notes();
         self.chat_stack.set_visible_child_name("project");
         self.history.show(project, cwd, &self.project_label(project));
@@ -3658,7 +3676,9 @@ impl App {
     /// A row of the Running list: its number (Ctrl+1…9), dot, name, project, and the ☕ that
     /// keeps it awake. Dragged, it moves within the list.
     fn running_row(self: &Rc<Self>, agent: &SideAgent, index: usize, said: &str) -> gtk::ListBoxRow {
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+        // Two lines on one grid: bead, title and its project's chip; then what it does, its
+        // Ctrl number and ☕ (each item on its line's own middle).
+        let line = gtk::Grid::builder().column_spacing(8).row_spacing(2).build();
         let number = gtk::Label::new(Some(&if index < 9 { (index + 1).to_string() } else { String::new() }));
         number.add_css_class("running-number");
         number.set_width_chars(1);
@@ -3669,18 +3689,31 @@ impl App {
         bead_named(&dot, agent);
         let title = gtk::Label::builder().label(&agent.title).xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         title.add_css_class("agent-title");
+        title.set_hexpand(true);
         // under its name: what it waits on, why it failed or what it said last, and when
-        let names = gtk::Box::builder().orientation(gtk::Orientation::Vertical).hexpand(true).build();
-        names.append(&title);
-        if !said.is_empty() {
-            let sub = gtk::Label::builder().label(said).xalign(0.0).ellipsize(pango::EllipsizeMode::End).tooltip_text(said).build();
-            sub.add_css_class("dim");
-            sub.add_css_class("small");
-            sub.add_css_class("agent-sub");
-            names.append(&sub);
-        }
-        let project = gtk::Label::builder().label(&agent.project_name).max_width_chars(12).valign(gtk::Align::Start).ellipsize(pango::EllipsizeMode::End).build();
+        let sub = gtk::Label::builder().label(said).xalign(0.0).ellipsize(pango::EllipsizeMode::End).tooltip_text(said).build();
+        sub.add_css_class("dim");
+        sub.add_css_class("small");
+        sub.add_css_class("agent-sub");
+        // Its project, a chip: clicked, the project's page (as its name in the header).
+        let open = format!("Open {}: its board and conversations", agent.project_name);
+        let project = gtk::Button::builder()
+            .child(&gtk::Label::builder().label(&agent.project_name).max_width_chars(10).ellipsize(pango::EllipsizeMode::End).build())
+            .focus_on_click(false)
+            .valign(gtk::Align::Center)
+            .halign(gtk::Align::End)
+            .tooltip_text(&open)
+            .build();
+        project.add_css_class("flat");
         project.add_css_class("running-project");
+        project.set_cursor_from_name(Some("pointer"));
+        project.update_property(&[gtk::accessible::Property::Label(&open)]);
+        let (weak, path) = (Rc::downgrade(self), agent.project.clone());
+        project.connect_clicked(move |_| {
+            if let Some(app) = weak.upgrade() {
+                app.show_project(&path, &path);
+            }
+        });
         // Not a focus stop: clicked, the sidebar is rebuilt, and focus left on it would land on
         // another row (scrolling the list away).
         let awake = gtk::Button::builder().child(&crate::logo::cup(14, agent.awake)).focus_on_click(false).build();
@@ -3698,12 +3731,14 @@ impl App {
                 crate::conn::command("window", "set_awake", json!({ "agent": target.to_string(), "awake": !was_awake }));
             }
         });
-        // its bead first, in line with the projects' beads below; Ctrl+N's number at the end
-        line.append(&dot);
-        line.append(&names);
-        line.append(&project);
-        line.append(&number);
-        line.append(&awake);
+        let end = gtk::Box::builder().spacing(4).halign(gtk::Align::End).valign(gtk::Align::Center).build();
+        end.append(&number);
+        end.append(&awake);
+        line.attach(&dot, 0, 0, 1, 1);
+        line.attach(&title, 1, 0, 1, 1);
+        line.attach(&project, 2, 0, 1, 1);
+        line.attach(&sub, 1, 1, 1, 1);
+        line.attach(&end, 2, 1, 1, 1);
         let row = gtk::ListBoxRow::builder().child(&line).build();
         row.add_css_class("running-row");
         // Reordered by dragging: before or after the row it is dropped on (a line shows where).

@@ -470,12 +470,17 @@ scrolledwindow.running-pane { box-shadow: 0 6px 8px -6px @loom_shadow; padding-b
 .agents row.agent-row.in-running:selected > box { opacity: 1; }
 button.heading-button { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; opacity: 0.6; }
 button.heading-button:hover { opacity: 1; }
-.agents row.running-row { margin: 0 10px; padding: 4px 8px 4px 12px; border-radius: 8px; }
+.agents row.running-row { margin: 0 10px; padding: 4px 8px; border-radius: 8px; }
 .agents row.running-row:hover { background: alpha(@window_fg_color, 0.05); }
 .agents row.running-row.current { background: alpha(@accent_color, 0.14); }
 .running-number { font-size: 0.8em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
-.running-project { font-size: 0.8em; opacity: 0.5; }
+/* A running agent's project: a neutral chip (the bead is the row's only colour); its page. */
+button.running-project { font-size: 0.8em; font-weight: 700; padding: 0 6px; min-height: 18px; border-radius: 99px; color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); box-shadow: none; }
+button.running-project:hover { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; }
 button.awake { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.3); }
+/* In Running: on the second line, small, and shown on hover (or when on). */
+.running-row button.awake { min-width: 16px; min-height: 16px; opacity: 0; }
+.running-row:hover button.awake, .running-row button.awake.on { opacity: 1; }
 .running-row:hover button.awake { color: alpha(@window_fg_color, 0.6); }
 /* On: Ayu's gold. */
 button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
