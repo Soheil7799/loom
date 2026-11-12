@@ -103,6 +103,15 @@ impl Browser {
             }
         });
         browser.input();
+        // Kept running while the user may look at it (loomd stops it unused).
+        let weak = browser.me.clone();
+        glib::timeout_add_local(Duration::from_secs(300), move || {
+            let Some(b) = weak.upgrade() else { return glib::ControlFlow::Break };
+            if b.port.get() != 0 && b.frame.parent().is_some() {
+                crate::conn::command("browser", "browser_open", json!({ "project": b.project }));
+            }
+            glib::ControlFlow::Continue
+        });
         browser
     }
 
@@ -137,15 +146,6 @@ impl Browser {
         if open && self.port.get() != 0 {
             if self.cast.borrow().is_none() {
                 self.follow();
-                // Kept running while the user may look at it (loomd stops it unused).
-                let weak = self.me.clone();
-                glib::timeout_add_local(Duration::from_secs(300), move || match weak.upgrade() {
-                    Some(b) if b.cast.borrow().is_some() => {
-                        crate::conn::command("browser", "browser_open", json!({ "project": b.project }));
-                        glib::ControlFlow::Continue
-                    }
-                    _ => glib::ControlFlow::Break,
-                });
             }
         } else {
             self.cast.borrow_mut().take();

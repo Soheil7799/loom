@@ -306,19 +306,17 @@ fn warm(socket: &str, agent: u32) {
     }
 }
 
-/// loom_find: the places in the agent's folder (this process runs in it: a worktree's agent
-/// searches its worktree) and its project's concept cards best matching the query.
 /// The project's browser, started by loom, and how to drive it.
 fn browser(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     let b = call(socket, agent, "browser", json!({ "show": args["show"].as_bool() == Some(true) }))?;
     let port = b["port"].as_u64().ok_or("loom gave no browser port")?;
     if !crate::browser::wait_ready(port as u16, std::time::Duration::from_secs(20)) {
-        return Err(format!("the browser was started but doesn't answer on port {port} yet (its log: ~/.local/state/loom/browser.log); try again in a moment"));
+        return Err(format!("the browser was started but doesn't answer on port {port} yet (its log: {}); try again in a moment", crate::state::dir().join("browser.log").display()));
     }
     let how = if b["headed"] == true { "headed, on a screen of its own" } else { "headless (install Xvfb for a headed one)" };
     let shown = if args["show"] == true { " It is in front of the user now: tell them what to do there, then wait for their word." } else { "" };
     let drive = if b["devtools"] == true {
-        "Drive it with the loom-browser MCP tools (Chrome DevTools: navigate_page, take_snapshot, click, fill, list_webmcp_tools…), already pointed at it.".to_owned()
+        "Drive it with the loom-browser MCP tools (Chrome DevTools: navigate_page, take_snapshot, click, fill…), already pointed at it.".to_owned()
     } else {
         format!(
             "Drive it with agent-browser in Bash, always with --cdp {port} (it attaches to this browser, never starts its own):\n\
@@ -334,6 +332,8 @@ fn browser(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     Ok(format!("{} is running for this project, {how}, on port {port}.{shown}\n{drive}\nLogins and checks are the user's: call loom_browser with show, and never ask for a password in the chat.", b["name"].as_str().unwrap_or("The browser")))
 }
 
+/// loom_find: the places in the agent's folder (this process runs in it: a worktree's agent
+/// searches its worktree) and its project's concept cards best matching the query.
 fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     let agents = call(socket, agent, "list_agents", json!({}))?;
     let project = agents.as_array().into_iter().flatten().find(|a| a["you"] == true).and_then(|a| a["project"].as_str()).map(PathBuf::from).ok_or("loom doesn't know this agent's project")?;

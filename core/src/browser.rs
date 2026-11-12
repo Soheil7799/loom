@@ -23,9 +23,9 @@ use serde_json::{Value, json};
 
 /// Chromium-based browsers, by program name (what CDP, and so agent-browser, can drive).
 const KNOWN: &[(&str, &str)] = &[
-    ("helium-browser", "Helium"),
     ("chromium", "Chromium"),
     ("chromium-browser", "Chromium"),
+    ("helium-browser", "Helium"),
     ("google-chrome-stable", "Google Chrome"),
     ("google-chrome", "Google Chrome"),
     ("brave-browser", "Brave"),
@@ -91,7 +91,8 @@ pub fn wait_ready(port: u16, within: Duration) -> bool {
 struct Running {
     port: u16,
     name: String,
-    headed: bool,
+    /// The screen (X display number) it draws on, None: headless.
+    display: Option<u32>,
     browser: Child,
     screen: Option<Child>,
     used: Instant,
@@ -156,7 +157,8 @@ fn end(browser: Child, port: Option<u16>, after: Option<Child>) {
                 matches!(child.try_wait(), Ok(Some(_)) | Err(_))
             })
         };
-        if port.is_some_and(close) && ended(&mut child) {
+        // a browser gone already: its port may be a new one's
+        if matches!(child.try_wait(), Ok(None)) && port.is_some_and(close) && ended(&mut child) {
             continue;
         }
         // SAFETY: a signal to a child of ours, by its pid.
@@ -186,7 +188,7 @@ fn close(port: u16) -> bool {
 }
 
 fn item(project: &Path, b: &Running) -> Value {
-    json!({ "id": project.to_string_lossy(), "port": b.port, "headed": b.headed, "name": b.name, "shown": b.shown, "devtools": crate::settings::get().browser_devtools })
+    json!({ "id": project.to_string_lossy(), "port": b.port, "headed": b.display.is_some(), "name": b.name, "shown": b.shown, "devtools": crate::settings::get().browser_devtools })
 }
 
 /// The command line a browser is started with: its profile, its port, headed on `display`
@@ -210,9 +212,11 @@ fn arguments(profile: &Path, port: u16, display: Option<u32>) -> Vec<String> {
     args
 }
 
-/// A display number nobody uses (no socket, no lock).
+/// A display number nobody uses (no socket, no lock, and no browser of ours: a screen just
+/// started has neither yet).
 fn free_display() -> Option<u32> {
-    (90..190).find(|n| !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists() && !Path::new(&format!("/tmp/.X{n}-lock")).exists())
+    let ours: Vec<u32> = RUNNING.with(|r| r.borrow().values().filter_map(|b| b.display).collect());
+    (90..190).find(|n| !ours.contains(n) && !Path::new(&format!("/tmp/.X11-unix/X{n}")).exists() && !Path::new(&format!("/tmp/.X{n}-lock")).exists())
 }
 
 /// Dies with loomd (the signal it gets when loomd ends).
@@ -227,7 +231,7 @@ fn with_loomd(command: &mut Command) {
 }
 
 fn start(project: &Path) -> Result<Running, String> {
-    let program = chosen().ok_or("no Chromium-based browser was found: install Chromium (or Chrome, Brave, Helium), then pick it in loom's Settings → Browser")?;
+    let program = chosen().ok_or("no Chromium-based browser was found: install Chromium (or Chrome, Brave), then pick it in loom's Settings → Browser")?;
     let name = found().into_iter().find(|(_, p)| *p == program).map(|(n, _)| n).unwrap_or_else(|| program.file_name().unwrap_or_default().to_string_lossy().into_owned());
     let port = port_of(project);
     if listening(port) {
@@ -283,7 +287,7 @@ fn start(project: &Path) -> Result<Running, String> {
         }
     };
     crate::log::write("browser", &format!("{name} for {} on port {port}{}", project.display(), if display.is_some() { ", headed" } else { ", headless" }));
-    Ok(Running { port, name, headed: display.is_some(), browser, screen, used: Instant::now(), shown: 0 })
+    Ok(Running { port, name, display, browser, screen, used: Instant::now(), shown: 0 })
 }
 
 /// loomd's part: the `browsers` resource (one item per running browser), `browser_open` and

@@ -959,7 +959,7 @@ fn advanced(s: &Settings) -> gtk::Box {
     row(
         &browser,
         "Chrome DevTools MCP instead of agent-browser",
-        "Agents drive the browser with agent-browser by default: fewer tokens. On, they get Chrome's DevTools MCP instead (more tools: network, console, a page's WebMCP tools), when agent-browser can't do something. For agents started from now on.",
+        "Agents drive the browser with agent-browser by default: fewer tokens. On, they get Chrome's DevTools MCP instead (more tools: network, console, performance), when agent-browser can't do something. For agents started from now on.",
         &devtools,
     );
     content.append(&browser);
