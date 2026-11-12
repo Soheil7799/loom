@@ -28,6 +28,8 @@ pub struct Browser {
     pointer: Cell<(f64, f64)>,
     /// `shown` as last seen: an agent asking the user to look raises it.
     shown: Cell<u64>,
+    /// Which `follow` is the current one (an older one's end says nothing).
+    following: Cell<u64>,
     /// `browsers` was seen once (asks made before the window started aren't shown again).
     synced: Cell<bool>,
     /// Told to dock or undock the view (the tray holds the dock).
@@ -66,6 +68,7 @@ impl Browser {
             page: Cell::new((0.0, 0.0)),
             pointer: Cell::new((0.0, 0.0)),
             shown: Cell::new(0),
+            following: Cell::new(0),
             synced: Cell::new(false),
             on_dock: RefCell::default(),
             window: RefCell::default(),
@@ -103,15 +106,6 @@ impl Browser {
             }
         });
         browser.input();
-        // Kept running while the user may look at it (loomd stops it unused).
-        let weak = browser.me.clone();
-        glib::timeout_add_local(Duration::from_secs(300), move || {
-            let Some(b) = weak.upgrade() else { return glib::ControlFlow::Break };
-            if b.port.get() != 0 && b.frame.parent().is_some() {
-                crate::conn::command("browser", "browser_open", json!({ "project": b.project }));
-            }
-            glib::ControlFlow::Continue
-        });
         browser
     }
 
@@ -205,10 +199,16 @@ impl Browser {
 
     /// The page's frames into the picture, until the view closes or the browser stops.
     fn follow(&self) {
-        let (send, frames) = async_channel::unbounded::<Shown>();
+        // A few frames at most wait: the main loop busy, the newest come instead of a backlog.
+        let (send, frames) = async_channel::bounded::<Shown>(3);
         let cast = Screencast::start(self.port.get(), move |shown| {
-            let _ = send.send_blocking(shown);
+            let _ = match shown {
+                Shown::Frame { .. } => send.try_send(shown).map_err(|_| ()),
+                _ => send.send_blocking(shown).map_err(|_| ()),
+            };
         });
+        let mine = self.following.get() + 1;
+        self.following.set(mine);
         *self.cast.borrow_mut() = Some(cast);
         let weak = self.me.clone();
         glib::spawn_future_local(async move {
@@ -222,6 +222,7 @@ impl Browser {
                         b.page.set((width, height));
                     }
                     Shown::Page { title, url } => b.address.set_label(if title.is_empty() { &url } else { &title }),
+                    Shown::Ended(_) if b.following.get() != mine => return,
                     Shown::Ended(why) => {
                         b.address.set_label(&format!("Not shown: {why}"));
                         b.cast.borrow_mut().take();
@@ -304,9 +305,11 @@ impl Browser {
         self.picture.add_controller(scroll);
         let keys = gtk::EventControllerKey::new();
         let weak = self.me.clone();
-        keys.connect_key_pressed(move |_, key, _, state| {
+        keys.connect_key_pressed(move |_, key, keycode, state| {
             let Some(b) = weak.upgrade() else { return glib::Propagation::Proceed };
             let ctrl = state.contains(gdk::ModifierType::CONTROL_MASK);
+            // Shortcuts by the key on the first layout, so they work with the Persian one too.
+            let key = if ctrl { WidgetExt::display(&b.picture).translate_key(keycode, gdk::ModifierType::empty(), 0).map_or(key, |(k, ..)| k) } else { key };
             // Pasted from the user's clipboard, as typed.
             if ctrl && matches!(key, gdk::Key::v | gdk::Key::V) {
                 let weak = b.me.clone();
@@ -372,7 +375,9 @@ fn key_events(key: gdk::Key, modifiers: i32) -> Vec<Value> {
         _ => match key.to_unicode() {
             Some(c) if !c.is_control() => {
                 let typed = if modifiers & 2 != 0 || modifiers & 1 != 0 { String::new() } else { c.to_string() };
-                (c.to_string(), c.to_ascii_uppercase() as i32, typed)
+                // A key code only for letters and digits (theirs is the capital's): others' would
+                // be an editing key's ('$' is Home's, '.' Delete's).
+                (c.to_string(), if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() as i32 } else { 0 }, typed)
             }
             _ => return Vec::new(),
         },
@@ -410,5 +415,7 @@ mod tests {
         let select_all = key_events(gdk::Key::a, 2);
         assert!(select_all[0].get("text").is_none() && select_all[0]["type"] == "rawKeyDown", "Ctrl+A selects, doesn't type: {select_all:?}");
         assert!(key_events(gdk::Key::Shift_L, 8).is_empty());
+        let dollar = key_events(gdk::Key::dollar, 8);
+        assert_eq!((dollar[0]["text"].as_str(), dollar[0]["windowsVirtualKeyCode"].as_i64()), (Some("$"), Some(0)), "typed, not Home");
     }
 }

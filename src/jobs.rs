@@ -167,6 +167,10 @@ impl Tray {
             let feed = self.browsers.borrow();
             let Some(feed) = feed.as_ref() else { return };
             feed.update();
+            // Not before its snapshot: the first one seen sets what was asked before.
+            if !feed.synced() {
+                return;
+            }
             let cwd = self.core.cwd().to_string_lossy();
             feed.items().iter().find(|i| i["id"].as_str() == Some(&cwd)).cloned()
         };

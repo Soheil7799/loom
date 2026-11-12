@@ -315,7 +315,8 @@ fn browser(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
     }
     let how = if b["headed"] == true { "headed, on a screen of its own" } else { "headless (install Xvfb for a headed one)" };
     let shown = if args["show"] == true { " It is in front of the user now: tell them what to do there, then wait for their word." } else { "" };
-    let drive = if b["devtools"] == true {
+    // As this agent was started (its MCP servers were fixed then), not as Settings say now.
+    let drive = if std::env::var_os("LOOM_BROWSER_DEVTOOLS").is_some() {
         "Drive it with the loom-browser MCP tools (Chrome DevTools: navigate_page, take_snapshot, click, fill…), already pointed at it.".to_owned()
     } else {
         format!(

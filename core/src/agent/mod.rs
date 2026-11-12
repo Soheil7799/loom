@@ -1184,7 +1184,9 @@ impl Agent {
         })];
         if crate::settings::get().browser_devtools {
             let url = format!("http://127.0.0.1:{}", crate::browser::port_of(&self.project));
-            servers.push(json!({ "name": "loom-browser", "command": "npx", "args": ["-y", "chrome-devtools-mcp@latest", "--browser-url", url], "env": [] }));
+            // Pinned (what runs is what was checked), and nothing sent to Google.
+            servers.push(json!({ "name": "loom-browser", "command": "npx", "args": ["-y", "chrome-devtools-mcp@1.13.0", "--browser-url", url, "--no-usage-statistics", "--no-performance-crux"], "env": [] }));
+            servers[0]["env"].as_array_mut().expect("env").push(json!({ "name": "LOOM_BROWSER_DEVTOOLS", "value": "1" }));
         }
         json!(servers)
     }

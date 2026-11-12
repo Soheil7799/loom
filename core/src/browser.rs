@@ -10,13 +10,13 @@
 //! stops them (`browser_stop`, after `IDLE` unused, and with loomd: they die with it).
 
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::TcpStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc;
+use std::sync::{Mutex, mpsc};
 use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
@@ -35,7 +35,8 @@ const KNOWN: &[(&str, &str)] = &[
     ("vivaldi", "Vivaldi"),
 ];
 
-/// Unused this long (no agent asked, the window doesn't show it), a browser is stopped.
+/// Unused this long (no agent asked, nothing connected to it: no agent-browser, DevTools MCP
+/// or view), a browser is stopped.
 const IDLE: Duration = Duration::from_secs(30 * 60);
 
 /// The screen a headed browser draws on, in pixels.
@@ -66,8 +67,33 @@ pub fn chosen() -> Option<PathBuf> {
 
 /// The project's debugging port: always the same, so the DevTools MCP can be told it before
 /// the browser runs.
+/// shortcut: two projects can hash to one port (1 in 10000 a pair; start refuses the second
+/// while the first runs), a port per project kept in its state would rule that out.
 pub fn port_of(project: &Path) -> u16 {
-    9300 + (crate::embed::hash(&project.to_string_lossy()) % 600) as u16
+    20000 + (crate::embed::hash(&project.to_string_lossy()) % 10000) as u16
+}
+
+/// Is a client connected to `port` (agent-browser, the DevTools MCP, a view), in `table`
+/// (/proc/net/tcp: the local address's port in hex, state 01 established)?
+fn has_client(table: &str, port: u16) -> bool {
+    let local = format!(":{port:04X}");
+    table.lines().skip(1).any(|line| {
+        let fields: Vec<&str> = line.split_whitespace().collect();
+        fields.len() > 3 && fields[1].ends_with(&local) && fields[3] == "01"
+    })
+}
+
+/// Ports of browsers still closing (stopped, not gone yet): not started again until they are.
+static CLOSING: Mutex<Option<HashSet<u16>>> = Mutex::new(None);
+
+fn closing(port: u16, on: bool) {
+    let mut set = CLOSING.lock().unwrap_or_else(|e| e.into_inner());
+    let set = set.get_or_insert_with(HashSet::new);
+    if on {
+        set.insert(port);
+    } else {
+        set.remove(&port);
+    }
 }
 
 /// Does something answer on `port` on this machine?
@@ -129,6 +155,7 @@ pub fn open(project: &Path, show: bool) -> Result<Value, String> {
 /// Stops the project's browser (and its screen).
 pub fn stop(project: &Path) {
     if let Some(b) = RUNNING.with(|r| r.borrow_mut().remove(project)) {
+        closing(b.port, true);
         std::thread::spawn(move || end(b.browser, Some(b.port), b.screen));
         crate::api::remove_item("browsers", &project.to_string_lossy());
     }
@@ -150,6 +177,10 @@ pub fn stop_all() {
 /// without one it would die before saving.
 fn end(browser: Child, port: Option<u16>, after: Option<Child>) {
     for (mut child, port) in std::iter::once((browser, port)).chain(after.map(|s| (s, None))) {
+        // Gone already (and reaped: its pid may be another program's now).
+        if !matches!(child.try_wait(), Ok(None)) {
+            continue;
+        }
         let pid = child.id();
         let ended = |child: &mut Child| {
             (0..100).any(|_| {
@@ -157,8 +188,7 @@ fn end(browser: Child, port: Option<u16>, after: Option<Child>) {
                 matches!(child.try_wait(), Ok(Some(_)) | Err(_))
             })
         };
-        // a browser gone already: its port may be a new one's
-        if matches!(child.try_wait(), Ok(None)) && port.is_some_and(close) && ended(&mut child) {
+        if port.is_some_and(close) && ended(&mut child) {
             continue;
         }
         // SAFETY: a signal to a child of ours, by its pid.
@@ -170,6 +200,9 @@ fn end(browser: Child, port: Option<u16>, after: Option<Child>) {
             let _ = child.wait();
             crate::log::write("browser", &format!("{pid} killed: it didn't stop in 10 s"));
         }
+    }
+    if let Some(port) = port {
+        closing(port, false);
     }
 }
 
@@ -234,6 +267,12 @@ fn start(project: &Path) -> Result<Running, String> {
     let program = chosen().ok_or("no Chromium-based browser was found: install Chromium (or Chrome, Brave), then pick it in loom's Settings → Browser")?;
     let name = found().into_iter().find(|(_, p)| *p == program).map(|(n, _)| n).unwrap_or_else(|| program.file_name().unwrap_or_default().to_string_lossy().into_owned());
     let port = port_of(project);
+    if CLOSING.lock().unwrap_or_else(|e| e.into_inner()).as_ref().is_some_and(|c| c.contains(&port)) {
+        return Err("this project's browser is still closing: try again in a few seconds".into());
+    }
+    if let Some(other) = RUNNING.with(|r| r.borrow().iter().find(|(_, b)| b.port == port).map(|(p, _)| p.clone())) {
+        return Err(format!("port {port}, this project's browser port, is the one of {}'s browser, which runs: stop that one first", other.display()));
+    }
     if listening(port) {
         return Err(format!("port {port}, this project's browser port, is taken by another program"));
     }
@@ -312,6 +351,14 @@ pub fn serve() {
     });
     // Ended by itself (crashed, closed), or unused for long: stopped, out of `browsers`.
     let _ = crate::rt::every(Duration::from_secs(60), || {
+        let table = std::fs::read_to_string("/proc/net/tcp").unwrap_or_default();
+        RUNNING.with(|r| {
+            for b in r.borrow_mut().values_mut() {
+                if has_client(&table, b.port) {
+                    b.used = Instant::now();
+                }
+            }
+        });
         let done: Vec<PathBuf> = RUNNING.with(|r| r.borrow_mut().iter_mut().filter_map(|(p, b)| (b.used.elapsed() > IDLE || !matches!(b.browser.try_wait(), Ok(None))).then(|| p.clone())).collect());
         for project in done {
             stop(&project);
@@ -437,11 +484,20 @@ mod tests {
     fn a_project_has_one_port_and_a_browser_runs_headed_only_on_a_screen() {
         let project = Path::new("/work/shop");
         assert_eq!(port_of(project), port_of(project));
-        assert!((9300..9900).contains(&port_of(project)));
+        assert!((20000..30000).contains(&port_of(project)));
         let headed = arguments(Path::new("/p"), 9333, Some(91));
         assert!(headed.contains(&"--remote-debugging-port=9333".to_owned()) && headed.contains(&"--ozone-platform=x11".to_owned()));
         assert!(!headed.iter().any(|a| a.starts_with("--headless")));
         assert!(arguments(Path::new("/p"), 9333, None).contains(&"--headless=new".to_owned()));
         assert!(headed.contains(&"--user-data-dir=/p".to_owned()), "a profile of loom's, never the user's own");
+    }
+
+    #[test]
+    fn a_browser_with_a_client_connected_is_in_use() {
+        // 0x4E52 = 20050: the browser's side of a connection, established; another port listening
+        let table = "  sl  local_address rem_address   st\n   0: 0100007F:4E52 0100007F:A1B2 01 0\n   1: 0100007F:4E53 00000000:0000 0A 0\n";
+        assert!(has_client(table, 20050));
+        assert!(!has_client(table, 20051), "listening only");
+        assert!(!has_client(table, 2005));
     }
 }
