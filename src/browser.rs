@@ -32,6 +32,9 @@ pub struct Browser {
     synced: Cell<bool>,
     /// Told to dock or undock the view (the tray holds the dock).
     pub on_dock: RefCell<Option<Rc<dyn Fn(bool)>>>,
+    /// The view full screen, in a window of its own (None: docked or closed).
+    window: RefCell<Option<gtk::Window>>,
+    full: RefCell<Option<gtk::Button>>,
     me: Weak<Browser>,
 }
 
@@ -65,6 +68,8 @@ impl Browser {
             shown: Cell::new(0),
             synced: Cell::new(false),
             on_dock: RefCell::default(),
+            window: RefCell::default(),
+            full: RefCell::default(),
             me: me.clone(),
         });
         let button = |label: &str, tip: &str, act: fn(&Rc<Browser>)| {
@@ -82,6 +87,9 @@ impl Browser {
         };
         header.append(&button("Back", "The page before", |b| b.eval("history.back()")));
         header.append(&button("Reload", "Load the page again", |b| b.send("Page.reload", json!({}))));
+        let full = button("Full screen", "The page on the whole screen, in a window of its own (this again, or closing it, brings it back)", |b| b.full_screen());
+        header.append(&full);
+        *browser.full.borrow_mut() = Some(full);
         header.append(&button("Unpin", "Back to the tray (it keeps running)", |b| b.dock(false)));
         header.append(&button("Stop", "Stop the browser (logins stay for next time)", |b| {
             crate::conn::command("browser", "browser_stop", json!({ "project": b.project }));
@@ -141,10 +149,57 @@ impl Browser {
             }
         } else {
             self.cast.borrow_mut().take();
+            self.leave_window();
         }
         let told = self.on_dock.borrow().clone();
         if let Some(told) = told {
             told(open && me.port.get() != 0);
+        }
+    }
+
+    /// The view full screen in a window of its own, or back above the tray.
+    fn full_screen(&self) {
+        if self.leave_window() {
+            self.tell_dock(true);
+            return;
+        }
+        self.tell_dock(false);
+        let window = gtk::Window::builder().title(format!("Browser · {}", self.project.file_name().unwrap_or_default().to_string_lossy())).child(&self.frame).build();
+        window.set_transient_for(self.chip.root().and_downcast::<gtk::Window>().as_ref());
+        let weak = self.me.clone();
+        window.connect_close_request(move |_| {
+            if let Some(b) = weak.upgrade()
+                && b.leave_window()
+            {
+                b.tell_dock(true);
+            }
+            // closed by leave_window (or already gone)
+            glib::Propagation::Stop
+        });
+        *self.window.borrow_mut() = Some(window.clone());
+        if let Some(full) = self.full.borrow().as_ref() {
+            full.set_label("Exit full screen");
+        }
+        window.fullscreen();
+        window.present();
+        self.picture.grab_focus();
+    }
+
+    /// Takes the view out of its full-screen window (closed). False: it wasn't in one.
+    fn leave_window(&self) -> bool {
+        let Some(window) = self.window.borrow_mut().take() else { return false };
+        window.set_child(None::<&gtk::Widget>);
+        window.destroy();
+        if let Some(full) = self.full.borrow().as_ref() {
+            full.set_label("Full screen");
+        }
+        true
+    }
+
+    fn tell_dock(&self, open: bool) {
+        let told = self.on_dock.borrow().clone();
+        if let Some(told) = told {
+            told(open);
         }
     }
 
