@@ -17,7 +17,7 @@ pub struct Process {
     stdin: RefCell<Option<ChildStdin>>,
     child: RefCell<Option<Child>>,
     pid: u32,
-    /// "acp 1234", "claude 1234": how the debug log names it.
+    /// "claude 1234": how the debug log names it.
     tag: String,
 }
 
@@ -112,10 +112,6 @@ impl Process {
 
     pub fn pid(&self) -> u32 {
         self.pid
-    }
-
-    pub fn tag(&self) -> &str {
-        &self.tag
     }
 
     pub fn write(&self, value: &Value) {

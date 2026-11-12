@@ -31,8 +31,4 @@ gtk-update-icon-cache -q -t "$HOME/.local/share/icons/hicolor" 2>/dev/null || tr
 if [[ -f "$HOME/.claude/skills/loom/SKILL.md" ]]; then
     echo "loom now keeps its skill in ~/.config/loom/claude: ~/.claude/skills/loom can be deleted."
 fi
-# Before 0.3.0 loom drove Claude Code through an ACP adapter installed here.
-if [[ -d "$HOME/.local/share/loom/adapter" ]]; then
-    echo "loom now drives Claude Code itself: ~/.local/share/loom/adapter can be deleted."
-fi
 echo "Installed $bindir/loom"

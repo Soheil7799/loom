@@ -1,6 +1,6 @@
-//! Claude Code's tool calls as ACP tool updates (title, kind, content, locations), and its
-//! permission questions as ACP options. The shapes follow claude-agent-acp's reporters
-//! (Apache-2.0), so cards look as they did through the adapter.
+//! Claude Code's tool calls as loom's tool updates (title, kind, content, locations), and its
+//! permission questions as options. The shapes were first taken from claude-agent-acp's
+//! reporters (Apache-2.0), an adapter loom no longer runs.
 
 use std::path::Path;
 
@@ -351,7 +351,7 @@ fn patch_diffs(response: &Value) -> Option<(Vec<Value>, Vec<Value>)> {
     (!content.is_empty()).then_some((content, locations))
 }
 
-/// A tool result's content as ACP content (an error's text fenced).
+/// A tool result's content as loom's content blocks (an error's text fenced).
 fn content_update(content: &Value, error: bool) -> Option<Vec<Value>> {
     let fence = |text: &str| if error { format!("```\n{text}\n```") } else { text.to_owned() };
     match content {
@@ -803,7 +803,7 @@ mod tests {
     }
 
     #[test]
-    fn titles_follow_the_adapter() {
+    fn tool_titles() {
         let cwd = Path::new("/home/me/p");
         assert_eq!(tool_call(&tool("Read", json!({ "file_path": "/home/me/p/src/a.rs", "offset": 10, "limit": 5 })), cwd)["title"], "Read src/a.rs (10 - 14)");
         assert_eq!(tool_call(&tool("Bash", json!({ "command": "ls -la" })), cwd)["title"], "ls -la");

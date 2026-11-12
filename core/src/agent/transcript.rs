@@ -222,8 +222,8 @@ impl Transcript {
         let map = item.as_object_mut()?;
         let call = map.remove("id");
         let status = match map.remove("status") {
-            // A tool's, as the agent reports it (ACP: pending, in_progress, completed, failed).
-            Some(Value::String(acp)) => match acp.as_str() {
+            // A tool's, as the agent reports it (pending, in_progress, completed, failed).
+            Some(Value::String(status)) => match status.as_str() {
                 "in_progress" => "streaming",
                 "completed" => "done",
                 "failed" => "failed",
@@ -334,7 +334,7 @@ impl Transcript {
                 }
             }
             // What the agent gave it (`input`), what it shows (`content`: diffs, text, a
-            // terminal) and where (`locations`), as ACP has them.
+            // terminal) and where (`locations`), as the driver reports them.
             // A subagent's launch card: its subagent (whose conversation a client opens).
             if let Some(sub) = update["subagent"].as_str() {
                 entry["subagent"] = json!(sub);
@@ -491,7 +491,7 @@ impl Recorded {
         self.agent.borrow().as_ref().map(|id| crate::api::hub().store(&format!("crew/{id}")))
     }
 
-    /// A usage report from the agent (ACP's `usage_update`): its item in `usage`.
+    /// A usage report from the agent (`usage_update`): its item in `usage`.
     pub fn usage_update(&self, update: &Value) {
         let Some(id) = self.agent.borrow().clone() else { return };
         let info = &update["_meta"]["_claude/rateLimit"];

@@ -7,5 +7,5 @@ Exec=@BINDIR@/loom
 Icon=dev.shirvani.Loom
 Terminal=false
 Categories=Development;GTK;
-Keywords=claude;agent;ai;terminal;acp;
+Keywords=claude;agent;ai;terminal;
 StartupNotify=true

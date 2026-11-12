@@ -304,7 +304,7 @@ fn dropdown<T: PartialEq + Clone + 'static>(choices: &[(T, &str)], current: T, e
 }
 
 thread_local! {
-    /// The session settings an agent last showed (ACP configOptions): what the defaults offer.
+    /// The session settings an agent last showed (configOptions): what the defaults offer.
     static KNOWN_OPTIONS: std::cell::RefCell<serde_json::Value> = const { std::cell::RefCell::new(serde_json::Value::Null) };
 }
 
@@ -938,22 +938,6 @@ fn advanced(s: &Settings) -> gtk::Box {
     on_done(&editor, |text| update(|s| s.editor = text));
     row_stacked(&other, "Command", "Ctrl+Shift+O opens the file there (code, gnome-text-editor…); empty uses the app your system opens it with.", &editor);
     content.append(&other);
-
-    let program = section("Agent program");
-    let entry = gtk::Entry::builder().text(&s.adapter).placeholder_text("empty: Claude Code itself").build();
-    entry.add_css_class("mono");
-    entry.connect_changed(|e| {
-        let text = e.text().trim().to_owned();
-        update(|s| s.adapter = text);
-    });
-    let example = crate::provider::default_adapter().join(" ");
-    row_stacked(
-        &program,
-        "ACP adapter",
-        &format!("Empty: agents run Claude Code itself. An ACP adapter's command here runs them through it instead ({example}, or another ACP agent). For agents started from now on."),
-        &entry,
-    );
-    content.append(&program);
 
     let sandbox = section("Sandbox");
     let strict = switch(s.strict_sandbox, |s, on| s.strict_sandbox = on);

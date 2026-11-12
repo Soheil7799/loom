@@ -1,5 +1,5 @@
 //! loom: a light, keyboard-first home for coding agents. Each agent is a Claude Code
-//! session over ACP (claude-agent-acp), shown as a native chat; commands land in a job tray,
+//! session (the `claude` program, driven over its stream-json protocol), shown as a native chat; commands land in a job tray,
 //! files in a side editor, and a scratch terminal is one key away.
 
 mod about;

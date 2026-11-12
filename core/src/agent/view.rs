@@ -93,7 +93,7 @@ pub trait View {
     fn notice_action(&self, text: &str, button: &str, action: Rc<dyn Fn()>);
     /// A notice with a button that goes once pressed.
     fn notice_choice(&self, text: &str, button: &str, action: Rc<dyn Fn()>);
-    /// A tool call (ACP's tool_call / tool_call_update).
+    /// A tool call (tool_call / tool_call_update).
     fn tool(&self, update: &Value);
     fn tool_output(&self, id: &str, data: &str);
     fn tool_exit(&self, id: &str, code: Option<i64>);

@@ -1,7 +1,7 @@
 //! A project's page: start a new conversation, or pick up a past one.
 //!
-//! Past conversations come from the adapter (ACP `session/list`, the same list and titles
-//! Claude Code shows), asked by a short-lived adapter process that stops once it answered.
+//! Past conversations come from Claude Code's files (`session/list`, the same list and titles
+//! Claude Code shows), read through a short-lived link that stops once it answered.
 
 use std::cell::{Cell, RefCell};
 use std::path::{Path, PathBuf};

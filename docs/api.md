@@ -44,7 +44,7 @@ Who: window, cli, bridge, agent.
 | `place` | string | where in the project it works (a repo, a folder) |
 | `edited` | integer | files it changed |
 | `awake` | boolean | kept from resting |
-| `options` | array? | the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` |
+| `options` | array? | the session's settings (configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` |
 | `chosen` | array? | the ids of the settings among `options` the agent has a choice of its own for (kept for it, applied whenever it starts); the rest follow the settings' defaults |
 | `stalled` | boolean? | a turn quiet for 3 minutes, no tool running |
 | `looking` | boolean? | the user has it in front of them in loom |

@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""A stand-in for Claude Code (`claude`), speaking its stream-json protocol on stdin/stdout as
+loom drives it, playing turns for loomd's tests (this folder goes first on PATH):
+- "background": says "started", leaves a background subagent running and ends its turn; the
+  subagent ends 1.5 s later and the agent goes on by itself: "all finished".
+- "server": says "serving", leaves a background command (a dev server) running, ends its turn.
+- "plan": writes its plan (two steps).
+- "bus": says whether the session bus can be reached.
+- "write": writes made.txt as a shell command would.
+Anything else ends the turn with nothing said."""
+import itertools, json, os, socket, sys, threading, time
+
+if "--version" in sys.argv:
+    print("2.1.0 (Claude Code)")
+    sys.exit(0)
+
+out = threading.Lock()
+ids = itertools.count(1)
+
+
+def send(message):
+    with out:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+
+
+def assistant(*blocks):
+    send({"type": "assistant", "parent_tool_use_id": None, "message": {"id": f"m{next(ids)}", "content": list(blocks)}})
+
+
+def text(t):
+    return {"type": "text", "text": t}
+
+
+def say(t):
+    assistant(text(t))
+
+
+def system(subtype, **fields):
+    send({"type": "system", "subtype": subtype, **fields})
+
+
+def result(said=""):
+    send({"type": "result", "subtype": "success", "is_error": False, "result": said, "stop_reason": "end_turn"})
+
+
+def later():
+    time.sleep(1.5)
+    system("task_notification", task_id="t1", tool_use_id="sub1", status="completed", summary="helped")
+    time.sleep(0.5)
+    say("all finished")
+    result("all finished")
+
+
+def turn(prompt):
+    if "background" in prompt:
+        assistant(text("started"), {"type": "tool_use", "id": "sub1", "name": "Agent", "input": {"description": "helper", "prompt": "help", "run_in_background": True}})
+        send({"type": "user", "parent_tool_use_id": None, "message": {"content": [{"type": "tool_result", "tool_use_id": "sub1", "content": "launched"}]}, "tool_use_result": {"status": "async_launched"}})
+        system("task_started", task_id="t1", tool_use_id="sub1", is_backgrounded=True)
+        result("started")
+        threading.Thread(target=later, daemon=True).start()
+        return
+    if "plan" in prompt:
+        todos = [{"content": "Read it", "status": "completed", "activeForm": "Reading it"}, {"content": "Fix it", "status": "in_progress", "activeForm": "Fixing it"}]
+        assistant({"type": "tool_use", "id": f"todo{next(ids)}", "name": "TodoWrite", "input": {"todos": todos}})
+        say("planned")
+    elif "bus" in prompt:
+        # the session bus, as `systemd-run --user` would reach it (the strict sandbox shuts it)
+        try:
+            socket.socket(socket.AF_UNIX).connect(f"/run/user/{os.getuid()}/bus")
+            say("bus reachable")
+        except PermissionError:
+            say("bus blocked")
+        except OSError:
+            say("no bus")
+    elif "write" in prompt:
+        # as a shell command would (`printf > made.txt`): no diff for loom to see; after a
+        # while, as an agent thinks first (loom reads git's status as the turn begins)
+        time.sleep(1)
+        with open("made.txt", "w") as f:
+            f.write("made\n")
+        say("wrote")
+    elif "server" in prompt:
+        say("serving")
+        assistant({"type": "tool_use", "id": "bash1", "name": "Bash", "input": {"command": "serve", "run_in_background": True}})
+        system("task_started", task_id="t2", tool_use_id="bash1")
+        system("background_tasks_changed", tasks=[{"task_id": "t2", "task_type": "local_bash", "description": "dev server"}])
+    result()
+
+
+for line in sys.stdin:
+    msg = json.loads(line)
+    if msg.get("type") == "control_request":
+        request = msg["request"]
+        answer = {"commands": [], "account": {}} if request.get("subtype") == "initialize" else {}
+        send({"type": "control_response", "response": {"subtype": "success", "request_id": msg["request_id"], "response": answer}})
+    elif msg.get("type") == "user":
+        content = msg["message"]["content"]
+        turn(" ".join(b.get("text", "") for b in content) if isinstance(content, list) else content)

@@ -348,7 +348,7 @@ async fn run() -> u8 {
     let owner = {
         let (ws, notes) = (Rc::downgrade(&ws), Rc::downgrade(&notes));
         move |pid| {
-            let id = ws.upgrade()?.agent_of_process(pid).or_else(|| notes.upgrade()?.agents().iter().find(|a| a.adapter_pid() == Some(pid)).map(|a| a.id))?;
+            let id = ws.upgrade()?.agent_of_process(pid).or_else(|| notes.upgrade()?.agents().iter().find(|a| a.claude_pid() == Some(pid)).map(|a| a.id))?;
             Some(Principal::Agent(id.to_string()))
         }
     };
@@ -376,7 +376,7 @@ async fn run() -> u8 {
                 .ws
                 .agents_in_order()
                 .iter()
-                .map(|a| (a.id, format!("{} · {}", daemon.ws.project_label(&a.project), a.title()), a.status().css().to_owned(), a.adapter_pid()))
+                .map(|a| (a.id, format!("{} · {}", daemon.ws.project_label(&a.project), a.title()), a.status().css().to_owned(), a.claude_pid()))
                 .collect();
             let last = last.clone();
             loom_core::rt::spawn_local(async move {

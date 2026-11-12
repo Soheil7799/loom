@@ -24,7 +24,7 @@
   const diffs = (content: unknown[] | undefined): Diff[] =>
     (content ?? []).filter((c): c is Diff & { type: string } => !!c && typeof c === "object" && (c as { type?: string }).type === "diff");
   const name = (path?: string) => path?.split("/").pop() ?? "";
-  // ACP's kind of tool, as a label; "other" (an MCP tool, say) says nothing: TOOL
+  // The tool's kind, as a label; "other" (an MCP tool, say) says nothing: TOOL
   const kindOf = (kind?: string) => (!kind || kind === "other" ? "tool" : kind).toUpperCase();
 </script>
 

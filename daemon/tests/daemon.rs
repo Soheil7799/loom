@@ -110,6 +110,11 @@ fn replied(entries: &[Value], text: &str) -> bool {
     entries.iter().any(|e| e["kind"] == "agent" && e["text"].as_str().is_some_and(|t| t.contains(text))) && entries.last().is_some_and(|e| e["kind"] == "turn")
 }
 
+/// PATH with the fake `claude` (tests/fake/claude) first: agents run it, not Claude Code.
+fn fake_claude() -> (&'static str, String) {
+    ("PATH", format!("{}/tests/fake:{}", env!("CARGO_MANIFEST_DIR"), std::env::var("PATH").unwrap_or_default()))
+}
+
 /// The agent's item in `agents`.
 fn agent_item(c: &mut Connection, id: &str) -> Value {
     c.get("agents").unwrap().into_iter().find(|a| a["id"] == id).expect("the agent")
@@ -117,8 +122,7 @@ fn agent_item(c: &mut Connection, id: &str) -> Value {
 
 #[test]
 fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
-    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
-    let (d, mut c) = start("Done", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let (d, mut c) = start("Done", json!({}), &[fake_claude()], &[]);
     let agent = command(&mut c, "new_agent", json!({ "folder": d.root.join("project") }))["agent"].as_str().unwrap().to_owned();
     // A turn that leaves a background agent going: its reply ends the turn, the work goes on.
     command(&mut c, "send", json!({ "agent": agent, "text": "background" }));
@@ -156,8 +160,7 @@ fn done_is_said_once_the_work_is_over_not_while_background_agents_run() {
 
 #[test]
 fn a_file_a_shell_command_writes_counts_as_edited() {
-    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
-    let (d, mut c) = start("Shell", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let (d, mut c) = start("Shell", json!({}), &[fake_claude()], &[]);
     let project = d.root.join("project");
     assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&project).status().unwrap().success());
     let agent = command(&mut c, "new_agent", json!({ "folder": project }))["agent"].as_str().unwrap().to_owned();
@@ -172,8 +175,7 @@ fn the_strict_sandbox_keeps_an_agent_off_the_session_bus() {
         eprintln!("no Landlock ABI 9 or no session bus here: skipped");
         return;
     }
-    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
-    let (d, mut c) = start("Sandbox", json!({ "strictSandbox": true }), &[("LOOM_AGENT", fake)], &[]);
+    let (d, mut c) = start("Sandbox", json!({ "strictSandbox": true }), &[fake_claude()], &[]);
     let agent = command(&mut c, "new_agent", json!({ "folder": d.root.join("project") }))["agent"].as_str().unwrap().to_owned();
     command(&mut c, "send", json!({ "agent": agent, "text": "bus" }));
     let entries = until(&mut c, &format!("conversation/{agent}"), Duration::from_secs(20), "its answer", |e| replied(e, "bus"));
@@ -182,8 +184,7 @@ fn the_strict_sandbox_keeps_an_agent_off_the_session_bus() {
 
 #[test]
 fn a_projects_board_is_a_file_in_it() {
-    let fake = format!("python3 {}/tests/fake_agent.py", env!("CARGO_MANIFEST_DIR"));
-    let (d, mut c) = start("Board", json!({}), &[("LOOM_AGENT", fake)], &[]);
+    let (d, mut c) = start("Board", json!({}), &[fake_claude()], &[]);
     let project = d.root.join("project");
     assert!(std::process::Command::new("git").arg("init").arg("-q").arg(&project).status().unwrap().success());
     // a project of the sidebar's: one with an agent in it

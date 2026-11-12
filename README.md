@@ -3,8 +3,7 @@
 A light, keyboard-first home for coding agents, written in Rust with GTK 4.
 
 Each agent is a Claude Code session, driven by loom and shown as a chat, not a terminal.
-Agents are grouped by project, and a project may hold several git repos. (Any other
-[ACP](https://agentclientprotocol.com) agent can be set in Settings → Advanced.)
+Agents are grouped by project, and a project may hold several git repos.
 
 ![An agent's chat, with the Running list and projects in the sidebar](docs/chat.png)
 

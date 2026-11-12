@@ -1,11 +1,8 @@
-//! The agents' providers: everything that knows how a coding agent is spoken to lives under
-//! here. The rest of loom speaks one language to all of them, ACP's (requests such as
-//! `session/new` and `session/prompt`, updates such as `tool_call`), through [`Conn`].
-//!
-//! - `claude`: Claude Code itself, over its stream-json protocol (the default).
-//! - `acp`: any ACP adapter process (set in Settings → Advanced, or `LOOM_AGENT`).
+//! The agents' provider: everything that knows how Claude Code is spoken to lives under here.
+//! The rest of loom speaks one language to it, loom's own (requests such as `session/new` and
+//! `session/prompt`, updates such as `tool_call`), through [`Conn`]; `claude` turns that into
+//! Claude Code's stream-json protocol and back.
 
-mod acp;
 mod claude;
 mod process;
 
@@ -25,33 +22,20 @@ pub enum Incoming {
 
 pub type Reply = Box<dyn FnOnce(Result<Value, Value>)>;
 
-enum Link {
-    Acp(Rc<acp::Link>),
-    Claude(Rc<claude::Link>),
-}
-
 pub struct Conn {
-    link: Link,
+    link: Rc<claude::Link>,
 }
 
 /// Conversation `session` read back from Claude Code's own file as session updates (what
-/// `session/load` replays), with no process started. None: no such conversation, or an
-/// adapter that keeps its own (ACP's).
+/// `session/load` replays), with no process started. None: no such conversation.
 pub fn read_back(session: &str, cwd: &Path) -> Option<Vec<Value>> {
-    if acp::chosen().is_some() {
-        return None;
-    }
     claude::read_back(session, cwd)
 }
 
 /// Conversations `sessions` as `session/list` gives them (sessionId, cwd, title, updatedAt),
-/// newest first, from Claude Code's files. None: an adapter that keeps its own (ACP's), to be
-/// listed through it. Off the UI's thread.
-pub fn list_of(sessions: &[String]) -> Option<Vec<Value>> {
-    if acp::chosen().is_some() {
-        return None;
-    }
-    Some(claude::list_of(sessions))
+/// newest first, from Claude Code's files. Off the UI's thread.
+pub fn list_of(sessions: &[String]) -> Vec<Value> {
+    claude::list_of(sessions)
 }
 
 /// The conversations of `sessions` whose words hold every word of `query`, each with a line
@@ -62,40 +46,25 @@ pub fn search(sessions: &[String], query: &str) -> Vec<(String, String)> {
 
 /// What runs an agent, as a command line (for an error that names it).
 pub fn program() -> String {
-    match acp::chosen() {
-        Some(command) => command.join(" "),
-        None => claude::program().to_string_lossy().into_owned(),
-    }
+    claude::program().to_string_lossy().into_owned()
 }
 
-/// The ACP adapter run when none is set.
-pub fn default_adapter() -> Vec<String> {
-    acp::default_adapter()
-}
-
-/// What runs the agents, for people: "Claude Code 2.1.312", or the adapter's command.
+/// What runs the agents, for people: "Claude Code 2.1.312".
 pub fn describe() -> String {
-    match acp::chosen() {
-        Some(command) => format!("ACP adapter: {}", command.join(" ")),
-        // Never waits for `claude --version` (this is shown on the main loop).
-        None => match claude::known_version() {
-            Some(version) => format!("Claude Code {version}"),
-            None => "Claude Code".to_owned(),
-        },
+    // Never waits for `claude --version` (this is shown on the main loop).
+    match claude::known_version() {
+        Some(version) => format!("Claude Code {version}"),
+        None => "Claude Code".to_owned(),
     }
 }
 
 /// Said when the installed Claude Code is not the version loom was built and tested against
 /// (its protocol is not documented, so a newer one may change what loom reads); nothing when
-/// they match, or while an ACP adapter is used. Reads `claude --version` (once): call it off
-/// the main loop.
+/// they match. Reads `claude --version` (once): call it off the main loop.
 pub fn version_note() -> Option<String> {
-    if acp::chosen().is_some() {
-        return None;
-    }
     let built = claude::BUILT_FOR;
     let Some(installed) = claude::installed_version() else {
-        return Some("Claude Code was not found: install it, or set an ACP adapter in Settings → Advanced.".to_owned());
+        return Some("Claude Code was not found: install it, then start the agent again.".to_owned());
     };
     let number = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
     match number(&installed).cmp(&number(built)) {
@@ -107,59 +76,37 @@ pub fn version_note() -> Option<String> {
 
 impl Conn {
     /// A connection for an agent working in `cwd`. Claude Code starts with the session (on
-    /// `session/new`, `session/load`, `session/resume`); an adapter starts now.
+    /// `session/new`, `session/load`, `session/resume`).
     /// `agent`: the agent it is for (its processes go in that agent's scope).
     pub fn spawn(cwd: &Path, agent: Option<u32>, on_incoming: impl Fn(Incoming) + 'static) -> std::io::Result<Rc<Conn>> {
         let on_incoming: Rc<dyn Fn(Incoming)> = Rc::new(on_incoming);
-        let link = match acp::chosen() {
-            Some(program) => Link::Acp(acp::Link::spawn(&program, cwd, agent, on_incoming)?),
-            None => Link::Claude(claude::Link::new(cwd, agent, on_incoming)?),
-        };
-        Ok(Rc::new(Conn { link }))
+        Ok(Rc::new(Conn { link: claude::Link::new(cwd, agent, on_incoming)? }))
     }
 
     pub fn request(&self, method: &str, params: Value, reply: impl FnOnce(Result<Value, Value>) + 'static) {
-        match &self.link {
-            Link::Acp(link) => link.request(method, params, Box::new(reply)),
-            Link::Claude(link) => link.request(method, params, Box::new(reply)),
-        }
+        self.link.request(method, params, Box::new(reply))
     }
 
     /// The process id (0 while Claude Code is not started yet).
     pub fn pid(&self) -> u32 {
-        match &self.link {
-            Link::Acp(link) => link.pid(),
-            Link::Claude(link) => link.pid(),
-        }
+        self.link.pid()
     }
 
     pub fn notify(&self, method: &str, params: Value) {
-        match &self.link {
-            Link::Acp(link) => link.notify(method, params),
-            Link::Claude(link) => link.notify(method, params),
-        }
+        self.link.notify(method, params)
     }
 
     pub fn respond(&self, id: Value, result: Value) {
-        match &self.link {
-            Link::Acp(link) => link.respond(id, result),
-            Link::Claude(link) => link.respond(id, result),
-        }
+        self.link.respond(id, result)
     }
 
     pub fn respond_error(&self, id: Value, code: i64, message: &str) {
-        match &self.link {
-            Link::Acp(link) => link.respond_error(id, code, message),
-            Link::Claude(link) => link.respond_error(id, code, message),
-        }
+        self.link.respond_error(id, code, message)
     }
 
     /// Stops the agent and everything it started.
     pub fn stop(&self) {
-        match &self.link {
-            Link::Acp(link) => link.stop(),
-            Link::Claude(link) => link.stop(),
-        }
+        self.link.stop()
     }
 }
 

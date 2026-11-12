@@ -23,8 +23,6 @@ pub struct Settings {
     /// Agents and their jobs under Landlock: no Unix socket but loom's, SSH's and GPG's
     /// (sandbox.rs). Off by default: it costs them sudo, systemctl --user, notify-send…
     pub strict_sandbox: bool,
-    /// The agent program (empty: the one loom installs, else claude-agent-acp on PATH).
-    pub adapter: String,
     /// Permission mode new agents start in (empty: Claude Code's own default).
     pub default_mode: String,
     /// The session settings every agent starts with, new or woken (option id → value: the
@@ -104,7 +102,6 @@ impl Default for Settings {
             confirm_quit: true,
             keep_working: false,
             strict_sandbox: false,
-            adapter: String::new(),
             default_mode: String::new(),
             default_options: Default::default(),
             show_thinking: true,
@@ -209,7 +206,6 @@ const WINDOW_ONLY: &[&str] = &[
     "sttEnabled",
     "sttUrl",
     "sttKey",
-    "adapter",
     "defaultMode",
     // what agents may reach: never turned off by one
     "strictSandbox",
@@ -400,7 +396,6 @@ fn parse(text: &str) -> Settings {
         confirm_quit: flag("confirmQuit", d.confirm_quit),
         keep_working: flag("keepWorking", d.keep_working),
         strict_sandbox: flag("strictSandbox", d.strict_sandbox),
-        adapter: string("adapter", &d.adapter),
         default_mode: string("defaultMode", &d.default_mode),
         default_options: v["defaultOptions"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_else(|| d.default_options.clone()),
         show_thinking: flag("showThinking", d.show_thinking),
@@ -456,7 +451,6 @@ fn render(s: &Settings) -> String {
         "confirmQuit": s.confirm_quit,
         "keepWorking": s.keep_working,
         "strictSandbox": s.strict_sandbox,
-        "adapter": s.adapter,
         "defaultMode": s.default_mode,
         "defaultOptions": s.default_options,
         "showThinking": s.show_thinking,
@@ -509,7 +503,6 @@ mod tests {
         let s = Settings {
             idle_minutes: 3,
             notify_done: false,
-            adapter: "x y".into(),
             text_scale: 1.2,
             telegram_enabled: true,
             telegram_token: "1:abc".into(),

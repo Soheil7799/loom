@@ -1,5 +1,5 @@
-//! Past conversations: the list Claude Code keeps (ACP `session/list`, the same list and titles
-//! Claude Code shows), asked by a short-lived adapter process that stops once it answered.
+//! Past conversations: the list Claude Code keeps (`session/list`, the same list and titles
+//! Claude Code shows), read from its files through a short-lived link that stops once it answered.
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
@@ -19,16 +19,16 @@ pub struct Past {
     pub cwd: PathBuf,
     /// None: Claude Code has none for it.
     pub title: Option<String>,
-    /// ISO 8601, as the adapter gives it.
+    /// ISO 8601, as Claude Code's files give it.
     pub updated: String,
 }
 
 type Done = Box<dyn FnOnce(Result<Vec<Past>, String>)>;
 
 /// Conversations `sessions` alone, newest first, read from their files (no listing process).
-/// None: an ACP adapter keeps them (`list` then). Off the UI's thread.
-pub fn list_of(sessions: &[String]) -> Option<Vec<Past>> {
-    crate::provider::list_of(sessions).map(|sessions| parse(&json!({ "sessions": sessions })))
+/// Off the UI's thread.
+pub fn list_of(sessions: &[String]) -> Vec<Past> {
+    parse(&json!({ "sessions": crate::provider::list_of(sessions) }))
 }
 
 /// Every kept conversation, newest first (a few pages at most), or why not. Returns the
@@ -82,7 +82,7 @@ pub fn list(done: impl FnOnce(Result<Vec<Past>, String>) + 'static) -> Option<st
     Some(Rc::downgrade(&conn))
 }
 
-/// Deletes a past conversation for good (ACP session/delete, through a short-lived adapter).
+/// Deletes a past conversation for good (`session/delete`, through a short-lived link).
 pub fn delete(session: String, done: impl FnOnce(Result<(), String>) + 'static) {
     let done = Rc::new(RefCell::new(Some(Box::new(done) as Box<dyn FnOnce(Result<(), String>)>)));
     let finish = {

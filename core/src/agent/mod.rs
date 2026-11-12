@@ -1,7 +1,7 @@
-//! One agent: its adapter process, its ACP session, and what it shows (chat, jobs, files).
+//! One agent: its Claude Code process, its session, and what it shows (chat, jobs, files).
 //!
-//! An agent can be suspended (no process, just the session id) and resumed: ACP's
-//! session/load replays the conversation, so closing loom or idling frees the memory without
+//! An agent can be suspended (no process, just the session id) and resumed:
+//! `session/load` replays the conversation, so closing loom or idling frees the memory without
 //! losing anything but a turn in flight.
 
 use std::cell::{Cell, RefCell};
@@ -200,7 +200,7 @@ struct RepoCache {
     read_at: Option<Instant>,
 }
 
-/// A subagent with a session of its own (Claude Code's Agent/Task), which the adapter reports
+/// A subagent with a session of its own (Claude Code's Agent/Task), which Claude Code reports
 /// apart from the main conversation: its state, and its conversation to read.
 pub struct Sub {
     pub id: String,
@@ -279,7 +279,7 @@ pub struct Agent {
     shells: Cell<u64>,
     /// The running `!command` was stopped by the user.
     shell_stopped: Cell<bool>,
-    /// The adapter can resume a session without replaying it.
+    /// Claude Code can resume a session without replaying it.
     can_resume: Cell<bool>,
     /// The provider tells when a background task ends, and stops one when asked.
     tasks: Cell<bool>,
@@ -569,8 +569,8 @@ impl Agent {
         }
     }
 
-    /// The adapter process, while it runs.
-    pub fn adapter_pid(&self) -> Option<u32> {
+    /// The Claude Code process, while it runs.
+    pub fn claude_pid(&self) -> Option<u32> {
         // 0: its process is not running (yet), so there is none to measure.
         self.conn.borrow().as_ref().map(|c| c.pid()).filter(|pid| *pid != 0)
     }
@@ -1192,7 +1192,7 @@ impl Agent {
         self.emit(Event::Changed);
     }
 
-    /// The session's settings (ACP's configOptions: model, effort…), as the agent gave them.
+    /// The session's settings (configOptions: model, effort…), as the agent gave them.
     pub fn options(&self) -> Value {
         self.config.borrow().clone()
     }
@@ -1838,7 +1838,7 @@ impl Agent {
         true
     }
 
-    /// A message as ACP content: `!command` runs first (as Claude Code puts them before the
+    /// A message as prompt blocks: `!command` runs first (as Claude Code puts them before the
     /// message), then the images, then the text.
     fn prompt_blocks(&self, text: &str, images: &[Png]) -> Vec<Value> {
         let mut prompt: Vec<Value> = self.context.borrow().iter().map(|c| json!({ "type": "text", "text": c })).collect();
@@ -3187,7 +3187,7 @@ impl Agent {
 }
 
 /// A fork made through `agent`'s process is opened by a process of its own: this one lets
-/// go of it (best effort; the adapter closes it when it stops anyway).
+/// go of it (best effort; Claude Code closes it when it stops anyway).
 fn conn_close(agent: &Agent, session: &str) -> Option<()> {
     let conn = agent.conn.borrow().clone()?;
     conn.request("session/close", json!({ "sessionId": session }), |_| {});
@@ -3255,7 +3255,7 @@ mod tests {
     }
 }
 
-/// The values an ACP config option offers (`options`, flat or in groups).
+/// The values a config option offers (`options`, flat or in groups).
 fn option_values(option: &Value) -> Vec<String> {
     let mut values = Vec::new();
     for entry in option["options"].as_array().into_iter().flatten() {

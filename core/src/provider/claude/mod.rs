@@ -1,8 +1,8 @@
 //! Claude Code itself, over its stream-json protocol (`claude --input-format stream-json
-//! --output-format stream-json`): one process per conversation. Its messages become the ACP
-//! updates the rest of loom reads, and loom's ACP requests become its messages and control
-//! requests. The shapes follow claude-agent-acp (Apache-2.0), the adapter loom used before,
-//! so what loom shows is what it showed then.
+//! --output-format stream-json`): one process per conversation. Its messages become the
+//! updates the rest of loom reads, and loom's requests become its messages and control
+//! requests. The shapes were first taken from claude-agent-acp (Apache-2.0), an adapter loom
+//! no longer runs.
 
 mod tools;
 mod transcripts;
@@ -70,7 +70,7 @@ pub fn known_version() -> Option<String> {
     VERSION.get().cloned().flatten()
 }
 
-/// Permission modes, as the adapter named them.
+/// Permission modes, as loom names them.
 const MODES: [(&str, &str, &str); 5] = [
     ("default", "Manual", "Always ask before making changes"),
     ("acceptEdits", "Accept edits", "Automatically accept all file edits"),
@@ -679,7 +679,7 @@ impl Link {
 
     // ---- prompts --------------------------------------------------------------------------
 
-    /// ACP prompt blocks as a user message; its id (what its file checkpoint is under).
+    /// Prompt blocks as a user message; its id (what its file checkpoint is under).
     fn write_user(&self, prompt: &Value) -> String {
         let content: Vec<Value> = prompt
             .as_array()

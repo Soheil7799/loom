@@ -354,7 +354,7 @@ fn handle() {
     });
 }
 
-/// An option's values (ACP: a list of {value, name}, or of groups with their own `options`).
+/// An option's values (a list of {value, name}, or of groups with their own `options`).
 fn values(options: &Value) -> Vec<String> {
     options.as_array().into_iter().flatten().flat_map(|o| match o["options"].as_array() {
         Some(_) => values(&o["options"]),

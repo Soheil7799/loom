@@ -48,26 +48,14 @@ impl Notes {
             return;
         };
         let me = self.me.clone();
-        let ours = chats(&vault);
+        let wanted = chats(&vault);
         loom_core::rt::spawn_local(async move {
             // Only the vault's own chats are read, not every past conversation (that listing
             // failed for good in a long-running loomd, 2026-11-11, cause not found).
-            let wanted = ours.clone();
-            let read = loom_core::rt::spawn_blocking(move || loom_core::history::list_of(&wanted)).await.ok().flatten();
+            let read = loom_core::rt::spawn_blocking(move || loom_core::history::list_of(&wanted)).await.unwrap_or_default();
             let Some(notes) = me.upgrade() else { return };
-            if let Some(pasts) = read {
-                *notes.pasts.borrow_mut() = pasts;
-                return notes.publish();
-            }
-            // An ACP adapter keeps them: listed through it, shared with whoever lists meanwhile.
-            loom_core::workspace::past(move |result| {
-                let Some(notes) = me.upgrade() else { return };
-                match result {
-                    Ok(all) => *notes.pasts.borrow_mut() = all.into_iter().filter(|p| ours.contains(&p.session_id)).collect(),
-                    Err(err) => loom_core::log::write("notes", &format!("past chats not listed: {err}")),
-                }
-                notes.publish();
-            });
+            *notes.pasts.borrow_mut() = read;
+            notes.publish();
         });
     }
 

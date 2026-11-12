@@ -62,7 +62,7 @@ pub fn cut(text: &str) -> &str {
     &text[..end]
 }
 
-/// `area`: what it is about ("acp 1234", "agent 3", "telegram"…).
+/// `area`: what it is about ("claude 1234", "agent 3", "telegram"…).
 pub fn write(area: &str, text: &str) {
     if !on() && area != "crash" {
         return;

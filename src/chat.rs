@@ -2612,7 +2612,7 @@ impl Chat {
         }
     }
 
-    /// A tool entry of the core's conversation (warp): its card, as ACP's update would draw
+    /// A tool entry of the core's conversation (warp): its card, as a tool_call update would draw
     /// it, with its output and exit.
     fn tool_entry(&self, item: &Value) {
         let Some(call) = item["call"].as_str() else { return };
@@ -2943,7 +2943,7 @@ impl Chat {
 
     // ---- tool calls -----------------------------------------------------------------------
 
-    /// A tool call starts, or changes: `update` is ACP's tool_call or tool_call_update.
+    /// A tool call starts, or changes: `update` is a tool_call or tool_call_update.
     pub fn tool(&self, update: &Value) {
         let Some(id) = update["toolCallId"].as_str() else { return };
         let existing = self.tools.borrow().get(id).cloned();

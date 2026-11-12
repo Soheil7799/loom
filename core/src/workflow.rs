@@ -1,6 +1,6 @@
 //! Workflows an agent runs (Claude Code's Workflow tool): a card in the conversation with
 //! each phase's progress and every agent of it, read from Claude Code's own files. The
-//! adapter says only that one was launched (its task id and its folder); after that,
+//! driver says only that one was launched (its task id and its folder); after that,
 //! Claude Code writes a journal (`journal.jsonl`: a line when an agent starts, with its label
 //! and phase, and one when it is done, with its answer), each agent's transcript
 //! (`agent-<id>.jsonl`) beside it, and, once the workflow is over, the task's output file.
@@ -20,7 +20,7 @@ pub struct Launch {
 }
 
 /// The launch of a workflow, if `update` is the Workflow tool call's result: from the
-/// structured response when the adapter gives it, else from the result's text (a
+/// structured response when Claude Code gives it, else from the result's text (a
 /// conversation read back has only that).
 pub fn launch_of(update: &Value) -> Option<Launch> {
     let response = &update["_meta"]["claudeCode"]["toolResponse"];

@@ -359,10 +359,10 @@ impl Workspace {
         self.agents.borrow().iter().find(|a| a.id == id).cloned()
     }
 
-    /// The agent whose process is `pid`: its adapter, or a job it ran.
+    /// The agent whose process is `pid`: its Claude Code, or a job it ran.
     pub fn agent_of_process(&self, pid: u32) -> Option<u32> {
         let agents = self.agents.borrow();
-        agents.iter().find(|a| a.adapter_pid() == Some(pid)).map(|a| a.id).or_else(|| agents.iter().find_map(|a| a.jobs.agent_of(pid)))
+        agents.iter().find(|a| a.claude_pid() == Some(pid)).map(|a| a.id).or_else(|| agents.iter().find_map(|a| a.jobs.agent_of(pid)))
     }
 
     /// The open agent with conversation `session`.
@@ -726,7 +726,7 @@ impl Workspace {
 }
 
 /// Claude Code's past conversations, listed once for all who ask meanwhile, and kept a
-/// moment (each listing starts an adapter process).
+/// moment (each listing reads every conversation file).
 pub fn past(done: impl FnOnce(Result<Vec<crate::history::Past>, String>) + 'static) {
     let fresh = KEPT.with_borrow(|k| k.as_ref().filter(|(at, _)| at.elapsed() < Duration::from_secs(30)).map(|(_, all)| all.clone()));
     if let Some(all) = fresh {

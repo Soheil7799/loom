@@ -1,5 +1,5 @@
 //! What survives a restart: the projects in the sidebar, which agents were open in them and
-//! their ACP session ids (the conversations themselves live in Claude Code's own session
+//! their session ids (the conversations themselves live in Claude Code's own session
 //! files), what was focused and pinned, and the agents closed lately (to reopen).
 
 use std::path::PathBuf;
@@ -15,13 +15,13 @@ pub struct Saved {
     pub named: bool,
     /// Typed but not sent.
     pub draft: String,
-    /// Folders beyond `cwd` it may work in (ACP additionalDirectories).
+    /// Folders beyond `cwd` it may work in (additionalDirectories, `--add-dir`).
     pub dirs: Vec<PathBuf>,
     /// When it was last used (opened, written to, a turn ended): Unix seconds, 0 unknown.
     pub used: u64,
     /// Kept awake: never suspended for being idle.
     pub awake: bool,
-    /// Its session's settings as last known (ACP's configOptions: model, effort…), shown
+    /// Its session's settings as last known (configOptions: model, effort…), shown
     /// while it rests.
     pub options: serde_json::Value,
     /// Its own choices among them (option id → value), applied whenever it starts; the

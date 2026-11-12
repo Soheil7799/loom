@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-/// An agent as the snapshot needs it: (id, "project · title", state, its adapter's pid).
+/// An agent as the snapshot needs it: (id, "project · title", state, its Claude Code process's pid).
 pub type AgentInfo = (u32, String, String, Option<u32>);
 
 /// One line per part: the total, loom's window, each agent with its processes, the rest.

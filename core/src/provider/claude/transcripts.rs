@@ -1,5 +1,5 @@
 //! Claude Code's own files of its conversations (`<config>/projects/<folder>/<id>.jsonl`):
-//! the list of them, deleting and copying one, and reading one back as ACP updates.
+//! the list of them, deleting and copying one, and reading one back as session updates.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};

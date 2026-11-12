@@ -56,7 +56,6 @@
     { name: "Claude", sections: [] },
     { name: "Advanced", sections: [
       { title: "Other editor", rows: [{ key: "editor", title: "Command", detail: "Opens files there (code, gnome-text-editor…); empty uses the app your system opens them with.", kind: "text" }] },
-      { title: "Agent program", rows: [{ key: "adapter", title: "ACP adapter", detail: "Empty: agents run Claude Code itself. An ACP adapter's command here runs them through it instead. For agents started from now on.", kind: "text" }] },
       { title: "Troubleshooting", rows: [{ key: "debug_log", title: "Debug log", detail: "What loom does, in detail, in loom's state folder (debug.log). Holds parts of conversations; stays on this computer.", kind: "switch" }] },
     ] },
     { name: "Notes", sections: [{ title: "", rows: [

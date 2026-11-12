@@ -29,7 +29,7 @@ export type AgentsItem = {
   edited: number;
   /** kept from resting */
   awake: boolean;
-  /** the session's settings (ACP configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` */
+  /** the session's settings (configOptions: {id, name, category, currentValue, options: [{value, name} or groups]}): model, effort…; `set_option` */
   options?: unknown[];
   /** the ids of the settings among `options` the agent has a choice of its own for (kept for it, applied whenever it starts); the rest follow the settings' defaults */
   chosen?: unknown[];
