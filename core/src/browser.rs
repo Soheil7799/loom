@@ -128,31 +128,32 @@ pub fn open(project: &Path, show: bool) -> Result<Value, String> {
 /// Stops the project's browser (and its screen).
 pub fn stop(project: &Path) {
     if let Some(b) = RUNNING.with(|r| r.borrow_mut().remove(project)) {
-        end(b.browser);
-        if let Some(screen) = b.screen {
-            end(screen);
-        }
+        // Its screen only once it closed: without one it would die before saving its cookies
+        // (the logins).
+        end(b.browser, b.screen);
         crate::api::remove_item("browsers", &project.to_string_lossy());
     }
 }
 
-fn end(mut child: Child) {
-    let pid = child.id();
-    // SAFETY: a signal to a child of ours, by its pid.
-    unsafe {
-        libc::kill(pid as i32, libc::SIGTERM);
-    }
-    // reaped when it ends; killed if it is still there in 5 s
+/// Asks `child` to stop (killed if it is still there in 10 s), then `after` the same way.
+fn end(child: Child, after: Option<Child>) {
     std::thread::spawn(move || {
-        for _ in 0..50 {
-            if matches!(child.try_wait(), Ok(Some(_)) | Err(_)) {
-                return;
+        for mut child in std::iter::once(child).chain(after) {
+            let pid = child.id();
+            // SAFETY: a signal to a child of ours, by its pid.
+            unsafe {
+                libc::kill(pid as i32, libc::SIGTERM);
             }
-            std::thread::sleep(Duration::from_millis(100));
+            let ended = (0..100).any(|_| {
+                std::thread::sleep(Duration::from_millis(100));
+                matches!(child.try_wait(), Ok(Some(_)) | Err(_))
+            });
+            if !ended {
+                let _ = child.kill();
+                let _ = child.wait();
+                crate::log::write("browser", &format!("{pid} killed: it didn't stop in 10 s"));
+            }
         }
-        let _ = child.kill();
-        let _ = child.wait();
-        crate::log::write("browser", &format!("{pid} killed: it didn't stop in 5 s"));
     });
 }
 
@@ -212,9 +213,10 @@ fn start(project: &Path) -> Result<Running, String> {
     let display = match (crate::paths::find_program("Xvfb"), free_display()) {
         (Some(xvfb), Some(n)) => {
             let mut command = Command::new(xvfb);
-            command.args([format!(":{n}"), "-screen".into(), "0".into(), format!("{}x{}x24", SCREEN.0, SCREEN.1), "-nolisten".into(), "tcp".into()]);
+            command.args([format!(":{n}"), "-screen".into(), "0".into(), format!("{}x{}x24", SCREEN.0, SCREEN.1), "-nolisten".into(), "tcp".into(), "-terminate".into()]);
             command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(log.try_clone().map_err(|e| e.to_string())?);
-            with_loomd(&mut command);
+            // Not ended with loomd (the browser is, and closes its windows first): it ends by
+            // itself once the browser is gone (-terminate), its cookies saved.
             match command.spawn() {
                 Ok(child) => {
                     screen = Some(child);
@@ -247,7 +249,7 @@ fn start(project: &Path) -> Result<Running, String> {
         Ok(browser) => browser,
         Err(e) => {
             if let Some(screen) = screen {
-                end(screen);
+                end(screen, None);
             }
             return Err(format!("{} didn't start: {e}", program.display()));
         }
