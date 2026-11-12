@@ -213,6 +213,13 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
             }, "required": ["query"] }
         },
         {
+            "name": "loom_browser",
+            "description": "A real browser for this project, for the web: pages WebFetch can't read (shops, sites that block bots, pages built by scripts), a site the user must log in to, clicking through a site, testing a web app. loom runs it (headed, out of the user's way: they watch it in loom's tray and can click and type in it) with its own profile per project, so logins stay. Call this first: it starts the browser and says how to drive it. Use it instead of Playwright or opening a browser yourself.",
+            "inputSchema": { "type": "object", "properties": {
+                "show": { "type": "boolean", "description": "Bring it in front of the user: they must log in, solve a check, or look at something. Ask them in your reply what to do there; never ask for a password in the chat. Default false" }
+            } }
+        },
+        {
             "name": "loom_board",
             "description": "This project's board (the user's kanban: Backlog, To do, Doing, Done), its cards with their ids, descriptions and dates. Look here for what to work on and what is in progress.",
             "inputSchema": { "type": "object", "properties": {} }
@@ -297,6 +304,33 @@ fn warm(socket: &str, agent: u32) {
     if meaning_model(socket, agent, "notes").is_some() && vault(socket, agent).is_some() {
         let _ = note_tool(socket, agent, "loom_note_search", &json!({ "query": "warm up", "limit": 1 }));
     }
+}
+
+/// The project's browser, started by loom, and how to drive it.
+fn browser(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
+    let b = call(socket, agent, "browser", json!({ "show": args["show"].as_bool() == Some(true) }))?;
+    let port = b["port"].as_u64().ok_or("loom gave no browser port")?;
+    if !crate::browser::wait_ready(port as u16, std::time::Duration::from_secs(20)) {
+        return Err(format!("the browser was started but doesn't answer on port {port} yet (its log: {}); try again in a moment", crate::state::dir().join("browser.log").display()));
+    }
+    let how = if b["headed"] == true { "headed, on a screen of its own" } else { "headless (install Xvfb for a headed one)" };
+    let shown = if args["show"] == true { " It is in front of the user now: tell them what to do there, then wait for their word." } else { "" };
+    // As this agent was started (its MCP servers were fixed then), not as Settings say now.
+    let drive = if std::env::var_os("LOOM_BROWSER_DEVTOOLS").is_some() {
+        "Drive it with the loom-browser MCP tools (Chrome DevTools: navigate_page, take_snapshot, click, fill…), already pointed at it.".to_owned()
+    } else {
+        format!(
+            "Drive it with agent-browser in Bash, always with --cdp {port} (it attaches to this browser, never starts its own):\n\
+             npx -y agent-browser --cdp {port} open <url>\n\
+             npx -y agent-browser --cdp {port} snapshot -i      (the page's controls, each with a ref: @e12)\n\
+             npx -y agent-browser --cdp {port} click @e12  |  fill @e5 \"text\"  |  press Enter\n\
+             npx -y agent-browser --cdp {port} get text @e3     (one part's text: far fewer tokens than a whole snapshot)\n\
+             npx -y agent-browser --cdp {port} screenshot <file.png>\n\
+             Snapshots of big pages are long: read a part (get text, snapshot -s <css selector>) when you can. \
+             If agent-browser can't do something, the user can switch agents to Chrome's DevTools MCP in loom's Settings → Browser."
+        )
+    };
+    Ok(format!("{} is running for this project, {how}, on port {port}.{shown}\n{drive}\nLogins and checks are the user's: call loom_browser with show, and never ask for a password in the chat.", b["name"].as_str().unwrap_or("The browser")))
 }
 
 /// loom_find: the places in the agent's folder (this process runs in it: a worktree's agent
@@ -491,6 +525,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_notify" => call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
         "loom_agents" => call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
         "loom_find" => find(socket, agent, args),
+        "loom_browser" => browser(socket, agent, args),
         "loom_board" => call(socket, agent, "board", json!({})).map(|v| pretty(&v)),
         "loom_board_add" => call(socket, agent, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),
         "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| "Moved.".to_owned()),

@@ -159,6 +159,21 @@ Who: window, cli, bridge.
 | `state` | string | off, checking, pulling, ready, failed |
 | `detail` | string | a sentence for people |
 
+### `browsers`
+
+The projects' browsers that run (browser.rs), one item each.
+
+Who: window, cli, bridge.
+
+| Field | Type | |
+|---|---|---|
+| `id` | string | the project's folder |
+| `port` | integer | its debugging port (CDP, on 127.0.0.1): a view screencasts the page from it |
+| `headed` | boolean | on a screen of its own (Xvfb), not headless |
+| `name` | string | the browser: Helium, Chromium… |
+| `shown` | integer | times an agent asked the user to look at it (a login): a UI brings it in front when it grows |
+| `devtools` | boolean | agents drive it with Chrome's DevTools MCP, not agent-browser |
+
 ### `settings`
 
 One item: every setting by its snake_case name; secrets only as `<name>_set`.
@@ -863,6 +878,26 @@ Who: window, cli. Result: `{agent}`, once done.
 |---|---|---|
 | `project` | string | the project's id (its folder) |
 | `branch` | string | the new branch's name |
+
+### `browser_open`
+
+Starts the project's browser if it doesn't run (agents start it with their loom_browser tool): headed on a screen of its own when Xvfb is installed, with loom's profile for the project. Keeps it from stopping unused.
+
+Who: window, cli. Result: `its `browsers` item`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
+
+### `browser_stop`
+
+Stops the project's browser (its profile, and so its logins, stay).
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string | the project's id (its folder) |
 
 ### `embeddings_check`
 

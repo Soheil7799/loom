@@ -84,6 +84,22 @@ a password in the command or ask for it in the chat; never pipe one in with `ech
 cannot wait for the end of your turn (loom already notifies when you ask a permission question
 or finish).
 
+## The web: a browser loom runs
+
+WebSearch and WebFetch stay for searching and reading plain pages. For a page they can't read
+(a shop, a site that blocks bots, a page its scripts build), a site to log in to, clicking
+through a site or testing a web app, call `loom_browser`. Don't use Playwright or start a
+browser yourself. loom starts the project's browser, out of the user's way (they watch it in
+loom's tray and can click in it), with a profile of its own that keeps logins. The tool's
+answer says how to drive it: usually `npx -y agent-browser --cdp <port> …` in Bash, always
+with that `--cdp`.
+
+- Read little: `get text @ref` or a part of the page beats a whole `snapshot` (big pages run
+  to thousands of tokens).
+- Logins, captchas and checks are the user's: `loom_browser(show: true)` brings it in front
+  of them; say in your reply what to do there, and never ask for a password in the chat.
+- Never buy, send, post or delete anything there without the user's word in this chat.
+
 ## The user's notes
 
 When the user has loom's Notes add-on on, two more tools reach their own notes: an Obsidian

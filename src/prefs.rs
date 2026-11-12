@@ -939,6 +939,31 @@ fn advanced(s: &Settings) -> gtk::Box {
     row_stacked(&other, "Command", "Ctrl+Shift+O opens the file there (code, gnome-text-editor…); empty uses the app your system opens it with.", &editor);
     content.append(&other);
 
+    let browser = section("Browser");
+    // The browsers found here, by program; the one set stays listed even if it is gone.
+    let found = loom_core::browser::found();
+    let mut choices: Vec<(String, String)> = vec![(String::new(), match found.first() {
+        Some((name, _)) => format!("Automatic ({name})"),
+        None => "Automatic (none found)".to_owned(),
+    })];
+    choices.extend(found.iter().map(|(name, path)| (path.to_string_lossy().into_owned(), name.clone())));
+    let named: Vec<(String, &str)> = choices.iter().map(|(v, n)| (v.clone(), n.as_str())).collect();
+    let pick = dropdown(&named, s.browser.clone(), |set| format!("{set} (not found)"), |s, path| s.browser = path);
+    row(
+        &browser,
+        "Browser agents use",
+        "A browser of yours, Chromium-based, run by loom with a profile of its own for each project (your own profile and logins are never touched). It runs on a screen of its own (headed when Xvfb is installed), shown in the project's tray. For browsers started from now on.",
+        &pick,
+    );
+    let devtools = switch(s.browser_devtools, |s, on| s.browser_devtools = on);
+    row(
+        &browser,
+        "Chrome DevTools MCP instead of agent-browser",
+        "Agents drive the browser with agent-browser by default: fewer tokens. On, they get Chrome's DevTools MCP instead (more tools: network, console, performance), when agent-browser can't do something. For agents started from now on.",
+        &devtools,
+    );
+    content.append(&browser);
+
     let sandbox = section("Sandbox");
     let strict = switch(s.strict_sandbox, |s, on| s.strict_sandbox = on);
     let can = loom_core::sandbox::available();

@@ -366,6 +366,7 @@ async fn run() -> u8 {
     notes.refresh();
     // Meaning search (Settings): Ollama started and the model pulled when it is on.
     loom_core::embed::serve();
+    loom_core::browser::serve();
     // With the debug log on: memory every 3 minutes, loomd's and each agent's (read off the
     // main loop; what the window logged when its agents were its own).
     let (watched, last) = (Rc::downgrade(&daemon), Rc::new(std::cell::Cell::new(None::<u64>)));
@@ -448,6 +449,7 @@ async fn run() -> u8 {
     for jobs in daemon.jobs.borrow().values() {
         jobs.stop_all();
     }
+    loom_core::browser::stop_all();
     loom_core::api::web::close();
     let _ = std::fs::remove_file(&socket);
     0

@@ -68,6 +68,10 @@ pub struct Settings {
     pub stt_language: String,
     /// Ctrl+Shift+O opens the file in this program (empty: the system's default app).
     pub editor: String,
+    /// The browser agents drive (browser.rs): a Chromium-based program (empty: the first found).
+    pub browser: String,
+    /// Agents drive it with Chrome's DevTools MCP instead of agent-browser (which costs fewer tokens).
+    pub browser_devtools: bool,
     /// The Notes add-on: on, and the vault it keeps notes in (empty: none chosen).
     pub notes_enabled: bool,
     pub notes_vault: String,
@@ -128,6 +132,8 @@ impl Default for Settings {
             stt_model: String::new(),
             stt_language: String::new(),
             editor: String::new(),
+            browser: String::new(),
+            browser_devtools: false,
             notes_enabled: false,
             notes_vault: String::new(),
             notes_daily_calls: 300,
@@ -211,6 +217,8 @@ const WINDOW_ONLY: &[&str] = &[
     "strictSandbox",
     // A program loom runs; what Scribe reads and sends.
     "editor",
+    "browser",
+    "browserDevtools",
     "notesEnabled",
     "notesVault",
 ];
@@ -427,6 +435,8 @@ fn parse(text: &str) -> Settings {
         stt_model: string("sttModel", &d.stt_model),
         stt_language: string("sttLanguage", &d.stt_language),
         editor: string("editor", &d.editor),
+        browser: string("browser", &d.browser),
+        browser_devtools: flag("browserDevtools", d.browser_devtools),
         notes_enabled: flag("notesEnabled", d.notes_enabled),
         notes_vault: string("notesVault", &d.notes_vault),
         notes_daily_calls: v["notesDailyCalls"].as_u64().unwrap_or(d.notes_daily_calls),
@@ -477,6 +487,8 @@ fn render(s: &Settings) -> String {
         "sttModel": s.stt_model,
         "sttLanguage": s.stt_language,
         "editor": s.editor,
+        "browser": s.browser,
+        "browserDevtools": s.browser_devtools,
         "notesEnabled": s.notes_enabled,
         "notesVault": s.notes_vault,
         "notesDailyCalls": s.notes_daily_calls,

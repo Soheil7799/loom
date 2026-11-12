@@ -985,6 +985,10 @@ impl App {
         if key == gdk::Key::Back && self.go_back() {
             return glib::Propagation::Stop;
         }
+        // The browser's page takes every key (typed into the page, its shortcuts its own).
+        if GtkWindowExt::focus(&self.window).is_some_and(|w| w.has_css_class("browser-page")) {
+            return glib::Propagation::Proceed;
+        }
         if key == gdk::Key::F2 && !ctrl && !alt {
             self.begin_rename();
             return glib::Propagation::Stop;
@@ -1458,6 +1462,7 @@ impl App {
             }),
             act("Open the file in another editor", "Ctrl+Shift+O", |a| a.files.open_elsewhere()),
             act("Scratch terminal", "Ctrl+`", |a| a.toggle_scratch()),
+            act("Browser: this project's, above the tray", "", |a| a.current_tray().open_browser()),
             act("Run a command in the tray…", "Ctrl+J", |a| a.ask_command()),
             act("Peek the newest job", "Ctrl+Shift+J", |a| a.current_tray().peek_latest()),
             act("Clear finished jobs", "Ctrl+Shift+X", |a| a.current_tray().clear_finished()),

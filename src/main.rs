@@ -8,6 +8,7 @@ use loom_core::provider;
 use loom_core::agent;
 mod app;
 mod board;
+mod browser;
 mod chat;
 mod chat_view;
 mod cheatsheet;
