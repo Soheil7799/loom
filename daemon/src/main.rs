@@ -449,6 +449,7 @@ async fn run() -> u8 {
     for jobs in daemon.jobs.borrow().values() {
         jobs.stop_all();
     }
+    loom_core::browser::stop_all();
     loom_core::api::web::close();
     let _ = std::fs::remove_file(&socket);
     0

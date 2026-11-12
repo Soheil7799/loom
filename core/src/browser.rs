@@ -128,33 +128,61 @@ pub fn open(project: &Path, show: bool) -> Result<Value, String> {
 /// Stops the project's browser (and its screen).
 pub fn stop(project: &Path) {
     if let Some(b) = RUNNING.with(|r| r.borrow_mut().remove(project)) {
-        // Its screen only once it closed: without one it would die before saving its cookies
-        // (the logins).
-        end(b.browser, b.screen);
+        std::thread::spawn(move || end(b.browser, Some(b.port), b.screen));
         crate::api::remove_item("browsers", &project.to_string_lossy());
     }
 }
 
-/// Asks `child` to stop (killed if it is still there in 10 s), then `after` the same way.
-fn end(child: Child, after: Option<Child>) {
-    std::thread::spawn(move || {
-        for mut child in std::iter::once(child).chain(after) {
-            let pid = child.id();
-            // SAFETY: a signal to a child of ours, by its pid.
-            unsafe {
-                libc::kill(pid as i32, libc::SIGTERM);
-            }
-            let ended = (0..100).any(|_| {
+/// Stops every browser before loomd ends (waiting for them: they save their logins as they
+/// close).
+pub fn stop_all() {
+    let all: Vec<Running> = RUNNING.with(|r| r.borrow_mut().drain().map(|(_, b)| b).collect());
+    let ends: Vec<_> = all.into_iter().map(|b| std::thread::spawn(move || end(b.browser, Some(b.port), b.screen))).collect();
+    for end in ends {
+        let _ = end.join();
+    }
+}
+
+/// Closes the browser as its window's close button would, by CDP's `Browser.close` on `port`:
+/// SIGTERM cuts its last save of the cookies (the logins) short. SIGTERM if that fails or it
+/// is still there in 10 s, killed 10 s later. Then its screen (`after`), only once it closed:
+/// without one it would die before saving.
+fn end(browser: Child, port: Option<u16>, after: Option<Child>) {
+    for (mut child, port) in std::iter::once((browser, port)).chain(after.map(|s| (s, None))) {
+        let pid = child.id();
+        let ended = |child: &mut Child| {
+            (0..100).any(|_| {
                 std::thread::sleep(Duration::from_millis(100));
                 matches!(child.try_wait(), Ok(Some(_)) | Err(_))
-            });
-            if !ended {
-                let _ = child.kill();
-                let _ = child.wait();
-                crate::log::write("browser", &format!("{pid} killed: it didn't stop in 10 s"));
-            }
+            })
+        };
+        if port.is_some_and(close) && ended(&mut child) {
+            continue;
         }
-    });
+        // SAFETY: a signal to a child of ours, by its pid.
+        unsafe {
+            libc::kill(pid as i32, libc::SIGTERM);
+        }
+        if !ended(&mut child) {
+            let _ = child.kill();
+            let _ = child.wait();
+            crate::log::write("browser", &format!("{pid} killed: it didn't stop in 10 s"));
+        }
+    }
+}
+
+/// Asks the browser on `port` to close (`Browser.close`); whether it was asked.
+fn close(port: u16) -> bool {
+    let asked = || -> Result<(), String> {
+        let text = ureq::get(&format!("http://127.0.0.1:{port}/json/version")).call().map_err(|e| e.to_string())?.body_mut().read_to_string().map_err(|e| e.to_string())?;
+        let version: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+        let url = version["webSocketDebuggerUrl"].as_str().ok_or("no browser socket")?;
+        let (mut socket, _) = tungstenite::connect(url).map_err(|e| e.to_string())?;
+        socket.send(tungstenite::Message::text(json!({ "id": 1, "method": "Browser.close" }).to_string())).map_err(|e| e.to_string())?;
+        // Its answer: it is closing.
+        socket.read().map(|_| ()).map_err(|e| e.to_string())
+    };
+    asked().map_err(|e| crate::log::write("browser", &format!("Browser.close on port {port}: {e}"))).is_ok()
 }
 
 fn item(project: &Path, b: &Running) -> Value {
@@ -249,7 +277,7 @@ fn start(project: &Path) -> Result<Running, String> {
         Ok(browser) => browser,
         Err(e) => {
             if let Some(screen) = screen {
-                end(screen, None);
+                std::thread::spawn(move || end(screen, None, None));
             }
             return Err(format!("{} didn't start: {e}", program.display()));
         }
