@@ -148,6 +148,8 @@ pub const COMMANDS: &[Command] = &[
         later: true,
         about: "Starts an agent in a worktree of its own: a new branch from what the project has checked out, in <parent>/<project>.worktrees/<branch>. Its agents stay on the project's card.",
     },
+    Command { name: "browser_open", who: PEOPLE, params: &[("project", "string", true, "the project's id (its folder)")], result: "its `browsers` item", later: false, about: "Starts the project's browser if it doesn't run (agents start it with their loom_browser tool): headed on a screen of its own when Xvfb is installed, with loom's profile for the project. Keeps it from stopping unused." },
+    Command { name: "browser_stop", who: PEOPLE, params: &[("project", "string", true, "the project's id (its folder)")], result: "{}", later: false, about: "Stops the project's browser (its profile, and so its logins, stay)." },
     Command { name: "embeddings_check", who: PEOPLE, params: &[], result: "the `embeddings` item", later: true, about: "Checks meaning search again (Settings' Refresh): starts Ollama when nothing answers on this machine, downloads the model when it is missing." },
     Command { name: "worktree_merge", who: PEOPLE, params: &[("agent", "string", true, "the agent's id")], result: "{said}", later: true, about: "Merges the branch of an agent's worktree into what its project has checked out (a merge commit). Refused while it has changes not committed; a conflict is undone." },
     Command { name: "worktree_remove", who: PEOPLE, params: &[("agent", "string", true, "the agent's id")], result: "{said}", later: true, about: "Closes an agent and removes its worktree, and its branch once merged (an unmerged branch is kept). Refused while it works or has changes not committed." },
@@ -366,6 +368,12 @@ pub const RESOURCES: &[Resource] = &[
         who: ALL_BUT_AGENTS,
         item: &[("id", "string", true, "`status`"), ("state", "string", true, "off, checking, pulling, ready, failed"), ("detail", "string", true, "a sentence for people")],
         about: "How meaning search stands (Settings' embed_code and embed_notes): Ollama and its model.",
+    },
+    Resource {
+        name: "browsers",
+        who: ALL_BUT_AGENTS,
+        item: &[("id", "string", true, "the project's folder"), ("port", "integer", true, "its debugging port (CDP, on 127.0.0.1): a view screencasts the page from it"), ("headed", "boolean", true, "on a screen of its own (Xvfb), not headless"), ("name", "string", true, "the browser: Helium, Chromium…"), ("shown", "integer", true, "times an agent asked the user to look at it (a login): a UI brings it in front when it grows"), ("devtools", "boolean", true, "agents drive it with Chrome's DevTools MCP, not agent-browser")],
+        about: "The projects' browsers that run (browser.rs), one item each.",
     },
     Resource { name: "settings", who: ALL_BUT_AGENTS, item: &[("id", "string", true, "`settings`")], about: "One item: every setting by its snake_case name; secrets only as `<name>_set`." },
     Resource {

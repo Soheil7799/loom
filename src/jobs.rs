@@ -62,6 +62,10 @@ pub struct Tray {
     removing: RefCell<Vec<Id>>,
     /// A job to peek once its chip comes (asked for before `jobs` had it).
     peek_due: Cell<Option<Id>>,
+    /// The project's browser (a chip while it runs; its page docked when opened), and loomd's
+    /// `browsers`, followed.
+    browser: Rc<crate::browser::Browser>,
+    browsers: RefCell<Option<crate::feed::Feed>>,
 }
 
 impl Tray {
@@ -82,7 +86,9 @@ impl Tray {
             .build();
         let hint = gtk::Label::new(Some("Ctrl+J run · Ctrl+Shift+J peek · Ctrl+` scratch"));
         hint.add_css_class("hint");
+        let browser = crate::browser::Browser::new(cwd.clone());
         bar.append(&scroller);
+        bar.append(&browser.chip);
         bar.append(&hint);
         let dock = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         dock.set_homogeneous(true);
@@ -90,7 +96,25 @@ impl Tray {
         let (core, events) = Jobs::new(cwd);
         // The core API publishes its jobs; the tray draws from what it publishes.
         drop(loom_core::jobs_api::published(&core, events));
-        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default(), removing: RefCell::default(), peek_due: Cell::new(None) });
+        let tray = Rc::new(Tray { bar, dock, chips, hint, jobs: RefCell::default(), core, on_finish: RefCell::default(), on_dock: RefCell::default(), feed: RefCell::default(), removing: RefCell::default(), peek_due: Cell::new(None), browser, browsers: RefCell::default() });
+        let weak = Rc::downgrade(&tray);
+        *tray.browser.on_dock.borrow_mut() = Some(Rc::new(move |open: bool| {
+            let Some(tray) = weak.upgrade() else { return };
+            let frame = &tray.browser.frame;
+            match (open, frame.parent().is_some()) {
+                (true, false) => tray.dock.append(frame),
+                (false, true) => tray.dock.remove(frame),
+                _ => return,
+            }
+            tray.docked_changed();
+        }));
+        let weak = Rc::downgrade(&tray);
+        *tray.browsers.borrow_mut() = crate::feed::Feed::new("browsers", move || {
+            if let Some(tray) = weak.upgrade() {
+                tray.sync_browser();
+            }
+        });
+        tray.sync_browser();
         let weak = Rc::downgrade(&tray);
         *tray.feed.borrow_mut() = crate::feed::Feed::new("jobs", move || {
             if let Some(tray) = weak.upgrade() {
@@ -135,6 +159,29 @@ impl Tray {
         for job in gone {
             self.drop_chip(&job);
         }
+    }
+
+    /// The browser's chip and view as loomd's `browsers` has this project's now.
+    fn sync_browser(&self) {
+        let item = {
+            let feed = self.browsers.borrow();
+            let Some(feed) = feed.as_ref() else { return };
+            feed.update();
+            let cwd = self.core.cwd().to_string_lossy();
+            feed.items().iter().find(|i| i["id"].as_str() == Some(&cwd)).cloned()
+        };
+        self.browser.show(item.as_ref());
+    }
+
+    /// Opens the project's browser (started by loomd if it doesn't run) above the tray.
+    pub fn open_browser(&self) {
+        let browser = Rc::downgrade(&self.browser);
+        crate::conn::command_then("browser", "browser_open", json!({ "project": self.core.cwd() }), move |answer| {
+            if let (Some(browser), Some(answer)) = (browser.upgrade(), answer) {
+                browser.show(Some(&answer));
+                browser.dock(true);
+            }
+        });
     }
 
     fn by_id(&self, id: Id) -> Option<Rc<Job>> {

@@ -11,6 +11,7 @@ pub mod asks;
 pub mod audit;
 pub mod bridges;
 pub mod board;
+pub mod browser;
 pub mod changes;
 pub mod code_search;
 pub mod compacted;

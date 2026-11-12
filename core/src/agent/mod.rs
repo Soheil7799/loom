@@ -1169,9 +1169,11 @@ impl Agent {
 
     /// loom's own MCP server (`loom mcp`), told how to reach this app and which agent it
     /// serves: its tools run jobs in the tray, open files for the user, notify.
+    /// With Settings' DevTools choice, also Chrome's DevTools MCP, for the project's browser
+    /// (browser.rs: it connects when first used, once loom_browser started it).
     fn mcp_servers(&self) -> Value {
         let (Some(socket), Some(exe)) = (crate::control::current(), crate::paths::loom_program()) else { return json!([]) };
-        json!([{
+        let mut servers = vec![json!({
             "name": "loom",
             "command": exe.to_string_lossy(),
             "args": ["mcp"],
@@ -1179,7 +1181,12 @@ impl Agent {
                 { "name": "LOOM_SOCKET", "value": socket.to_string_lossy() },
                 { "name": "LOOM_AGENT", "value": self.id.to_string() }
             ]
-        }])
+        })];
+        if crate::settings::get().browser_devtools {
+            let url = format!("http://127.0.0.1:{}", crate::browser::port_of(&self.project));
+            servers.push(json!({ "name": "loom-browser", "command": "npx", "args": ["-y", "chrome-devtools-mcp@latest", "--browser-url", url], "env": [] }));
+        }
+        json!(servers)
     }
 
     /// Shows the session's settings (model, effort…) as pickers in the header.

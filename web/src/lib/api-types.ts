@@ -167,6 +167,22 @@ export type EmbeddingsItem = {
   detail: string;
 };
 
+/** The projects' browsers that run (browser.rs), one item each. */
+export type BrowsersItem = {
+  /** the project's folder */
+  id: string;
+  /** its debugging port (CDP, on 127.0.0.1): a view screencasts the page from it */
+  port: number;
+  /** on a screen of its own (Xvfb), not headless */
+  headed: boolean;
+  /** the browser: Helium, Chromium… */
+  name: string;
+  /** times an agent asked the user to look at it (a login): a UI brings it in front when it grows */
+  shown: number;
+  /** agents drive it with Chrome's DevTools MCP, not agent-browser */
+  devtools: boolean;
+};
+
 /** One item: every setting by its snake_case name; secrets only as `<name>_set`. */
 export type SettingsItem = {
   /** `settings` */
@@ -468,6 +484,7 @@ export interface Resources {
   "jobs": JobsItem;
   "job/<id>": JobItem;
   "embeddings": EmbeddingsItem;
+  "browsers": BrowsersItem;
   "settings": SettingsItem;
   "vault/<folder>": VaultItem;
   "note/<path>": NoteItem;
@@ -789,6 +806,18 @@ export type NewWorktreeAgentParams = {
   project: string;
   /** the new branch's name */
   branch: string;
+};
+
+/** Starts the project's browser if it doesn't run (agents start it with their loom_browser tool): headed on a screen of its own when Xvfb is installed, with loom's profile for the project. Keeps it from stopping unused. Result: its `browsers` item */
+export type BrowserOpenParams = {
+  /** the project's id (its folder) */
+  project: string;
+};
+
+/** Stops the project's browser (its profile, and so its logins, stay). Result: {} */
+export type BrowserStopParams = {
+  /** the project's id (its folder) */
+  project: string;
 };
 
 /** Checks meaning search again (Settings' Refresh): starts Ollama when nothing answers on this machine, downloads the model when it is missing. Result: the `embeddings` item */
@@ -1322,6 +1351,8 @@ export interface Commands {
   "set_looking": SetLookingParams;
   "new_agent": NewAgentParams;
   "new_worktree_agent": NewWorktreeAgentParams;
+  "browser_open": BrowserOpenParams;
+  "browser_stop": BrowserStopParams;
   "embeddings_check": EmbeddingsCheckParams;
   "worktree_merge": WorktreeMergeParams;
   "worktree_remove": WorktreeRemoveParams;
