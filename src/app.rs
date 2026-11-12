@@ -985,6 +985,10 @@ impl App {
         if key == gdk::Key::Back && self.go_back() {
             return glib::Propagation::Stop;
         }
+        // The browser's page takes every key (typed into the page, its shortcuts its own).
+        if GtkWindowExt::focus(&self.window).is_some_and(|w| w.has_css_class("browser-page")) {
+            return glib::Propagation::Proceed;
+        }
         if key == gdk::Key::F2 && !ctrl && !alt {
             self.begin_rename();
             return glib::Propagation::Stop;

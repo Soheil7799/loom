@@ -90,7 +90,8 @@ impl Browser {
         let weak = browser.me.clone();
         browser.chip.connect_clicked(move |_| {
             if let Some(browser) = weak.upgrade() {
-                browser.dock(browser.cast.borrow().is_none());
+                let closed = browser.cast.borrow().is_none();
+                browser.dock(closed);
             }
         });
         browser.input();
@@ -172,11 +173,9 @@ impl Browser {
                         // The browser still runs (another page came in front, it restarted): again.
                         let again = b.me.clone();
                         glib::timeout_add_local_once(Duration::from_secs(2), move || {
-                            if let Some(b) = again.upgrade()
-                                && b.port.get() != 0
-                                && b.frame.parent().is_some()
-                                && b.cast.borrow().is_none()
-                            {
+                            let Some(b) = again.upgrade() else { return };
+                            let idle = b.cast.borrow().is_none();
+                            if idle && b.port.get() != 0 && b.frame.parent().is_some() {
                                 b.follow();
                             }
                         });
