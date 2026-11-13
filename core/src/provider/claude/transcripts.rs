@@ -182,8 +182,9 @@ pub fn user_after(session: &str, after: &str) -> Option<String> {
 /// that is current (a rewound branch is left out). None: no such conversation.
 pub fn replay(session: &str, cwd: &Path) -> Option<Vec<Value>> {
     let text = std::fs::read_to_string(file(session)?).ok()?;
-    let mut lines: HashMap<String, Value> = HashMap::new();
-    let mut order: Vec<String> = Vec::new();
+    // Each line's text, its parent and whether it is a compaction: not every line parsed and
+    // kept (a long conversation's file is hundreds of MB; kept parsed, several times that).
+    let mut lines: HashMap<String, (&str, Option<String>, bool)> = HashMap::new();
     let mut last = None;
     for line in text.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
@@ -194,25 +195,26 @@ pub fn replay(session: &str, cwd: &Path) -> Option<Vec<Value>> {
         if matches!(v["type"].as_str(), Some("user" | "assistant" | "system")) {
             last = Some(uuid.clone());
         }
-        order.push(uuid.clone());
-        lines.insert(uuid, v);
+        let boundary = v["subtype"].as_str() == Some("compact_boundary");
+        lines.insert(uuid, (line, v["parentUuid"].as_str().map(str::to_owned), boundary));
     }
     // Back from the newest message to the latest compaction (or the start).
     let mut chain = Vec::new();
     let mut at = last;
     while let Some(uuid) = at.take() {
-        let Some(v) = lines.get(&uuid) else { break };
-        if v["subtype"].as_str() == Some("compact_boundary") {
+        let Some((line, parent, boundary)) = lines.get(&uuid) else { break };
+        if *boundary {
             break;
         }
-        chain.push(uuid.clone());
-        at = v["parentUuid"].as_str().map(str::to_owned);
+        chain.push(*line);
+        at = parent.clone();
     }
     chain.reverse();
     let mut updates = Vec::new();
     let mut tools: HashMap<String, ToolUse> = HashMap::new();
-    for uuid in chain {
-        let v = &lines[&uuid];
+    for line in chain {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        let v = &v;
         let content = &v["message"]["content"];
         match v["type"].as_str() {
             Some("user") => {

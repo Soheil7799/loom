@@ -1092,7 +1092,18 @@ impl Agent {
         let (weak, cwd) = (Rc::downgrade(self), self.cwd.clone());
         crate::rt::spawn_local(async move {
             let read = session.clone();
-            let back = crate::rt::spawn_blocking(move || (crate::compacted::earlier(&read, EARLIER), provider::read_back(&read, &cwd))).await;
+            let back = crate::rt::spawn_blocking(move || {
+                let back = (crate::compacted::earlier(&read, EARLIER), provider::read_back(&read, &cwd));
+                // Reading a long conversation's file peaks at hundreds of MB; glibc keeps what
+                // was freed unless asked to give it back.
+                #[cfg(target_env = "gnu")]
+                // SAFETY: malloc_trim only returns free memory to the system.
+                unsafe {
+                    libc::malloc_trim(0);
+                }
+                back
+            })
+            .await;
             let Some(agent) = weak.upgrade() else { return };
             // Started meanwhile (even if stopped since), or read back again: not this one's.
             if agent.readings.get() != reading || agent.conn.borrow().is_some() {
