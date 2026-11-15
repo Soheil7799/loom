@@ -116,7 +116,7 @@ scrolledwindow.running-pane { box-shadow: 0 6px 8px -6px @loom_shadow; padding-b
    edge (drawn over the list), its agents raised pills beside it. Only what needs the user
    (gold) or failed (red) tints a pill; the bead tells the other states. The open agent: the
    accent's fill. */
-.agents row.agent-row.in-card, .agents row.agent-row.in-card:selected { margin: 0 12px; padding: 2px 8px 2px 32px; border-radius: 0; background: alpha(black, 0.16); }
+.agents row.agent-row.in-card, .agents row.agent-row.in-card:selected { margin: 0 12px; padding: 2px 8px 2px 40px; border-radius: 0; background: alpha(black, 0.16); }
 .agents row.agent-row.in-card.first { margin-top: 12px; padding-top: 8px; border-radius: 14px 14px 0 0; }
 .agents row.agent-row.in-card.last { padding-bottom: 8px; border-radius: 0 0 14px 14px; box-shadow: none; }
 .agents row.agent-row.in-card.first.last { padding-top: 12px; padding-bottom: 12px; border-radius: 14px; }

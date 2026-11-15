@@ -129,7 +129,7 @@ impl Daemon {
                 "open_file" => "wants you to see a file",
                 _ => params["message"].as_str().unwrap_or("needs you"),
             };
-            desktop(&found.title(), what);
+            desktop(&found.title(), what, Some(&found.project));
         }
         asked
     }
@@ -180,10 +180,10 @@ impl Host for Daemon {
             && loom_core::settings::get().notify_questions
             && !self.window_active()
         {
-            desktop(&agent.title(), &format!("Wants to: {title}"));
+            desktop(&agent.title(), &format!("Wants to: {title}"), Some(&agent.project));
         }
         if matches!(event, Event::Done) && loom_core::settings::get().notify_done && !looking {
-            desktop(&agent.title(), "Finished");
+            desktop(&agent.title(), "Finished", Some(&agent.project));
         }
         self.publish_soon();
         if !matches!(event, Event::Changed) {
@@ -193,8 +193,8 @@ impl Host for Daemon {
 
     fn notify(&self, agent: Option<&Rc<Agent>>, title: &str, body: &str) {
         match agent {
-            Some(agent) => desktop(&agent.title(), body),
-            None => desktop(title, body),
+            Some(agent) => desktop(&agent.title(), body, Some(&agent.project)),
+            None => desktop(title, body, None),
         }
     }
 
@@ -204,14 +204,21 @@ impl Host for Daemon {
     }
 }
 
-/// A word on the desktop (`notify-send`, where there is one), and in loomd's output.
-fn desktop(title: &str, body: &str) {
+/// A word on the desktop (`notify-send`, where there is one), and in loomd's output; with the
+/// icon of the project it is about.
+fn desktop(title: &str, body: &str, project: Option<&std::path::Path>) {
     eprintln!("loomd: {title}: {body}");
     if std::env::var_os("LOOM_TEST_INSTANCE").is_some() {
         return;
     }
-    let spawned = std::process::Command::new("notify-send")
-        .args(["--app-name=loom", title, body])
+    let mut send = std::process::Command::new("notify-send");
+    send.arg("--app-name=loom");
+    // Notifications come in the app icon's colours: the dark fox.
+    if let Some(project) = project {
+        send.arg("--icon").arg(loom_core::project_icon::file(project, &loom_core::project_files::projects(), true));
+    }
+    let spawned = send
+        .args([title, body])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

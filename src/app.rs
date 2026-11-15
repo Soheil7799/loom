@@ -1577,6 +1577,9 @@ impl App {
         }));
         // A job ending (a build, the tests) is worth a word when the window is elsewhere.
         let (app, project_name) = (self.window.clone(), self.project_label(project));
+        // Notifications come in the app icon's colours: the dark fox.
+        let others: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
+        let icon = loom_core::project_icon::file(project, &others, true);
         let application = self.app.clone();
         *tray.on_finish.borrow_mut() = Some(Rc::new(move |name: &str, code: Option<i64>| {
             if app.is_active() || !settings::get().notify_done {
@@ -1589,6 +1592,7 @@ impl App {
             };
             let notification = gio::Notification::new(&format!("{name} {how}"));
             notification.set_body(Some(&format!("Job in {project_name}")));
+            notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(&icon)));
             application.send_notification(Some(&format!("job-{name}")), &notification);
         }));
         self.trays.borrow_mut().insert(project.to_owned(), tray.clone());
@@ -2724,6 +2728,56 @@ impl App {
         entry.select_region(0, -1);
     }
 
+    /// A project's icon, `size` pixels square, in the window's colours.
+    fn project_icon(&self, path: &Path, size: i32) -> gtk::Image {
+        let others: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
+        let file = loom_core::project_icon::file(path, &others, crate::files::is_dark(&self.list));
+        let image = gtk::Image::from_file(file);
+        image.set_pixel_size(size);
+        image.set_size_request(size, size);
+        image.add_css_class("project-icon");
+        image
+    }
+
+    /// Changes a project's icon (`change` writes it), then draws the sidebar again.
+    fn set_icon(self: &Rc<Self>, path: &Path, change: impl FnOnce(&Path) -> std::io::Result<()>) {
+        if let Err(e) = change(path) {
+            eprintln!("loom: the icon of {} was not changed: {e}", path.display());
+        }
+        self.draw_sidebar();
+    }
+
+    /// The fox's colour picked by hand; its tile follows.
+    fn pick_icon_colour(self: &Rc<Self>, path: &Path) {
+        let dialog = gtk::ColorDialog::builder().title("The icon's colour").with_alpha(false).modal(true).build();
+        let (weak, path) = (Rc::downgrade(self), path.to_owned());
+        dialog.choose_rgba(Some(&self.window), None, None::<&gio::Cancellable>, move |chosen| {
+            let (Some(app), Ok(rgba)) = (weak.upgrade(), chosen) else { return };
+            let byte = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
+            let hex = format!("#{:02x}{:02x}{:02x}", byte(rgba.red()), byte(rgba.green()), byte(rgba.blue()));
+            app.set_icon(&path, |p| loom_core::project_icon::pick(p, Some(&hex)));
+        });
+    }
+
+    /// A picture (SVG or PNG) as the project's icon, copied into its `.loom` folder.
+    fn pick_icon_picture(self: &Rc<Self>, path: &Path) {
+        let filter = gtk::FileFilter::new();
+        filter.set_name(Some("SVG or PNG"));
+        filter.add_mime_type("image/svg+xml");
+        filter.add_mime_type("image/png");
+        let filters = gio::ListStore::new::<gtk::FileFilter>();
+        filters.append(&filter);
+        let dialog = gtk::FileDialog::builder().title("The project's icon").filters(&filters).modal(true).build();
+        dialog.set_initial_folder(Some(&gio::File::for_path(path)));
+        let (weak, path) = (Rc::downgrade(self), path.to_owned());
+        dialog.open(Some(&self.window), None::<&gio::Cancellable>, move |chosen| {
+            let (Some(app), Ok(file)) = (weak.upgrade(), chosen) else { return };
+            if let Some(picture) = file.path() {
+                app.set_icon(&path, |p| loom_core::project_icon::choose(p, Some(&picture)));
+            }
+        });
+    }
+
     /// A branch's name asked for in place, then an agent in a worktree of its own on it.
     fn new_worktree_at(self: &Rc<Self>, project: &Path, x: f64, y: f64) {
         let entry = gtk::Entry::builder().width_chars(30).placeholder_text("The new branch's name").build();
@@ -3439,6 +3493,31 @@ impl App {
                     })))
                     .section()
                     .item("Rename…", on(Box::new(move |app| app.rename_project_at(&p6, x, y))))
+                    .item("Icon colour…", {
+                        let (weak, at) = (Rc::downgrade(self), path.clone());
+                        move || {
+                            if let Some(app) = weak.upgrade() {
+                                app.pick_icon_colour(&at);
+                            }
+                        }
+                    })
+                    .item("Icon picture…", {
+                        let (weak, at) = (Rc::downgrade(self), path.clone());
+                        move || {
+                            if let Some(app) = weak.upgrade() {
+                                app.pick_icon_picture(&at);
+                            }
+                        }
+                    })
+                    .item("Automatic icon", {
+                        let (weak, at) = (Rc::downgrade(self), path.clone());
+                        move || {
+                            if let Some(app) = weak.upgrade() {
+                                app.set_icon(&at, |p| loom_core::project_icon::choose(p, None).and_then(|()| loom_core::project_icon::pick(p, None)));
+                            }
+                        }
+                    })
+                    .enabled(loom_core::project_icon::custom(&path))
                     .item(if collapsed { "Show its agents" } else { "Hide its agents" }, on(Box::new(move |app| app.toggle_collapsed(&p7))))
                     .section()
                     .item("Remove from the sidebar", on(Box::new(move |app| app.remove_project(&path))))
@@ -3800,6 +3879,10 @@ impl App {
             // As tall as its agents: a longer name is cut short ("…"; in full in the tooltip).
             let spine = crate::tube::Tube::new();
             spine.set_draw(move |tube, snapshot| {
+                // Under the icon a one-agent card has no room for it: the icon's letter says it.
+                if tube.height() < 48 {
+                    return;
+                }
                 let layout = name_layout(tube, &label, tube.height().max(10));
                 let (w, h) = layout.pixel_size();
                 snapshot.save();
@@ -3809,7 +3892,11 @@ impl App {
                 snapshot.restore();
             });
             // Its page is the project's name in the chat's header now: this folds the card.
-            let strip = gtk::Button::builder().child(&spine).tooltip_text(format!("Fold {name} (its board and conversations: its name in the header)")).build();
+            spine.set_vexpand(true);
+            let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
+            column.append(&self.project_icon(path, 32));
+            column.append(&spine);
+            let strip = gtk::Button::builder().child(&column).tooltip_text(format!("Fold {name} (its board and conversations: its name in the header)")).build();
             strip.add_css_class("card-strip");
             strip.set_cursor_from_name(Some("pointer"));
             strip.update_property(&[gtk::accessible::Property::Label(&format!("Fold {name}"))]);
@@ -3867,6 +3954,7 @@ impl App {
     /// A project's header: open/closed arrow, name, what its agents are up to, and +.
     fn project_row(self: &Rc<Self>, project: &SideProject, agents: &[&SideAgent]) -> gtk::ListBoxRow {
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        line.append(&self.project_icon(&project.path, 32));
         let name = gtk::Label::builder().label(&project.name).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).build();
         name.add_css_class("project-name");
         line.append(&name);
@@ -4357,7 +4445,7 @@ fn tip_above(widget: &impl IsA<gtk::Widget>) {
 }
 
 /// How wide an open project's name strip is, at its card's left (a click folds the card).
-const CARD_STRIP: f32 = 26.0;
+const CARD_STRIP: f32 = 32.0;
 
 /// The open cards' name strips over the list: each widget and its card's first and last rows.
 type CardSpots = Rc<RefCell<Vec<(gtk::Widget, gtk::ListBoxRow, gtk::ListBoxRow)>>>;
