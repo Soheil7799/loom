@@ -325,15 +325,15 @@ impl App {
         let run_list = gtk::ListBox::new();
         run_list.add_css_class("agents");
         run_list.add_css_class("running-list");
-        let none = gtk::Label::builder().label("Nothing running now.").xalign(0.0).valign(gtk::Align::Start).build();
+        let none = gtk::Label::builder().label("Nothing running").xalign(0.0).valign(gtk::Align::Start).build();
         none.add_css_class("dim");
         none.add_css_class("small");
         none.add_css_class("running-none");
         run_list.set_placeholder(Some(&none));
         let run_scroller = gtk::ScrolledWindow::builder().child(&run_list).hscrollbar_policy(gtk::PolicyType::Never).propagate_natural_height(true).build();
         run_scroller.add_css_class("running-pane");
-        let run_head = SectionHead::new("RUNNING", true);
-        let proj_head = SectionHead::new("PROJECTS", false);
+        let run_head = SectionHead::new("Running", true);
+        let proj_head = SectionHead::new("Projects", false);
         let sections_filler = gtk::Box::builder().vexpand(true).visible(false).build();
         let sections = gtk::Box::new(gtk::Orientation::Vertical, 0);
         sections.append(&run_head.root);
@@ -3705,7 +3705,7 @@ impl App {
             running_rows.push(row);
         }
         *self.running_rows.borrow_mut() = running_rows;
-        self.run_head.title.set_label(&format!("RUNNING · {}", running.len()));
+        self.run_head.title.set_label(&format!("Running · {}", running.len()));
         let count = |f: &dyn Fn(&SideAgent) -> bool| running.iter().filter(|a| f(a)).count();
         let counts = [
             (count(&|a| a.status == Status::Blocked), "waiting"),
@@ -3716,7 +3716,7 @@ impl App {
             label.set_label(&format!("● {n} {word}"));
             label.set_visible(n > 0);
         }
-        self.proj_head.title.set_label(&format!("PROJECTS · {}", projects.len()));
+        self.proj_head.title.set_label(&format!("Projects · {}", projects.len()));
         let mut cards = Vec::new();
         for project in &projects {
             let mine: Vec<&SideAgent> = agents.iter().filter(|a| a.project == project.path).collect();
@@ -3796,7 +3796,7 @@ impl App {
         }
         let mut spots = Vec::new();
         for (path, name, first, last) in self.cards.borrow().iter() {
-            let label = name.to_uppercase();
+            let label = name.clone();
             // As tall as its agents: a longer name is cut short ("…"; in full in the tooltip).
             let spine = crate::tube::Tube::new();
             spine.set_draw(move |tube, snapshot| {
@@ -4235,7 +4235,7 @@ impl App {
 struct SectionHead {
     root: gtk::Box,
     toggle: gtk::Button,
-    chevron: gtk::Label,
+    chevron: gtk::Image,
     title: gtk::Label,
     /// Waiting, failed and done (Running only), each hidden at zero.
     counts: [gtk::Label; 3],
@@ -4245,7 +4245,7 @@ struct SectionHead {
 
 impl SectionHead {
     fn new(name: &str, counted: bool) -> SectionHead {
-        let chevron = gtk::Label::new(Some("▾"));
+        let chevron = gtk::Image::from_icon_name("pan-down-symbolic");
         chevron.add_css_class("section-chevron");
         let title = gtk::Label::builder().label(name).xalign(0.0).build();
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -4289,7 +4289,7 @@ impl SectionHead {
     }
 
     fn set_open(&self, open: bool) {
-        self.chevron.set_label(if open { "▾" } else { "▸" });
+        self.chevron.set_icon_name(Some(if open { "pan-down-symbolic" } else { "pan-end-symbolic" }));
         self.toggle.update_state(&[gtk::accessible::State::Expanded(Some(open))]);
         for tool in &self.tools {
             tool.set_visible(open);
@@ -4366,12 +4366,9 @@ type CardSpots = Rc<RefCell<Vec<(gtk::Widget, gtk::ListBoxRow, gtk::ListBoxRow)>
 fn name_layout(widget: &impl IsA<gtk::Widget>, text: &str, width: i32) -> pango::Layout {
     let layout = widget.create_pango_layout(Some(text));
     let mut font = pango::FontDescription::new();
-    font.set_weight(pango::Weight::Bold);
+    font.set_weight(pango::Weight::Medium);
     font.set_size(10 * pango::SCALE);
     layout.set_font_description(Some(&font));
-    let attrs = pango::AttrList::new();
-    attrs.insert(pango::AttrInt::new_letter_spacing(pango::SCALE));
-    layout.set_attributes(Some(&attrs));
     layout.set_width(width * pango::SCALE);
     layout.set_ellipsize(pango::EllipsizeMode::End);
     layout
@@ -4442,7 +4439,7 @@ fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxR
     // Files it wrote or edited in this conversation.
     let edited = match agent.edited {
         0 => String::new(),
-        n => format!("✎{n}"),
+        n => format!("{n} edited"),
     };
     let sub = [state, place, edited].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" · ");
     if !sub.is_empty() {

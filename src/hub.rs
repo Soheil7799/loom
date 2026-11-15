@@ -307,31 +307,31 @@ impl Hub {
         }
         let answered = |t: &&Value| t["kind"].as_str() == Some("answer");
         if teach.iter().any(|t| !answered(&t)) {
-            self.body.append(&heading("WHY NOT?"));
+            self.body.append(&heading("Why not?"));
             for t in teach.iter().filter(|t| !answered(t)) {
                 self.body.append(&self.teach_card(t));
             }
         }
         if teach.iter().any(|t| answered(&t)) {
-            self.body.append(&heading("RULES FROM YOUR ANSWERS"));
+            self.body.append(&heading("Rules from your answers"));
             for t in teach.iter().filter(answered) {
                 self.body.append(&self.teach_card(t));
             }
         }
         if !questions.is_empty() {
-            self.body.append(&heading("QUESTIONS"));
+            self.body.append(&heading("Questions"));
             for q in &questions {
                 self.body.append(&self.question_card(q));
             }
         }
         if !pending.is_empty() {
-            self.body.append(&heading("WAITING FOR YOUR OK"));
+            self.body.append(&heading("Waiting for your OK"));
             for p in &pending {
                 self.body.append(&self.change_card(p, true));
             }
         }
         if !recent.is_empty() {
-            self.body.append(&heading("WRITTEN"));
+            self.body.append(&heading("Written"));
             let rows = gtk::Box::new(gtk::Orientation::Vertical, 4);
             for p in recent.iter().take(RECENT) {
                 rows.append(&self.change_row(p, true));

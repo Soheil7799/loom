@@ -4,7 +4,7 @@
 use gtk::{gdk, glib, prelude::*};
 
 /// What loom is, in a line (the welcome screen says it too).
-pub const TAGLINE: &str = "Your Claude Code agents, side by side.";
+pub const TAGLINE: &str = "Your Claude Code agents, side by side";
 
 /// "by shirvani.dev", the domain a link.
 pub fn byline() -> gtk::Label {

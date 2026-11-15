@@ -72,7 +72,7 @@ impl Overview {
         let side = gtk::Box::new(gtk::Orientation::Vertical, 8);
         side.set_vexpand(true);
         side.add_css_class("overview-side");
-        let heading = gtk::Label::builder().label("SCHEDULED PROMPTS").xalign(0.0).build();
+        let heading = gtk::Label::builder().label("Scheduled prompts").xalign(0.0).build();
         heading.add_css_class("overview-heading");
         side.append(&heading);
         let schedules = gtk::Box::new(gtk::Orientation::Vertical, 6);

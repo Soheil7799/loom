@@ -50,7 +50,7 @@ impl NotesChat {
     pub fn new() -> Rc<NotesChat> {
         let side = gtk::Box::new(gtk::Orientation::Vertical, 6);
         side.add_css_class("notes-side");
-        let heading = gtk::Label::builder().label("NOTES").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
+        let heading = gtk::Label::builder().label("Notes").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build();
         heading.add_css_class("project-name");
         side.append(&heading);
         let new = gtk::Button::builder().child(&gtk::Label::builder().label("+  New chat").xalign(0.0).build()).tooltip_text("A new chat with your notes (Ctrl+N)").build();
@@ -122,7 +122,7 @@ impl NotesChat {
             return;
         };
         let name = vault.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-        self.heading.set_label(&format!("NOTES · {name}"));
+        self.heading.set_label(&format!("Notes · {name}"));
         self.heading.set_tooltip_text(Some(&vault.to_string_lossy()));
         self.fill();
         match self.remote_current.get() {

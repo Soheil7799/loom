@@ -27,7 +27,7 @@ const VERBS: &[&str] = &[
 const STARS: &[&str] = &["·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"];
 
 /// The input's hint while it is empty.
-const HINT: &str = "Ask Claude…   @ file · / commands · ! run · Ctrl+V pastes images";
+const HINT: &str = "Ask Claude   @ file · / commands · ! run";
 
 thread_local! {
     /// Opens a file link ("loom-file:src/app.rs:42", or a relative or file:// link) clicked
@@ -389,7 +389,7 @@ impl Chat {
         meter.append(&usage);
         meter.append(&spend);
         // Claude Code is not the version loom was built for: a mark here, the note in the popover.
-        let version_warn = gtk::Label::new(Some("⚠"));
+        let version_warn = gtk::Image::from_icon_name("dialog-warning-symbolic");
         version_warn.add_css_class("version-warn");
         version_warn.set_visible(false);
         meter.append(&version_warn);
@@ -1683,7 +1683,7 @@ impl Chat {
             label.set_tooltip_text(Some(text));
             let mark = gtk::Label::new(Some("Queued"));
             mark.add_css_class("queued-mark");
-            let remove = gtk::Button::with_label("×");
+            let remove = gtk::Button::from_icon_name("window-close-symbolic");
             remove.add_css_class("flat");
             remove.set_tooltip_text(Some("Take it back into the input"));
             let weak = Rc::downgrade(self);
@@ -1743,7 +1743,7 @@ impl Chat {
             body.append(&usage_note(&format!("Cost: {cost}")));
         }
         if let Some(note) = self.version_note.borrow().as_deref() {
-            let warn = usage_note(&format!("⚠ {note}"));
+            let warn = usage_note(note);
             warn.add_css_class("version-warn");
             body.append(&warn);
         }
@@ -1766,7 +1766,7 @@ impl Chat {
         if let Some(plan) = limits["plan"].as_str().filter(|p| !p.is_empty())
             && let Some(heading) = account.first_child().and_downcast::<gtk::Label>()
         {
-            heading.set_label(&format!("ACCOUNT · {}", plan.to_uppercase()));
+            heading.set_label(&format!("Account · {plan}"));
         }
         for window in windows {
             let share = window["utilization"].as_f64().unwrap_or(0.0);
@@ -1958,7 +1958,7 @@ impl Chat {
             picture.set_valign(gtk::Align::Center);
             picture.add_css_class("attachment");
             let frame = gtk::Overlay::builder().child(&picture).build();
-            let remove = gtk::Button::with_label("×");
+            let remove = gtk::Button::from_icon_name("window-close-symbolic");
             remove.add_css_class("attachment-remove");
             remove.set_halign(gtk::Align::End);
             remove.set_valign(gtk::Align::Start);
@@ -2357,7 +2357,7 @@ impl Chat {
     /// (the agent is not running).
     pub fn show_mcp(&self, servers: Option<Vec<(String, String, Option<String>)>>) {
         let trouble: Vec<&str> = servers.iter().flatten().filter(|(_, status, _)| matches!(status.as_str(), "failed" | "needs-auth")).map(|(name, _, _)| name.as_str()).collect();
-        self.mcp_alert.set_label(&format!("⚠ {}", trouble.join(", ")));
+        self.mcp_alert.set_label(&trouble.join(", "));
         self.mcp_alert.set_visible(!trouble.is_empty());
         let Some(holder) = self.mcp_box.borrow().clone() else { return };
         while let Some(child) = holder.first_child() {
@@ -4174,7 +4174,7 @@ fn thumbnail(png: &glib::Bytes, max_w: i32, max_h: i32) -> Option<gtk::Picture> 
 }
 
 fn usage_heading(text: &str) -> gtk::Label {
-    let label = gtk::Label::builder().label(text.to_uppercase()).xalign(0.0).build();
+    let label = gtk::Label::builder().label(text).xalign(0.0).build();
     label.add_css_class("usage-heading");
     label
 }

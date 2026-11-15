@@ -1,6 +1,17 @@
 /* loom's look. Colours are the GTK theme's (noctalia/matugen write them), so it follows the
  * wallpaper; status colours are loom's own, and "waiting" is picked at runtime to stay apart
- * from the accent (theme.rs). Type steps: 0.78 labels, 0.88 secondary, 1 body, 1.2 titles. */
+ * from the accent (theme.rs).
+ *
+ * The system (unslop polish, 2026-11-15), one value per rule:
+ * - type: 0.85em labels and meta, 0.92em secondary, 1em body, 1.15em titles, 1.5em page
+ *   titles, 2em the welcome; weights 400 and 500, 600 only for a rare emphasis; sentence
+ *   case, no tracking on small text, no italics.
+ * - spacing: steps of 4 px (2 px only inside small controls).
+ * - radius by size: 4-6 tags and keycaps, 8 rows and buttons, 10-12 cards, 12-14 panels;
+ *   circles only for beads and round icon buttons.
+ * - colour: fills, never outlines (decided 2026-11-10); the accent marks the selection and
+ *   the primary action; gold means "needs you", red a failure, green a change made; the
+ *   status bead is each agent's one state colour. */
 
 @define-color loom_ok #87d96c;
 @define-color loom_warn #ffcc66;
@@ -8,12 +19,13 @@
 @define-color loom_run #73b8ff;
 @define-color loom_shell #c39bff;
 @define-color loom_line alpha(@window_fg_color, 0.07);
+@define-color loom_shadow alpha(black, 0.32);
 
 window.loom { font-family: Onest, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
 .mono, .tool-title, .chip, .code-block, .diff label, .table-cell.mono { font-family: "JetBrains Mono", Vazirmatn, monospace; }
 .dim { color: alpha(@window_fg_color, 0.68); }
-.small { font-size: 0.9em; }
-.title { font-weight: 700; }
+.small { font-size: 0.92em; }
+.title { font-weight: 500; }
 window.loom scrolledwindow undershoot, window.loom scrolledwindow overshoot { background: none; }
 
 /* Keyboard focus is always visible. */
@@ -22,67 +34,130 @@ button:focus-visible, menubutton > button:focus-visible, .tree row:focus-visible
   outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px;
 }
 
+/* Pressed: loom's own button and row fills replace the theme's, its pressed look with them;
+   a press darkens whatever fill it has (a fill, never a stroke). */
+button:active, menubutton > button:active, row.activatable:active { filter: brightness(0.82); }
+
+/* Tooltips: one look for GTK's own and the footer's (popovers opening above, tip_above in
+   app.rs): the popover's colours, small text, rounded, a soft shadow. */
+popover.tip > contents { padding: 4px 8px; border-radius: 8px; }
+popover.tip label { font-size: 0.92em; }
+window.loom tooltip, tooltip.background { background-color: @popover_bg_color; color: @popover_fg_color; border-radius: 8px; padding: 4px 8px; border: none; box-shadow: 0 2px 8px @loom_shadow; }
+tooltip label { font-size: 0.92em; }
+
 /* ---- sidebar ---------------------------------------------------------------------------- */
 .sidebar { background: @sidebar_bg_color; }
 /* The theme gives .sidebar a border of its own: none here (the colour is the edge). */
 window.loom box.sidebar { border: none; box-shadow: none; }
-.sidebar-top { padding: 10px 10px 6px 10px; }
-.brand-by { font-size: 0.8em; font-weight: 500; opacity: 0.6; margin-top: -1px; }
-button.brand-button { padding: 6px 8px; min-height: 0; border-radius: 10px; }
+.sidebar-top { padding: 12px 12px 8px 12px; }
+.brand-by { font-size: 0.85em; font-weight: 500; opacity: 0.6; }
+button.brand-button { padding: 4px 8px; min-height: 0; border-radius: 10px; }
 button.brand-button:hover { background: alpha(@window_fg_color, 0.05); }
 button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
-.prefs-nav-title { font-size: 1.05em; font-weight: 700; }
-.lockup-by { opacity: 0.68; }
-.lockup-by link { color: inherit; }
-.lockup-by link:hover { color: @accent_color; }
-.about-body { padding: 28px 32px 24px; }
-/* As tall as the tray's bar beside it (4 + 26 + 4). */
-.sidebar-bottom { padding: 4px 6px; min-height: 26px; }
+/* As tall as the tray's bar beside it (4 + 24 + 4). */
+.sidebar-bottom { padding: 4px 8px; min-height: 24px; }
 .sidebar-bottom button:not(:hover):not(:checked) { background: none; box-shadow: none; }
-.sidebar-bottom button { border-radius: 8px; min-height: 26px; padding-top: 0; padding-bottom: 0; }
-.sidebar-bottom button.icon { min-width: 26px; min-height: 26px; padding: 0; }
+.sidebar-bottom button { border-radius: 8px; min-height: 24px; padding-top: 0; padding-bottom: 0; }
+.sidebar-bottom button.icon { min-width: 24px; min-height: 24px; padding: 0; }
+.sidebar-bottom button.icon label { font-weight: 500; }
+.sidebar-empty { padding: 16px 20px; }
+
+/* The sidebar's sections (Running, Projects): a header that folds each, as VS Code's. */
+.section-head { margin: 8px 8px 4px 8px; }
+button.section-toggle { padding: 4px 4px; min-height: 0; border-radius: 6px; font-size: 0.85em; font-weight: 500; }
+button.section-toggle > box > label { opacity: 0.75; }
+.section-chevron { -gtk-icon-size: 12px; opacity: 0.6; }
+.section-count { font-weight: 500; }
+.section-count.blocked { color: @loom_warn; }
+.section-count.failed { color: @loom_err; }
+.section-count.done { color: @loom_ok; }
+button.heading-button { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px; opacity: 0.6; }
+button.heading-button:hover { opacity: 1; }
+.running-none { padding: 4px 24px 8px; }
+/* Running sits over the projects: its edge a soft shadow, as the cards'. */
+scrolledwindow.running-pane { box-shadow: 0 6px 8px -6px @loom_shadow; padding-bottom: 4px; }
+
 .agents { background: transparent; }
-.agents row { border-radius: 8px; margin: 1px 6px; padding: 6px 10px; }
-/* A project is a card: its header row on top, its agent rows inside, the last one closing it. */
-/* No outline: a soft fill alone reads as one card (an outline over it looked smudged). */
-.agents row.project-row, .agents row.agent-row { background: alpha(@window_fg_color, 0.05); border: none; }
-.agents row.agent-row { margin: 0 10px; padding: 1px 4px; border-radius: 0; }
-.agents row.agent-row.last { border-radius: 0 0 12px 12px; padding-bottom: 6px; }
-/* The agent's own highlight, rounded, inside the card. */
-.agents row.agent-row > box { padding: 5px 8px; border-radius: 8px; }
+.agents row { border-radius: 8px; margin: 2px 8px; padding: 8px 12px; }
+.agents row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.agents row:selected .agent-title { font-weight: 500; }
+.agents row.empty-row { margin: 0 8px 0 24px; padding: 4px 8px; }
+.agent-title { font-weight: 500; }
+.agent-title.resting { opacity: 0.6; }
+.agents row:selected .agent-title.resting { opacity: 1; }
+.agent-sub { opacity: 0.5; }
+.agents row.agent-row .agent-sub { opacity: 0.85; }
+.agent-row .dup { opacity: 0.45; }
+.badge-wait { color: @loom_wait; font-size: 0.85em; font-weight: 600; }
+.badge-busy { color: @accent_color; font-size: 0.85em; font-weight: 500; }
+
+/* A closed project: one pill. Its agents' card header otherwise. */
+.agents row.project-row { margin: 12px 12px 0 12px; padding: 8px 8px 4px 8px; border-radius: 12px 12px 0 0; background: alpha(@window_fg_color, 0.05); border: none; }
+.agents row.project-row:hover { background: alpha(@window_fg_color, 0.075); }
+.agents row.project-row.alone { margin-top: 12px; padding: 8px 8px 8px 12px; border-radius: 12px; background: alpha(@window_fg_color, 0.07); box-shadow: 0 4px 8px -4px @loom_shadow; }
+.project-name { font-size: 0.85em; font-weight: 500; opacity: 0.85; }
+.project-row.alone .project-name { font-size: 1em; opacity: 1; }
+.project-row button.add { padding: 0 8px; min-height: 24px; min-width: 24px; opacity: 0; border-radius: 6px; }
+.project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
+
+/* An agent row on a project's card (the closed-card form; open cards are .in-card below). */
+.agents row.agent-row { margin: 0 12px; padding: 2px 4px; border-radius: 0; background: alpha(@window_fg_color, 0.05); border: none; }
+.agents row.agent-row.last { border-radius: 0 0 12px 12px; padding-bottom: 8px; box-shadow: 0 4px 8px -4px @loom_shadow; }
+.agents row.agent-row > box { padding: 4px 8px; border-radius: 8px; }
 .agents row.agent-row:hover:not(:selected) > box { background: alpha(@window_fg_color, 0.05); }
 .agents row.agent-row:selected { background: alpha(@window_fg_color, 0.05); }
-.agents row.agent-row:selected > box { background: alpha(@accent_color, 0.14); }
-.agents row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-.agents row:selected .agent-title { font-weight: 600; }
-.agents row.project-row { margin: 10px 10px 0 10px; padding: 8px 6px 4px 8px; border-radius: 12px 12px 0 0; }
-.agents row.project-row.alone { border-radius: 12px; padding-bottom: 8px; }
-.agents row.project-row:hover { background: alpha(@window_fg_color, 0.075); }
-/* Depth: cards and the boxes that float on the chat cast a soft shadow below. A project card
-   is several rows, so only its bottom row casts one (side shadows would show at each seam). */
-@define-color loom_shadow alpha(black, 0.32);
-.agents row.agent-row.last, .agents row.project-row.alone { box-shadow: 0 5px 8px -5px @loom_shadow; }
-.agents row.agent-row:selected > box, .agents row.running-row.current { box-shadow: 0 1px 3px @loom_shadow; }
-.msg-user { box-shadow: 0 1px 3px @loom_shadow; }
-.composer { box-shadow: 0 4px 14px @loom_shadow; }
-.overview-card { box-shadow: 0 2px 6px @loom_shadow; }
-.overview-card:hover { box-shadow: 0 4px 12px @loom_shadow; }
-.project-name { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }
-.project-row button.add { padding: 0 7px; min-height: 22px; min-width: 22px; opacity: 0; border-radius: 6px; }
-.project-row:hover button.add, .project-row button.add:focus-visible { opacity: 0.85; }
-.badge-wait { color: @loom_wait; font-size: 0.8em; font-weight: 700; }
-.badge-busy { color: @accent_color; font-size: 0.8em; font-weight: 700; }
-.agents row.empty-row { margin: 0 6px 0 22px; padding: 4px 8px; }
-.sidebar-empty { padding: 18px 18px; }
-.agent-title { font-weight: 500; }
-.inbox-button { color: @loom_wait; font-weight: 700; }
-button.inbox-banner, menubutton.inbox-banner > button { margin: 2px 10px 4px 10px; padding: 6px 12px; border-radius: 10px; background: alpha(@loom_wait, 0.14); }
+.agents row.agent-row:selected > box { background: alpha(@accent_color, 0.14); box-shadow: 0 1px 3px @loom_shadow; }
+/* A running agent on its project's card: a dim line (its full row is in Running). */
+.agents row.agent-row.in-running > box { opacity: 0.55; }
+.agents row.agent-row.in-running:selected > box { opacity: 1; }
+
+/* An open project in the sidebar (app.rs draw_sidebar): one sunk card, its name up the left
+   edge (drawn over the list), its agents raised pills beside it. Only what needs the user
+   (gold) or failed (red) tints a pill; the bead tells the other states. The open agent: the
+   accent's fill. */
+.agents row.agent-row.in-card, .agents row.agent-row.in-card:selected { margin: 0 12px; padding: 2px 8px 2px 32px; border-radius: 0; background: alpha(black, 0.16); }
+.agents row.agent-row.in-card.first { margin-top: 12px; padding-top: 8px; border-radius: 14px 14px 0 0; }
+.agents row.agent-row.in-card.last { padding-bottom: 8px; border-radius: 0 0 14px 14px; box-shadow: none; }
+.agents row.agent-row.in-card.first.last { padding-top: 12px; padding-bottom: 12px; border-radius: 14px; }
+.agents row.agent-row.in-card > box { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.07); box-shadow: 0 1px 2px @loom_shadow; }
+.agents row.agent-row.in-card.state-suspended > box { background: alpha(@window_fg_color, 0.03); box-shadow: none; }
+.agents row.agent-row.in-card.state-blocked > box { background: alpha(@loom_wait, 0.26); }
+.agents row.agent-row.in-card.state-failed > box { background: alpha(@loom_err, 0.16); }
+.agents row.agent-row.in-card:hover:not(:selected) > box { background-image: linear-gradient(alpha(@window_fg_color, 0.05), alpha(@window_fg_color, 0.05)); }
+.agents row.agent-row.in-card:selected > box { background: alpha(@accent_color, 0.28); box-shadow: 0 2px 8px @loom_shadow; }
+.agents row.agent-row.in-card.state-blocked:selected > box { background: alpha(@loom_wait, 0.36); }
+.agents row.agent-row.in-card:focus-visible { outline: none; }
+.agents row.agent-row.in-card:focus-visible > box { outline: 2px solid alpha(@accent_color, 0.9); outline-offset: 1px; }
+button.card-strip { background: none; padding: 0; border-radius: 10px; min-width: 0; min-height: 0; box-shadow: none; }
+button.card-strip:hover { background: alpha(@window_fg_color, 0.08); }
+
+/* The Running list: flat rows above the project cards, numbered for Ctrl+1…9. */
+.agents row.running-row { margin: 0 12px; padding: 4px 8px; border-radius: 8px; }
+.agents row.running-row:hover { background: alpha(@window_fg_color, 0.05); }
+.agents row.running-row.current { background: alpha(@accent_color, 0.18); box-shadow: 0 1px 3px @loom_shadow; }
+.running-number { font-size: 0.85em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
+/* A running agent's project: a neutral tag (the bead is the row's only colour); its page. */
+button.running-project { font-size: 0.85em; font-weight: 500; padding: 0 6px; min-height: 20px; border-radius: 6px; color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); box-shadow: none; }
+button.running-project:hover { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; }
+button.awake { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.3); }
+/* In Running: on the second line, small, and shown on hover (or when on). */
+.running-row button.awake { min-width: 16px; min-height: 16px; opacity: 0; }
+.running-row:hover button.awake, .running-row button.awake.on { opacity: 1; }
+.running-row:hover button.awake { color: alpha(@window_fg_color, 0.6); }
+button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
+
+/* Where a dragged project would go: a line in the gap above or below a card. */
+.agents row.drop-before { box-shadow: 0 -6px 0 -1px @accent_color, 0 -3px 0 0 @sidebar_bg_color; }
+.agents row.drop-after { box-shadow: 0 6px 0 -1px @accent_color, 0 3px 0 0 @sidebar_bg_color; }
+
+.inbox-button { color: @loom_wait; font-weight: 600; }
+button.inbox-banner, menubutton.inbox-banner > button { margin: 2px 12px 4px 12px; padding: 8px 12px; border-radius: 10px; background: alpha(@loom_wait, 0.14); }
 menubutton.inbox-banner > button:hover { background: alpha(@loom_wait, 0.22); }
-menubutton.inbox-banner label { color: @loom_wait; font-weight: 600; }
-.inbox { padding: 6px; }
-.inbox-agent { font-weight: 700; }
+menubutton.inbox-banner label { color: @loom_wait; font-weight: 500; }
+.inbox { padding: 8px; }
+.inbox-agent { font-weight: 500; }
 .menu { padding: 4px; }
-button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
+button.menu-item { padding: 8px 12px; border-radius: 6px; font-weight: normal; }
 
 /* Status: shape and colour both, each bead in a 12 px slot. Only working moves (a turning
    arc; still, it still reads as an arc when animations are off). */
@@ -95,675 +170,486 @@ button.menu-item { padding: 6px 12px; border-radius: 6px; font-weight: normal; }
 .dot.failed { min-width: 8px; min-height: 8px; margin: 2px; background: @loom_err; border-radius: 1px; }
 .dot.suspended { background: none; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.35); }
 @keyframes spin { to { transform: rotate(360deg); } }
-@keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.35; } 100% { opacity: 1; } }
 
-/* ---- chat ------------------------------------------------------------------------------- */
+/* ---- the agent's view ------------------------------------------------------------------- */
+/* Around it: the sidebars' colour; the view itself a rounded panel in it. */
+.middle { background: @sidebar_bg_color; }
+paned.panels { margin: 8px 8px 0 0; }
+.island { border-radius: 12px; background: @view_bg_color; box-shadow: 0 2px 10px @loom_shadow; }
+window.loom paned > separator { background: none; background-color: @loom_line; color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
+window.loom .middle paned > separator, window.loom paned.split > separator { background-color: @sidebar_bg_color; }
+window.loom paned.panels > separator { min-width: 8px; background-color: transparent; }
+
 .chat { background: @view_bg_color; }
-.header { padding: 10px 18px; border-bottom: 1px solid @loom_line; }
-.chat.active .header { border-bottom-color: alpha(@accent_color, 0.5); }
+.header { padding: 12px 20px; border-bottom: 1px solid @loom_line; }
 .chat.inactive .header .title { opacity: 0.6; }
-.header .title { font-size: 1.25em; }
+.header .title { font-size: 1.15em; }
 /* The breadcrumb: the project (a button to its page) › the agent. */
-.header button.crumb { padding: 1px 6px; margin-left: -6px; min-height: 0; border-radius: 6px; }
-.header button.crumb label { font-size: 1.25em; opacity: 0.68; }
+.header button.crumb { padding: 2px 6px; margin-left: -6px; min-height: 0; border-radius: 6px; }
+.header button.crumb label { font-size: 1.15em; opacity: 0.68; }
 .header button.crumb:hover label { opacity: 1; }
 .header button.crumb:disabled { background: none; }
-.header .crumb-sep { font-size: 1.25em; opacity: 0.45; }
+.header .crumb-sep { font-size: 1.15em; opacity: 0.45; }
 .context-bar { min-width: 40px; }
 .context-bar trough { min-height: 4px; border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
 .context-bar block.filled { border-radius: 99px; background: alpha(@window_fg_color, 0.45); }
 .context-bar.full block.filled { background: @loom_warn; }
-.messages { padding: 18px 28px 24px 28px; }
-.msg-user { background: alpha(@window_fg_color, 0.055); border: 1px solid alpha(@window_fg_color, 0.07); border-radius: 10px; padding: 10px 14px; }
-.msg-agent { padding: 0 2px; }
-.thought { opacity: 0.68; }
-.notice { font-style: italic; opacity: 0.75; }
-.notice.error { color: @loom_err; opacity: 1; font-style: normal; }
-box.notice.error { padding: 10px 14px; border-radius: 10px; border: 1px solid alpha(@loom_err, 0.45); background: alpha(@loom_err, 0.07); }
-box.notice.error label { font-style: normal; color: @window_fg_color; }
-/* A question with one way on (Undo file changes?): like an error card, without the alarm. */
-box.notice.choice { padding: 10px 14px; border-radius: 10px; border: 1px solid alpha(@window_fg_color, 0.14); background: alpha(@window_fg_color, 0.04); }
-box.notice.choice label { font-style: normal; color: @window_fg_color; }
-.starting-note { padding: 40px 0; opacity: 0.68; }
-.code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 10px; font-size: 0.9em; }
-.md-table { border-radius: 8px; border: 1px solid @loom_line; }
-.md-table .table-head { font-size: 0.8em; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.68; padding: 6px 12px; border-bottom: 1px solid @loom_line; }
-.md-table .table-cell { padding: 5px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.04); }
-
-/* Tool calls: quiet rows; only what changed (a diff) or failed draws the eye. */
-.tool-card { border-radius: 8px; background: transparent; }
-.tool-card:hover { background: alpha(@window_fg_color, 0.035); }
-.tool-toggle { padding: 2px 8px; border-radius: 8px; }
-.tool-title { font-size: 0.9em; opacity: 0.85; }
-.tool-card .chevron { opacity: 0.45; font-size: 0.9em; }
-.kind { font-size: 0.8em; font-weight: 700; opacity: 0.55; text-transform: uppercase; }
-.glyph { opacity: 0.85; }
-.glyph.done { color: @loom_ok; }
-.glyph.failed { color: @loom_err; }
-.tool-detail { padding: 4px 12px 10px 28px; }
-.tool-summary { font-size: 0.9em; opacity: 0.75; }
-.tool-summary:hover { opacity: 1; }
-.diff { background: alpha(@window_fg_color, 0.035); border-radius: 8px; padding: 6px 10px; }
-.diff-add { color: @loom_ok; }
-.diff-del { color: @loom_err; }
-.permission-card { border: 1px solid alpha(@loom_wait, 0.6); background: alpha(@loom_wait, 0.07); border-radius: 10px; padding: 12px; }
-button.suggested { background: alpha(@accent_color, 0.85); color: @accent_fg_color; }
-.plan { padding: 8px 28px; border-top: 1px solid @loom_line; font-size: 0.9em; }
-.plan .done { opacity: 0.5; }
-.plan .current { font-weight: 700; }
-.turn-footer { font-size: 0.8em; opacity: 0.6; margin: -4px 0 4px 2px; }
-/* A footer with its Undo file changes beside it. */
-.turn-footer-line { margin: -4px 0 4px 2px; }
-.turn-footer-line .turn-footer { margin: 0; }
-button.undo-files { min-height: 0; padding: 0 8px; font-size: 0.8em; opacity: 0.7; }
-button.undo-files:hover { opacity: 1; }
-button.latest { border-radius: 99px; padding: 4px 16px; background: @window_bg_color; border: 1px solid alpha(@window_fg_color, 0.12); box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
-.msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.8em; opacity: 0; border-radius: 6px; }
-.code-wrap button.copy { margin: 4px; background: alpha(@window_bg_color, 0.8); }
-.msg-wrap:hover button.copy, .code-wrap:hover button.copy { opacity: 0.8; }
-
-/* Composer. */
-.input-box { padding: 10px 28px 14px 28px; }
-/* The box as the other cards: a soft fill, 12 px corners; its edge shows while typing. */
-.composer { border-radius: 12px; background: alpha(@window_fg_color, 0.05); border: 1px solid transparent; }
-.composer:focus-within { border-color: alpha(@window_fg_color, 0.16); background: alpha(@window_fg_color, 0.06); }
-textview.input, textview.input text { background: transparent; }
-.placeholder { opacity: 0.55; }
-.placeholder.suggesting { opacity: 0.75; }
-.composer-bar { padding: 2px 8px 8px 8px; }
-.composer-bar menubutton.chip-picker > button, .composer-bar button.mode { min-height: 24px; padding: 0 10px; border-radius: 99px; font-size: 0.9em; background: alpha(@window_fg_color, 0.06); }
-.composer-bar menubutton.chip-picker > button:hover, .composer-bar button.mode:hover { background: alpha(@window_fg_color, 0.12); }
-.composer-bar button.mode.plan-mode { color: @loom_ok; }
-.composer-bar button.mode.accept-mode { color: @loom_run; }
-.composer-bar button.mode.bypass-mode { color: @loom_err; box-shadow: inset 0 0 0 1px alpha(@loom_err, 0.6); }
-button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 700; }
-button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 800; }
-button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
-label.working { font-size: 0.9em; opacity: 0.85; margin-left: 6px; color: @accent_color; font-variant-numeric: tabular-nums; }
-.completion row { padding: 3px 8px; }
-.option-list { padding: 4px; min-width: 240px; }
-.option-heading { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.06em; padding: 4px 10px 6px 10px; text-transform: uppercase; }
-
-/* ---- tray, files, scratch --------------------------------------------------------------- */
-.tray { padding: 4px 8px; min-height: 26px; background: @sidebar_bg_color; }
-.tray .hint { font-size: 0.8em; opacity: 0.6; margin-right: 6px; }
-.chip { padding: 2px 10px; min-height: 0; border-radius: 99px; font-size: 0.9em; }
-/* Tray jobs: pills with a fill (like the composer's chips). */
-.tray button.chip { background: alpha(@window_fg_color, 0.06); border-radius: 8px; }
-.tray button.chip:hover { background: alpha(@window_fg_color, 0.12); }
-.dock { padding: 6px; background: @sidebar_bg_color; }
-.docked, .peek-frame { padding: 4px; }
-button.small { padding: 0 8px; min-height: 22px; font-size: 0.9em; }
-.files { background: @sidebar_bg_color; }
-.panel-header { padding: 10px 12px 6px 12px; }
-/* Tabs as one segmented control: a soft track, the chosen one raised. */
-.segmented { background: alpha(@window_fg_color, 0.06); border-radius: 10px; padding: 2px; }
-.segmented .tab { padding: 3px 12px; min-height: 0; border-radius: 6px; font-weight: 500; font-size: 0.9em; opacity: 0.7; }
-.segmented .tab:hover { opacity: 0.9; }
-.segmented .tab:checked { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; opacity: 1; font-weight: 600; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
-.segmented .tab:checked label { color: @window_fg_color; }
-.panel-caption { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; opacity: 0.62; padding: 10px 18px 4px 18px; }
-.files-empty { padding: 28px 18px; }
-.file-list { background: transparent; }
-.file-list row { border-radius: 8px; margin: 1px 8px; padding: 0; }
-.file-list row:hover { background: alpha(@window_fg_color, 0.05); }
-.file-list row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-.file-row { padding: 6px 10px; }
-/* What git ignores, dimmed in the tree (icon and name together). */
-.ignored { opacity: 0.45; }
-/* File icons are drawn in their own colours (icons.rs): full strength. */
-.file-icon { -gtk-icon-size: 16px; margin-right: 2px; }
-.badge { font-size: 0.8em; font-weight: 700; padding: 1px 7px; min-height: 0; border-radius: 99px; letter-spacing: 0.02em; }
-.badge.new { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
-.badge.edited { color: @accent_color; background: alpha(@accent_color, 0.14); }
-.dirty { color: @loom_warn; }
-.editor { font-family: "JetBrains Mono", Vazirmatn, monospace; }
-.editor-message { padding: 2px 12px 6px 12px; color: @loom_warn; font-size: 0.9em; }
-listview.tree { background: transparent; padding: 4px 0; }
-.tree row { padding: 4px 8px; margin: 0 8px; border-radius: 6px; }
-.tree row:hover { background: alpha(@window_fg_color, 0.05); }
-.tree row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-.tree .folder { font-weight: 500; }
-.changes-view { padding: 6px 4px; }
-.changes-view > box, .changes-view > .repo-line { margin: 0 8px; }
-.repo-line { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.8; padding: 2px 2px; }
-.git-code { font-family: "JetBrains Mono", monospace; font-size: 0.8em; font-weight: 700; min-width: 22px; padding: 0 4px; border-radius: 6px; }
-.git-code.modified { color: @accent_color; background: alpha(@accent_color, 0.12); }
-.git-code.added { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
-.git-code.deleted { color: @loom_err; background: alpha(@loom_err, 0.12); }
-.scratch { background: @window_bg_color; border-radius: 10px; padding: 8px; border: 1px solid alpha(@accent_color, 0.45); box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
-window.loom paned > separator { background: none; background-color: @loom_line; color: transparent; box-shadow: none; border: none; border-image: none; outline: none; -gtk-icon-source: none; min-width: 1px; min-height: 1px; }
-.toast { background: alpha(@window_bg_color, 0.97); border: 1px solid alpha(@loom_wait, 0.7); border-radius: 10px; padding: 6px 6px 6px 14px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
-.toast button { min-height: 26px; padding: 0 10px; }
-.toast .toast-go { font-weight: 600; color: @loom_wait; }
-.prefix-hint { background: alpha(@window_bg_color, 0.95); border: 1px solid alpha(@accent_color, 0.6); border-radius: 99px; padding: 6px 16px; font-size: 0.9em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
-
-/* ---- pickers, help, welcome, settings --------------------------------------------------- */
-.picker { padding: 4px; }
-.picker-list { background: transparent; }
-.switcher-list row, .picker-list row { padding: 7px 10px; border-radius: 6px; }
-.help { padding: 6px; }
-.keycap { font-family: "JetBrains Mono", monospace; font-size: 0.8em; padding: 1px 7px; border-radius: 6px; background: alpha(@window_fg_color, 0.08); }
-.welcome { padding: 32px; }
-.welcome-title { font-size: 2.2em; font-weight: 700; letter-spacing: -0.02em; }
-.welcome-actions { margin-top: 22px; min-width: 420px; }
-button.welcome-action, button.welcome-project { padding: 10px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
-button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
-.welcome-heading { margin-top: 22px; font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; }
-window.prefs stack, window.prefs stack > scrolledwindow, window.prefs stack viewport { background: @window_bg_color; }
-.prefs-nav { background: @sidebar_bg_color; border-right: 1px solid @loom_line; min-width: 180px; }
-.prefs-nav-top { padding: 16px 12px 10px 18px; }
-.prefs-nav list { background: transparent; }
-.prefs-nav row { border-radius: 8px; margin: 1px 6px; padding: 7px 10px; outline: none; }
-.prefs-nav row:hover:not(:selected) { background: alpha(@window_fg_color, 0.05); }
-.prefs-nav row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-.prefs-nav row:selected label { font-weight: 600; }
-.prefs-nav row image { -gtk-icon-size: 16px; opacity: 0.7; }
-.prefs-nav row:selected image { color: @accent_color; opacity: 1; }
-.prefs-nav row:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
-.prefs-nav-foot { padding: 10px 18px; border-top: 1px solid @loom_line; font-size: 0.8em; opacity: 0.6; }
-.prefs-page { padding: 28px 36px 36px; }
-.prefs-heading { font-size: 1.6em; font-weight: 700; margin-bottom: 4px; }
-.prefs-section { font-size: 0.8em; font-weight: 700; opacity: 0.6; letter-spacing: 0.08em; text-transform: uppercase; margin: 0 0 8px 4px; }
-.prefs-group { background: alpha(@window_fg_color, 0.035); border: 1px solid alpha(@window_fg_color, 0.06); border-radius: 10px; }
-.prefs-row { padding: 10px 16px; min-height: 32px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
-.prefs-row:last-child { border-bottom: none; }
-.prefs-caption { font-size: 0.8em; opacity: 0.6; margin: 6px 4px 0 4px; }
-.prefs-title { font-weight: 500; }
-.prefs-page dropdown > button, .prefs-page fontbutton > button, .prefs-button {
-  min-height: 28px; padding: 0 10px; border-radius: 8px; font-size: 0.9em; font-weight: 500;
-  background: alpha(@window_fg_color, 0.06); box-shadow: none; border: none; }
-.prefs-page dropdown > button:hover, .prefs-page fontbutton > button:hover, .prefs-button:hover { background: alpha(@window_fg_color, 0.12); }
-.prefs-page entry, .prefs-page passwordentry { border-radius: 8px; min-height: 32px; }
-.prefs-status { padding: 14px 16px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); border: 1px solid alpha(@window_fg_color, 0.06); }
-.prefs-status.ok { border-color: alpha(@loom_ok, 0.45); }
-.prefs-status.failed { border-color: alpha(@loom_err, 0.5); }
-.link-code { font-family: "JetBrains Mono", monospace; font-size: 1.25em; letter-spacing: 0.12em; padding: 4px 12px; border-radius: 8px; color: @accent_color; background: alpha(@accent_color, 0.12); }
-.about-name { font-size: 1.6em; font-weight: 800; letter-spacing: 0.04em; }
-.about-blurb { margin: 6px 0; }
-
-/* A project's page: new conversation, or a past one. */
-.project-column { padding: 48px 24px 32px 24px; }
-.project-title { font-size: 1.6em; font-weight: 700; }
-list.history { background: transparent; }
-list.history row { padding: 9px 14px; border-radius: 10px; margin-bottom: 2px; }
-list.history row:hover { background: alpha(@window_fg_color, 0.05); }
-list.history row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-list.history row.history-new { margin-bottom: 10px; background: alpha(@window_fg_color, 0.04); }
-list.history row.history-new:selected { background: alpha(@accent_color, 0.16); }
-.history-plus { font-weight: 700; color: @accent_color; min-width: 14px; }
-.history-open { font-size: 0.8em; padding: 1px 7px; border-radius: 99px; color: @accent_color; background: alpha(@accent_color, 0.12); }
-.history-note { padding: 4px 14px; }
-
-/* The keyboard cheatsheet (Ctrl+/). */
-window.cheatsheet { background: @window_bg_color; }
-.cheat-content { padding: 28px 32px 36px 32px; }
-.cheat-title { font-size: 1.6em; font-weight: 700; }
-.cheat-content > flowbox { margin-top: 18px; }
-.cheat-card { background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.06); border-radius: 10px; padding: 14px 16px 12px 16px; min-width: 300px; }
-.cheat-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: @accent_color; margin-bottom: 6px; }
-.cheat-row { padding: 5px 0; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
-.cheat-card > .cheat-row:last-child { border-bottom: none; }
-.keycap { min-width: 14px; border-bottom: 1px solid alpha(@window_fg_color, 0.14); }
-.key-plus, .key-or { opacity: 0.45; font-size: 0.8em; }
-.key-note { opacity: 0.6; font-size: 0.8em; margin-left: 4px; }
-
-/* Images: attached under the input, and sent with a message. */
-.attachments { padding: 10px 12px 0 12px; }
-.attachment { border-radius: 8px; border: 1px solid alpha(@window_fg_color, 0.12); }
-button.attachment-remove { min-height: 18px; min-width: 18px; padding: 0; margin: 3px; border-radius: 99px; font-size: 0.8em; background: alpha(@window_bg_color, 0.85); }
-.msg-images { margin: 2px 0 6px 0; }
-.msg-image { border-radius: 10px; border: 1px solid alpha(@window_fg_color, 0.1); }
-.shell-line { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.75; }
-.plan-detail { padding: 10px 14px; border-radius: 8px; background: alpha(@window_fg_color, 0.04); }
-.msg-wrap-user .copy { opacity: 0; }
-.msg-wrap-user:hover .copy { opacity: 0.8; }
-.find-bar { background: alpha(@window_bg_color, 0.97); border: 1px solid alpha(@window_fg_color, 0.12); border-radius: 10px; padding: 6px 10px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
-.history-filter { margin: 0 0 4px 0; }
-.editor-tabs { padding: 2px 10px 4px 10px; }
-.editor-tab { border-radius: 6px; background: alpha(@window_fg_color, 0.04); }
-.editor-tab.current { background: alpha(@window_fg_color, 0.12); }
-.editor-tab button { padding: 1px 8px; min-height: 0; font-size: 0.9em; }
-.commit-line { margin: 6px 8px 8px 8px; }
-.change-row .change-actions { opacity: 0; }
-.change-row:hover .change-actions { opacity: 1; }
-.git-code.staged { box-shadow: inset 0 -2px 0 alpha(@loom_ok, 0.8); }
-.option-preview { font-size: 0.9em; margin-top: 4px; }
-.tool-children { margin: 2px 0 4px 22px; padding-left: 8px; border-left: 2px solid alpha(@window_fg_color, 0.08); }
-.history-delete { opacity: 0; }
-list.history row:hover .history-delete { opacity: 0.7; }
-/* Graph: commits and branch heads. */
-.repo-bar { margin: 2px 12px 4px 12px; }
-list.graph { background: transparent; }
-list.graph row { padding: 0 10px 0 6px; min-height: 0; }
-list.graph row:hover { background: alpha(@window_fg_color, 0.04); }
-list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
-.graph-row { min-height: 26px; }
-.graph-bar { padding: 0 8px 4px; }
-.graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.9em; opacity: 0.55; }
-.ref { font-size: 0.8em; font-weight: 700; padding: 0 6px; border-radius: 99px; }
-.ref.head { color: @accent_fg_color; background: @accent_color; }
-.ref.branch { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
-.ref.remote { color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); }
-.ref.tag { color: @loom_warn; background: alpha(@loom_warn, 0.14); }
-/* Room under the last message, so it never sits against the input. */
-.messages { padding-bottom: 28px; }
-/* The open file, beside the chat. */
-.editor-pane { background: @view_bg_color; }
-.reader { padding: 24px 28px 40px 28px; }
-.reader label { font-size: 1em; }
-.editor-title { padding: 10px 10px 8px 14px; border-bottom: 1px solid @loom_line; }
-.editor-name { font-weight: 600; }
-.editor-path { font-size: 0.8em; opacity: 0.45; }
-.editor-path:hover { opacity: 0.8; }
-button.editor-close { min-width: 26px; min-height: 26px; padding: 0; border-radius: 8px; }
 .usage-button { padding: 2px 8px; min-height: 0; border-radius: 8px; }
-.usage-pop { padding: 10px 12px; min-width: 340px; }
-.usage-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 6px; }
-.crew { background: none; padding: 4px 6px 6px 6px; font-size: 0.9em; }
-.crew row { padding: 3px 6px; border-radius: 6px; }
-.crew .crew-name { font-weight: 600; }
-.crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
-.overview { padding: 24px 24px 32px 24px; }
-/* The schedules: a soft card in the overview (as the sidebar's projects), no edge line. */
-.overview-side { margin: 16px 16px 16px 0; padding: 18px 16px; border-radius: 12px; background: alpha(@window_fg_color, 0.05); }
-.overview-side-scroller { background: none; border: none; }
-.overview-title { font-size: 1.6em; font-weight: 700; }
-.overview-heading { font-size: 0.8em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.55; margin-top: 8px; }
-.overview-cards flowboxchild { padding: 0; border-radius: 10px; }
-.overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
-.overview-card { padding: 10px 14px 6px 14px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: 1px solid alpha(@window_fg_color, 0.08); }
-.overview-card:hover { background: alpha(@window_fg_color, 0.07); }
-.overview-card.needs-you { border-color: alpha(@loom_wait, 0.6); }
-.overview-card .card-title { font-weight: 600; }
-.overview-card .card-reply { opacity: 0.8; margin-top: 4px; }
-.overview-card .card-waiting { color: @loom_wait; font-weight: 600; }
-.overview-card .accent { color: @loom_wait; font-weight: 600; }
-.schedule-row { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); }
-button.overview-button { min-width: 30px; min-height: 30px; padding: 0; border-radius: 8px; }
-button.overview-button image { -gtk-icon-size: 16px; opacity: 0.8; }
-.agent-sub { opacity: 0.5; }
-.schedule-body { padding: 18px 20px; }
-.schedule-prompt { background: alpha(@window_fg_color, 0.04); }
-label.error { color: @loom_err; }
+.usage-pop { padding: 12px; min-width: 340px; }
+.usage-heading { font-size: 0.85em; font-weight: 500; opacity: 0.6; margin-top: 8px; }
+/* Claude Code is not the version loom was built for (by the usage meter, and in its popover). */
+.version-warn, label.dim.version-warn { color: @loom_warn; }
+button.compact-alert { padding: 2px 12px; min-height: 0; border-radius: 8px; font-size: 0.92em; color: @loom_warn; background: alpha(@loom_warn, 0.12); box-shadow: none; border: none; }
+button.compact-alert:hover { background: alpha(@loom_warn, 0.22); }
+button.mcp-alert { min-height: 0; padding: 2px 8px; color: @warning_color; font-weight: normal; }
+button.page-back { min-width: 28px; min-height: 28px; padding: 0; border-radius: 8px; margin-left: -6px; }
+
+/* Messages. Room under the last one, so it never sits against the input. */
+.messages { padding: 20px 28px 28px 28px; }
+.msg-user { background: alpha(@window_fg_color, 0.055); border: none; border-radius: 10px; padding: 12px 16px; box-shadow: 0 1px 3px @loom_shadow; }
+.msg-agent { padding: 2px 0; color: alpha(@window_fg_color, 0.94); }
 /* Reading: air between lines; code a little tighter. */
 .msg-agent label, .msg-user label, .reader label { line-height: 1.4; }
 .msg-agent label.code-block, .reader label.code-block { line-height: 1.35; }
+.thought { opacity: 0.68; }
+.notice { opacity: 0.75; }
+.notice.error { color: @loom_err; opacity: 1; }
+box.notice.error { padding: 12px 16px; border-radius: 10px; border: none; background: alpha(@loom_err, 0.13); }
+box.notice.error label { color: @window_fg_color; }
+/* A question with one way on (Undo file changes?): like an error card, without the alarm. */
+box.notice.choice { padding: 12px 16px; border-radius: 10px; border: none; background: alpha(@window_fg_color, 0.08); box-shadow: 0 1px 3px @loom_shadow; }
+box.notice.choice label { color: @window_fg_color; }
+.starting-note { padding: 40px 0; opacity: 0.68; }
+.code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 12px; font-size: 0.92em; }
+.md-table { border-radius: 8px; border: 1px solid @loom_line; }
+.md-table .table-head { font-size: 0.85em; font-weight: 500; opacity: 0.68; padding: 8px 12px; border-bottom: 1px solid @loom_line; }
+.md-table .table-cell { padding: 4px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.04); }
+separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg_color, 0.15); }
+.msg-images { margin: 2px 0 8px 0; }
+.msg-image { border-radius: 10px; border: none; }
+.shell-line { font-family: "JetBrains Mono", monospace; font-size: 0.92em; opacity: 0.75; }
+.msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.85em; opacity: 0; border-radius: 6px; }
+.code-wrap button.copy { margin: 4px; background: alpha(@window_bg_color, 0.8); }
+.msg-wrap:hover button.copy, .code-wrap:hover button.copy { opacity: 0.8; }
+.msg-wrap-user .copy { opacity: 0; }
+.msg-wrap-user:hover .copy { opacity: 0.8; }
+.turn-footer { font-size: 0.85em; opacity: 0.6; margin: -4px 0 4px 2px; }
+/* A footer with its Undo file changes beside it. */
+.turn-footer-line { margin: -4px 0 4px 2px; }
+.turn-footer-line .turn-footer { margin: 0; }
+button.undo-files { min-height: 0; padding: 0 8px; font-size: 0.85em; opacity: 0.7; }
+button.undo-files:hover { opacity: 1; }
+button.latest { border-radius: 10px; padding: 4px 16px; background: @window_bg_color; border: none; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
+/* A finished turn folded to one line (a click opens it). */
+button.turn-fold { margin: 2px 0 12px; padding: 4px 12px; min-height: 0; border-radius: 8px; font-weight: normal; }
+button.turn-fold label { opacity: 0.75; }
+button.turn-fold:hover label { opacity: 1; }
+.since-looked { margin: 8px 0; padding-top: 0; border-top: none; color: @accent_color; font-size: 0.92em; }
+button.pinned-ask { margin: 8px 24px 0; padding: 8px 16px; min-height: 0; border-radius: 10px; background: alpha(@view_bg_color, 0.96); box-shadow: 0 2px 8px alpha(black, 0.25); border: 1px solid alpha(@window_fg_color, 0.1); font-weight: normal; }
 
-/* Each kind of block its own look, so one ends visibly where the next begins:
-   Claude's words on a rail, edits green-edged, commands on a darker card, reads quiet. */
-.msg-agent { padding: 2px 0; color: alpha(@window_fg_color, 0.94); }
-.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.07); border-radius: 8px; margin: 2px 0; }
-.tool-card.kind-execute { background: alpha(@loom_run, 0.06); border-radius: 8px; margin: 2px 0; }
-.tool-card.kind-edit:hover, .tool-card.kind-delete:hover, .tool-card.kind-move:hover { background: alpha(@loom_ok, 0.08); }
-.tool-card.kind-execute:hover { background: alpha(@loom_run, 0.1); }
+/* Tool calls: quiet rows; only what changed (an edit, green) or failed draws the eye. Commands
+   and shell lines are neutral cards. */
+.tool-card { border-radius: 8px; background: transparent; }
+.tool-card:hover { background: alpha(@window_fg_color, 0.035); }
+.tool-toggle { padding: 2px 8px; border-radius: 8px; }
+.tool-title { font-size: 0.92em; opacity: 0.85; }
+.tool-card .chevron { opacity: 0.45; font-size: 0.92em; }
+.kind { font-family: "JetBrains Mono", monospace; font-size: 0.85em; opacity: 0.55; }
+.glyph { opacity: 0.85; }
+.glyph.done { color: @loom_ok; }
+.glyph.failed { color: @loom_err; }
+.tool-detail { padding: 4px 12px 12px 28px; }
+.tool-summary { font-size: 0.92em; opacity: 0.75; }
+.tool-summary:hover { opacity: 1; }
+.tool-children { margin: 2px 0 4px 20px; padding-left: 8px; border-left: 2px solid alpha(@window_fg_color, 0.08); }
+.tool-card.kind-edit, .tool-card.kind-delete, .tool-card.kind-move { background: alpha(@loom_ok, 0.07); margin: 2px 0; }
+.tool-card.kind-edit:hover, .tool-card.kind-delete:hover, .tool-card.kind-move:hover { background: alpha(@loom_ok, 0.1); }
 .tool-card.kind-edit .kind, .tool-card.kind-delete .kind, .tool-card.kind-move .kind { color: @loom_ok; opacity: 0.9; }
-.tool-card.kind-execute .kind { color: @loom_run; opacity: 0.9; }
+.tool-card.kind-execute, .tool-card.kind-shell { background: alpha(@window_fg_color, 0.04); margin: 2px 0; }
+.tool-card.kind-execute:hover, .tool-card.kind-shell:hover { background: alpha(@window_fg_color, 0.07); }
 .tool-card.kind-read .tool-title, .tool-card.kind-search .tool-title, .tool-card.kind-fetch .tool-title { opacity: 0.7; }
-.state-pill { font-size: 0.8em; padding: 1px 8px; border-radius: 99px; background: alpha(@window_fg_color, 0.07); color: alpha(@window_fg_color, 0.75); }
+.diff { background: alpha(@window_fg_color, 0.035); border-radius: 8px; padding: 8px 12px; }
+.diff-add { color: @loom_ok; }
+.diff-del { color: @loom_err; }
+.permission-card { border: none; background: alpha(@loom_wait, 0.14); border-radius: 10px; padding: 12px; }
+button.suggested { background: alpha(@accent_color, 0.85); color: @accent_fg_color; }
+.plan { padding: 8px 28px; border-top: 1px solid @loom_line; font-size: 0.92em; }
+.plan .done { opacity: 0.5; }
+.plan .current { font-weight: 500; }
+.plan-detail { padding: 12px 16px; border-radius: 8px; background: alpha(@window_fg_color, 0.04); }
+.plan-part button.plan-comment-button { opacity: 0.3; min-height: 24px; min-width: 24px; padding: 0 4px; border-radius: 6px; }
+.plan-part:hover button.plan-comment-button, .plan-part button.plan-comment-button:focus { opacity: 0.8; }
+entry.plan-comment { margin: 2px 32px 8px 0; }
+button.plan-line { min-height: 0; padding: 2px 4px; font-weight: normal; }
+.option-list { padding: 4px; min-width: 240px; }
+.option-heading { font-size: 0.85em; font-weight: 500; opacity: 0.6; padding: 4px 12px 8px 12px; }
+.option-preview { font-size: 0.92em; margin-top: 4px; }
+.state-pill { font-size: 0.85em; padding: 2px 8px; border-radius: 6px; background: alpha(@window_fg_color, 0.07); color: alpha(@window_fg_color, 0.75); }
 .state-pill.working, .state-pill.starting { color: @accent_color; background: alpha(@accent_color, 0.12); }
-.state-pill.blocked { color: @loom_wait; background: alpha(@loom_wait, 0.14); font-weight: 600; }
+.state-pill.blocked { color: @loom_wait; background: alpha(@loom_wait, 0.14); font-weight: 500; }
 .state-pill.failed { color: @loom_err; background: alpha(@loom_err, 0.12); }
 .state-pill.done { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
-.plan-part button.plan-comment-button { opacity: 0.3; min-height: 22px; min-width: 26px; padding: 0 4px; border-radius: 6px; }
-.plan-part:hover button.plan-comment-button, .plan-part button.plan-comment-button:focus { opacity: 0.8; }
-entry.plan-comment { margin: 2px 32px 6px 0; }
 .aside-bar { padding: 8px 20px; border-bottom: 1px solid @loom_line; }
-.aside-title { font-weight: 600; }
+.aside-title { font-weight: 500; }
+.crew { background: none; padding: 4px 8px 8px 8px; font-size: 0.92em; }
+.crew row { padding: 4px 8px; border-radius: 6px; }
+.crew .crew-name { font-weight: 500; }
+.crew spinner.crew-glyph { min-width: 12px; min-height: 12px; }
 .crew-glyph.requires_action { color: @loom_wait; }
 .crew-glyph.idle { color: @loom_ok; }
-.composer.shell-mode, .composer.shell-mode:focus-within { border-color: alpha(@loom_shell, 0.75); background: alpha(@loom_shell, 0.06); }
-.shell-badge { font-size: 0.8em; font-weight: 700; padding: 1px 8px; border-radius: 99px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
-.tool-card.kind-shell { background: alpha(@loom_shell, 0.07); border-radius: 8px; margin: 2px 0; }
-.tool-card.kind-shell .kind { color: @loom_shell; opacity: 0.9; }
-
-/* Messages waiting for the turn to end, over the input. */
-.composer .queued { padding: 6px 10px 4px; border-bottom: 1px solid alpha(currentColor, 0.08); }
-.composer .queued-row { min-height: 26px; }
-.composer .queued-mark { font-size: 0.8em; padding: 1px 6px; border-radius: 6px; background: alpha(@loom_run, 0.15); color: @loom_run; }
-.composer .queued-hint { font-size: 0.8em; opacity: 0.6; padding-top: 2px; }
-.prefs-page dropdown > button > box, .prefs-page dropdown > button stack, .prefs-page dropdown > button label { background: none; box-shadow: none; }
-button.prefs-nav-foot { border-radius: 0; min-height: 0; padding: 10px 18px; }
-button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity: 0.85; }
-/* Where a dragged project would go: a line in the gap above or below a card. */
-.agents row.drop-before { box-shadow: 0 -6px 0 -1px @accent_color, 0 -3px 0 0 @sidebar_bg_color; }
-.agents row.drop-after { box-shadow: 0 6px 0 -1px @accent_color, 0 3px 0 0 @sidebar_bg_color; }
-/* Schedule… on a card only when it is pointed at or has the keyboard. */
-.overview-card .schedule-button { opacity: 0; }
-.overview-card:hover .schedule-button, flowboxchild:focus-within .schedule-button, .overview-card .schedule-button:focus-visible { opacity: 1; }
-.agent-row .dup { opacity: 0.45; }
-.sidebar-bottom button.icon label { font-weight: 700; font-size: 0.95em; }
-.overview-card.compact { padding: 7px 12px; }
-/* Around the agent's view: the sidebars' colour; the view itself a rounded panel in it. */
-.middle { background: @sidebar_bg_color; }
-/* The panels: rounded, in the sidebars' colour, with no lines between the parts around them. */
-paned.panels { margin: 6px 6px 0 0; }
-.island { border-radius: 12px; background: @view_bg_color; box-shadow: 0 2px 10px @loom_shadow; }
-window.loom .middle paned > separator, window.loom paned.split > separator { background-color: @sidebar_bg_color; }
-window.loom paned.panels > separator { min-width: 6px; background-color: transparent; }
-/* A toggle among the buttons looks like them, pressed or not. */
-button.prefs-button:checked { background: alpha(@window_fg_color, 0.12); color: @window_fg_color; }
-.sidebar-bottom button.icon label { font-size: 1.05em; }
-.file-picture { margin: 12px; }
-.file-other { padding: 24px; }
-window.loom button.toggle.prefs-button:checked, window.loom button.toggle.prefs-button:checked label { color: @window_fg_color; opacity: 1; }
-/* The microphone: red while recording, dim while what was said is written down. */
-.composer-bar button.mic, .composer button.mic { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; }
-button.mic.recording { color: @loom_err; background: alpha(@loom_err, 0.15); }
-button.mic.busy { opacity: 0.5; }
-separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg_color, 0.15); }
-/* The Running list: flat rows above the project cards, numbered for Ctrl+1…9. */
-/* The sidebar's sections (Running, Projects): a header that folds each, as VS Code's. */
-.section-head { margin: 6px 8px 2px 6px; }
-button.section-toggle { padding: 3px 6px; min-height: 0; border-radius: 6px; font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; }
-button.section-toggle > box > label { opacity: 0.85; }
-.section-chevron { min-width: 10px; opacity: 0.6; }
-.section-count { letter-spacing: 0; font-weight: 600; }
-.running-none { padding: 4px 22px 6px; }
-.section-count.blocked { color: @loom_warn; }
-.section-count.failed { color: @loom_err; }
-.section-count.done { color: @loom_ok; }
-/* Running sits over the projects: its edge a soft shadow, as the cards'. */
-scrolledwindow.running-pane { box-shadow: 0 6px 8px -6px @loom_shadow; padding-bottom: 4px; }
-/* A running agent on its project's card: a dim line (its full row is in Running). */
-.agents row.agent-row.in-running > box { opacity: 0.55; }
-.agents row.agent-row.in-running:selected > box { opacity: 1; }
-button.heading-button { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; opacity: 0.6; }
-button.heading-button:hover { opacity: 1; }
-.agents row.running-row { margin: 0 10px; padding: 4px 8px; border-radius: 8px; }
-.agents row.running-row:hover { background: alpha(@window_fg_color, 0.05); }
-.agents row.running-row.current { background: alpha(@accent_color, 0.14); }
-.running-number { font-size: 0.8em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
-/* A running agent's project: a neutral chip (the bead is the row's only colour); its page. */
-button.running-project { font-size: 0.8em; font-weight: 700; padding: 0 6px; min-height: 18px; border-radius: 99px; color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); box-shadow: none; }
-button.page-back { min-width: 28px; min-height: 28px; padding: 0; border-radius: 8px; margin-left: -6px; }
-/* A session setting the agent chose for itself (not the default): tinted. */
-.composer-bar menubutton.chip-picker.chosen > button { color: @accent_color; background: alpha(@accent_color, 0.14); }
-.composer-bar menubutton.chip-picker.chosen > button:hover { background: alpha(@accent_color, 0.22); }
-button.running-project:hover { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; }
-button.awake { min-width: 22px; min-height: 22px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.3); }
-/* In Running: on the second line, small, and shown on hover (or when on). */
-.running-row button.awake { min-width: 16px; min-height: 16px; opacity: 0; }
-.running-row:hover button.awake, .running-row button.awake.on { opacity: 1; }
-.running-row:hover button.awake { color: alpha(@window_fg_color, 0.6); }
-/* On: Ayu's gold. */
-button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
-/* Suspended agents in the cards: dimmer (running ones stand out). */
-.agent-title.resting { opacity: 0.6; }
-
-/* Settings: the add-ons listed under "Add-ons" in the nav. */
-.prefs-nav row.prefs-nav-sub { padding-left: 26px; }
-.prefs-nav row.prefs-nav-sub label { font-size: 0.95em; }
-label.addon-on { color: @loom_ok; font-weight: 600; }
-.prefs-page label.error { color: @loom_err; }
-
-/* Notes: Scribe's panel. */
-.hub { padding: 10px 12px; }
-.hub-head { padding-bottom: 8px; border-bottom: 1px solid @loom_line; }
-.hub-heading { font-size: 0.75em; font-weight: 700; letter-spacing: 0.06em; opacity: 0.6; margin-top: 4px; }
-.hub-card { padding: 10px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
-.hub-card.ask { border: 1px solid alpha(@accent_color, 0.45); }
-.hub-card.written { opacity: 0.85; }
-/* A written change folded to one line (the panel, the history page); undone or dropped: dim. */
-.hub-row title { padding: 4px 6px; border-radius: 8px; }
-.hub-row title:hover { background: alpha(@window_fg_color, 0.05); }
-.hub-row .hub-card { margin-top: 4px; }
-.hub-row.gone .hub-note { opacity: 0.55; }
-.hub-card button.chosen { border-color: @accent_color; background: alpha(@accent_color, 0.14); }
-.hub-topic { font-weight: 600; font-size: 0.85em; color: @accent_color; }
-button.hub-from { padding: 0 4px; min-height: 0; font-size: 0.85em; }
-.hub-note { font-weight: 600; }
-.hub-question { font-weight: 600; }
-.hub-diff { font-size: 0.85em; padding: 6px 8px; border-radius: 6px; background: alpha(@window_fg_color, 0.05); }
-.segmented button.tab.news { box-shadow: inset 0 -2px @accent_color; }
-.scribe-mark { min-width: 7px; min-height: 7px; border-radius: 99px; background: @accent_color; margin-right: 4px; }
-button.overview-scribe { padding: 2px 6px; margin-left: -6px; color: @accent_color; font-weight: 600; min-height: 0; }
-/* An agent waits for the user to fill the open file in (loom_edit). */
-.edit-request { padding: 8px 12px; background: alpha(@accent_color, 0.12); border-bottom: 1px solid alpha(@accent_color, 0.35); }
-.edit-request label { font-weight: 600; }
-.edit-request.disk-changed { background: alpha(@loom_warn, 0.12); border-bottom-color: alpha(@loom_warn, 0.35); }
-
-/* Settings' close button, as loom's other icon buttons. */
-button.prefs-close { margin: 10px 12px; min-width: 30px; min-height: 30px; padding: 0;
-  border-radius: 8px; background: none; box-shadow: none; border: none;
-  opacity: 0.68; font-size: 1.3em; }
-button.prefs-close:hover { background: alpha(@window_fg_color, 0.08); opacity: 1; }
-button.prefs-close:focus-visible { outline: 2px solid alpha(@accent_color, 0.7);
-  outline-offset: -2px; }
-
-/* By the context meter once the context is fuller than the user's setting. */
-button.compact-alert { padding: 2px 10px; min-height: 0; border-radius: 8px; font-size: 0.9em;
-  color: @loom_warn; background: alpha(@loom_warn, 0.12); box-shadow: none; border: none; }
-button.compact-alert:hover { background: alpha(@loom_warn, 0.22); }
 
 /* A workflow's card in the conversation (workflow.rs). */
-.workflow-card { padding: 10px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); margin: 4px 0; }
-.workflow-title { font-weight: 700; }
-button.workflow-stop { min-height: 0; padding: 1px 10px; font-size: 0.85em; }
-label.workflow-status { font-size: 0.85em; padding: 1px 8px; border-radius: 999px; background: alpha(@accent_color, 0.16); color: @accent_color; }
+.workflow-card { padding: 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); margin: 4px 0; }
+.workflow-title { font-weight: 500; }
+button.workflow-stop { min-height: 0; padding: 2px 12px; font-size: 0.85em; }
+label.workflow-status { font-size: 0.85em; padding: 2px 8px; border-radius: 6px; background: alpha(@accent_color, 0.16); color: @accent_color; }
 label.workflow-status.done { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.7); }
 label.workflow-status.stopped { background: alpha(@window_fg_color, 0.08); color: alpha(@window_fg_color, 0.5); }
 label.workflow-status.failed { background: alpha(@loom_err, 0.12); color: @loom_err; }
 .workflow-progress { font-variant-numeric: tabular-nums; }
 list.workflow-agents { background: transparent; }
-list.workflow-agents row { padding: 3px 4px; border-radius: 6px; }
+list.workflow-agents row { padding: 4px; border-radius: 6px; }
 list.workflow-agents label.running { color: @accent_color; }
-.workflow-agent { font-weight: 600; }
+.workflow-agent { font-weight: 500; }
 
-/* Right-click menus (menu.rs). */
-popover.context-menu > contents { padding: 4px; min-width: 220px; }
-popover.context-menu separator { margin: 4px 6px; background: alpha(@window_fg_color, 0.1); }
-popover.context-menu label.menu-hint { color: alpha(@window_fg_color, 0.5); font-size: 0.9em; }
-popover.context-menu button.menu-item.danger label { color: @loom_err; }
-popover.context-menu button.menu-item:disabled label { opacity: 0.45; }
+/* Composer: a soft fill, 12 px corners; brighter while typing. */
+.input-box { padding: 12px 28px 16px 28px; }
+.composer { border-radius: 12px; background: alpha(@window_fg_color, 0.05); border: none; box-shadow: 0 4px 14px @loom_shadow; }
+.composer:focus-within { background: alpha(@window_fg_color, 0.1); box-shadow: 0 6px 20px @loom_shadow; }
+.composer.shell-mode, .composer.shell-mode:focus-within { border: none; background: alpha(@loom_shell, 0.12); }
+.shell-badge { font-size: 0.85em; font-weight: 500; padding: 2px 8px; border-radius: 6px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
+textview.input, textview.input text { background: transparent; }
+.placeholder { opacity: 0.55; }
+.placeholder.suggesting { opacity: 0.75; }
+.composer-bar { padding: 4px 8px 8px 8px; }
+.composer-bar menubutton.chip-picker > button, .composer-bar button.mode { min-height: 24px; padding: 0 12px; border-radius: 8px; font-size: 0.92em; background: alpha(@window_fg_color, 0.06); }
+.composer-bar menubutton.chip-picker > button:hover, .composer-bar button.mode:hover { background: alpha(@window_fg_color, 0.12); }
+/* A session setting the agent chose for itself (not the default): tinted. */
+.composer-bar menubutton.chip-picker.chosen > button { color: @accent_color; background: alpha(@accent_color, 0.14); }
+.composer-bar menubutton.chip-picker.chosen > button:hover { background: alpha(@accent_color, 0.22); }
+.composer-bar button.mode.plan-mode { color: @loom_ok; }
+.composer-bar button.mode.accept-mode { color: @loom_run; }
+.composer-bar button.mode.bypass-mode { color: @loom_err; box-shadow: none; background: alpha(@loom_err, 0.16); }
+button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 500; }
+button.send { min-width: 32px; min-height: 32px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 600; }
+button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
+/* The microphone: red while recording, dim while what was said is written down. */
+.composer-bar button.mic, .composer button.mic { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; }
+button.mic.recording { color: @loom_err; background: alpha(@loom_err, 0.15); }
+button.mic.busy { opacity: 0.5; }
+label.working { font-size: 0.92em; opacity: 0.85; margin-left: 8px; color: @accent_color; font-variant-numeric: tabular-nums; }
+.completion row { padding: 4px 8px; }
+/* Messages waiting for the turn to end, over the input. */
+.composer .queued { padding: 8px 12px 4px; border-bottom: 1px solid alpha(currentColor, 0.08); }
+.composer .queued-row { min-height: 24px; }
+.composer .queued-mark { font-size: 0.85em; padding: 2px 6px; border-radius: 6px; background: alpha(@loom_run, 0.15); color: @loom_run; }
+.composer .queued-hint { font-size: 0.85em; opacity: 0.6; padding-top: 2px; }
+/* Images: attached under the input, and sent with a message. */
+.attachments { padding: 12px 12px 0 12px; }
+.attachment { border-radius: 8px; border: none; }
+button.attachment-remove { min-height: 20px; min-width: 20px; padding: 0; margin: 4px; border-radius: 99px; background: alpha(@window_bg_color, 0.85); }
 
-/* The keyboard lands on the same highlight as the pointer, not the focus ring. */
-popover.context-menu button.menu-item:focus-visible { outline: none; background: alpha(@accent_color, 0.14); }
-/* Claude Code is not the version loom was built for (by the usage meter, and in its popover). */
-.version-warn, label.dim.version-warn { color: @loom_warn; }
+/* ---- tray, files, scratch --------------------------------------------------------------- */
+.tray { padding: 4px 8px; min-height: 24px; background: @sidebar_bg_color; }
+.tray .hint { font-size: 0.85em; opacity: 0.6; margin-right: 8px; }
+.chip { padding: 2px 12px; min-height: 0; border-radius: 8px; font-size: 0.92em; }
+.tray button.chip { background: alpha(@window_fg_color, 0.06); }
+.tray button.chip:hover { background: alpha(@window_fg_color, 0.12); }
+.dock { padding: 8px; background: @sidebar_bg_color; }
+.docked, .peek-frame { padding: 4px; }
+button.small { padding: 0 8px; min-height: 24px; font-size: 0.92em; }
+.scratch { background: @window_bg_color; border-radius: 10px; padding: 8px; border: none; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45); }
+.toast { background: mix(@window_bg_color, @loom_wait, 0.14); border: none; border-radius: 10px; padding: 8px 8px 8px 16px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.toast button { min-height: 24px; padding: 0 12px; }
+.toast .toast-go { font-weight: 600; color: @loom_wait; }
+.prefix-hint { background: alpha(@window_bg_color, 0.95); border: none; border-radius: 10px; padding: 8px 16px; font-size: 0.92em; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35); }
+.find-bar { background: alpha(@window_bg_color, 0.97); border: none; border-radius: 10px; padding: 8px 12px; box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3); }
 
-/* The Notes view (notes_chat.rs, notes_panel.rs): its button's dot, its chats in the
-   sidebar, the starters over an empty chat, the topics panel. */
-button.overview-button.on { background: alpha(currentColor, 0.14); }
-button.overview-button.on image { opacity: 1; }
-.notes-dot { min-width: 7px; min-height: 7px; border-radius: 99px; background: @loom_wait; margin: 4px 4px 0 0; }
-.notes-side { padding: 14px 10px 6px; }
-button.notes-new { padding: 6px 10px; border-radius: 8px; }
-button.notes-new label { font-weight: 600; }
-label.notes-day { font-size: 0.8em; font-weight: 600; letter-spacing: 0.04em; color: alpha(@window_fg_color, 0.5); margin: 10px 8px 2px; }
-list.notes-chats { background: transparent; }
-list.notes-chats row { padding: 6px 8px; border-radius: 8px; }
-button.notes-back { padding: 6px 10px; border-radius: 8px; }
-button.notes-back label { color: alpha(@window_fg_color, 0.75); }
-.notes-starters { padding: 24px; }
-label.notes-starters-title { font-size: 1.25em; font-weight: 700; }
-button.notes-starter { padding: 6px 14px; border-radius: 999px; }
-.notes-panel entry.notes-filter, .notes-panel searchentry.notes-filter { margin: 8px 10px 2px; }
-list.notes-topics { background: transparent; }
-list.notes-topics row { padding: 3px 10px; border-radius: 6px; }
-list.notes-topics row.notes-topic { margin-top: 10px; }
-label.notes-topic-name { font-weight: 700; }
-list.notes-topics row.notes-note { padding-left: 18px; }
-list.notes-topics row.notes-more { padding-left: 18px; }
-list.notes-topics row.notes-conflicts label.notes-topic-name { color: @loom_warn; }
-.conflict-actions { padding: 10px 12px; background: @window_bg_color; border-top: 1px solid alpha(currentColor, 0.12); }
+.files { background: @sidebar_bg_color; }
+.panel-header { padding: 12px 12px 8px 12px; }
+/* Tabs as one segmented control: a soft track, the chosen one raised. */
+.segmented { background: alpha(@window_fg_color, 0.06); border-radius: 10px; padding: 2px; }
+.segmented .tab { padding: 4px 12px; min-height: 0; border-radius: 8px; font-weight: 500; font-size: 0.92em; opacity: 0.7; }
+.segmented .tab:hover { opacity: 0.9; }
+.segmented .tab:checked { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; opacity: 1; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3); }
+.segmented .tab:checked label { color: @window_fg_color; }
+.segmented button.tab.news { box-shadow: none; background: alpha(@accent_color, 0.18); }
+.panel-caption { font-size: 0.85em; font-weight: 500; opacity: 0.62; padding: 12px 20px 4px 20px; }
+.files-empty { padding: 28px 20px; }
+.file-list { background: transparent; }
+.file-list row { border-radius: 8px; margin: 2px 8px; padding: 0; }
+.file-list row:hover { background: alpha(@window_fg_color, 0.05); }
+.file-list row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.file-row { padding: 8px 12px; }
+/* What git ignores, dimmed in the tree (icon and name together). */
+.ignored { opacity: 0.45; }
+/* File icons are drawn in their own colours (icons.rs): full strength. */
+.file-icon { -gtk-icon-size: 16px; margin-right: 2px; }
+.badge { font-size: 0.85em; font-weight: 500; padding: 0 6px; min-height: 0; border-radius: 6px; }
+.badge.new { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
+.badge.edited { color: @accent_color; background: alpha(@accent_color, 0.14); }
+.dirty { color: @loom_warn; }
+.editor { font-family: "JetBrains Mono", Vazirmatn, monospace; }
+.editor-message { padding: 4px 12px 8px 12px; color: @loom_warn; font-size: 0.92em; }
+listview.tree { background: transparent; padding: 4px 0; }
+.tree row { padding: 4px 8px; margin: 0 8px; border-radius: 6px; }
+.tree row:hover { background: alpha(@window_fg_color, 0.05); }
+.tree row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.tree .folder { font-weight: 500; }
+.changes-view { padding: 8px 4px; }
+.changes-view > box, .changes-view > .repo-line { margin: 0 8px; }
+.repo-line { font-family: "JetBrains Mono", monospace; font-size: 0.92em; opacity: 0.8; padding: 2px; }
+.git-code { font-family: "JetBrains Mono", monospace; font-size: 0.85em; font-weight: 500; min-width: 20px; padding: 0 4px; border-radius: 4px; }
+.git-code.modified { color: @accent_color; background: alpha(@accent_color, 0.12); }
+.git-code.added { color: @loom_ok; background: alpha(@loom_ok, 0.12); }
+.git-code.deleted { color: @loom_err; background: alpha(@loom_err, 0.12); }
+.git-code.staged { box-shadow: inset 0 -2px 0 alpha(@loom_ok, 0.8); }
+.commit-line { margin: 8px; }
+.change-row .change-actions { opacity: 0; }
+.change-row:hover .change-actions { opacity: 1; }
+/* Graph: commits and branch heads. */
+.repo-bar { margin: 2px 12px 4px 12px; }
+list.graph { background: transparent; }
+list.graph row { padding: 0 12px 0 8px; min-height: 0; }
+list.graph row:hover { background: alpha(@window_fg_color, 0.04); }
+list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.graph-row { min-height: 24px; }
+.graph-bar { padding: 0 8px 4px; }
+.graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.92em; opacity: 0.55; }
+.ref { font-size: 0.85em; font-weight: 500; padding: 0 6px; border-radius: 4px; }
+.ref.head { color: @accent_fg_color; background: @accent_color; }
+.ref.branch { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
+.ref.remote { color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); }
+.ref.tag { color: @loom_warn; background: alpha(@loom_warn, 0.14); }
+
+/* The open file, beside the chat. */
+.editor-pane { background: @view_bg_color; }
+.reader { padding: 24px 28px 40px 28px; }
+.reader label { font-size: 1em; }
+.editor-title { padding: 12px 12px 8px 16px; border-bottom: 1px solid @loom_line; }
+.editor-name { font-weight: 500; }
+.editor-path { font-size: 0.85em; opacity: 0.45; }
+.editor-path:hover { opacity: 0.8; }
+button.editor-close { min-width: 28px; min-height: 28px; padding: 0; border-radius: 8px; }
+.editor-tabs { padding: 2px 12px 4px 12px; }
+.editor-tab { border-radius: 6px; background: alpha(@window_fg_color, 0.04); }
+.editor-tab.current { background: alpha(@window_fg_color, 0.12); }
+.editor-tab button { padding: 2px 8px; min-height: 0; font-size: 0.92em; }
+.file-picture { margin: 12px; }
+.file-other { padding: 24px; }
+/* An agent waits for the user to fill the open file in (loom_edit). */
+.edit-request { padding: 8px 12px; background: alpha(@accent_color, 0.12); border-bottom: none; }
+.edit-request label { font-weight: 500; }
+.edit-request.disk-changed { background: alpha(@loom_warn, 0.12); }
 
 /* A changed file's diff, hunk by hunk (Undo each; a click on a line: a note on it). */
-.change-window { margin: 12px 14px 18px; }
-.hunk { border: 1px solid alpha(@window_fg_color, 0.12); border-radius: 10px; }
-.hunk-head { padding: 4px 6px 4px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.1); }
+.change-window { margin: 12px 16px 20px; }
+.hunk { border: none; border-radius: 10px; }
+.hunk-head { padding: 4px 8px 4px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.1); }
 list.hunk-lines { background: transparent; }
 list.hunk-lines row { padding: 0 12px; min-height: 0; }
-list.hunk-lines row:hover { box-shadow: inset 0 0 0 1px alpha(@accent_color, 0.5); }
+list.hunk-lines row:hover { box-shadow: none; background: alpha(@accent_color, 0.1); }
 list.hunk-lines row.added { color: @success_color; background: alpha(@success_color, 0.09); }
 list.hunk-lines row.removed { color: @error_color; background: alpha(@error_color, 0.09); }
 
-/* A finished turn folded to one line (a click opens it). */
-button.turn-fold { margin: 2px 0 10px; padding: 4px 10px; min-height: 0; border-radius: 8px; font-weight: normal; }
-button.turn-fold label { opacity: 0.75; }
-button.turn-fold:hover label { opacity: 1; }
-.since-looked { margin: 8px 0; padding-top: 6px; border-top: 1px solid alpha(@accent_color, 0.6); color: @accent_color; font-size: 0.9em; }
-button.pinned-ask { margin: 6px 24px 0; padding: 6px 14px; min-height: 0; border-radius: 10px; background: alpha(@view_bg_color, 0.96); box-shadow: 0 2px 8px alpha(black, 0.25); border: 1px solid alpha(@window_fg_color, 0.1); font-weight: normal; }
-button.mcp-alert { min-height: 0; padding: 2px 8px; color: @warning_color; font-weight: normal; }
-button.plan-line { min-height: 0; padding: 2px 4px; font-weight: normal; }
+/* ---- pickers, help, welcome, settings --------------------------------------------------- */
+.picker { padding: 4px; }
+.picker-list { background: transparent; }
+.switcher-list row, .picker-list row { padding: 8px 12px; border-radius: 6px; }
+.help { padding: 8px; }
+.keycap { font-family: "JetBrains Mono", monospace; font-size: 0.85em; padding: 0 6px; min-width: 14px; border-radius: 4px; background: alpha(@window_fg_color, 0.08); border-bottom: 1px solid alpha(@window_fg_color, 0.14); }
+.welcome { padding: 32px; }
+.welcome-title { font-size: 2em; font-weight: 500; }
+.welcome-actions { margin-top: 24px; min-width: 420px; }
+button.welcome-action, button.welcome-project { padding: 12px 16px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
+button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
+.welcome-heading { margin-top: 24px; font-size: 0.85em; font-weight: 500; opacity: 0.6; }
+.about-body { padding: 28px 32px 24px; }
+.about-name { font-size: 1.5em; font-weight: 500; }
+.about-blurb { margin: 8px 0; }
+.lockup-by { opacity: 0.68; }
+.lockup-by link { color: inherit; }
+.lockup-by link:hover { color: @accent_color; }
 
-/* Tooltips: one look for GTK's own and the footer's (popovers opening above, tip_above in
-   app.rs): the popover's colours, small text, rounded, a soft shadow. */
-popover.tip > contents { padding: 5px 9px; border-radius: 8px; }
-popover.tip label { font-size: 0.9em; }
-window.loom tooltip, tooltip.background { background-color: @popover_bg_color; color: @popover_fg_color; border-radius: 8px; padding: 5px 9px; border: 1px solid alpha(@window_fg_color, 0.08); box-shadow: 0 2px 8px @loom_shadow; }
-tooltip label { font-size: 0.9em; }
-
-/* A project's board (board.rs): lanes side by side, cards as the sidebar's cards. */
-.board-heading { padding: 14px 22px 8px 22px; }
-.board-problem { margin: 0 22px; color: @loom_err; }
-.board-lanes { padding: 8px 22px 18px 22px; }
-.board-lane { min-width: 270px; padding: 10px; border-radius: 12px; background: alpha(@window_fg_color, 0.04); }
-.board-lane-title { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.85; }
-button.board-card { padding: 9px 11px; border-radius: 10px; background: alpha(@window_fg_color, 0.06); box-shadow: 0 1px 3px @loom_shadow; font-weight: normal; }
-button.board-card:hover { background: alpha(@window_fg_color, 0.1); }
-button.board-card.done .board-card-title { opacity: 0.7; }
-.board-card-title { font-weight: 500; }
-.board-editor { padding: 6px; }
-textview.board-body, textview.board-body text { background: alpha(@window_fg_color, 0.04); border-radius: 8px; padding: 6px; }
-
-/* An open project in the sidebar (app.rs draw_sidebar): one card, its name up the left edge
-   (drawn over the list), its agents pills beside it, each tinted by what it is doing. */
-.agents row.agent-row.in-card { margin: 0 10px; padding: 2px 6px 2px 30px; border-radius: 0; background: alpha(@window_fg_color, 0.045); }
-.agents row.agent-row.in-card.first { margin-top: 10px; padding-top: 8px; border-radius: 14px 14px 0 0; }
-.agents row.agent-row.in-card.last { padding-bottom: 8px; border-radius: 0 0 14px 14px; }
-.agents row.agent-row.in-card.first.last { border-radius: 14px; }
-.agents row.agent-row.in-card > box { padding: 7px 10px; border-radius: 10px; background: alpha(@window_fg_color, 0.05); box-shadow: 0 1px 2px @loom_shadow; }
-.agents row.agent-row.in-card.state-working > box { background: alpha(@accent_color, 0.16); }
-.agents row.agent-row.in-card.state-starting > box { background: alpha(@accent_color, 0.09); }
-.agents row.agent-row.in-card.state-blocked > box { background: alpha(@loom_wait, 0.2); }
-.agents row.agent-row.in-card.state-done > box { background: alpha(@loom_ok, 0.16); }
-.agents row.agent-row.in-card.state-failed > box { background: alpha(@loom_err, 0.18); }
-.agents row.agent-row.in-card.state-suspended > box { background: alpha(@window_fg_color, 0.03); box-shadow: none; }
-.agents row.agent-row.in-card:hover:not(:selected) > box { background-image: linear-gradient(alpha(@window_fg_color, 0.05), alpha(@window_fg_color, 0.05)); }
-.agents row.agent-row.in-card:selected { background: alpha(@window_fg_color, 0.045); }
-.agents row.agent-row.in-card:selected > box { box-shadow: inset 0 0 0 1.5px alpha(@accent_color, 0.75), 0 2px 6px @loom_shadow; }
-/* A closed project: one pill. */
-.agents row.project-row.alone { margin-top: 10px; padding: 9px 8px 9px 10px; border-radius: 14px; }
-
-/* A project's page: its board, its conversations on the right. */
-.project-side { border-left: 1px solid @loom_line; background: alpha(@window_fg_color, 0.02); }
-.project-side .project-column { padding: 6px 4px; }
-.side-title { font-size: 0.8em; font-weight: 700; letter-spacing: 0.07em; text-transform: uppercase; opacity: 0.7; padding: 10px 2px 2px 2px; }
-
-/* Polish (design-critic, 2026-11-10): the card a sunk container, the pills lifted; tints by
-   urgency, done the quietest; a selection ring that shows on any tint; deeper board lanes. */
-/* (no outline: each row of the card would draw its own, a line between every two) */
-.agents row.agent-row.in-card, .agents row.agent-row.in-card:selected { background: alpha(black, 0.16); }
-/* one agent: room for its project's name up the edge */
-.agents row.agent-row.in-card.first.last { padding-top: 14px; padding-bottom: 14px; }
-.agents row.agent-row.in-card > box { background: alpha(@window_fg_color, 0.07); }
-.agents row.agent-row.in-card.state-working > box { background: alpha(@loom_run, 0.16); }
-.agents row.agent-row.in-card.state-starting > box { background: alpha(@loom_run, 0.08); }
-.agents row.agent-row.in-card.state-done > box { background: alpha(@loom_ok, 0.09); }
-.agents row.agent-row.in-card.state-blocked > box { background: alpha(@loom_wait, 0.22); box-shadow: inset 0 0 0 1px alpha(@loom_wait, 0.5); }
-.agents row.agent-row.in-card.state-failed > box { background: alpha(@loom_err, 0.16); }
-.agents row.agent-row.in-card:selected > box { box-shadow: inset 0 0 0 2px alpha(@window_fg_color, 0.85), 0 2px 8px @loom_shadow; }
-.agents row.agent-row .agent-sub { opacity: 0.68; }
-.project-row.alone .project-name { font-size: 1em; font-weight: 600; letter-spacing: 0; text-transform: none; opacity: 1; }
-.agents row.project-row.alone { background: alpha(@window_fg_color, 0.07); }
-.board-heading { padding: 18px 22px 10px 22px; }
-.board-lane { background: alpha(black, 0.14); box-shadow: inset 0 0 0 1px @loom_line; }
-button.board-card { background: alpha(@window_fg_color, 0.065); box-shadow: inset 0 1px alpha(white, 0.04), 0 1px 3px @loom_shadow; transition: background 120ms; }
-button.board-card.done { opacity: 0.72; }
-.board-card-meta { font-size: 0.82em; }
-.side-title { padding: 22px 2px 6px 2px; }
-
-/* The project page, redesigned (design-critic, 2026-11-10): each lane its colour and dot,
-   Doing lifted, Done quietest and compact; a header with how the lanes stand; empty lanes
-   say so; one surface with the conversations; an 8 px grid. */
-.board-heading { padding: 16px 24px 8px 24px; }
-.board-heading .project-title { font-size: 1.75em; font-weight: 650; letter-spacing: -0.01em; }
-.board-lanes { padding: 8px 24px 16px 24px; }
-.board-lane { padding: 8px; border-radius: 12px; }
-.board-lane-dot { font-size: 0.7em; color: alpha(@window_fg_color, 0.4); }
-.lane-to-do .board-lane-dot { color: @accent_color; }
-.lane-doing .board-lane-dot { color: @loom_run; }
-.lane-done .board-lane-dot { color: alpha(@loom_ok, 0.7); }
-.board-lane-title { font-size: 0.78em; letter-spacing: 0.08em; opacity: 0.7; }
-.board-lane menubutton.flat, .board-lane > box > button.flat { opacity: 0.35; transition: opacity 120ms; }
-.board-lane:hover menubutton.flat, .board-lane:hover > box > button.flat, .board-lane > box > button.flat:focus-visible { opacity: 1; }
-.board-lane.lane-doing { box-shadow: inset 0 2px alpha(@loom_run, 0.7), inset 0 0 0 1px @loom_line; }
-.board-lane.lane-done { background: alpha(black, 0.08); }
-button.board-card { padding: 8px 12px; }
-.lane-doing button.board-card { background: alpha(@loom_run, 0.10); box-shadow: inset 0 0 0 1px alpha(@loom_run, 0.28), 0 1px 3px @loom_shadow; }
-button.board-card.done { opacity: 1; padding: 6px 12px; background: alpha(@window_fg_color, 0.035); box-shadow: none; }
-button.board-card.done .board-card-title { opacity: 0.6; font-weight: 400; }
-.board-card-meta { font-size: 0.78em; opacity: 0.8; }
-.board-empty { padding: 24px 16px; border-radius: 10px; border: 1px dashed alpha(@window_fg_color, 0.12); color: alpha(@window_fg_color, 0.55); }
-.side-title { font-size: 1.05em; font-weight: 600; text-transform: none; letter-spacing: 0; opacity: 0.9; padding: 18px 4px 8px 4px; }
-list.history row { padding: 8px 12px; }
-.project-side .history-note { padding: 0 12px; }
-
-/* No strokes (Soheil, 2026-11-10: "I hate this highlight you use everywhere"): emphasis is a
-   tinted or brighter fill, depth a soft shadow; never a coloured or hairline outline. Kept:
-   the keyboard focus ring, the lines inside tables and diffs, the rules between regions. */
-.msg-user, .composer, .composer:focus-within, .attachment, .msg-image, .prefs-group, .prefs-status,
-.cheat-card, .overview-card, .hunk, button.latest, .find-bar, .scratch, .prefix-hint, .toast,
-window.loom tooltip, tooltip.background, box.notice.error, box.notice.choice, .hub-card.ask,
-.permission-card { border: none; }
-.composer:focus-within { background: alpha(@window_fg_color, 0.08); }
-.composer.shell-mode, .composer.shell-mode:focus-within { border: none; background: alpha(@loom_shell, 0.12); }
-box.notice.error { background: alpha(@loom_err, 0.13); }
-.permission-card { background: alpha(@loom_wait, 0.14); }
-.overview-card.needs-you { border: none; background: alpha(@loom_wait, 0.12); }
-.prefs-status.ok { border: none; background: alpha(@loom_ok, 0.1); }
-.prefs-status.failed { border: none; background: alpha(@loom_err, 0.1); }
-.hub-card.ask { background: alpha(@accent_color, 0.1); }
-.hub-card button.chosen { border-color: transparent; background: alpha(@accent_color, 0.22); }
-.edit-request { border-bottom: none; }
-.since-looked { border-top: none; padding-top: 0; }
-.chat.active .header { border-bottom-color: @loom_line; }
-.segmented button.tab.news { box-shadow: none; background: alpha(@accent_color, 0.18); }
-list.hunk-lines row:hover { box-shadow: none; background: alpha(@accent_color, 0.1); }
-.composer-bar button.mode.bypass-mode { box-shadow: none; background: alpha(@loom_err, 0.16); }
-/* the sidebar's cards: the open agent a brighter pill, a waiting one a stronger tint */
-.agents row.agent-row.in-card:selected > box { box-shadow: 0 2px 8px @loom_shadow; background: alpha(@window_fg_color, 0.16); }
-.agents row.agent-row.in-card.state-blocked > box { box-shadow: 0 1px 2px @loom_shadow; background: alpha(@loom_wait, 0.26); }
-.agents row.agent-row.in-card.state-blocked:selected > box { background: alpha(@loom_wait, 0.34); }
-.agents row.agent-row.in-card.state-working:selected > box { background: alpha(@loom_run, 0.26); }
-.agents row.agent-row.in-card.state-done:selected > box { background: alpha(@loom_ok, 0.2); }
-/* the board: lanes and cards by fill alone */
-.board-lane, .board-lane.lane-doing { box-shadow: none; }
-.board-lane.lane-doing { background: alpha(@loom_run, 0.07); }
-button.board-card { box-shadow: 0 1px 3px @loom_shadow; }
-.lane-doing button.board-card { box-shadow: 0 1px 3px @loom_shadow; background: alpha(@loom_run, 0.14); }
-.board-empty { border: none; background: alpha(@window_fg_color, 0.03); }
-.project-side { border-left: none; background: alpha(black, 0.06); }
-
-/* Accessibility pass (design-critic, 2026-11-10): the name strip and its ▾ real buttons; the
-   open agent told by a light pill, not a slight fill; sub-lines readable; the project page's
-   conversations a surface of their own; what the no-strokes block left too faint. */
-button.card-strip { background: none; padding: 0; border-radius: 10px; min-width: 0; min-height: 0; box-shadow: none; }
-button.card-strip:hover { background: alpha(@window_fg_color, 0.08); }
-.agents row.agent-row.in-card:selected > box,
-.agents row.agent-row.in-card.state-working:selected > box,
-.agents row.agent-row.in-card.state-done:selected > box,
-.agents row.agent-row.in-card.state-blocked:selected > box { background: alpha(@window_fg_color, 0.88); box-shadow: 0 2px 8px @loom_shadow; }
-.agents row.agent-row.in-card:selected > box label { color: @window_bg_color; opacity: 1; }
-.agents row:selected .agent-title.resting { opacity: 1; }
-.agents row.agent-row .agent-sub { opacity: 0.85; }
-.agents row.agent-row.in-card:focus-visible { outline: none; }
-.agents row.agent-row.in-card:focus-visible > box { outline: 2px solid alpha(@accent_color, 0.9); outline-offset: 1px; }
-.project-side { background: mix(@view_bg_color, @sidebar_bg_color, 0.5); margin: 8px 8px 8px 0; border-radius: 12px; box-shadow: 0 2px 10px @loom_shadow; }
-box.notice.choice { background: alpha(@window_fg_color, 0.08); box-shadow: 0 1px 3px @loom_shadow; }
-.toast { background: mix(@window_bg_color, @loom_wait, 0.14); }
-.composer:focus-within { background: alpha(@window_fg_color, 0.10); box-shadow: 0 6px 20px @loom_shadow; }
-.hub-card button.chosen { font-weight: 700; }
-/* on the light pill of the open agent, a grey bead goes dark to show */
-.agents row.agent-row.in-card:selected > box .dot.idle { background: alpha(@window_bg_color, 0.55); }
-.agents row.agent-row.in-card:selected > box .dot.suspended { box-shadow: inset 0 0 0 1.5px alpha(@window_bg_color, 0.65); }
-.project-side .project-column { padding: 6px 12px; }
-
-/* Pressed: loom's own button and row fills replace the theme's, its pressed look with them;
-   a press darkens whatever fill it has (a fill, never a stroke). */
-button:active, menubutton > button:active, row.activatable:active { filter: brightness(0.82); }
-
+window.prefs stack, window.prefs stack > scrolledwindow, window.prefs stack viewport { background: @window_bg_color; }
+.prefs-nav { background: @sidebar_bg_color; border-right: 1px solid @loom_line; min-width: 180px; }
+.prefs-nav-top { padding: 16px 12px 12px 20px; }
+.prefs-nav-title { font-size: 1em; font-weight: 500; }
+.prefs-nav list { background: transparent; }
+.prefs-nav row { border-radius: 8px; margin: 2px 8px; padding: 8px 12px; outline: none; }
+.prefs-nav row:hover:not(:selected) { background: alpha(@window_fg_color, 0.05); }
+.prefs-nav row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+.prefs-nav row:selected label { font-weight: 500; }
+.prefs-nav row image { -gtk-icon-size: 16px; opacity: 0.7; }
+.prefs-nav row:selected image { color: @accent_color; opacity: 1; }
+.prefs-nav row:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
+/* Settings: the add-ons listed under "Add-ons" in the nav. */
+.prefs-nav row.prefs-nav-sub { padding-left: 28px; }
+.prefs-nav-foot { padding: 12px 20px; border-top: 1px solid @loom_line; font-size: 0.85em; opacity: 0.6; }
+button.prefs-nav-foot { border-radius: 0; min-height: 0; padding: 12px 20px; }
+button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity: 0.85; }
+.prefs-page { padding: 28px 36px 36px; }
+.prefs-heading { font-size: 1.5em; font-weight: 500; margin-bottom: 4px; }
+.prefs-section { font-size: 0.85em; font-weight: 500; opacity: 0.6; margin: 0 0 8px 4px; }
+.prefs-group { background: alpha(@window_fg_color, 0.035); border: none; border-radius: 10px; }
+.prefs-row { padding: 12px 16px; min-height: 32px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
+.prefs-row:last-child { border-bottom: none; }
+.prefs-caption { font-size: 0.85em; opacity: 0.6; margin: 8px 4px 0 4px; }
+.prefs-title { font-weight: 500; }
+.prefs-page dropdown > button, .prefs-page fontbutton > button, .prefs-button {
+  min-height: 28px; padding: 0 12px; border-radius: 8px; font-size: 0.92em; font-weight: 500;
+  background: alpha(@window_fg_color, 0.06); box-shadow: none; border: none; }
+.prefs-page dropdown > button:hover, .prefs-page fontbutton > button:hover, .prefs-button:hover { background: alpha(@window_fg_color, 0.12); }
+.prefs-page dropdown > button > box, .prefs-page dropdown > button stack, .prefs-page dropdown > button label { background: none; box-shadow: none; }
+/* A toggle among the buttons looks like them, pressed or not. */
+button.prefs-button:checked { background: alpha(@window_fg_color, 0.12); color: @window_fg_color; }
+window.loom button.toggle.prefs-button:checked, window.loom button.toggle.prefs-button:checked label { color: @window_fg_color; opacity: 1; }
+.prefs-page entry, .prefs-page passwordentry { border-radius: 8px; min-height: 32px; }
+.prefs-status { padding: 16px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); border: none; }
+.prefs-status.ok { background: alpha(@loom_ok, 0.1); }
+.prefs-status.failed { background: alpha(@loom_err, 0.1); }
+.prefs-page label.error { color: @loom_err; }
+label.addon-on { color: @loom_ok; font-weight: 500; }
 /* Meaning search's state in Settings. */
 label.meaning-ready { color: @loom_ok; opacity: 1; }
 label.meaning-failed { color: @loom_warn; opacity: 1; }
+/* A pairing code to type on the phone: spaced so it reads digit by digit. */
+.link-code { font-family: "JetBrains Mono", monospace; font-size: 1.15em; letter-spacing: 0.12em; padding: 4px 12px; border-radius: 8px; color: @accent_color; background: alpha(@accent_color, 0.12); }
+/* Settings' close button, as loom's other icon buttons. */
+button.prefs-close { margin: 12px; min-width: 32px; min-height: 32px; padding: 0; border-radius: 8px; background: none; box-shadow: none; border: none; opacity: 0.68; }
+button.prefs-close:hover { background: alpha(@window_fg_color, 0.08); opacity: 1; }
+button.prefs-close:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
+
+/* A project's page: its board, its conversations on the right. */
+.project-column { padding: 48px 24px 32px 24px; }
+.project-title { font-size: 1.5em; font-weight: 500; }
+.project-side { border-left: none; background: mix(@view_bg_color, @sidebar_bg_color, 0.5); margin: 8px 8px 8px 0; border-radius: 12px; box-shadow: 0 2px 10px @loom_shadow; }
+.project-side .project-column { padding: 8px 12px; }
+.project-side .history-note { padding: 0 12px; }
+.side-title { font-size: 1em; font-weight: 500; opacity: 0.9; padding: 20px 4px 8px 4px; }
+list.history { background: transparent; }
+list.history row { padding: 8px 12px; border-radius: 10px; margin-bottom: 2px; }
+list.history row:hover { background: alpha(@window_fg_color, 0.05); }
+list.history row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
+list.history row.history-new { margin-bottom: 12px; background: alpha(@window_fg_color, 0.04); }
+list.history row.history-new:selected { background: alpha(@accent_color, 0.16); }
+.history-plus { font-weight: 500; color: @accent_color; min-width: 16px; }
+.history-open { font-size: 0.85em; padding: 0 6px; border-radius: 6px; color: @accent_color; background: alpha(@accent_color, 0.12); }
+.history-note { padding: 4px 16px; }
+.history-filter { margin: 0 0 4px 0; }
+.history-delete { opacity: 0; }
+list.history row:hover .history-delete { opacity: 0.7; }
+
+/* The board (board.rs): lanes side by side. Doing, the live lane, is the one in colour. */
+.board-heading { padding: 16px 24px 8px 24px; }
+.board-heading .project-title { font-size: 1.5em; font-weight: 500; }
+.board-problem { margin: 0 24px; color: @loom_err; }
+.board-lanes { padding: 8px 24px 16px 24px; }
+.board-lane { min-width: 272px; padding: 8px; border-radius: 12px; background: alpha(black, 0.14); box-shadow: none; }
+.board-lane.lane-doing { background: alpha(@loom_run, 0.07); }
+.board-lane.lane-done { background: alpha(black, 0.08); }
+.board-lane-title { font-size: 0.85em; font-weight: 500; opacity: 0.7; }
+.board-lane-dot { font-size: 0.7em; color: alpha(@window_fg_color, 0.4); }
+.lane-doing .board-lane-dot { color: @loom_run; }
+.board-lane menubutton.flat, .board-lane > box > button.flat { opacity: 0.35; transition: opacity 120ms; }
+.board-lane:hover menubutton.flat, .board-lane:hover > box > button.flat, .board-lane > box > button.flat:focus-visible { opacity: 1; }
+button.board-card { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.065); box-shadow: 0 1px 3px @loom_shadow; font-weight: normal; transition: background 120ms; }
+button.board-card:hover { background: alpha(@window_fg_color, 0.1); }
+button.board-card.done { padding: 4px 12px; background: alpha(@window_fg_color, 0.035); box-shadow: none; }
+.board-card-title { font-weight: 500; }
+button.board-card.done .board-card-title { opacity: 0.6; font-weight: 400; }
+.board-card-meta { font-size: 0.85em; opacity: 0.8; }
+.board-empty { padding: 24px 16px; border-radius: 10px; border: none; background: alpha(@window_fg_color, 0.03); color: alpha(@window_fg_color, 0.55); }
+.board-editor { padding: 8px; }
+textview.board-body, textview.board-body text { background: alpha(@window_fg_color, 0.04); border-radius: 8px; padding: 8px; }
+
+/* The keyboard cheatsheet (Ctrl+/). */
+window.cheatsheet { background: @window_bg_color; }
+.cheat-content { padding: 28px 32px 36px 32px; }
+.cheat-title { font-size: 1.5em; font-weight: 500; }
+.cheat-content > flowbox { margin-top: 20px; }
+.cheat-card { background: alpha(@window_fg_color, 0.04); border: none; border-radius: 10px; padding: 16px 16px 12px 16px; min-width: 300px; }
+.cheat-heading { font-size: 0.92em; font-weight: 500; color: @accent_color; margin-bottom: 8px; }
+.cheat-row { padding: 4px 0; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
+.cheat-card > .cheat-row:last-child { border-bottom: none; }
+.key-plus, .key-or { opacity: 0.45; font-size: 0.85em; }
+.key-note { opacity: 0.6; font-size: 0.85em; margin-left: 4px; }
+
+/* The overview: every agent's card, and the schedules beside them. */
+.overview { padding: 24px 24px 32px 24px; }
+.overview-side { margin: 16px 16px 16px 0; padding: 20px 16px; border-radius: 12px; background: alpha(@window_fg_color, 0.05); }
+.overview-side-scroller { background: none; border: none; }
+.overview-title { font-size: 1.5em; font-weight: 500; }
+.overview-heading { font-size: 0.85em; font-weight: 500; opacity: 0.55; margin-top: 8px; }
+.overview-cards flowboxchild { padding: 0; border-radius: 10px; }
+.overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
+.overview-card { padding: 12px 16px 8px 16px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); border: none; box-shadow: 0 2px 6px @loom_shadow; }
+.overview-card:hover { background: alpha(@window_fg_color, 0.07); box-shadow: 0 4px 12px @loom_shadow; }
+.overview-card.compact { padding: 8px 12px; }
+.overview-card.needs-you { background: alpha(@loom_wait, 0.12); }
+.overview-card .card-title { font-weight: 500; }
+.overview-card .card-reply { opacity: 0.8; margin-top: 4px; }
+.overview-card .card-waiting { color: @loom_wait; font-weight: 500; }
+.overview-card .accent { color: @loom_wait; font-weight: 500; }
+/* Schedule… on a card only when it is pointed at or has the keyboard. */
+.overview-card .schedule-button { opacity: 0; }
+.overview-card:hover .schedule-button, flowboxchild:focus-within .schedule-button, .overview-card .schedule-button:focus-visible { opacity: 1; }
+.schedule-row { padding: 8px 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.035); }
+.schedule-body { padding: 20px; }
+.schedule-prompt { background: alpha(@window_fg_color, 0.04); }
+button.overview-button { min-width: 32px; min-height: 32px; padding: 0; border-radius: 8px; }
+button.overview-button image { -gtk-icon-size: 16px; opacity: 0.8; }
+button.overview-button.on { background: alpha(currentColor, 0.14); }
+button.overview-button.on image { opacity: 1; }
+label.error { color: @loom_err; }
+
+/* Right-click menus (menu.rs). */
+popover.context-menu > contents { padding: 4px; min-width: 220px; }
+popover.context-menu separator { margin: 4px 8px; background: alpha(@window_fg_color, 0.1); }
+popover.context-menu label.menu-hint { color: alpha(@window_fg_color, 0.5); font-size: 0.92em; }
+popover.context-menu button.menu-item.danger label { color: @loom_err; }
+popover.context-menu button.menu-item:disabled label { opacity: 0.45; }
+/* The keyboard lands on the same highlight as the pointer, not the focus ring. */
+popover.context-menu button.menu-item:focus-visible { outline: none; background: alpha(@accent_color, 0.14); }
+
+/* ---- Notes: Scribe's panel and the Notes view ------------------------------------------- */
+.hub { padding: 12px; }
+.hub-head { padding-bottom: 8px; border-bottom: 1px solid @loom_line; }
+.hub-heading { font-size: 0.85em; font-weight: 500; opacity: 0.6; margin-top: 4px; }
+.hub-card { padding: 12px; border-radius: 10px; background: alpha(@window_fg_color, 0.04); }
+.hub-card.ask { border: none; background: alpha(@accent_color, 0.1); }
+.hub-card.written { opacity: 0.85; }
+/* A written change folded to one line (the panel, the history page); undone or dropped: dim. */
+.hub-row title { padding: 4px 8px; border-radius: 8px; }
+.hub-row title:hover { background: alpha(@window_fg_color, 0.05); }
+.hub-row .hub-card { margin-top: 4px; }
+.hub-row.gone .hub-note { opacity: 0.55; }
+.hub-card button.chosen { border-color: transparent; background: alpha(@accent_color, 0.22); font-weight: 600; }
+.hub-topic { font-weight: 500; font-size: 0.85em; color: @accent_color; }
+button.hub-from { padding: 0 4px; min-height: 0; font-size: 0.85em; }
+.hub-note { font-weight: 500; }
+.hub-question { font-weight: 500; }
+.hub-diff { font-size: 0.85em; padding: 8px; border-radius: 6px; background: alpha(@window_fg_color, 0.05); }
+.scribe-mark { min-width: 8px; min-height: 8px; border-radius: 99px; background: @accent_color; margin-right: 4px; }
+button.overview-scribe { padding: 2px 6px; margin-left: -6px; color: @accent_color; font-weight: 500; min-height: 0; }
+.notes-dot { min-width: 8px; min-height: 8px; border-radius: 99px; background: @loom_wait; margin: 4px 4px 0 0; }
+.notes-side { padding: 16px 12px 8px; }
+button.notes-new { padding: 8px 12px; border-radius: 8px; }
+button.notes-new label { font-weight: 500; }
+label.notes-day { font-size: 0.85em; font-weight: 500; color: alpha(@window_fg_color, 0.5); margin: 12px 8px 2px; }
+list.notes-chats { background: transparent; }
+list.notes-chats row { padding: 8px; border-radius: 8px; }
+button.notes-back { padding: 8px 12px; border-radius: 8px; }
+button.notes-back label { color: alpha(@window_fg_color, 0.75); }
+.notes-starters { padding: 24px; }
+label.notes-starters-title { font-size: 1.15em; font-weight: 500; }
+button.notes-starter { padding: 8px 16px; border-radius: 8px; }
+.notes-panel entry.notes-filter, .notes-panel searchentry.notes-filter { margin: 8px 12px 2px; }
+list.notes-topics { background: transparent; }
+list.notes-topics row { padding: 4px 12px; border-radius: 6px; }
+list.notes-topics row.notes-topic { margin-top: 12px; }
+label.notes-topic-name { font-weight: 500; }
+list.notes-topics row.notes-note { padding-left: 20px; }
+list.notes-topics row.notes-more { padding-left: 20px; }
+list.notes-topics row.notes-conflicts label.notes-topic-name { color: @loom_warn; }
+.conflict-actions { padding: 12px; background: @window_bg_color; border-top: 1px solid alpha(currentColor, 0.12); }

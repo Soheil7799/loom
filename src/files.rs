@@ -2101,7 +2101,7 @@ impl Files {
             let go = gtk::Button::with_label(&name);
             go.add_css_class("flat");
             go.set_tooltip_text(Some(&path.to_string_lossy()));
-            let close = gtk::Button::with_label("×");
+            let close = gtk::Button::from_icon_name("window-close-symbolic");
             close.add_css_class("flat");
             close.set_tooltip_text(Some("Take it off the tabs"));
             let (me, target) = (self.me.borrow().clone(), path.clone());

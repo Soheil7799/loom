@@ -132,7 +132,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     body.append(&nav);
     // The pages, with a close button over their top right corner.
     let pages_overlay = gtk::Overlay::builder().child(&stack).hexpand(true).build();
-    let close = gtk::Button::builder().label("×").tooltip_text("Close (Esc)").halign(gtk::Align::End).valign(gtk::Align::Start).build();
+    let close = gtk::Button::builder().icon_name("window-close-symbolic").tooltip_text("Close (Esc)").halign(gtk::Align::End).valign(gtk::Align::Start).build();
     close.add_css_class("prefs-close");
     close.update_property(&[gtk::accessible::Property::Label("Close Settings")]);
     let w = window.downgrade();
