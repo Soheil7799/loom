@@ -117,6 +117,8 @@ pub struct App {
     sidebar_feeds: RefCell<Option<(Feed, Feed)>>,
     /// Something new waits in them: drawn once the window is idle.
     sidebar_due: Cell<bool>,
+    /// A redraw is due for project icons still looked for.
+    icons_due: Cell<bool>,
     /// What the sidebar's rows were last built from: `agents` changing only in what they
     /// don't show (a file edited, the options) doesn't rebuild them under the pointer.
     sidebar_drawn: RefCell<Option<(Vec<SideAgent>, Vec<SideProject>, Vec<(u32, String)>)>>,
@@ -636,6 +638,7 @@ impl App {
             run_cap: Cell::new(300),
             sidebar_feeds: RefCell::default(),
             sidebar_due: Cell::new(false),
+            icons_due: Cell::new(false),
             sidebar_drawn: RefCell::default(),
             remote_agents: RefCell::default(),
             remote_focused: Cell::new(None),
@@ -1577,9 +1580,9 @@ impl App {
         }));
         // A job ending (a build, the tests) is worth a word when the window is elsewhere.
         let (app, project_name) = (self.window.clone(), self.project_label(project));
-        // Notifications come in the app icon's colours: the dark fox.
+        // Notifications come in the app icon's colours: the dark fox (none while it is looked for).
         let others: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
-        let icon = loom_core::project_icon::file(project, &others, true);
+        let icon = loom_core::project_icon::ready(project, &others, true);
         let application = self.app.clone();
         *tray.on_finish.borrow_mut() = Some(Rc::new(move |name: &str, code: Option<i64>| {
             if app.is_active() || !settings::get().notify_done {
@@ -1592,7 +1595,9 @@ impl App {
             };
             let notification = gio::Notification::new(&format!("{name} {how}"));
             notification.set_body(Some(&format!("Job in {project_name}")));
-            notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(&icon)));
+            if let Some(icon) = &icon {
+                notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(icon)));
+            }
             application.send_notification(Some(&format!("job-{name}")), &notification);
         }));
         self.trays.borrow_mut().insert(project.to_owned(), tray.clone());
@@ -2728,11 +2733,27 @@ impl App {
         entry.select_region(0, -1);
     }
 
-    /// A project's icon, `size` pixels square, in the window's colours.
-    fn project_icon(&self, path: &Path, size: i32) -> gtk::Image {
+    /// A project's icon file in the window's colours; `None` while its logo is still looked
+    /// for (the sidebar and overview are drawn again soon).
+    fn icon_file(self: &Rc<Self>, path: &Path) -> Option<PathBuf> {
         let others: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
-        let file = loom_core::project_icon::file(path, &others, crate::files::is_dark(&self.list));
-        let image = gtk::Image::from_file(file);
+        let file = loom_core::project_icon::ready(path, &others, crate::files::is_dark(&self.list));
+        if file.is_none() && !self.icons_due.replace(true) {
+            let weak = Rc::downgrade(self);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                if let Some(app) = weak.upgrade() {
+                    app.icons_due.set(false);
+                    app.draw_sidebar();
+                    app.fill_remote_overview();
+                }
+            });
+        }
+        file
+    }
+
+    /// A project's icon, `size` pixels square (blank while it is looked for).
+    fn project_icon(self: &Rc<Self>, path: &Path, size: i32) -> gtk::Image {
+        let image = self.icon_file(path).map_or_else(gtk::Image::new, gtk::Image::from_file);
         image.set_pixel_size(size);
         image.set_size_request(size, size);
         image.add_css_class("project-icon");
@@ -2986,6 +3007,7 @@ impl App {
                     id,
                     title: a["title"].as_str().unwrap_or_default().to_owned(),
                     project: a["project"].as_str().unwrap_or_default().to_owned(),
+                    icon: a["project_id"].as_str().and_then(|p| self.icon_file(Path::new(p))),
                     place: a["place"].as_str().unwrap_or_default().to_owned(),
                     status: Status::from_css(a["status"].as_str().unwrap_or_default()),
                     unseen: a["unseen"] == true,
@@ -4113,7 +4135,9 @@ impl App {
         let end = gtk::Box::builder().spacing(4).halign(gtk::Align::End).valign(gtk::Align::Center).build();
         end.append(&number);
         end.append(&awake);
-        line.attach(&dot, 0, 0, 1, 1);
+        let icon = self.project_icon(&agent.project, 32);
+        icon.set_valign(gtk::Align::Center);
+        line.attach(&icon_with_bead(&icon, &dot), 0, 0, 1, 2);
         line.attach(&title, 1, 0, 1, 1);
         line.attach(&project, 2, 0, 1, 1);
         line.attach(&sub, 1, 1, 1, 1);
@@ -4386,6 +4410,18 @@ impl SectionHead {
 }
 
 /// A bead says its state to a screen reader and on hover, not by its look alone.
+/// A project's icon with an agent's status bead on its top corner: which project at a glance,
+/// and how its agent is.
+pub(crate) fn icon_with_bead(icon: &gtk::Image, dot: &gtk::Box) -> gtk::Overlay {
+    let overlay = gtk::Overlay::builder().child(icon).valign(gtk::Align::Center).build();
+    let holder = gtk::Box::builder().halign(gtk::Align::End).valign(gtk::Align::Start).build();
+    holder.add_css_class("icon-bead");
+    dot.set_valign(gtk::Align::Center);
+    holder.append(dot);
+    overlay.add_overlay(&holder);
+    overlay
+}
+
 fn bead_named(dot: &gtk::Box, agent: &SideAgent) {
     let state = if agent.status == Status::Idle && agent.unseen { "done" } else { agent.status.describe() };
     dot.update_property(&[gtk::accessible::Property::Label(state)]);
