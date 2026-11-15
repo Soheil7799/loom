@@ -16,6 +16,8 @@ pub struct Card {
     pub id: u32,
     pub title: String,
     pub project: String,
+    /// Its project's icon file (none while it is looked for).
+    pub icon: Option<std::path::PathBuf>,
     /// Its repo and branch, or the folder it works in.
     pub place: String,
     pub status: Status,
@@ -268,7 +270,14 @@ impl Overview {
         }));
         state.add_css_class("small");
         state.add_css_class(if card.status == Status::Blocked { "accent" } else { "dim" });
-        top.append(&dot);
+        match &card.icon {
+            Some(icon) => {
+                let image = gtk::Image::from_file(icon);
+                image.set_pixel_size(32);
+                top.append(&crate::app::icon_with_bead(&image, &dot));
+            }
+            None => top.append(&dot),
+        }
         top.append(&title);
         if compact {
             let project = gtk::Label::new(Some(&card.project));

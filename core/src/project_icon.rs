@@ -9,28 +9,27 @@ const APP_ICON: &str = include_str!("../../data/dev.shirvani.Loom.svg");
 /// The hues a fox gets on its own: teal to pink. The warm half reads as loom's signals
 /// (red: failed, gold: waits, green: done), a fox in it as one more of them.
 const HUES: std::ops::RangeInclusive<u16> = 185..=340;
-/// Where a repository usually keeps its logo, looked for in this order.
-const LOGOS: [&str; 13] = [
-    "logo.svg",
-    "logo.png",
-    "icon.svg",
-    "icon.png",
-    "assets/logo.svg",
-    "assets/logo.png",
-    "assets/icon.svg",
-    "assets/icon.png",
-    ".github/logo.svg",
-    ".github/logo.png",
-    "public/logo.svg",
-    "public/favicon.svg",
-    "static/favicon.svg",
-];
+/// Folders never searched for a logo: dependencies and build output.
+const SKIP: [&str; 12] = ["node_modules", "target", "build", "dist", "vendor", "venv", "__pycache__", "Pods", "out", "coverage", "site-packages", "bin"];
 
 /// The icon's file for `project`, in dark or light colours. `others` are the other projects:
-/// a project without a colour yet takes the hue farthest from theirs.
+/// a project without a colour yet takes the hue farthest from theirs. Waits for the search
+/// for its logo (half a second in a big tree, the first time).
 pub fn file(project: &Path, others: &[PathBuf], dark: bool) -> PathBuf {
-    if let Some(own) = chosen(project).or_else(|| logo(project)) {
-        return own;
+    icon(project, others, dark, true).unwrap_or_default()
+}
+
+/// As `file`, but `None` while its logo is still looked for (in the background: ask again).
+pub fn ready(project: &Path, others: &[PathBuf], dark: bool) -> Option<PathBuf> {
+    icon(project, others, dark, false)
+}
+
+fn icon(project: &Path, others: &[PathBuf], dark: bool, wait: bool) -> Option<PathBuf> {
+    if let Some(own) = chosen(project) {
+        return Some(own);
+    }
+    if let Some(logo) = logo(project, wait)? {
+        return Some(logo);
     }
     let colour = colour(project, others);
     let letter = project.file_name().and_then(|n| n.to_str()).and_then(|n| n.chars().find(|c| c.is_alphanumeric()));
@@ -40,7 +39,7 @@ pub fn file(project: &Path, others: &[PathBuf], dark: bool) -> PathBuf {
         let _ = std::fs::create_dir_all(path.parent().unwrap_or(Path::new(".")));
         let _ = std::fs::write(&path, svg);
     }
-    path
+    Some(path)
 }
 
 /// The picture the user chose for it, if any.
@@ -48,21 +47,93 @@ fn chosen(project: &Path) -> Option<PathBuf> {
     ["icon.svg", "icon.png"].iter().map(|f| project.join(".loom").join(f)).find(|p| p.is_file())
 }
 
-/// The repository's own logo: a usual name, or a desktop app's icon (named by its app id,
-/// as `data/dev.example.App.svg`).
-fn logo(project: &Path) -> Option<PathBuf> {
-    LOGOS.iter().map(|f| project.join(f)).find(|p| p.is_file()).or_else(|| {
-        ["data", "data/icons/hicolor/scalable/apps"].iter().find_map(|dir| {
-            let mut found: Vec<PathBuf> = std::fs::read_dir(project.join(dir))
-                .ok()?
-                .flatten()
-                .map(|e| e.path())
-                .filter(|p| p.extension().is_some_and(|e| e == "svg") && p.file_stem().and_then(|s| s.to_str()).is_some_and(|s| s.matches('.').count() >= 2))
-                .collect();
-            found.sort();
-            found.into_iter().next()
-        })
-    })
+/// The project's own logo, looked for once per run (a folder above several repos too): the best
+/// of the SVG and PNG files named `*logo*`, `icon` or `favicon`, or a desktop app's icon (named
+/// by its app id, as `dev.example.App.svg`), up to 6 folders deep.
+/// `None`: still looking (`wait` false), in a thread of its own.
+fn logo(project: &Path, wait: bool) -> Option<Option<PathBuf>> {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, PoisonError};
+    // Per project: its logo or none once known; `None` while it is looked for.
+    static FOUND: Mutex<Option<HashMap<PathBuf, Option<Option<PathBuf>>>>> = Mutex::new(None);
+    let done = |logo: &Option<PathBuf>| {
+        FOUND.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_default().insert(project.to_owned(), Some(logo.clone()));
+    };
+    {
+        let mut found = FOUND.lock().unwrap_or_else(PoisonError::into_inner);
+        match found.get_or_insert_default().get(project) {
+            Some(Some(logo)) => return Some(logo.clone()),
+            Some(None) if !wait => return None,
+            Some(None) => {}
+            None => {
+                found.get_or_insert_default().insert(project.to_owned(), None);
+                if !wait {
+                    let project = project.to_owned();
+                    std::thread::spawn(move || {
+                        let logo = search(&project);
+                        FOUND.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_default().insert(project, Some(logo));
+                    });
+                    return None;
+                }
+            }
+        }
+    }
+    let logo = search(project);
+    done(&logo);
+    Some(logo)
+}
+
+fn search(project: &Path) -> Option<PathBuf> {
+    // "learning german", "Hamketab": as a file name would have it.
+    let squash = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+    let name = project.file_name().and_then(|n| n.to_str()).map(squash).unwrap_or_default();
+    let mut best: Option<((bool, u8, bool, usize), PathBuf)> = None;
+    let mut queue = std::collections::VecDeque::from([(project.to_owned(), 0)]);
+    // shortcut: at most 20 000 entries looked at; a huge tree may hide its logo past them (pick it by hand)
+    let mut budget = 20_000;
+    while let Some((dir, depth)) = queue.pop_front() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let mut entries: Vec<_> = entries.flatten().collect();
+        entries.sort_by_key(std::fs::DirEntry::file_name);
+        for entry in entries {
+            budget -= 1;
+            if budget == 0 {
+                return best.map(|b| b.1);
+            }
+            let path = entry.path();
+            let Some(file) = path.file_name().and_then(|f| f.to_str()) else { continue };
+            let Ok(kind) = entry.file_type() else { continue };
+            if kind.is_dir() {
+                if depth < 6 && (!file.starts_with('.') || file == ".github") && !SKIP.contains(&file) {
+                    queue.push_back((path, depth + 1));
+                }
+                continue;
+            }
+            let Some((stem, ext)) = file.rsplit_once('.') else { continue };
+            let svg = ext.eq_ignore_ascii_case("svg");
+            if !kind.is_file() || !(svg || ext.eq_ignore_ascii_case("png")) || entry.metadata().map_or(true, |m| m.len() > 2 << 20) {
+                continue;
+            }
+            let lower = stem.to_lowercase();
+            let rank = if svg && stem.matches('.').count() >= 2 {
+                0
+            } else if lower.contains("logo") && !lower.contains("logos") {
+                1
+            } else if lower == "icon" || lower == "app_icon" {
+                2
+            } else if lower == "favicon" {
+                3
+            } else {
+                continue;
+            };
+            // Lower is better: named after the project, then the kind, SVG, nearer the top.
+            let score = (name.is_empty() || !squash(stem).contains(&name), rank, !svg, depth);
+            if best.as_ref().is_none_or(|(b, _)| score < *b) {
+                best = Some((score, path));
+            }
+        }
+    }
+    best.map(|b| b.1)
 }
 
 /// Use `picture` (an SVG or PNG) as the project's icon; `None`: back to its logo or fox.
@@ -277,10 +348,18 @@ mod tests {
     fn logo_then_chosen_then_fox() {
         let project = std::env::temp_dir().join(format!("loom-icon-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&project);
-        std::fs::create_dir_all(project.join("data")).unwrap();
-        assert_eq!(logo(&project), None);
-        std::fs::write(project.join("data/dev.example.App.svg"), "<svg/>").unwrap();
-        assert_eq!(logo(&project), Some(project.join("data/dev.example.App.svg")));
+        std::fs::create_dir_all(project.join("app/data")).unwrap();
+        std::fs::create_dir_all(project.join("web/node_modules/x")).unwrap();
+        assert_eq!(search(&project), None);
+        std::fs::write(project.join("web/node_modules/x/logo.svg"), "<svg/>").unwrap();
+        std::fs::write(project.join("web/favicon.png"), "png").unwrap();
+        assert_eq!(search(&project), Some(project.join("web/favicon.png")));
+        std::fs::write(project.join("app/data/dev.example.App.svg"), "<svg/>").unwrap();
+        assert_eq!(search(&project), Some(project.join("app/data/dev.example.App.svg")));
+        // named after the project beats any other kind
+        let named = format!("{}-logo.png", project.file_name().unwrap().to_str().unwrap());
+        std::fs::write(project.join("web").join(&named), "png").unwrap();
+        assert_eq!(search(&project), Some(project.join("web").join(named)));
         let picture = project.join("mine.png");
         std::fs::write(&picture, "png").unwrap();
         choose(&project, Some(&picture)).unwrap();
