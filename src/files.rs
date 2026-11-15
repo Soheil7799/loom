@@ -2664,7 +2664,7 @@ fn relative(dir: &Path, base: &Path) -> String {
 }
 
 /// Whether the widget's text colour is light, i.e. the theme is dark.
-fn is_dark(widget: &impl IsA<gtk::Widget>) -> bool {
+pub(crate) fn is_dark(widget: &impl IsA<gtk::Widget>) -> bool {
     let fg = widget.as_ref().color();
     0.299 * fg.red() + 0.587 * fg.green() + 0.114 * fg.blue() > 0.5
 }

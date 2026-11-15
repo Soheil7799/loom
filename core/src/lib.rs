@@ -34,6 +34,7 @@ pub mod notes_chat;
 pub mod paths;
 pub mod plugin;
 pub mod project_files;
+pub mod project_icon;
 pub mod provider;
 pub mod quickopen;
 pub mod repos;
