@@ -297,22 +297,40 @@ pub fn pull(model: &Model) -> Result<(), String> {
 }
 
 /// `ollama serve` in the background, answering where `url` says, its output in loom's state
-/// folder.
+/// folder. It ends with loomd (quit, killed or crashed): an Ollama loomd didn't start is never
+/// touched.
 fn start_ollama(program: &std::path::Path, url: &str) -> Result<(), String> {
+    use std::os::unix::process::CommandExt;
     let dir = crate::paths::home().join(".local/state/loom");
     let _ = std::fs::create_dir_all(&dir);
     let log = std::fs::File::create(dir.join("ollama.log")).map_err(|e| e.to_string())?;
-    let mut child = std::process::Command::new(program)
+    let mut command = std::process::Command::new(program);
+    command
         .arg("serve")
         .env("OLLAMA_HOST", url.split("://").nth(1).unwrap_or(url).trim_end_matches('/'))
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
-        .stderr(log)
-        .spawn()
-        .map_err(|e| format!("can't start Ollama: {e}"))?;
-    // reaped when it ends (loom stopping it, or its own end)
-    std::thread::spawn(move || child.wait());
-    Ok(())
+        .stderr(log);
+    // SAFETY: prctl only, between fork and exec.
+    unsafe {
+        command.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            Ok(())
+        });
+    }
+    // The death signal comes when the *thread* that started it ends: started from a thread
+    // that lives as long as Ollama (waiting on it), not from a pool thread that may end first.
+    let (sent, started) = std::sync::mpsc::channel();
+    std::thread::spawn(move || match command.spawn() {
+        Ok(mut child) => {
+            let _ = sent.send(Ok(()));
+            let _ = child.wait();
+        }
+        Err(e) => {
+            let _ = sent.send(Err(format!("can't start Ollama: {e}")));
+        }
+    });
+    started.recv().map_err(|e| e.to_string())?
 }
 
 /// loomd's part: the `embeddings` resource, `embeddings_check` (Settings' Refresh), and a
