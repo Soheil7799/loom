@@ -231,6 +231,12 @@ fn stop_old_loomd(pid: u32) -> Result<(), String> {
 
 /// loomd's `hello` against this window (version `mine`): None if they match; else how many of
 /// the commands this window uses loomd lacks (0: only the version differs).
+/// A newer loom installed over the one running (the program's file replaced since it started:
+/// the kernel shows its path "(deleted)").
+fn update_installed() -> bool {
+    std::fs::read_link("/proc/self/exe").is_ok_and(|p| p.to_string_lossy().ends_with(" (deleted)"))
+}
+
 fn loomd_differs(hello: &Value, mine: &str) -> Option<usize> {
     let has: Vec<&str> = hello["capabilities"]["commands"].as_array().into_iter().flatten().filter_map(Value::as_str).collect();
     let missing = loom_core::api::spec::COMMANDS.iter().filter(|c| !has.contains(&c.name)).count();
@@ -2234,6 +2240,9 @@ impl App {
             let lacks = if missing > 0 { format!(", and lacks {missing} of the commands this window uses") } else { String::new() };
             return ("blocked", format!("loomd {version}"), format!("loomd is {version}, this window {mine}{lacks}. Click to restart it as this window's version."));
         }
+        if update_installed() {
+            return ("blocked", "loom updated".to_owned(), "A newer loom is installed than the one running. Click to restart into it: now, or once no agent works.".to_owned());
+        }
         let closing = if settings::get().keep_working {
             "Closing this window leaves them working."
         } else if !crate::conn::started_loomd() {
@@ -2264,12 +2273,15 @@ impl App {
     /// The sign clicked: an older or newer loomd restarted as this window's version (after
     /// asking: its working agents stop), a refusing one explained, a gone one started again.
     fn loomd_clicked(self: &Rc<Self>) {
+        if update_installed() {
+            return self.ask_relaunch();
+        }
         let (class, _, tip) = self.loomd_state();
         let detail = match class {
             // Not reachable: none answers, so one is started (nothing runs to stop).
             "suspended" if loom_core::api::socket::running(&loom_core::api::socket::socket_path(&self.app_id)).is_none() => return self.restart_loomd(),
             "blocked" => {
-                let busy: Vec<String> = self.sidebar_feeds.borrow().as_ref().map(|(agents, _)| agents.items().iter().filter(|a| a["busy"] == true).filter_map(|a| a["title"].as_str().map(str::to_owned)).collect()).unwrap_or_default();
+                let busy = self.busy_titles();
                 let stops = if busy.is_empty() { String::new() } else { format!(" Working now, they stop (their conversations are kept and go on): {}.", busy.join(", ")) };
                 format!("{tip}{stops}")
             }
@@ -2286,6 +2298,64 @@ impl App {
                 app.restart_loomd();
             }
         });
+    }
+
+    /// A newer loom installed: restarted into now, or once no agent works ("when quiet").
+    fn ask_relaunch(self: &Rc<Self>) {
+        let busy = self.busy_titles();
+        let detail = if busy.is_empty() {
+            "No agent is working now. Restarting stops loomd and this window and starts the new ones; conversations are kept.".to_owned()
+        } else {
+            format!("Working now: {}. \"When quiet\" waits until none works, then restarts loomd and this window; conversations are kept.", busy.join(", "))
+        };
+        let dialog = gtk::AlertDialog::builder().message("Restart into the new loom?").detail(detail).buttons(["Later", "When quiet", "Now"]).cancel_button(0).default_button(1).build();
+        let weak = Rc::downgrade(self);
+        dialog.choose(Some(&self.window), None::<&gio::Cancellable>, move |choice| {
+            let Some(app) = weak.upgrade() else { return };
+            match choice {
+                Ok(2) => app.relaunch(),
+                Ok(1) => {
+                    let (button, _, label) = &app.loomd_sign;
+                    button.set_sensitive(false);
+                    label.set_label("restarts when quiet…");
+                    let weak = Rc::downgrade(&app);
+                    glib::timeout_add_seconds_local(3, move || {
+                        let Some(app) = weak.upgrade() else { return glib::ControlFlow::Break };
+                        if app.busy_titles().is_empty() {
+                            app.relaunch();
+                            return glib::ControlFlow::Break;
+                        }
+                        glib::ControlFlow::Continue
+                    });
+                }
+                _ => {}
+            }
+        });
+    }
+
+    /// The titles of loomd's agents working now.
+    fn busy_titles(&self) -> Vec<String> {
+        self.sidebar_feeds.borrow().as_ref().map(|(agents, _)| agents.items().iter().filter(|a| a["busy"] == true).filter_map(|a| a["title"].as_str().map(str::to_owned)).collect()).unwrap_or_default()
+    }
+
+    /// loomd and this window stopped, and the newly installed window started (it starts its
+    /// loomd): a moment after this one is gone, as there is one window per app id.
+    fn relaunch(&self) {
+        let Some(program) = loom_core::paths::loom_program() else { return };
+        let spawned = std::process::Command::new("sh")
+            .args(["-c", "sleep 3; exec \"$0\""])
+            .arg(&program)
+            .env("LOOM_APP_ID", &self.app_id)
+            .stdin(std::process::Stdio::null())
+            .spawn();
+        if let Err(err) = spawned {
+            crate::conn::tell(&format!("loom couldn't restart: {err}"));
+            return;
+        }
+        crate::conn::command("window", "loomd_stop", json!({}));
+        if let Some(app) = self.window.application() {
+            app.quit();
+        }
     }
 
     /// loomd stopped, then started again as this window's version; the connection follows.
