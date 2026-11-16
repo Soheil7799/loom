@@ -2298,7 +2298,8 @@ impl App {
                     continue;
                 }
                 let edit = item["kind"] == "edit";
-                if first && !edit {
+                // (a notice clicked shortly before this window opened still shows its agent)
+                if first && !edit && item["kind"] != "show" {
                     seen.insert(id);
                     continue;
                 }
@@ -2355,6 +2356,15 @@ impl App {
                     self.show_remote_toast(agent, &format!("{title}: {message}"), false);
                 }
                 done(&id);
+            }
+            // A desktop notice about it clicked: the window comes up on that agent.
+            "show" => {
+                done(&id);
+                if let Some(agent) = agent {
+                    self.focus_remote(agent);
+                    self.window.present();
+                    return;
+                }
             }
             "input" => {
                 let job = item["job"].as_str().and_then(|j| j.parse().ok());

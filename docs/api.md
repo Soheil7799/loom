@@ -438,7 +438,7 @@ Who: window, cli, bridge.
 | `id` | string |  |
 | `agent` | string | who asks |
 | `title` | string | its title |
-| `kind` | string | open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n) |
+| `kind` | string | open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n), show (a desktop notice about the agent was clicked: a window shows it) |
 | `path` | string? | the file |
 | `job` | string? | input's job (`job/<id>`, `job_input`) |
 | `message` | string |  |

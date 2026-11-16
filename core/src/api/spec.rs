@@ -416,7 +416,7 @@ pub const RESOURCES: &[Resource] = &[
     Resource {
         name: "asks",
         who: ALL_BUT_AGENTS,
-        item: &[("id", "string", true, ""), ("agent", "string", true, "who asks"), ("title", "string", true, "its title"), ("kind", "string", true, "open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n)"), ("path", "string", false, "the file"), ("job", "string", false, "input's job (`job/<id>`, `job_input`)"), ("message", "string", true, ""), ("state", "string", true, "waiting"), ("at", "string", true, "when")],
+        item: &[("id", "string", true, ""), ("agent", "string", true, "who asks"), ("title", "string", true, "its title"), ("kind", "string", true, "open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n), show (a desktop notice about the agent was clicked: a window shows it)"), ("path", "string", false, "the file"), ("job", "string", false, "input's job (`job/<id>`, `job_input`)"), ("message", "string", true, ""), ("state", "string", true, "waiting"), ("at", "string", true, "when")],
         about: "What agents ask of the user beyond their conversation, where no window of loom's shows it (loomd): a UI shows them; `ask_done`, `ask_open`.",
     },
     Resource { name: "bridge/<name>", who: &["bridge (that one)"], item: &[("id", "string", true, ""), ("event", "object", true, "a bridge-protocol event")], about: "A bridge's events: each an item added and taken away at once (a snapshot is empty)." },

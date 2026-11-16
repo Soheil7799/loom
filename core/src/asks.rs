@@ -8,6 +8,8 @@
 //! - `notify`: the agent wants the user (`loom_notify`);
 //! - `input`: a job of its waits for the user to type in its terminal (`loom_run` with
 //!   `input`: a password, a y/n), its id in `job`; a UI opens it.
+//! - `show`: the user clicked a desktop notice about the agent; a window shows it (gone after
+//!   a minute, so a window started later doesn't jump to it).
 //!
 //! Commands, for people (loom's window, the CLI, a web page): `ask_done {id}` (an edit filled
 //! in; an open or a notify seen, and gone), `ask_cancel {id}` (an edit the user won't fill
@@ -135,6 +137,14 @@ fn edit_cancel(agent: u32, params: &Value) -> Result<Value, String> {
 }
 
 /// `loom_notify`: the agent wants the user.
+/// A desktop notice about `agent` was clicked: a window shows it.
+pub fn show(agent: &Agent) {
+    let id = format!("a{}", add(agent, "show", None, ""));
+    let _ = crate::rt::timeout_once(std::time::Duration::from_secs(60), move || {
+        store().remove(&id);
+    });
+}
+
 pub fn notify(agent: &Agent, params: &Value) -> Result<Value, String> {
     add(agent, "notify", None, params["message"].as_str().unwrap_or("Needs you"));
     Ok(json!({}))

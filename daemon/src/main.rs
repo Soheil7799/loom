@@ -129,7 +129,7 @@ impl Daemon {
                 "open_file" => "wants you to see a file",
                 _ => params["message"].as_str().unwrap_or("needs you"),
             };
-            desktop(&found.title(), what, Some(&found.project));
+            desktop(&found.title(), what, Some(&found));
         }
         asked
     }
@@ -180,10 +180,11 @@ impl Host for Daemon {
             && loom_core::settings::get().notify_questions
             && !self.window_active()
         {
-            desktop(&agent.title(), &format!("Wants to: {title}"), Some(&agent.project));
+            desktop(&agent.title(), &format!("Wants to: {title}"), Some(agent));
         }
         if matches!(event, Event::Done) && loom_core::settings::get().notify_done && !looking {
-            desktop(&agent.title(), "Finished", Some(&agent.project));
+            let said = agent.last_reply(140).filter(|r| !r.is_empty());
+            desktop(&agent.title(), said.as_deref().unwrap_or("Finished"), Some(agent));
         }
         self.publish_soon();
         if !matches!(event, Event::Changed) {
@@ -193,7 +194,7 @@ impl Host for Daemon {
 
     fn notify(&self, agent: Option<&Rc<Agent>>, title: &str, body: &str) {
         match agent {
-            Some(agent) => desktop(&agent.title(), body, Some(&agent.project)),
+            Some(agent) => desktop(&agent.title(), body, Some(agent)),
             None => desktop(title, body, None),
         }
     }
@@ -204,9 +205,12 @@ impl Host for Daemon {
     }
 }
 
+/// Agents whose desktop notice was clicked, for loomd's loop (`asks::show`).
+static CLICKED: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<u32>> = std::sync::OnceLock::new();
+
 /// A word on the desktop (`notify-send`, where there is one), and in loomd's output; with the
-/// icon of the project it is about.
-fn desktop(title: &str, body: &str, project: Option<&std::path::Path>) {
+/// icon of the project it is about. One about an agent opens it in loom's window when clicked.
+fn desktop(title: &str, body: &str, agent: Option<&Agent>) {
     eprintln!("loomd: {title}: {body}");
     if std::env::var_os("LOOM_TEST_INSTANCE").is_some() {
         return;
@@ -215,18 +219,28 @@ fn desktop(title: &str, body: &str, project: Option<&std::path::Path>) {
     send.arg("--app-name=loom");
     // Notifications come in the app icon's colours: the dark fox (none the first time, while
     // its logo is looked for: never a wait on loomd's loop).
-    if let Some(icon) = project.and_then(|p| loom_core::project_icon::ready(p, &loom_core::project_files::projects(), true)) {
+    if let Some(icon) = agent.and_then(|a| loom_core::project_icon::ready(&a.project, &loom_core::project_files::projects(), true)) {
         send.arg("--icon").arg(icon);
+    }
+    // Clicked, notify-send prints the action's name (it waits until the notice closes).
+    if agent.is_some() {
+        send.args(["--action=default=Open", "--wait"]);
     }
     let spawned = send
         .args([title, body])
         .stdin(std::process::Stdio::null())
-        .stdout(std::process::Stdio::null())
+        .stdout(if agent.is_some() { std::process::Stdio::piped() } else { std::process::Stdio::null() })
         .stderr(std::process::Stdio::null())
         .spawn();
     // Waited for, off this thread (no zombie left).
-    if let Ok(mut child) = spawned {
-        std::thread::spawn(move || child.wait());
+    let id = agent.map(|a| a.id);
+    if let Ok(child) = spawned {
+        std::thread::spawn(move || {
+            let clicked = child.wait_with_output().is_ok_and(|out| String::from_utf8_lossy(&out.stdout).lines().any(|l| l.trim() == "default"));
+            if clicked && let (Some(id), Some(tell)) = (id, CLICKED.get()) {
+                let _ = tell.send(id);
+            }
+        });
     }
 }
 
@@ -478,6 +492,20 @@ fn commands(daemon: &Rc<Daemon>) {
         let _ = loom_core::rt::timeout_once(Duration::from_millis(200), move || stop.notify_one());
         Ok(serde_json::json!({}))
     });
+    // A desktop notice clicked: loom's window shows its agent (`asks`' `show`).
+    let (tell, mut clicked) = tokio::sync::mpsc::unbounded_channel::<u32>();
+    if CLICKED.set(tell).is_ok() {
+        let weak = Rc::downgrade(daemon);
+        loom_core::rt::spawn_local(async move {
+            while let Some(id) = clicked.recv().await {
+                let Some(daemon) = weak.upgrade() else { break };
+                let found = daemon.ws.agent(id).or_else(|| daemon.notes.agents().into_iter().find(|a| a.id == id));
+                if let Some(agent) = found {
+                    loom_core::asks::show(&agent);
+                }
+            }
+        });
+    }
     let weak = Rc::downgrade(daemon);
     hub.handle("set_looking", move |who, params| {
         // (the CLI too in a test instance, so the end-to-end tests can say it)

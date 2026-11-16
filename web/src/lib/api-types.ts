@@ -412,7 +412,7 @@ export type AsksItem = {
   agent: string;
   /** its title */
   title: string;
-  /** open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n) */
+  /** open (a file to see), edit (a file to fill in), notify, input (a job waits for the user to type in its terminal: a password, a y/n), show (a desktop notice about the agent was clicked: a window shows it) */
   kind: string;
   /** the file */
   path?: string;
