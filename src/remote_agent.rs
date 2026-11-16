@@ -155,7 +155,8 @@ impl RemoteAgent {
         let status = Status::from_css(text("status"));
         self.chat.set_starting((status == Status::Starting).then(|| format!("Starting Claude in {place}…")).as_deref());
         self.chat.set_state(if status == Status::Suspended { "" } else { status.describe() }, status.css());
-        self.chat.set_mode(text("mode"));
+        let modes: Vec<String> = item["modes"].as_array().into_iter().flatten().filter_map(|m| m.as_str().map(str::to_owned)).collect();
+        self.chat.set_mode(text("mode"), &modes);
         if let Some(options) = item.get("options") {
             let chosen: Vec<String> = item["chosen"].as_array().into_iter().flatten().filter_map(|c| c.as_str().map(str::to_owned)).collect();
             self.chat.set_options(options, &chosen);
@@ -409,6 +410,10 @@ impl RemoteAgent {
         let weak = Rc::downgrade(self);
         *chat.on_option.borrow_mut() = Some(Rc::new(move |(option, value): (String, String)| {
             if let Some(agent) = weak.upgrade() {
+                // The mode's menu is one of the chips, but a command of its own.
+                if option == "mode" {
+                    return agent.send("set_mode", json!({ "mode": value }));
+                }
                 agent.send("set_option", json!({ "option": option, "value": value }));
             }
         }));

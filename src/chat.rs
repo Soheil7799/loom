@@ -73,7 +73,9 @@ pub struct Chat {
     dot: gtk::Box,
     context: gtk::LevelBar,
     state: gtk::Label,
-    mode: gtk::Button,
+    mode: gtk::MenuButton,
+    /// The mode and modes its menu was last built from.
+    mode_drawn: RefCell<Option<(String, Vec<String>)>>,
     usage: gtk::Label,
     /// Shown once the context is fuller than the user's setting: sends /compact.
     compact: gtk::Button,
@@ -364,10 +366,11 @@ impl Chat {
         let state = gtk::Label::builder().valign(gtk::Align::Center).visible(false).build();
         state.add_css_class("state-pill");
         title_line.append(&state);
-        let mode = gtk::Button::with_label("Mode");
+        let mode = gtk::MenuButton::builder().label("Permissions").build();
+        mode.add_css_class("chip-picker");
         mode.add_css_class("mode");
         mode.add_css_class("flat");
-        mode.set_tooltip_text(Some("Permission mode (Shift+Tab in the input)"));
+        mode.set_tooltip_text(Some("What Claude may do without asking (Shift+Tab in the input: the next one)"));
         mode.set_valign(gtk::Align::Center);
         let usage = gtk::Label::new(None);
         usage.add_css_class("dim");
@@ -630,6 +633,7 @@ impl Chat {
             context,
             state,
             mode,
+            mode_drawn: RefCell::default(),
             usage,
             compact: compact.clone(),
             spend,
@@ -1234,13 +1238,6 @@ impl Chat {
                 chat.show_crew();
             }
             glib::ControlFlow::Continue
-        });
-
-        let weak = Rc::downgrade(self);
-        self.mode.connect_clicked(move |_| {
-            if let Some(chat) = weak.upgrade() {
-                chat.call(&chat.on_cycle_mode, ());
-            }
         });
 
         let keys = gtk::EventControllerKey::new();
@@ -2164,25 +2161,35 @@ impl Chat {
         self.state.add_css_class(class);
     }
 
-    pub fn set_mode(&self, mode: &str) {
-        let name = match mode {
-            "default" => "Ask first",
-            "acceptEdits" => "Accept edits",
-            "plan" => "Plan",
-            "auto" => "Auto",
-            "bypassPermissions" => "Bypass",
-            other => other,
+    /// The permission mode's chip and its menu of `modes` (rebuilt only when they change: a
+    /// rebuild closes the open menu).
+    pub fn set_mode(&self, mode: &str, modes: &[String]) {
+        let drawn = Some((mode.to_owned(), modes.to_vec()));
+        if *self.mode_drawn.borrow() == drawn {
+            return;
+        }
+        *self.mode_drawn.borrow_mut() = drawn;
+        let about = |m: &str| -> (&str, &str) {
+            match m {
+                "default" => ("Ask first", "Asks before each edit and command"),
+                "acceptEdits" => ("Accept edits", "Edits files without asking; asks before commands"),
+                "plan" => ("Plan", "Reads and plans; changes nothing"),
+                "auto" => ("Auto", "Decides for itself what needs asking"),
+                "bypassPermissions" => ("Bypass", "Asks nothing at all"),
+                _ => ("", ""),
+            }
         };
-        self.mode.set_label(&format!("Mode · {name}"));
-        for class in ["plan-mode", "accept-mode", "bypass-mode"] {
-            self.mode.remove_css_class(class);
-        }
-        match mode {
-            "plan" => self.mode.add_css_class("plan-mode"),
-            "acceptEdits" | "auto" => self.mode.add_css_class("accept-mode"),
-            "bypassPermissions" => self.mode.add_css_class("bypass-mode"),
-            _ => {}
-        }
+        let name = |m: &str| if about(m).0.is_empty() { m.to_owned() } else { about(m).0.to_owned() };
+        self.mode.set_label(&format!("Permissions · {}", name(mode)));
+        // Not the default: tinted as a chip with a choice of its own; bypass in red.
+        if mode == "default" { self.mode.remove_css_class("chosen") } else { self.mode.add_css_class("chosen") }
+        if mode == "bypassPermissions" { self.mode.add_css_class("bypass-mode") } else { self.mode.remove_css_class("bypass-mode") }
+        let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        list.add_css_class("option-list");
+        let popover = gtk::Popover::builder().child(&list).position(gtk::PositionType::Top).build();
+        let values: Vec<(String, String, String)> = modes.iter().map(|m| (m.clone(), name(m), about(m).1.to_owned())).collect();
+        self.option_items(&list, &popover, "mode", "Permission mode", &values, mode);
+        self.mode.set_popover(Some(&popover));
     }
 
     /// Session settings as chips, each with its menu: "Model · Opus 5.5", "Effort · High · Fast"
@@ -2259,19 +2266,28 @@ impl Chat {
         heading.add_css_class("option-heading");
         list.append(&heading);
         for (value, name, description) in values {
-            let line = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let title = gtk::Label::builder().label(if value == current { format!("✓  {name}") } else { format!("    {name}") }).xalign(0.0).build();
-            line.append(&title);
+            // A check column: the current one's mark shown, the others' kept as room.
+            let check = gtk::Image::from_icon_name("object-select-symbolic");
+            check.set_pixel_size(16);
+            check.set_valign(gtk::Align::Start);
+            check.set_opacity(if value == current { 1.0 } else { 0.0 });
+            let words = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            words.append(&gtk::Label::builder().label(name.as_str()).xalign(0.0).build());
             if !description.is_empty() {
                 let detail = gtk::Label::builder().label(description).xalign(0.0).wrap(true).max_width_chars(44).build();
                 detail.add_css_class("dim");
                 detail.add_css_class("small");
-                detail.set_margin_start(22);
-                line.append(&detail);
+                words.append(&detail);
             }
+            let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            line.append(&check);
+            line.append(&words);
             let item = gtk::Button::builder().child(&line).build();
             item.add_css_class("flat");
             item.add_css_class("menu-item");
+            if value == current {
+                item.update_property(&[gtk::accessible::Property::Description("current")]);
+            }
             let callback = self.on_option.borrow().clone();
             let (id, value, popover) = (id.to_owned(), value.clone(), popover.clone());
             item.connect_clicked(move |_| {
