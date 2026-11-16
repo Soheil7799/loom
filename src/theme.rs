@@ -129,7 +129,9 @@ pub fn apply(theme: &str, mode: &str) {
     APPLIED.with_borrow_mut(|a| *a = (theme.to_owned(), mode.to_owned()));
     let first = DESKTOP.with_borrow(Option::is_none);
     let desktop_dark = DESKTOP.with_borrow_mut(|d| d.get_or_insert_with(|| Desktop { theme: settings.gtk_theme_name(), dark: settings.is_gtk_application_prefer_dark_theme() }).dark);
-    // shortcut: the desktop's dark preference is read once; a change to it while loom runs is seen at its next start
+    if first {
+        follow_desktop();
+    }
     let dark = match mode {
         "dark" => true,
         "light" => false,
@@ -158,6 +160,48 @@ pub fn apply(theme: &str, mode: &str) {
         return;
     }
     changed();
+}
+
+/// The desktop switching between dark and light while loom runs (the settings portal's
+/// color-scheme): followed at once when the mode is the desktop's ("").
+fn follow_desktop() {
+    gio::DBusProxy::for_bus(
+        gio::BusType::Session,
+        gio::DBusProxyFlags::DO_NOT_AUTO_START,
+        None,
+        "org.freedesktop.portal.Desktop",
+        "/org/freedesktop/portal/desktop",
+        "org.freedesktop.portal.Settings",
+        gio::Cancellable::NONE,
+        |proxy| {
+            // No portal: the preference read at start stays.
+            let Ok(proxy) = proxy else { return };
+            proxy.connect_local("g-signal", false, |values| {
+                let signal = values.get(2)?.get::<String>().ok()?;
+                let params = values.get(3)?.get::<glib::Variant>().ok()?;
+                if signal != "SettingChanged" || params.n_children() != 3 {
+                    return None;
+                }
+                let (namespace, key) = (params.child_value(0).str()?.to_owned(), params.child_value(1).str()?.to_owned());
+                if namespace != "org.freedesktop.appearance" || key != "color-scheme" {
+                    return None;
+                }
+                // 1: dark, 2: light, 0: no preference (light, as GTK reads it).
+                let value = params.child_value(2);
+                let scheme = value.as_variant().unwrap_or(value).get::<u32>()?;
+                let dark = scheme == 1;
+                let changed = DESKTOP.with_borrow_mut(|d| d.as_mut().is_some_and(|d| std::mem::replace(&mut d.dark, dark) != dark));
+                let (theme, mode) = APPLIED.with_borrow(|a| a.clone());
+                if changed && mode.is_empty() {
+                    APPLIED.with_borrow_mut(|a| a.0.clear());
+                    apply(&theme, &mode);
+                }
+                None
+            });
+            // Kept for as long as loom runs.
+            std::mem::forget(proxy);
+        },
+    );
 }
 
 /// Whether adw-gtk3's GTK 4 stylesheet is installed (Arch: adw-gtk-theme).
