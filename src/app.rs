@@ -1557,6 +1557,7 @@ impl App {
             act("Run a recipe on this agent (steps, one per turn)…", "", |a| a.choose_recipe()),
             act("Memory: the CLAUDE.md files this agent reads…", "", |a| a.choose_memory()),
             act("Find code by meaning (as loom_find does for agents)…", "", |a| a.find_by_meaning()),
+            act("Next from the board: give this agent a card…", "", |a| a.card_for_agent()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
             act("About Loom", "", |a| crate::about::open(&a.window)),
@@ -2861,6 +2862,45 @@ impl App {
             choices.insert(0, Choice::new("I'm back: end away mode", "", set(0)));
         }
         self.picker.open("Away: agents decide their own questions (permissions still wait). Until…", choices);
+    }
+
+    /// "What's next?" from the chat: the project's cards still to do (To do first, then
+    /// Backlog), one given to the agent in view (`board_work`: moved to Doing, its words sent).
+    fn card_for_agent(self: &Rc<Self>) {
+        let Some(id) = self.remote_in_view() else {
+            crate::conn::tell("Open an agent first: the card goes to the agent in view.");
+            return;
+        };
+        let project = self.remote_project(id).unwrap_or_else(|| self.current_project());
+        let weak = Rc::downgrade(self);
+        crate::conn::command_result("window", "board", json!({ "project": project }), move |answer| {
+            let (Some(app), Ok(board)) = (weak.upgrade(), answer) else {
+                crate::conn::tell("This project has no board yet: its page makes one.");
+                return;
+            };
+            let lanes = board["lanes"].as_array().cloned().unwrap_or_default();
+            let lane = |name: &str| lanes.iter().find(|l| l["title"] == name).and_then(|l| l["cards"].as_array().cloned()).unwrap_or_default();
+            let choices: Vec<Choice> = [("To do", lane("To do")), ("Backlog", lane("Backlog"))]
+                .into_iter()
+                .flat_map(|(from, cards)| cards.into_iter().map(move |c| (from, c)))
+                .filter_map(|(from, card)| {
+                    let number = card["id"].as_u64()?;
+                    let project = project.clone();
+                    Some(Choice::new(card["title"].as_str().unwrap_or_default().to_owned(), format!("{from} · card {number}"), move || {
+                        crate::conn::command_result("window", "board_work", json!({ "project": project, "card": number, "agent": id.to_string() }), |answer| {
+                            if let Err(err) = answer {
+                                crate::conn::tell(&err.to_string());
+                            }
+                        });
+                    }))
+                })
+                .collect();
+            if choices.is_empty() {
+                crate::conn::tell("Nothing in To do or Backlog on this project's board.");
+                return;
+            }
+            app.picker.open("Give this agent which card? It moves to Doing and its words are sent.", choices);
+        });
     }
 
     /// Meaning search for the user, what loom_find answers agents: asked in words, searched
