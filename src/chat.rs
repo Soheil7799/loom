@@ -94,6 +94,9 @@ pub struct Chat {
     history_draft: RefCell<String>,
     /// Pickers for the session's settings (model, effort…).
     options: gtk::Box,
+    /// What the chips were last built from: rebuilt only when it changes (a rebuild closes
+    /// an open menu, and the agent changes often while it works).
+    options_drawn: RefCell<Option<(Value, Vec<String>)>>,
     show_thinking: Cell<bool>,
     placeholder: gtk::Label,
     /// The input's hint while empty (and no suggestion shows).
@@ -638,6 +641,7 @@ impl Chat {
             history_at: Cell::new(None),
             history_draft: RefCell::default(),
             options,
+            options_drawn: RefCell::default(),
             show_thinking: Cell::new(true),
             placeholder,
             hint: RefCell::new(HINT.to_owned()),
@@ -2187,6 +2191,11 @@ impl Chat {
     /// The session's settings as chips; `chosen`: those the agent has its own choice for
     /// (tinted: the rest follow the settings' defaults).
     pub fn set_options(&self, options: &Value, chosen: &[String]) {
+        let drawn = Some((options.clone(), chosen.to_vec()));
+        if *self.options_drawn.borrow() == drawn {
+            return;
+        }
+        *self.options_drawn.borrow_mut() = drawn;
         while let Some(child) = self.options.first_child() {
             self.options.remove(&child);
         }
