@@ -38,6 +38,7 @@
 //! - `find`: Ctrl+P · `tree`: the files panel's project view
 //! - `squeezed`: widgets given less room than they measure, and every paned
 //! - `page:<name>`: shows that page of a stack in any open window (settings…)
+//! - `sendto:<text>`: "Send to another agent…" with that text, to the first agent offered
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
 //! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
@@ -404,6 +405,14 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             }
         }
         "palette" if !argument.is_empty() => app.palette_run(argument)?,
+        // A message passed on ("Send to another agent…"), to the picker's first agent.
+        "sendto" => {
+            app.send_elsewhere(argument.replace("\\n", "\n"));
+            let mut found = Vec::new();
+            popovers(app.window.upcast_ref(), &mut found);
+            let entry = found.iter().filter_map(|p| p.child()).find(|c| c.has_css_class("picker")).and_then(|c| c.first_child()).and_downcast::<gtk::SearchEntry>();
+            entry.ok_or("no picker open")?.emit_activate();
+        }
         "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),

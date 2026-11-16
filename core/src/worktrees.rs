@@ -114,6 +114,16 @@ mod tests {
         assert!(project.join("a.txt").exists());
         assert_eq!(remove(&dir).unwrap(), "Its worktree and fix/tooltip are removed.");
         assert!(!dir.exists());
+        // A conflict: undone, and the base named (the window hands it to the agent by it).
+        let other = add(&project, "clash").unwrap();
+        let commit = |at: &Path, text: &str| {
+            std::fs::write(at.join("a.txt"), text).unwrap();
+            git(at, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-am", text]).unwrap();
+        };
+        commit(&other, "theirs\n");
+        commit(&project, "ours\n");
+        assert!(merge(&other).unwrap_err().starts_with("clash didn't merge into main (nothing changed)"));
+        assert!(git(&project, &["status", "--porcelain"]).unwrap().trim().is_empty());
         let _ = std::fs::remove_dir_all(project.parent().unwrap());
     }
 }

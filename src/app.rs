@@ -2604,7 +2604,7 @@ impl App {
 
     /// A message passed on from the agent in view: pick another agent, and it lands in that
     /// one's input (quoted, with where it came from), to read over and send.
-    fn send_elsewhere(self: &Rc<Self>, text: String) {
+    pub fn send_elsewhere(self: &Rc<Self>, text: String) {
         let from = self.remote_in_view();
         let from_title = from.and_then(|id| self.remote_item(id)).and_then(|i| i["title"].as_str().map(str::to_owned)).unwrap_or_else(|| "another agent".to_owned());
         let weak = Rc::downgrade(self);
