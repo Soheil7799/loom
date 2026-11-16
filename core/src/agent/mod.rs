@@ -791,6 +791,18 @@ impl Agent {
         }
     }
 
+    /// The files changed this turn, relative to its folder, each once (the turn's footer).
+    fn turn_files_shown(&self) -> Vec<String> {
+        let mut shown: Vec<String> = Vec::new();
+        for file in self.turn_files.borrow().iter() {
+            let name = file.strip_prefix(&self.cwd).unwrap_or(file).to_string_lossy().into_owned();
+            if !shown.contains(&name) {
+                shown.push(name);
+            }
+        }
+        shown
+    }
+
     /// Its folder's git changes now, kept for the turn's end (off the main loop).
     fn read_turn_changes(self: &Rc<Self>) {
         let Some(repo) = crate::repos::repo_of(&self.cwd) else { return };
@@ -837,6 +849,7 @@ impl Agent {
             }
             drop(files);
             if added {
+                agent.view.turn_files(&agent.turn_files_shown());
                 agent.log_on_board();
                 agent.emit(Event::Files);
                 // its count in `agents` too (the edit tools' files arrive before the turn's end)
@@ -1447,7 +1460,7 @@ impl Agent {
             self.last_cancelled.set(false);
             self.last_error.borrow_mut().take();
             self.view.set_working(None);
-            self.view.turn_done(started.elapsed().as_secs());
+            self.view.turn_done(started.elapsed().as_secs(), &self.turn_files_shown());
             self.last_turn.set(Instant::now());
             self.note_shell_files();
             self.log_on_board();
@@ -2088,7 +2101,7 @@ impl Agent {
                     agent.suspend();
                     return;
                 }
-                agent.view.turn_done(started.elapsed().as_secs());
+                agent.view.turn_done(started.elapsed().as_secs(), &agent.turn_files_shown());
                 if let Some(message) = undo {
                     let weak = Rc::downgrade(&agent);
                     agent.view.turn_undo(Rc::new(move || {

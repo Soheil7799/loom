@@ -108,6 +108,8 @@ export type ConversationItem = {
   answer?: string;
   /** a turn's length */
   seconds?: number;
+  /** the files a turn changed, relative to the agent's folder (shell writes added once known) */
+  files?: unknown[];
 };
 
 /** The account's limits and each agent's context and cost. */

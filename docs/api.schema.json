@@ -492,6 +492,10 @@
           "seconds": {
             "type": "integer",
             "description": "a turn's length"
+          },
+          "files": {
+            "type": "array",
+            "description": "the files a turn changed, relative to the agent's folder (shell writes added once known)"
           }
         },
         "required": [

@@ -128,6 +128,16 @@ impl Transcript {
         i
     }
 
+    /// The last turn's end given the files it changed, once all are known (what a shell
+    /// command wrote is known only after the turn's end).
+    fn turn_files(&mut self, files: &[String]) {
+        let Some(i) = self.entries.iter().rposition(|(_, e)| e["kind"] == "turn") else { return };
+        let rev = self.bump();
+        self.entries[i].0 = rev;
+        self.entries[i].1["files"] = json!(files);
+        self.publish(i);
+    }
+
     /// A question for the user: its entry's id.
     fn question(&mut self, entry: Value) -> String {
         let i = self.push(entry);
@@ -709,8 +719,11 @@ impl View for Recorded {
             crate::api::hub().store(&format!("plan/{id}")).set(items);
         }
     }
-    fn turn_done(&self, seconds: u64) {
-        self.transcript.borrow_mut().push(json!({ "kind": "turn", "seconds": seconds }));
+    fn turn_done(&self, seconds: u64, files: &[String]) {
+        self.transcript.borrow_mut().push(json!({ "kind": "turn", "seconds": seconds, "files": files }));
+    }
+    fn turn_files(&self, files: &[String]) {
+        self.transcript.borrow_mut().turn_files(files);
     }
     fn turn_undo(&self, undo: Rc<dyn Fn()>) {
         // for a client: a notice with its button (`press`), the window's own aside
@@ -1108,7 +1121,7 @@ mod tests {
         view.tool(&json!({ "toolCallId": "t1", "title": "Read" }));
         assert_eq!(view.last_reply(), None);
         view.agent_text_with("Done.", None);
-        view.turn_done(3);
+        view.turn_done(3, &[]);
         assert_eq!(view.last_reply().as_deref(), Some("Done."));
         view.user("next");
         assert_eq!(view.last_reply(), None);

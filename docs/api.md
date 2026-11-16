@@ -98,6 +98,7 @@ Who: window, cli, bridge, agent (its own).
 | `form` | object? | a form question's JSON Schema |
 | `answer` | string? | how a question was answered |
 | `seconds` | integer? | a turn's length |
+| `files` | array? | the files a turn changed, relative to the agent's folder (shell writes added once known) |
 
 ### `usage`
 

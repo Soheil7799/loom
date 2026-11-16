@@ -2351,8 +2351,9 @@ impl Chat {
         }
     }
 
-    /// A quiet line under a finished turn: how long it took.
-    pub fn turn_done(&self, seconds: u64) {
+    /// A quiet line under a finished turn: how long it took, and the files it changed (each a
+    /// link that opens it in loom's editor; the rest counted, all of them in the tooltip).
+    pub fn turn_done(&self, seconds: u64, files: &[String]) -> gtk::Label {
         self.crew.borrow_mut().retain(|c| !c.guessed && c.ended.is_none());
         self.show_crew();
         self.group.take();
@@ -2361,10 +2362,20 @@ impl Chat {
         self.project_files.borrow_mut().take();
         let time = glib::DateTime::now_local().ok().and_then(|t| t.format("%H:%M").ok()).map(|t| t.to_string()).unwrap_or_default();
         let text = if seconds < 3 { time } else { format!("{time} · Worked for {}", elapsed(seconds)) };
-        let label = gtk::Label::builder().label(text).xalign(0.0).build();
+        let label = gtk::Label::builder().label(&text).xalign(0.0).wrap(true).build();
         label.add_css_class("turn-footer");
+        // A file link opens it in loom's editor, from this agent's folder.
+        label.connect_activate_link(|label, uri| {
+            let handler = OPEN_LINK.with(|h| h.borrow().clone());
+            match handler {
+                Some(open) if open(uri, label.upcast_ref()) => glib::Propagation::Stop,
+                _ => glib::Propagation::Proceed,
+            }
+        });
+        footer_files(&label, files);
         self.list.append(&label);
         *self.last.borrow_mut() = Last::None;
+        label
     }
 
     pub fn set_show_thinking(&self, show: bool) {
@@ -2563,7 +2574,24 @@ impl Chat {
                 }
                 None => self.notice(text, item["class"].as_str().unwrap_or_default()),
             },
-            "turn" if first => self.turn_done(item["seconds"].as_u64().unwrap_or(0)),
+            "turn" => {
+                let files: Vec<String> = item["files"].as_array().into_iter().flatten().filter_map(|f| f.as_str().map(str::to_owned)).collect();
+                if first {
+                    self.turn_done(item["seconds"].as_u64().unwrap_or(0), &files).set_widget_name(id);
+                } else {
+                    // its files known later (a shell's writes): found from the end, where it is
+                    let mut child = self.list.last_child();
+                    while let Some(widget) = child {
+                        if widget.widget_name() == id {
+                            if let Some(label) = widget.downcast_ref::<gtk::Label>() {
+                                footer_files(label, &files);
+                            }
+                            break;
+                        }
+                        child = widget.prev_sibling();
+                    }
+                }
+            }
             "question" => {
                 if first {
                     let entry = id.to_owned();
@@ -4698,6 +4726,28 @@ fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextVie
     click.connect_pressed(move |_, _, x, y| opened(x, y));
     wrap.add_controller(click);
     crate::menu::on_menu_key(wrap, move |x, y| open(x, y));
+}
+
+/// A turn's footer ("00:11 · Worked for 4s") with the files it changed: the first three as
+/// links, the rest counted, all of them in its tooltip.
+fn footer_files(label: &gtk::Label, files: &[String]) {
+    if files.is_empty() {
+        return;
+    }
+    const SHOWN: usize = 3;
+    let text = label.text();
+    let base = text.split(" · changed ").next().unwrap_or_default();
+    let links: Vec<String> = files
+        .iter()
+        .take(SHOWN)
+        .map(|f| {
+            let name = std::path::Path::new(f).file_name().map_or_else(|| f.clone(), |n| n.to_string_lossy().into_owned());
+            format!("<a href=\"loom-file:{}\">{}</a>", glib::markup_escape_text(f), glib::markup_escape_text(&name))
+        })
+        .collect();
+    let more = if files.len() > SHOWN { format!(" and {} more", files.len() - SHOWN) } else { String::new() };
+    label.set_markup(&format!("{} · changed {}{more}", glib::markup_escape_text(base), links.join(", ")));
+    label.set_tooltip_text(Some(&files.join("\n")));
 }
 
 /// A token count as the meter shows it: "950", "12k", "1.2M".

@@ -101,7 +101,10 @@ pub trait View {
     fn open_tool(&self, _id: &str) {}
     fn go_to_tool(&self, _id: &str) {}
     fn set_plan(&self, entries: &Value);
-    fn turn_done(&self, seconds: u64);
+    /// A turn ended: how long it took, and the files it changed (relative to its folder).
+    fn turn_done(&self, seconds: u64, files: &[String]);
+    /// The last turn's changed files, all known now (a shell's writes come after its end).
+    fn turn_files(&self, _files: &[String]) {}
     fn turn_undo(&self, undo: Rc<dyn Fn()>);
     /// The next question (`permission` or `form`) is entry `id` of the core API's
     /// conversation: a UI that answers through the API answers it by that.

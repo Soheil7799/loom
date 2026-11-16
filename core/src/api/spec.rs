@@ -343,6 +343,7 @@ pub const RESOURCES: &[Resource] = &[
             ("form", "object", false, "a form question's JSON Schema"),
             ("answer", "string", false, "how a question was answered"),
             ("seconds", "integer", false, "a turn's length"),
+            ("files", "array", false, "the files a turn changed, relative to the agent's folder (shell writes added once known)"),
         ],
         about: "An agent's conversation: Agent → turn → entry. Questions are entries `awaiting_user` until answered (`answer`).",
     },
