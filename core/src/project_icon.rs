@@ -12,23 +12,14 @@ const HUES: std::ops::RangeInclusive<u16> = 185..=340;
 /// Folders never searched for a logo: dependencies and build output.
 const SKIP: [&str; 12] = ["node_modules", "target", "build", "dist", "vendor", "venv", "__pycache__", "Pods", "out", "coverage", "site-packages", "bin"];
 
-/// The icon's file for `project`, in dark or light colours. `others` are the other projects:
-/// a project without a colour yet takes the hue farthest from theirs. Waits for the search
-/// for its logo (half a second in a big tree, the first time).
-pub fn file(project: &Path, others: &[PathBuf], dark: bool) -> PathBuf {
-    icon(project, others, dark, true).unwrap_or_default()
-}
-
-/// As `file`, but `None` while its logo is still looked for (in the background: ask again).
+/// The icon's file for `project`, in dark or light colours; `None` while its logo is still
+/// looked for (in the background, the first time: ask again). `others` are the other
+/// projects: a project without a colour yet takes the hue farthest from theirs.
 pub fn ready(project: &Path, others: &[PathBuf], dark: bool) -> Option<PathBuf> {
-    icon(project, others, dark, false)
-}
-
-fn icon(project: &Path, others: &[PathBuf], dark: bool, wait: bool) -> Option<PathBuf> {
     if let Some(own) = chosen(project) {
         return Some(own);
     }
-    if let Some(logo) = logo(project, wait)? {
+    if let Some(logo) = logo(project)? {
         return Some(logo);
     }
     let colour = colour(project, others);
@@ -50,37 +41,24 @@ fn chosen(project: &Path) -> Option<PathBuf> {
 /// The project's own logo, looked for once per run (a folder above several repos too): the best
 /// of the SVG and PNG files named `*logo*`, `icon` or `favicon`, or a desktop app's icon (named
 /// by its app id, as `dev.example.App.svg`), up to 6 folders deep.
-/// `None`: still looking (`wait` false), in a thread of its own.
-fn logo(project: &Path, wait: bool) -> Option<Option<PathBuf>> {
+/// `None`: still looking, in a thread of its own.
+fn logo(project: &Path) -> Option<Option<PathBuf>> {
     use std::collections::HashMap;
     use std::sync::{Mutex, PoisonError};
     // Per project: its logo or none once known; `None` while it is looked for.
     static FOUND: Mutex<Option<HashMap<PathBuf, Option<Option<PathBuf>>>>> = Mutex::new(None);
-    let done = |logo: &Option<PathBuf>| {
-        FOUND.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_default().insert(project.to_owned(), Some(logo.clone()));
-    };
-    {
-        let mut found = FOUND.lock().unwrap_or_else(PoisonError::into_inner);
-        match found.get_or_insert_default().get(project) {
-            Some(Some(logo)) => return Some(logo.clone()),
-            Some(None) if !wait => return None,
-            Some(None) => {}
-            None => {
-                found.get_or_insert_default().insert(project.to_owned(), None);
-                if !wait {
-                    let project = project.to_owned();
-                    std::thread::spawn(move || {
-                        let logo = search(&project);
-                        FOUND.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_default().insert(project, Some(logo));
-                    });
-                    return None;
-                }
-            }
-        }
+    let mut found = FOUND.lock().unwrap_or_else(PoisonError::into_inner);
+    let found = found.get_or_insert_default();
+    if let Some(known) = found.get(project) {
+        return known.clone();
     }
-    let logo = search(project);
-    done(&logo);
-    Some(logo)
+    found.insert(project.to_owned(), None);
+    let project = project.to_owned();
+    std::thread::spawn(move || {
+        let logo = search(&project);
+        FOUND.lock().unwrap_or_else(PoisonError::into_inner).get_or_insert_default().insert(project, Some(logo));
+    });
+    None
 }
 
 fn search(project: &Path) -> Option<PathBuf> {
@@ -115,9 +93,9 @@ fn search(project: &Path) -> Option<PathBuf> {
                 continue;
             }
             let lower = stem.to_lowercase();
-            let rank = if svg && stem.matches('.').count() >= 2 {
+            let rank = if words(stem).any(|w| w == "logo" || w == "logotype") {
                 0
-            } else if lower.contains("logo") && !lower.contains("logos") {
+            } else if svg && app_id(stem) {
                 1
             } else if lower == "icon" || lower == "app_icon" {
                 2
@@ -136,15 +114,48 @@ fn search(project: &Path) -> Option<PathBuf> {
     best.map(|b| b.1)
 }
 
+/// A file name's words, lowercase: "app_logo", "logo-dark" and "AppLogo" have "logo";
+/// "logout" and "catalogo" don't.
+fn words(stem: &str) -> impl Iterator<Item = String> + '_ {
+    let mut spaced = String::new();
+    let mut lower_before = false;
+    for c in stem.chars() {
+        if c.is_uppercase() && lower_before {
+            spaced.push(' ');
+        }
+        lower_before = c.is_lowercase();
+        spaced.extend(c.to_lowercase());
+    }
+    spaced.split(|c: char| !c.is_alphanumeric()).map(str::to_owned).collect::<Vec<_>>().into_iter()
+}
+
+/// A desktop app's id, as its icon is named: `dev.example.App` (at least three parts, each
+/// starting with a letter), not `arch.v1.2` or `fa.brands.6`.
+fn app_id(stem: &str) -> bool {
+    let parts: Vec<&str> = stem.split('.').collect();
+    parts.len() >= 3 && parts.iter().all(|p| p.starts_with(|c: char| c.is_ascii_alphabetic()) && p.chars().all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'))
+}
+
 /// Use `picture` (an SVG or PNG) as the project's icon; `None`: back to its logo or fox.
 pub fn choose(project: &Path, picture: Option<&Path>) -> std::io::Result<()> {
-    for old in ["icon.svg", "icon.png"].map(|f| project.join(".loom").join(f)).into_iter().filter(|p| p.is_file()) {
+    let dir = project.join(".loom");
+    // Copied before the old one goes: picking the current icon again (or a failed copy) loses nothing.
+    let new = match picture {
+        Some(picture) => {
+            std::fs::create_dir_all(&dir)?;
+            let ext = if picture.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) { "svg" } else { "png" };
+            std::fs::copy(picture, dir.join("icon.new"))?;
+            Some(ext)
+        }
+        None => None,
+    };
+    for old in ["icon.svg", "icon.png"].map(|f| dir.join(f)).into_iter().filter(|p| p.is_file()) {
         std::fs::remove_file(old)?;
     }
-    let Some(picture) = picture else { return Ok(()) };
-    let ext = if picture.extension().is_some_and(|e| e.eq_ignore_ascii_case("svg")) { "svg" } else { "png" };
-    std::fs::create_dir_all(project.join(".loom"))?;
-    std::fs::copy(picture, project.join(".loom").join(format!("icon.{ext}"))).map(|_| ())
+    match new {
+        Some(ext) => std::fs::rename(dir.join("icon.new"), dir.join(format!("icon.{ext}"))),
+        None => Ok(()),
+    }
 }
 
 /// The fox's colour for `project`: `#rrggbb` picked by the user; `None`: one of its own again.
@@ -176,27 +187,45 @@ fn read(project: &Path) -> Option<Colour> {
     let text = std::fs::read_to_string(project.join(".loom").join("fox")).ok()?;
     let text = text.trim();
     match text.strip_prefix('#') {
-        Some(hex) if hex.len() == 6 => {
-            let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok().map(|b| f64::from(b) / 255.0);
-            Some(Colour::Picked([byte(0)?, byte(2)?, byte(4)?]))
+        Some(hex) if hex.len() == 6 && hex.bytes().all(|b| b.is_ascii_hexdigit()) => {
+            let v = u32::from_str_radix(hex, 16).ok()?;
+            Some(Colour::Picked([v >> 16, v >> 8, v].map(|b| f64::from(b & 0xff) / 255.0)))
         }
         Some(_) => None,
         None => text.parse().ok().map(Colour::Hue),
     }
 }
 
+/// The hues loom gave on its own, "hue path" a line: in loom's state, not the project (looking
+/// at a repo leaves nothing in it).
+fn hues_file() -> PathBuf {
+    crate::state::dir().join("icons").join("hues")
+}
+
+fn hues() -> Vec<(u16, PathBuf)> {
+    let text = std::fs::read_to_string(hues_file()).unwrap_or_default();
+    text.lines().filter_map(|l| l.split_once(' ').and_then(|(h, p)| Some((h.parse().ok()?, PathBuf::from(p))))).collect()
+}
+
 fn colour(project: &Path, others: &[PathBuf]) -> Colour {
-    if let Some(c) = read(project) {
+    let given = hues();
+    let own = |p: &Path| read(p).or_else(|| given.iter().find(|(_, g)| g == p).map(|(h, _)| Colour::Hue(*h)));
+    if let Some(c) = own(project) {
         return c;
     }
-    let used: Vec<u16> = others.iter().filter(|p| *p != project).filter_map(|p| match read(p) {
+    let used: Vec<u16> = others.iter().filter(|p| *p != project).filter_map(|p| match own(p) {
         Some(Colour::Hue(h)) => Some(h),
         _ => None,
     }).collect();
     let hue = farthest(&used);
     // Kept, so it stays this project's colour when others come and go.
-    if project.is_dir() {
-        let _ = std::fs::create_dir_all(project.join(".loom")).and_then(|()| std::fs::write(project.join(".loom").join("fox"), format!("{hue}\n")));
+    if project.is_dir() && !project.to_string_lossy().contains('\n') {
+        use std::io::Write;
+        let file = hues_file();
+        let _ = std::fs::create_dir_all(file.parent().unwrap_or(Path::new(".")));
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(file) {
+            let _ = writeln!(f, "{hue} {}", project.display());
+        }
     }
     Colour::Hue(hue)
 }
@@ -359,12 +388,25 @@ mod tests {
         // named after the project beats any other kind
         let named = format!("{}-logo.png", project.file_name().unwrap().to_str().unwrap());
         std::fs::write(project.join("web").join(&named), "png").unwrap();
-        assert_eq!(search(&project), Some(project.join("web").join(named)));
+        assert_eq!(search(&project), Some(project.join("web").join(&named)));
         let picture = project.join("mine.png");
         std::fs::write(&picture, "png").unwrap();
         choose(&project, Some(&picture)).unwrap();
-        assert_eq!(file(&project, &[], true), project.join(".loom/icon.png"));
+        assert_eq!(ready(&project, &[], true), Some(project.join(".loom/icon.png")));
         assert!(custom(&project));
+        // picking the current icon again keeps it
+        choose(&project, Some(&project.join(".loom/icon.png"))).unwrap();
+        assert_eq!(chosen(&project), Some(project.join(".loom/icon.png")));
+        // a logout button or a dotted diagram is not the logo
+        std::fs::write(project.join("logout.svg"), "<svg/>").unwrap();
+        std::fs::write(project.join("arch.v1.2.svg"), "<svg/>").unwrap();
+        std::fs::write(project.join("AppLogo.png"), "png").unwrap();
+        assert_eq!(search(&project), Some(project.join("web").join(&named)));
+        std::fs::remove_file(project.join("web").join(&named)).unwrap();
+        assert_eq!(search(&project), Some(project.join("AppLogo.png")));
+        // a hand-edited colour that isn't one is ignored, never a panic
+        std::fs::write(project.join(".loom/fox"), "#a\u{e9}bcd\n").unwrap();
+        assert_eq!(read(&project), None);
         choose(&project, None).unwrap();
         assert!(!custom(&project));
         pick(&project, Some("#ff8fd8")).unwrap();

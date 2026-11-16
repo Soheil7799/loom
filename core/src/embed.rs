@@ -311,10 +311,15 @@ fn start_ollama(program: &std::path::Path, url: &str) -> Result<(), String> {
         .stdin(std::process::Stdio::null())
         .stdout(log.try_clone().map_err(|e| e.to_string())?)
         .stderr(log);
-    // SAFETY: prctl only, between fork and exec.
+    let loomd = libc::pid_t::try_from(std::process::id()).unwrap_or(0);
+    // SAFETY: prctl and getppid only, between fork and exec.
     unsafe {
-        command.pre_exec(|| {
+        command.pre_exec(move || {
             libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGTERM);
+            // loomd ended before the death signal was set: it would never come.
+            if libc::getppid() != loomd {
+                libc::_exit(0);
+            }
             Ok(())
         });
     }

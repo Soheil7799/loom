@@ -117,6 +117,8 @@ pub struct App {
     sidebar_feeds: RefCell<Option<(Feed, Feed)>>,
     /// Something new waits in them: drawn once the window is idle.
     sidebar_due: Cell<bool>,
+    /// Project icons drawn, by project and dark or light.
+    icons: RefCell<HashMap<(PathBuf, bool), PathBuf>>,
     /// A redraw is due for project icons still looked for.
     icons_due: Cell<bool>,
     /// What the sidebar's rows were last built from: `agents` changing only in what they
@@ -638,6 +640,7 @@ impl App {
             run_cap: Cell::new(300),
             sidebar_feeds: RefCell::default(),
             sidebar_due: Cell::new(false),
+            icons: RefCell::default(),
             icons_due: Cell::new(false),
             sidebar_drawn: RefCell::default(),
             remote_agents: RefCell::default(),
@@ -1580,10 +1583,8 @@ impl App {
         }));
         // A job ending (a build, the tests) is worth a word when the window is elsewhere.
         let (app, project_name) = (self.window.clone(), self.project_label(project));
-        // Notifications come in the app icon's colours: the dark fox (none while it is looked for).
-        let others: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
-        let icon = loom_core::project_icon::ready(project, &others, true);
         let application = self.app.clone();
+        let icon_of = project.to_owned();
         *tray.on_finish.borrow_mut() = Some(Rc::new(move |name: &str, code: Option<i64>| {
             if app.is_active() || !settings::get().notify_done {
                 return;
@@ -1595,7 +1596,8 @@ impl App {
             };
             let notification = gio::Notification::new(&format!("{name} {how}"));
             notification.set_body(Some(&format!("Job in {project_name}")));
-            if let Some(icon) = &icon {
+            // In the app icon's colours: the dark fox, as it is now (its colour already given).
+            if let Some(icon) = loom_core::project_icon::ready(&icon_of, &[], true) {
                 notification.set_icon(&gio::FileIcon::new(&gio::File::for_path(icon)));
             }
             application.send_notification(Some(&format!("job-{name}")), &notification);
@@ -2736,17 +2738,27 @@ impl App {
     /// A project's icon file in the window's colours; `None` while its logo is still looked
     /// for (the sidebar and overview are drawn again soon).
     fn icon_file(self: &Rc<Self>, path: &Path) -> Option<PathBuf> {
+        let key = (path.to_owned(), crate::files::is_dark(&self.list));
+        if let Some(file) = self.icons.borrow().get(&key) {
+            return Some(file.clone());
+        }
         let others: Vec<PathBuf> = self.remote_projects().iter().filter_map(|p| p["id"].as_str().map(PathBuf::from)).collect();
-        let file = loom_core::project_icon::ready(path, &others, crate::files::is_dark(&self.list));
-        if file.is_none() && !self.icons_due.replace(true) {
-            let weak = Rc::downgrade(self);
-            glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
-                if let Some(app) = weak.upgrade() {
-                    app.icons_due.set(false);
-                    app.draw_sidebar();
-                    app.fill_remote_overview();
-                }
-            });
+        let file = loom_core::project_icon::ready(path, &others, key.1);
+        match &file {
+            Some(file) => {
+                self.icons.borrow_mut().insert(key, file.clone());
+            }
+            None if !self.icons_due.replace(true) => {
+                let weak = Rc::downgrade(self);
+                glib::timeout_add_local_once(std::time::Duration::from_millis(500), move || {
+                    if let Some(app) = weak.upgrade() {
+                        app.icons_due.set(false);
+                        app.refresh_sidebar();
+                        app.fill_remote_overview();
+                    }
+                });
+            }
+            None => {}
         }
         file
     }
@@ -2765,7 +2777,9 @@ impl App {
         if let Err(e) = change(path) {
             eprintln!("loom: the icon of {} was not changed: {e}", path.display());
         }
-        self.draw_sidebar();
+        self.icons.borrow_mut().retain(|(p, _), _| p != path);
+        self.refresh_sidebar();
+        self.fill_remote_overview();
     }
 
     /// The fox's colour picked by hand; its tile follows.
@@ -3515,29 +3529,11 @@ impl App {
                     })))
                     .section()
                     .item("Rename…", on(Box::new(move |app| app.rename_project_at(&p6, x, y))))
-                    .item("Icon colour…", {
-                        let (weak, at) = (Rc::downgrade(self), path.clone());
-                        move || {
-                            if let Some(app) = weak.upgrade() {
-                                app.pick_icon_colour(&at);
-                            }
-                        }
-                    })
-                    .item("Icon picture…", {
-                        let (weak, at) = (Rc::downgrade(self), path.clone());
-                        move || {
-                            if let Some(app) = weak.upgrade() {
-                                app.pick_icon_picture(&at);
-                            }
-                        }
-                    })
+                    .item("Icon colour…", { let at = path.clone(); on(Box::new(move |app| app.pick_icon_colour(&at))) })
+                    .item("Icon picture…", { let at = path.clone(); on(Box::new(move |app| app.pick_icon_picture(&at))) })
                     .item("Automatic icon", {
-                        let (weak, at) = (Rc::downgrade(self), path.clone());
-                        move || {
-                            if let Some(app) = weak.upgrade() {
-                                app.set_icon(&at, |p| loom_core::project_icon::choose(p, None).and_then(|()| loom_core::project_icon::pick(p, None)));
-                            }
-                        }
+                        let at = path.clone();
+                        on(Box::new(move |app| app.set_icon(&at, |p| loom_core::project_icon::choose(p, None).and_then(|()| loom_core::project_icon::pick(p, None)))))
                     })
                     .enabled(loom_core::project_icon::custom(&path))
                     .item(if collapsed { "Show its agents" } else { "Hide its agents" }, on(Box::new(move |app| app.toggle_collapsed(&p7))))
@@ -4409,7 +4405,6 @@ impl SectionHead {
     }
 }
 
-/// A bead says its state to a screen reader and on hover, not by its look alone.
 /// A project's icon with an agent's status bead on its top corner: which project at a glance,
 /// and how its agent is.
 pub(crate) fn icon_with_bead(icon: &gtk::Image, dot: &gtk::Box) -> gtk::Overlay {
@@ -4422,6 +4417,7 @@ pub(crate) fn icon_with_bead(icon: &gtk::Image, dot: &gtk::Box) -> gtk::Overlay 
     overlay
 }
 
+/// A bead says its state to a screen reader and on hover, not by its look alone.
 fn bead_named(dot: &gtk::Box, agent: &SideAgent) {
     let state = if agent.status == Status::Idle && agent.unseen { "done" } else { agent.status.describe() };
     dot.update_property(&[gtk::accessible::Property::Label(state)]);

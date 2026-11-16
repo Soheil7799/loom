@@ -213,9 +213,10 @@ fn desktop(title: &str, body: &str, project: Option<&std::path::Path>) {
     }
     let mut send = std::process::Command::new("notify-send");
     send.arg("--app-name=loom");
-    // Notifications come in the app icon's colours: the dark fox.
-    if let Some(project) = project {
-        send.arg("--icon").arg(loom_core::project_icon::file(project, &loom_core::project_files::projects(), true));
+    // Notifications come in the app icon's colours: the dark fox (none the first time, while
+    // its logo is looked for: never a wait on loomd's loop).
+    if let Some(icon) = project.and_then(|p| loom_core::project_icon::ready(p, &loom_core::project_files::projects(), true)) {
+        send.arg("--icon").arg(icon);
     }
     let spawned = send
         .args([title, body])
