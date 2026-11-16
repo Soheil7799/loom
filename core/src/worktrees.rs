@@ -51,11 +51,13 @@ pub fn merge(dir: &Path) -> Result<String, String> {
     if !git(dir, &["status", "--porcelain"])?.trim().is_empty() {
         return Err(format!("{branch} has changes not committed yet: commit them first"));
     }
+    let base = branch_of(&project).unwrap_or_else(|| "the project".into());
     match git(&project, &["merge", "--no-ff", "--no-edit", &branch]) {
-        Ok(_) => Ok(format!("{branch} merged into {}", branch_of(&project).unwrap_or_else(|| "the project".into()))),
+        Ok(_) => Ok(format!("{branch} merged into {base}")),
         Err(err) => {
             let _ = git(&project, &["merge", "--abort"]);
-            Err(format!("{branch} didn't merge (nothing changed): {err}"))
+            // (the window reads "didn't merge into <base>" to offer the agent the conflict)
+            Err(format!("{branch} didn't merge into {base} (nothing changed): {err}"))
         }
     }
 }

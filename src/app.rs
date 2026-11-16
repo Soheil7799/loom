@@ -1453,6 +1453,26 @@ impl App {
             act("Stop the turn", "Esc", |a| {
                 a.remote_do("stop", json!({}));
             }),
+            // What the right-click menus have, here too.
+            act("New agent in a worktree of this project…", "", |a| {
+                let project = a.current_project();
+                a.new_worktree_at(&project, 60.0, 120.0);
+            }),
+            act("Merge this agent's worktree branch back", "", |a| a.palette_git("worktree_merge")),
+            act("Remove this agent's worktree", "", |a| a.palette_git("worktree_remove")),
+            act("Suspend this agent (free its memory)", "", |a| {
+                a.remote_do("suspend", json!({}));
+            }),
+            act("Keep this agent awake, or let it suspend when idle", "", |a| {
+                let awake = a.remote_in_view().and_then(|id| a.remote_item(id)).is_some_and(|i| i["awake"] == true);
+                a.remote_do("set_awake", json!({ "awake": !awake }));
+            }),
+            act("Icon colour of this project…", "", |a| {
+                let project = a.current_project();
+                a.pick_icon_colour(&project);
+            }),
+            act("Show every project's agents", "", |a| a.collapse_all(false)),
+            act("Hide every project's agents", "", |a| a.collapse_all(true)),
             act("Next permission mode", "Shift+Tab", |a| {
                 if let Some(agent) = a.remote_view() {
                     agent.cycle_mode();
@@ -2643,6 +2663,34 @@ impl App {
 
     /// Command `method` for loomd's agent in view (`extra`: its other params); false if none
     /// is in view.
+    /// A worktree command on the agent in view, from the palette.
+    fn palette_git(self: &Rc<Self>, method: &str) {
+        if let Some(id) = self.remote_in_view() {
+            self.worktree_git(id, method);
+        }
+    }
+
+    /// A worktree command on agent `id`: what git said, in a toast. A merge that didn't go
+    /// (a conflict) is handed to the agent: a message drafted in its input, to send.
+    fn worktree_git(self: &Rc<Self>, id: u32, method: &str) {
+        let weak = Rc::downgrade(self);
+        crate::conn::command_result("window", method, json!({ "agent": id.to_string() }), move |answer| match answer {
+            Ok(answer) => crate::conn::tell(answer["said"].as_str().unwrap_or("Done.")),
+            Err(err) => {
+                let said = err.to_string();
+                crate::conn::tell(&said);
+                let base = said.split(" didn't merge into ").nth(1).and_then(|rest| rest.split(" (nothing changed)").next());
+                let (Some(app), Some(base)) = (weak.upgrade(), base) else { return };
+                app.focus_remote(id);
+                let agent = app.remote_agent(id);
+                agent.chat.input.buffer().set_text(&format!(
+                    "Merging your branch back into {base} conflicts (loom undid the merge). Here in your worktree, merge {base} into your branch, resolve the conflicts, check it builds and its tests pass, and commit. Then tell me it is ready to merge back."
+                ));
+                agent.chat.input.grab_focus();
+            }
+        });
+    }
+
     fn remote_do(&self, method: &str, mut extra: Value) -> bool {
         let Some(id) = self.remote_in_view() else { return false };
         extra["agent"] = json!(id.to_string());
@@ -3617,11 +3665,11 @@ impl App {
         // In a worktree loom made for it: merged back, then removed (what git said, in a toast).
         let worktree = loom_core::worktrees::made_from(&cwd).is_some();
         let git = |method: &'static str| {
+            let weak = weak.clone();
             move || {
-                crate::conn::command_result("window", method, json!({ "agent": id.to_string() }), |answer| match answer {
-                    Ok(answer) => crate::conn::tell(answer["said"].as_str().unwrap_or("Done.")),
-                    Err(err) => crate::conn::tell(&err.to_string()),
-                });
+                if let Some(app) = weak.upgrade() {
+                    app.worktree_git(id, method);
+                }
             }
         };
         let menu = Menu::new()
