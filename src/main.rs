@@ -55,7 +55,7 @@ use gtk::{gdk, gio, glib, prelude::*};
 
 const APP_ID: &str = "dev.shirvani.Loom";
 
-/// The look (see style.css): the GTK theme's colours, so it follows the wallpaper.
+/// The look (see style.css), in a theme of loom's or the GTK theme's colours (theme.rs).
 const CSS: &str = include_str!("style.css");
 
 thread_local! {

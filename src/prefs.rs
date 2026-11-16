@@ -517,6 +517,14 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
 
 fn appearance(s: &Settings) -> gtk::Box {
     let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let colours = section("Colours");
+    let mut themes: Vec<(String, &str)> = vec![("system".to_owned(), "System (your GTK theme)")];
+    themes.extend(crate::theme::THEMES.iter().map(|(id, name, ..)| ((*id).to_owned(), if *id == "nocturne" { "Nocturne (loom's own)" } else { *name })));
+    let theme = dropdown(&themes, s.theme.clone(), |t| t.clone(), |s, t| s.theme = t);
+    row(&colours, "Theme", "System follows your desktop's theme, as noctalia or matugen set it.", &theme);
+    let modes: Vec<(String, &str)> = vec![(String::new(), "As the system"), ("dark".to_owned(), "Dark"), ("light".to_owned(), "Light")];
+    row(&colours, "Dark or light", "", &dropdown(&modes, s.theme_mode.clone(), |m| m.clone(), |s, m| s.theme_mode = m));
+    content.append(&colours);
     let text = section("Text");
     let scale = dropdown(SCALES, s.text_scale, |v| format!("{:.0}%", v * 100.0), |s, v| s.text_scale = v);
     row(&text, "Conversation text size", "", &scale);
@@ -540,7 +548,6 @@ fn appearance(s: &Settings) -> gtk::Box {
         }
     });
     row(&text, "Terminal font", "The scratchpad and the tray's terminals.", &font);
-    caption(&text, "Colours come from your GTK theme (noctalia, matugen…) and follow it live.");
     content.append(&text);
     content
 }

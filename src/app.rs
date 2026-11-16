@@ -946,6 +946,17 @@ impl App {
                 app.refresh_sidebar();
             }
         });
+        // New colours, dark or light: the project icons drawn again in them, once restyled.
+        let weak = Rc::downgrade(self);
+        crate::theme::on_change(move || {
+            let weak = weak.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(app) = weak.upgrade() {
+                    app.refresh_sidebar();
+                    app.fill_remote_overview();
+                }
+            });
+        });
     }
 
     fn apply_settings(&self, s: &settings::Settings) {
@@ -961,6 +972,7 @@ impl App {
             agent.chat.set_mic_visible(mic);
         }
         crate::theme::refont(&s.terminal_font);
+        crate::theme::apply(&s.theme, &s.theme_mode);
     }
 
     // ---- keys -----------------------------------------------------------------------------

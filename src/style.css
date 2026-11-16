@@ -1,6 +1,6 @@
-/* loom's look. Colours are the GTK theme's (noctalia/matugen write them), so it follows the
- * wallpaper; status colours are loom's own, and "waiting" is picked at runtime to stay apart
- * from the accent (theme.rs).
+/* loom's look. Colours are GTK's named ones: a theme of loom's sets them (theme.rs), or the
+ * GTK theme does (noctalia/matugen write them, following the wallpaper). With a GTK theme the
+ * status colours are these, and "waiting" is picked at runtime to stay apart from its accent.
  *
  * The system (unslop polish, 2026-11-15), one value per rule:
  * - type: 0.85em labels and meta, 0.92em secondary, 1em body, 1.15em titles, 1.5em page

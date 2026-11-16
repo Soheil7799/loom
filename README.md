@@ -49,7 +49,8 @@ Agents are grouped by project, and a project may hold several git repos.
     later.
   - **Speech to text.** Talk instead of typing, through any OpenAI-style transcription
     endpoint you set: Groq, OpenAI, or a local Whisper server.
-- **Themes** follow your GTK colours. Persian and right-to-left text work.
+- **Themes**: loom's own (Nocturne, Klein, Kingfisher, Emerald, Peony), dark or light, or your GTK
+  theme's colours. Persian and right-to-left text work.
 
 ## Agents know about loom
 
@@ -70,7 +71,8 @@ loom runs on Linux and needs:
 - git, for the Notes add-on
 
 On Arch: `pacman -S gtk4 gtksourceview5 vte4 git`. On Ubuntu 24.04 or Debian 13:
-`apt install libgtk-4-1 libgtksourceview-5-0 libvte-2.91-gtk4-0 git`.
+`apt install libgtk-4-1 libgtksourceview-5-0 libvte-2.91-gtk4-0 git`. loom's themes reach every
+control through the adw-gtk3 theme where it is installed (Arch: `adw-gtk-theme`).
 
 ### From a release
 

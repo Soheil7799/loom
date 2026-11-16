@@ -30,6 +30,10 @@ pub struct Settings {
     pub default_options: std::collections::BTreeMap<String, String>,
     pub show_thinking: bool,
     /// Chat text size, as a factor of the normal one.
+    /// The look: "system" (the desktop's GTK theme) or one of loom's ("nocturne", loom/default…).
+    pub theme: String,
+    /// "dark", "light", or empty: as the desktop prefers.
+    pub theme_mode: String,
     pub text_scale: f64,
     pub terminal_font: String,
     /// Close the scratch terminal when focus leaves it.
@@ -109,6 +113,8 @@ impl Default for Settings {
             default_mode: String::new(),
             default_options: Default::default(),
             show_thinking: true,
+            theme: "nocturne".to_owned(),
+            theme_mode: String::new(),
             text_scale: 1.0,
             terminal_font: TERMINAL_FONT.to_owned(),
             scratch_autohide: false,
@@ -407,6 +413,8 @@ fn parse(text: &str) -> Settings {
         default_mode: string("defaultMode", &d.default_mode),
         default_options: v["defaultOptions"].as_object().map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()).unwrap_or_else(|| d.default_options.clone()),
         show_thinking: flag("showThinking", d.show_thinking),
+        theme: string("theme", &d.theme),
+        theme_mode: string("themeMode", &d.theme_mode),
         text_scale: v["textScale"].as_f64().filter(|s| (0.7..=1.6).contains(s)).unwrap_or(d.text_scale),
         terminal_font: string("terminalFont", &d.terminal_font),
         scratch_autohide: flag("scratchAutohide", d.scratch_autohide),
@@ -464,6 +472,8 @@ fn render(s: &Settings) -> String {
         "defaultMode": s.default_mode,
         "defaultOptions": s.default_options,
         "showThinking": s.show_thinking,
+        "theme": s.theme,
+        "themeMode": s.theme_mode,
         "textScale": s.text_scale,
         "terminalFont": s.terminal_font,
         "scratchAutohide": s.scratch_autohide,
@@ -516,6 +526,8 @@ mod tests {
             idle_minutes: 3,
             notify_done: false,
             text_scale: 1.2,
+            theme: "peony".into(),
+            theme_mode: "light".into(),
             telegram_enabled: true,
             telegram_token: "1:abc".into(),
             telegram_user: 42,

@@ -68,6 +68,7 @@ pub fn mark(size: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder().content_width(size).content_height(size).build();
     area.add_css_class("logo");
     area.set_draw_func(|area, cr, width, height| paint(area, cr, width, height, |dark| if dark { (0, DARK) } else { (1, LIGHT) }));
+    redraw_on_theme(&area);
     area
 }
 
@@ -77,6 +78,7 @@ pub fn wordmark(height: i32) -> gtk::DrawingArea {
     let area = gtk::DrawingArea::builder().content_width((f64::from(height) * ratio).round() as i32).content_height(height).build();
     area.add_css_class("logo");
     area.set_draw_func(|area, cr, width, height| paint(area, cr, width, height, |dark| if dark { (2, WORD_DARK) } else { (3, WORD_LIGHT) }));
+    redraw_on_theme(&area);
     area
 }
 
@@ -126,4 +128,14 @@ fn scaled(key: u8, original: &Pixbuf, px: i32) -> Option<Pixbuf> {
     let p = original.scale_simple(size(original.width()), size(original.height()), gtk::gdk_pixbuf::InterpType::Hyper)?;
     SCALED.with(|s| s.borrow_mut().insert((key, px), p.clone()));
     Some(p)
+}
+
+/// A drawing picked by the theme's darkness is drawn again when it changes.
+fn redraw_on_theme(area: &gtk::DrawingArea) {
+    let weak = area.downgrade();
+    crate::theme::on_change(move || {
+        if let Some(area) = weak.upgrade() {
+            area.queue_draw();
+        }
+    });
 }
