@@ -505,6 +505,17 @@ Who: window, cli. Result: `{}`.
 |---|---|---|
 | `agent` | string | the agent's id |
 
+### `run_recipe`
+
+Runs a recipe: its first step is sent as a message, each next one when the turn before it ends; `stop` ends it.
+
+Who: window, cli. Result: `{}`.
+
+| Param | Type | |
+|---|---|---|
+| `agent` | string | the agent's id |
+| `steps` | array | its messages, in order |
+
 ### `set_awake`
 
 Keeps an agent awake, or lets it be suspended when idle.

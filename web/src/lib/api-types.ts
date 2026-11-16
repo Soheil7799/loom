@@ -545,6 +545,14 @@ export type SuspendParams = {
   agent: string;
 };
 
+/** Runs a recipe: its first step is sent as a message, each next one when the turn before it ends; `stop` ends it. Result: {} */
+export type RunRecipeParams = {
+  /** the agent's id */
+  agent: string;
+  /** its messages, in order */
+  steps: unknown[];
+};
+
 /** Keeps an agent awake, or lets it be suspended when idle. Result: {} */
 export type SetAwakeParams = {
   /** the agent's id */
@@ -1316,6 +1324,7 @@ export interface Commands {
   "answer": AnswerParams;
   "set_mode": SetModeParams;
   "suspend": SuspendParams;
+  "run_recipe": RunRecipeParams;
   "set_awake": SetAwakeParams;
   "changes": ChangesParams;
   "revert": RevertParams;

@@ -37,6 +37,7 @@ pub mod project_files;
 pub mod project_icon;
 pub mod provider;
 pub mod quickopen;
+pub mod recipes;
 pub mod repos;
 pub mod rt;
 pub mod schedule;

@@ -1549,6 +1549,7 @@ impl App {
                 }
             }),
             act("Away mode: agents decide their own questions until…", "", |a| a.choose_away()),
+            act("Run a recipe on this agent (steps, one per turn)…", "", |a| a.choose_recipe()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
             act("About Loom", "", |a| crate::about::open(&a.window)),
@@ -2853,6 +2854,28 @@ impl App {
             choices.insert(0, Choice::new("I'm back: end away mode", "", set(0)));
         }
         self.picker.open("Away: agents decide their own questions (permissions still wait). Until…", choices);
+    }
+
+    /// A recipe run on the agent in view: its steps sent one per turn (loomd's `run_recipe`).
+    fn choose_recipe(self: &Rc<Self>) {
+        let Some(id) = self.remote_in_view() else {
+            crate::conn::tell("Open an agent first: a recipe runs on the agent in view.");
+            return;
+        };
+        let mut choices = Vec::new();
+        for (name, steps) in loom_core::recipes::list() {
+            let first = steps.first().cloned().unwrap_or_default();
+            choices.push(Choice::new(format!("{name} · {} steps", steps.len()), first, move || {
+                let count = steps.len();
+                crate::conn::command_result("window", "run_recipe", json!({ "agent": id.to_string(), "steps": &steps }), move |answer| match answer {
+                    Ok(_) => crate::conn::tell(&format!("Recipe started: {count} steps, one per turn. Esc ends it.")),
+                    Err(err) => crate::conn::tell(&err.to_string()),
+                });
+            }));
+        }
+        let (window, folder) = (self.window.clone(), loom_core::recipes::folder());
+        choices.push(Choice::new("Edit recipes… (a Markdown file each, steps between --- lines)", folder.display().to_string(), move || crate::menu::launch(&window, &folder)));
+        self.picker.open("Run which recipe? Each step goes when the turn before it ends.", choices);
     }
 
     /// A worktree command on the agent in view, from the palette.

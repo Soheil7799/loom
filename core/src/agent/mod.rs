@@ -274,6 +274,8 @@ pub struct Agent {
     reply: RefCell<String>,
     /// Messages waiting to be sent: text and attached images (PNG).
     queue: RefCell<VecDeque<(String, Vec<Png>)>>,
+    /// A recipe's steps still to go: the next is sent when a turn ends (Esc ends the recipe).
+    recipe: RefCell<VecDeque<String>>,
     /// `!command` runs and their output, for Claude with the next message (as Claude Code's
     /// own `!` does).
     context: RefCell<Vec<String>>,
@@ -421,6 +423,7 @@ impl Agent {
             workflows: RefCell::default(),
             reply: RefCell::default(),
             queue: RefCell::default(),
+            recipe: RefCell::default(),
             context: RefCell::default(),
             waiting: RefCell::default(),
             shells: Cell::new(0),
@@ -1642,6 +1645,15 @@ impl Agent {
         self.send_next();
     }
 
+    /// A recipe: its first step sent as a message (now, or when this turn ends), each next
+    /// one when the turn before it ends.
+    pub fn run_recipe(self: &Rc<Self>, steps: Vec<String>) {
+        let mut steps: VecDeque<String> = steps.into_iter().filter(|s| !s.trim().is_empty()).collect();
+        let Some(first) = steps.pop_front() else { return };
+        *self.recipe.borrow_mut() = steps;
+        self.submit_with(first, Vec::new());
+    }
+
     /// A message, with images attached (PNG).
     pub fn submit_with(self: &Rc<Self>, text: String, images: Vec<Png>) {
         self.last_active.set(Instant::now());
@@ -1984,6 +1996,13 @@ impl Agent {
         if let Some(message) = self.take_waiting() {
             self.queue.borrow_mut().push_back(message);
         }
+        // Then a recipe's next step, once nothing else waits.
+        let step = if self.queue.borrow().is_empty() { self.recipe.borrow_mut().pop_front() } else { None };
+        if let Some(step) = step {
+            self.recorded.message_starts();
+            self.view.user(&step);
+            self.queue.borrow_mut().push_back((step, Vec::new()));
+        }
         let Some((text, images)) = self.queue.borrow_mut().pop_front() else { return };
         // Nothing to say (a command's output already went with an earlier message).
         if text.is_empty() && images.is_empty() && self.context.borrow().is_empty() {
@@ -2094,8 +2113,10 @@ impl Agent {
 
     pub fn cancel(self: &Rc<Self>) {
         crate::log::debug!(format!("agent {}", self.id), "cancel (turn: {}, queued: {}, waiting: {})", self.turn.get(), self.queue.borrow().len(), self.waiting.borrow().len());
-        // A `!command` running stops too (Esc stops what is going on, whichever it is).
+        // A `!command` running stops too (Esc stops what is going on, whichever it is), and a
+        // recipe's steps still to go.
         self.stop_shell();
+        self.recipe.borrow_mut().clear();
         if !self.turn.get() && self.autonomous.get().is_none() {
             // Still starting with a message to send: it is not sent (back in the input).
             let unsent: Vec<_> = self.queue.borrow_mut().drain(..).filter(|(t, i)| !t.is_empty() || !i.is_empty()).collect();

@@ -1602,6 +1602,32 @@
       },
       "result": "{}"
     },
+    "run_recipe": {
+      "description": "Runs a recipe: its first step is sent as a message, each next one when the turn before it ends; `stop` ends it.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": false,
+      "params": {
+        "type": "object",
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "the agent's id"
+          },
+          "steps": {
+            "type": "array",
+            "description": "its messages, in order"
+          }
+        },
+        "required": [
+          "agent",
+          "steps"
+        ]
+      },
+      "result": "{}"
+    },
     "set_awake": {
       "description": "Keeps an agent awake, or lets it be suspended when idle.",
       "who": [

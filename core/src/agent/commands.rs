@@ -162,6 +162,15 @@ fn handle() {
         }
         Ok(json!({}))
     });
+    hub.handle("run_recipe", |who, params| {
+        let agent = person(who, params, "run recipes")?;
+        let steps: Vec<String> = params["steps"].as_array().ok_or_else(|| Error::Invalid("steps: the recipe's messages, in order".into()))?.iter().filter_map(|s| s.as_str().map(str::to_owned)).collect();
+        if steps.iter().all(|s| s.trim().is_empty()) {
+            return Err(Error::Invalid("a recipe needs a step".into()));
+        }
+        agent.run_recipe(steps);
+        Ok(json!({}))
+    });
     hub.handle("set_awake", |who, params| {
         let agent = person(who, params, "keep agents awake")?;
         let on = params["awake"].as_bool().ok_or_else(|| Error::Invalid("awake: true or false".into()))?;
