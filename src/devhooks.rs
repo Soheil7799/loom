@@ -40,6 +40,7 @@
 //! - `page:<name>`: shows that page of a stack in any open window (settings…)
 //! - `sendto:<text>`: "Send to another agent…" with that text, to the first agent offered
 //! - `pickerfirst`: the open picker's first entry chosen (Enter)
+//! - `findcode:<words>`: the palette's "Find code by meaning…" asked that
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
 //! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
@@ -412,6 +413,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             picker_first(app)?;
         }
         "pickerfirst" => picker_first(app)?,
+        "findcode" => app.search_code(argument.to_owned()),
         "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),

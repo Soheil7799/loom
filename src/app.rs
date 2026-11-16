@@ -8,6 +8,11 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+/// The project's code index for the user's own meaning search, kept between searches (as the
+/// MCP server keeps loom_find's), and the meaning model's scores of its pieces.
+static FOUND_INDEX: std::sync::Mutex<Option<loom_core::code_search::Index>> = std::sync::Mutex::new(None);
+static FOUND_MEANING: std::sync::Mutex<Option<loom_core::embed::Meaning>> = std::sync::Mutex::new(None);
+
 /// Untouched this long, a window in front counts as away (`set_looking`).
 const IDLE_AWAY: Duration = Duration::from_secs(180);
 
@@ -1551,6 +1556,7 @@ impl App {
             act("Away mode: agents decide their own questions until…", "", |a| a.choose_away()),
             act("Run a recipe on this agent (steps, one per turn)…", "", |a| a.choose_recipe()),
             act("Memory: the CLAUDE.md files this agent reads…", "", |a| a.choose_memory()),
+            act("Find code by meaning (as loom_find does for agents)…", "", |a| a.find_by_meaning()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
             act("About Loom", "", |a| crate::about::open(&a.window)),
@@ -2855,6 +2861,72 @@ impl App {
             choices.insert(0, Choice::new("I'm back: end away mode", "", set(0)));
         }
         self.picker.open("Away: agents decide their own questions (permissions still wait). Until…", choices);
+    }
+
+    /// Meaning search for the user, what loom_find answers agents: asked in words, searched
+    /// off the main thread (by meaning when Settings has it on for code, else by words), the
+    /// places found picked from and opened at their line.
+    fn find_by_meaning(self: &Rc<Self>) {
+        let entry = gtk::Entry::builder().width_chars(44).placeholder_text("What are you looking for? Say it as you'd describe it").build();
+        let weak = Rc::downgrade(self);
+        entry.connect_activate(move |entry| {
+            let query = entry.text().trim().to_owned();
+            let Some(app) = weak.upgrade().filter(|_| !query.is_empty()) else { return };
+            app.menu.popdown();
+            app.search_code(query);
+        });
+        self.menu.set_child(Some(&entry));
+        self.menu.set_pointing_to(Some(&gdk::Rectangle::new(60, 120, 1, 1)));
+        self.menu.popup();
+        entry.grab_focus();
+    }
+
+    /// `query` searched for where the agent in view works (else the project in view).
+    pub fn search_code(self: &Rc<Self>, query: String) {
+        let root = self.remote_view().and_then(|a| a.cwd()).unwrap_or_else(|| self.current_project());
+        let project = self.current_project();
+        crate::conn::tell("Searching…");
+        let weak = Rc::downgrade(self);
+        {
+            glib::spawn_future_local(async move {
+                let s = settings::get();
+                let model = s.embed_code.then(|| loom_core::embed::Model::from_settings(&s));
+                let searched = root.clone();
+                let found = gio::spawn_blocking(move || {
+                    let mut held = FOUND_INDEX.lock().unwrap_or_else(|e| e.into_inner());
+                    if held.as_ref().is_none_or(|index| index.root() != searched) {
+                        *held = Some(loom_core::code_search::Index::new(&searched, Some(loom_core::code_search::map_of(&project))));
+                    }
+                    let index = held.as_mut()?;
+                    index.refresh();
+                    Some(match model.and_then(|m| loom_core::embed::scores_in(&FOUND_MEANING, m, &index.texts(), &query).ok()) {
+                        Some(scores) => index.search_by_meaning(&query, &scores, 20),
+                        None => index.search(&query, 20),
+                    })
+                })
+                .await
+                .ok()
+                .flatten()
+                .unwrap_or_default();
+                let Some(app) = weak.upgrade() else { return };
+                if found.is_empty() {
+                    crate::conn::tell("Nothing found: try other words (what the code would call it).");
+                    return;
+                }
+                let choices = found
+                    .into_iter()
+                    .map(|f| {
+                        let (files, path, line) = (app.files.clone(), root.join(&f.path), f.line as u32);
+                        Choice::new(format!("{}:{}  {}", f.path, f.line, f.head.trim()), f.doc.trim().to_owned(), move || {
+                            files.root.set_visible(true);
+                            files.open_file(&path);
+                            files.go_to_line(line);
+                        })
+                    })
+                    .collect();
+                app.picker.open("Where it is, best first", choices);
+            });
+        }
     }
 
     /// The memory files Claude Code reads for the agent in view (its folder's and every parent
