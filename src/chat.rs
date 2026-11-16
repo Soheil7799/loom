@@ -33,6 +33,8 @@ thread_local! {
     /// Opens a file link ("loom-file:src/app.rs:42", or a relative or file:// link) clicked
     /// in a chat (the widget it was in, to know whose folder): true if it did.
     pub static OPEN_LINK: RefCell<Option<Rc<dyn Fn(&str, &gtk::Widget) -> bool>>> = const { RefCell::new(None) };
+    /// "Send to another agent…" on a message: the app asks which, and puts it in its input.
+    pub static SEND_ELSEWHERE: RefCell<Option<Rc<dyn Fn(String)>>> = const { RefCell::new(None) };
     /// The account's limits as Claude Code last told them ({plan, windows}): the account's,
     /// so any agent's answer tells them for every chat.
     static LIMITS: RefCell<serde_json::Value> = const { RefCell::new(serde_json::Value::Null) };
@@ -4671,7 +4673,13 @@ fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextVie
             menu = menu.item(label, move || button.emit_clicked());
         }
         let quoted = selected.unwrap_or_else(|| message.text.borrow().trim().to_owned());
+        let passed = quoted.clone();
         menu.section()
+            .item("Send to another agent…", move || {
+                if let Some(send) = SEND_ELSEWHERE.with(|s| s.borrow().clone()) {
+                    send(passed.clone());
+                }
+            })
             .item("Quote in your reply", move || {
                 let buffer = input.buffer();
                 let quote = format!("> {}\n\n", quoted.trim().replace('\n', "\n> "));

@@ -2595,10 +2595,51 @@ impl App {
         }
     }
 
+    /// A message passed on from the agent in view: pick another agent, and it lands in that
+    /// one's input (quoted, with where it came from), to read over and send.
+    fn send_elsewhere(self: &Rc<Self>, text: String) {
+        let from = self.remote_in_view();
+        let from_title = from.and_then(|id| self.remote_item(id)).and_then(|i| i["title"].as_str().map(str::to_owned)).unwrap_or_else(|| "another agent".to_owned());
+        let weak = Rc::downgrade(self);
+        let mut choices = Vec::new();
+        for item in self.remote_items() {
+            let Some(id) = item["id"].as_str().and_then(|i| i.parse::<u32>().ok()).filter(|id| Some(*id) != from) else { continue };
+            let (weak, text, from_title) = (weak.clone(), text.clone(), from_title.clone());
+            let mut choice = Choice::new(format!("Send to {}", item["title"].as_str().unwrap_or_default()), item["project"].as_str().unwrap_or_default().to_owned(), move || {
+                let Some(app) = weak.upgrade() else { return };
+                app.focus_remote(id);
+                let agent = app.remote_agent(id);
+                let buffer = agent.chat.input.buffer();
+                let note = format!("From {from_title}:\n\n> {}\n\n", text.trim().replace('\n', "\n> "));
+                buffer.place_cursor(&buffer.end_iter());
+                if buffer.char_count() > 0 {
+                    buffer.insert_at_cursor("\n");
+                }
+                buffer.insert_at_cursor(&note);
+                agent.chat.input.grab_focus();
+            });
+            choice.dot = Some(Status::from_css(item["status"].as_str().unwrap_or_default()).css());
+            choices.push(choice);
+        }
+        if choices.is_empty() {
+            crate::conn::tell("No other agent to send it to.");
+            return;
+        }
+        self.picker.open("Send it to which agent?", choices);
+    }
+
     /// File links in chats ("loom-file:src/app.rs:42", relative links, file://) open in
     /// loom's editor, from the folder of the agent whose chat it is.
     fn wire_links(self: &Rc<Self>) {
         let weak = Rc::downgrade(self);
+        crate::chat::SEND_ELSEWHERE.with(|h| {
+            let weak = weak.clone();
+            *h.borrow_mut() = Some(Rc::new(move |text: String| {
+                if let Some(app) = weak.upgrade() {
+                    app.send_elsewhere(text);
+                }
+            }));
+        });
         crate::chat::OPEN_LINK.with(|h| {
             *h.borrow_mut() = Some(Rc::new(move |uri: &str, widget: &gtk::Widget| {
                 let Some(app) = weak.upgrade() else { return false };
