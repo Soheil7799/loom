@@ -296,9 +296,11 @@ impl RemoteAgent {
             };
             run.stop_unanswered(item["unanswered"].as_u64().unwrap_or(0));
             // Over, as loomd says (its files may not say so yet).
-            if !running && !run.done() {
+            // A completion after a stop loomd guessed earlier is read from the files again.
+            if !running {
                 match item["state"].as_str() {
-                    Some("stopped") => run.stopped(),
+                    Some("stopped") if !run.done() => run.stopped(),
+                    Some("stopped") => {}
                     Some("failed") => run.ended("failed", None),
                     _ => run.ended("completed", None),
                 }

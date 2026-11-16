@@ -201,8 +201,7 @@ impl Run {
 
     /// Its end, as the provider tells it: done (its output in `output`), failed, or stopped.
     pub fn ended(&self, status: &str, output: Option<PathBuf>) {
-        let alive = (self.alive)();
-        self.progress.borrow_mut().ended(status, output, alive);
+        self.progress.borrow_mut().ended(status, output);
         self.show();
     }
 

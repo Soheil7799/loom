@@ -1209,7 +1209,7 @@ impl Workflow for RecordedWorkflow {
         }
     }
     fn ended(&self, status: &str, output: Option<std::path::PathBuf>) {
-        self.progress.borrow_mut().ended(status, output, true);
+        self.progress.borrow_mut().ended(status, output);
         self.publish();
     }
     fn stopped(&self) {

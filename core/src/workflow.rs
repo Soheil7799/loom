@@ -234,10 +234,10 @@ impl Progress {
         if let Some(output) = output {
             let mut said = Vec::new();
             if let Some(n) = output["agentCount"].as_u64() {
-                said.push(format!("{n} agents"));
+                said.push(format!("{n} agent{}", if n == 1 { "" } else { "s" }));
             }
             if let Some(tokens) = output["totalTokens"].as_u64() {
-                said.push(format!("{:.1}M tokens", tokens as f64 / 1_000_000.0));
+                said.push(if tokens < 1_000_000 { format!("{}k tokens", (tokens + 500) / 1000) } else { format!("{:.1}M tokens", tokens as f64 / 1_000_000.0) });
             }
             let logs: Vec<String> = output["logs"].as_array().into_iter().flatten().filter_map(|l| l.as_str().map(str::to_owned)).collect();
             let mut text = format!("Finished: {}.", said.join(", "));
@@ -256,8 +256,11 @@ impl Progress {
     }
 
     /// Its end, as the provider tells it: done (its output in `output`), failed, or stopped.
-    pub fn ended(&mut self, status: &str, output: Option<PathBuf>, alive: bool) {
-        if self.done() {
+    /// A completion is done even before its output is written (it is told first), and gives
+    /// way over a stop guessed earlier (its task gone from the provider's list first).
+    pub fn ended(&mut self, status: &str, output: Option<PathBuf>) {
+        let guessed = self.state == State::Stopped && status == "completed";
+        if self.done() && !guessed {
             return;
         }
         match status {
@@ -265,7 +268,11 @@ impl Progress {
                 if output.is_some() {
                     self.output = output;
                 }
-                self.poll(alive);
+                self.state = State::Running;
+                self.poll(true);
+                if self.state == State::Running {
+                    self.state = State::Done("Finished.".to_owned());
+                }
             }
             "failed" => self.state = State::Failed,
             _ => self.state = State::Stopped,
@@ -307,5 +314,28 @@ mod tests {
         assert_eq!(members.len(), 2);
         assert_eq!(members[0].result.as_deref(), Some("Choose B."));
         assert_eq!(phases(&members), "Advise 1/1 · Decide 0/1");
+    }
+
+    #[test]
+    fn a_told_completion_is_done_even_after_a_guessed_stop() {
+        let root = std::env::temp_dir().join(format!("loom-test-workflow-guess-{}", std::process::id()));
+        let dir = root.join("projects/-p/s1/subagents/workflows/wf_1");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("journal.jsonl"), "{\"type\":\"started\",\"agentId\":\"a\",\"label\":\"x\",\"phase\":\"P\"}\n{\"type\":\"result\",\"agentId\":\"a\",\"result\":\"ok\"}\n").unwrap();
+        let output = root.join("out.output");
+        std::fs::write(&output, "{\"agentCount\":1}").unwrap();
+        let launch = Launch { task: "t1".into(), dir, name: "n".into(), summary: String::new() };
+        let mut p = Progress::new(&launch, true);
+        p.state = State::Stopped;
+        p.ended("stopped", None);
+        assert_eq!(p.state, State::Stopped);
+        p.ended("completed", Some(output));
+        assert_eq!(p.state, State::Done("Finished: 1 agent.".into()));
+        assert_eq!(p.counts(), (1, 1));
+        // Told before its output is written: done all the same.
+        let mut q = Progress::new(&launch, true);
+        q.ended("completed", None);
+        assert_eq!(q.state, State::Done("Finished.".into()));
+        std::fs::remove_dir_all(&root).unwrap();
     }
 }

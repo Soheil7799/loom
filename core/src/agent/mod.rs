@@ -3060,7 +3060,8 @@ impl Agent {
                     .filter(|t| t["taskType"] == "local_bash")
                     .filter_map(|t| Some((format!("task:{}:{}", t["taskId"].as_str()?, t["toolCallId"].as_str().unwrap_or("")), t["description"].as_str().unwrap_or("command").to_owned())))
                     .collect();
-                // A workflow no longer running there, its end never told (an interrupt): over.
+                // A workflow no longer running there, its end not told yet: stopped (an
+                // interrupt), unless a completion is told after all (Progress::ended).
                 let running: Vec<&str> = update["tasks"].as_array().into_iter().flatten().filter_map(|t| t["taskId"].as_str()).collect();
                 let ended: Vec<_> = self.workflows.borrow().iter().filter(|w| !w.done() && !running.contains(&w.task().as_str())).cloned().collect();
                 for run in ended {
