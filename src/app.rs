@@ -1550,6 +1550,7 @@ impl App {
             }),
             act("Away mode: agents decide their own questions until…", "", |a| a.choose_away()),
             act("Run a recipe on this agent (steps, one per turn)…", "", |a| a.choose_recipe()),
+            act("Memory: the CLAUDE.md files this agent reads…", "", |a| a.choose_memory()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
             act("About Loom", "", |a| crate::about::open(&a.window)),
@@ -2854,6 +2855,43 @@ impl App {
             choices.insert(0, Choice::new("I'm back: end away mode", "", set(0)));
         }
         self.picker.open("Away: agents decide their own questions (permissions still wait). Until…", choices);
+    }
+
+    /// The memory files Claude Code reads for the agent in view (its folder's and every parent
+    /// folder's CLAUDE.md, CLAUDE.local.md and .claude/CLAUDE.md, the user's own, and its auto
+    /// memory), nearest first: one opened in loom's editor. It explains what an agent goes by.
+    fn choose_memory(self: &Rc<Self>) {
+        let cwd = self.remote_view().and_then(|a| a.cwd()).unwrap_or_else(|| self.current_project());
+        let home = glib::home_dir();
+        let mut found: Vec<(PathBuf, &str)> = Vec::new();
+        for (depth, dir) in cwd.ancestors().enumerate() {
+            for name in ["CLAUDE.md", "CLAUDE.local.md", ".claude/CLAUDE.md"] {
+                found.push((dir.join(name), if depth == 0 { "this agent's folder" } else { "a folder around it" }));
+            }
+        }
+        // (the home folder's .claude/CLAUDE.md is this one, as yours)
+        found.retain(|(path, _)| *path != home.join(".claude/CLAUDE.md"));
+        found.push((home.join(".claude/CLAUDE.md"), "yours, read in every project"));
+        // Claude Code's notes to itself for this folder (its name with every other sign a '-')
+        let encoded: String = cwd.to_string_lossy().chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        found.push((home.join(".claude/projects").join(encoded).join("memory/MEMORY.md"), "Claude's own notes for this folder (auto memory)"));
+        let choices: Vec<Choice> = found
+            .into_iter()
+            .filter(|(path, _)| path.is_file())
+            .map(|(path, what)| {
+                let shown = path.strip_prefix(&home).map_or_else(|_| path.display().to_string(), |p| format!("~/{}", p.display()));
+                let files = self.files.clone();
+                Choice::new(shown, what, move || {
+                    files.root.set_visible(true);
+                    files.open_file(&path);
+                })
+            })
+            .collect();
+        if choices.is_empty() {
+            crate::conn::tell("No CLAUDE.md for this agent: none in its folder, around it, or yours.");
+            return;
+        }
+        self.picker.open("Open which memory file? Claude Code reads all of these, nearest first.", choices);
     }
 
     /// A recipe run on the agent in view: its steps sent one per turn (loomd's `run_recipe`).
