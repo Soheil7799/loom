@@ -41,6 +41,7 @@
 //! - `sendto:<text>`: "Send to another agent…" with that text, to the first agent offered
 //! - `pickerfirst`: the open picker's first entry chosen (Enter)
 //! - `findcode:<words>`: the palette's "Find code by meaning…" asked that
+//! - `awayfor:<seconds>`: away mode on for that long
 //! - `close`: close the focused agent (asks first if it is busy)
 //! - `scribenews`: as if Scribe had something new (the Notes tab shown or marked)
 //! - `rowmenu:<n>`: the sidebar's right-click menu of row n (empty: of its empty part)
@@ -414,6 +415,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         }
         "pickerfirst" => picker_first(app)?,
         "findcode" => app.search_code(argument.to_owned()),
+        "awayfor" => {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            let seconds: u64 = argument.parse().map_err(|_| "awayfor:<seconds>")?;
+            crate::conn::command("window", "set_settings", serde_json::json!({ "changes": { "away_until": now + seconds } }));
+        }
         "row" => app.activate_row(argument.parse().map_err(|_| "row:<n>")?),
         "agent" => app.focus_nth(argument.parse::<usize>().map_err(|_| "agent:<n>")?.saturating_sub(1)),
         "new" => app.start_in(PathBuf::from(argument)),
