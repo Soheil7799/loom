@@ -90,6 +90,10 @@ const SETTLE: Duration = Duration::from_secs(8);
 /// opened again (the newest).
 const EARLIER: usize = 400;
 
+/// The permission modes Claude Code offers, for an agent that hasn't started yet (it says its
+/// own once it has).
+const RESTING_MODES: [&str; 5] = ["default", "acceptEdits", "plan", "auto", "bypassPermissions"];
+
 /// " (28 Oct, 12:15)" for a file's ISO time, in local time; nothing if unreadable.
 fn when_said(iso: &str) -> String {
     iso.parse::<jiff::Timestamp>()
@@ -311,6 +315,8 @@ pub struct Agent {
     shell_pid: Cell<Option<i32>>,
     modes: RefCell<Vec<String>>,
     mode: RefCell<String>,
+    /// A mode chosen while it rested: the session gets it as it starts.
+    wanted_mode: RefCell<Option<String>>,
     pending: RefCell<Vec<Pending>>,
     /// The workflows it launched (their cards in the conversation).
     workflows: RefCell<Vec<Rc<dyn Workflow>>>,
@@ -436,6 +442,7 @@ impl Agent {
             login_watch: RefCell::default(),
             modes: RefCell::default(),
             mode: RefCell::new("default".to_owned()),
+            wanted_mode: RefCell::default(),
             pending: RefCell::default(),
             subs: RefCell::default(),
             asked: Cell::new(0),
@@ -1306,9 +1313,10 @@ impl Agent {
         self.ready.set(true);
         self.refresh_header();
         self.refresh_status();
-        // A new conversation starts in the mode chosen in the settings.
-        let wanted = crate::settings::get().default_mode;
-        if self.fresh.replace(false) && !wanted.is_empty() && *self.mode.borrow() != wanted && self.modes.borrow().contains(&wanted) {
+        // The mode chosen while it rested, else a new conversation's from the settings.
+        let fresh = self.fresh.replace(false);
+        let wanted = self.wanted_mode.take().unwrap_or_else(|| if fresh { crate::settings::get().default_mode } else { String::new() });
+        if !wanted.is_empty() && *self.mode.borrow() != wanted && self.modes.borrow().contains(&wanted) {
             self.set_mode(&wanted);
         }
         self.send_next();
@@ -2121,13 +2129,23 @@ impl Agent {
 
     /// Its permission mode now, and the ones it can take.
     pub fn modes(&self) -> (String, Vec<String>) {
-        (self.mode.borrow().clone(), self.modes.borrow().clone())
+        let modes = self.modes.borrow();
+        // Resting, it hasn't said its modes yet: Claude Code's usual ones.
+        let modes = if modes.is_empty() { RESTING_MODES.iter().map(|m| (*m).to_owned()).collect() } else { modes.clone() };
+        (self.mode.borrow().clone(), modes)
     }
 
-    /// Mode `mode` asked for (one it can take).
+    /// Mode `mode` asked for (one it can take): now if it runs, else when it starts.
     pub fn choose_mode(self: &Rc<Self>, mode: &str) -> Result<(), String> {
-        if self.conn.borrow().is_none() || self.session_id.borrow().is_none() {
-            return Err("it isn't running: send it something first".to_owned());
+        if !self.ready.get() || self.conn.borrow().is_none() || self.session_id.borrow().is_none() {
+            if !self.modes().1.iter().any(|m| m == mode) {
+                return Err(format!("no mode {mode}"));
+            }
+            *self.wanted_mode.borrow_mut() = Some(mode.to_owned());
+            *self.mode.borrow_mut() = mode.to_owned();
+            self.refresh_header();
+            self.emit(Event::Changed);
+            return Ok(());
         }
         if !self.modes.borrow().iter().any(|m| m == mode) {
             return Err(format!("no mode {mode} (it takes: {})", self.modes.borrow().join(", ")));
@@ -3272,6 +3290,18 @@ mod tests {
             vec![(repo.join("again.rs"), Mark::Changed), (repo.join("x"), Mark::Created), (repo.join("src/a.rs"), Mark::Changed), (repo.join("b"), Mark::Changed)],
             "a file changed before the turn and again in it counts"
         );
+    }
+
+    #[test]
+    fn a_resting_agent_takes_a_mode_for_when_it_starts() {
+        let dir = std::env::temp_dir();
+        let saved = Saved { cwd: dir.clone(), session_id: None, title: String::new(), named: false, draft: String::new(), dirs: Vec::new(), used: 1, awake: false, options: Value::Null, chosen: json!({}) };
+        let agent = Agent::new(9_001, saved, dir.clone(), crate::jobs::Jobs::new(dir).0);
+        assert!(agent.modes().1.contains(&"plan".to_owned()));
+        assert_eq!(agent.choose_mode("plan"), Ok(()));
+        assert_eq!(agent.modes().0, "plan");
+        assert_eq!(agent.wanted_mode.borrow().as_deref(), Some("plan"));
+        assert!(agent.choose_mode("nonsense").is_err());
     }
 }
 
