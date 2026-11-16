@@ -8,6 +8,14 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
+/// Untouched this long, a window in front counts as away (`set_looking`).
+const IDLE_AWAY: Duration = Duration::from_secs(180);
+
+thread_local! {
+    /// The user's last key, click or scroll in the window.
+    static LAST_INPUT: Cell<std::time::Instant> = Cell::new(std::time::Instant::now());
+}
+
 use gtk::{gdk, gio, glib, pango, prelude::*};
 use serde_json::{Value, json};
 
@@ -1972,13 +1980,47 @@ impl App {
     /// leaves questions to the window while it is in use). Said again every 20 s: loomd
     /// forgets it after a minute (a window that crashed silences nothing for long).
     fn tell_looking(&self) {
-        let beside = self.pinned_remote.get().filter(|_| self.window.is_active());
+        // In front but untouched a while: away (notices and the bridges speak again).
+        let active = self.window.is_active() && LAST_INPUT.get().elapsed() < IDLE_AWAY;
+        let beside = self.pinned_remote.get().filter(|_| active);
         let agents: Vec<String> = self.remote_looked_at().into_iter().chain(beside).map(|id| id.to_string()).collect();
-        crate::conn::command_result("window", "set_looking", json!({ "active": self.window.is_active(), "agents": agents }), |_| {});
+        crate::conn::command_result("window", "set_looking", json!({ "active": active, "agents": agents }), |_| {});
+    }
+
+    /// Any key, click or scroll in the window: the user is there (back from
+    /// idle: loomd told at once).
+    fn watch_input(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        let seen = Rc::new(move || {
+            let idle = LAST_INPUT.replace(std::time::Instant::now()).elapsed() >= IDLE_AWAY;
+            if idle && let Some(app) = weak.upgrade() {
+                app.tell_looking();
+            }
+        });
+        let keys = gtk::EventControllerKey::builder().propagation_phase(gtk::PropagationPhase::Capture).build();
+        let s = seen.clone();
+        keys.connect_key_pressed(move |_, _, _, _| {
+            s();
+            glib::Propagation::Proceed
+        });
+        // (not pointer motion: GTK makes some up when what is under the pointer changes, a
+        // reply coming in, so it doesn't tell the user is there)
+        let scroll = gtk::EventControllerScroll::builder().flags(gtk::EventControllerScrollFlags::BOTH_AXES).propagation_phase(gtk::PropagationPhase::Capture).build();
+        let s = seen.clone();
+        scroll.connect_scroll(move |_, _, _| {
+            s();
+            glib::Propagation::Proceed
+        });
+        let click = gtk::GestureClick::builder().button(0).propagation_phase(gtk::PropagationPhase::Capture).build();
+        click.connect_pressed(move |_, _, _, _| seen());
+        self.window.add_controller(keys);
+        self.window.add_controller(scroll);
+        self.window.add_controller(click);
     }
 
     /// The window as loomd's client: what it shows told to loomd, and loomd's `asks` acted on.
     fn wire_remote(self: &Rc<Self>) {
+        self.watch_input();
         let weak = Rc::downgrade(self);
         self.window.connect_is_active_notify(move |_| {
             if let Some(app) = weak.upgrade() {
