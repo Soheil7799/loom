@@ -1437,6 +1437,13 @@ impl App {
             act("Clear: a fresh conversation here (/clear)", "", |a| {
                 a.remote_do("clear", json!({}));
             }),
+            // In the input, drafted, to edit and send (Enter) or leave.
+            act("Compact this conversation…", "", |a| {
+                if let Some(chat) = a.chat_in_view() {
+                    chat.input.buffer().set_text(loom_core::agent::REST_COMPACT);
+                    chat.input.grab_focus();
+                }
+            }),
             act("Let this agent work in another folder too…", "", |a| a.add_dir()),
             act("Save this conversation as Markdown…", "", |a| a.export()),
             act("Move this agent up", "Alt+Shift+↑", |a| a.move_agent(-1)),

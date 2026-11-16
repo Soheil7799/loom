@@ -104,7 +104,7 @@ fn when_said(iso: &str) -> String {
 }
 
 /// What compacting before resting keeps: what the next session needs to carry on.
-const REST_COMPACT: &str = "/compact Keep what is still open: unfinished tasks, decisions made and why, the files involved, and anything asked for that is not done yet.";
+pub const REST_COMPACT: &str = "/compact Keep what is still open: unfinished tasks, decisions made and why, the files involved, and anything asked for that is not done yet.";
 
 
 #[derive(Clone, Copy, PartialEq, Debug)]

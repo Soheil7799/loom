@@ -743,7 +743,9 @@ impl Chat {
         // message. Only between turns (the button is not shown during one).
         let weak = Rc::downgrade(&chat);
         // It asks what the summary should keep (optional), then compacts.
-        let keep = gtk::Entry::builder().placeholder_text("What the summary should keep (optional)").width_chars(36).build();
+        // Drafted: what a summary should carry on with (edit it, or empty it for Claude's own).
+        let drafted = loom_core::agent::REST_COMPACT.strip_prefix("/compact ").unwrap_or_default();
+        let keep = gtk::Entry::builder().placeholder_text("What the summary should keep (optional)").text(drafted).width_chars(48).build();
         let go = gtk::Button::with_label("Compact");
         go.add_css_class("suggested");
         let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -767,7 +769,7 @@ impl Chat {
                     return;
                 }
                 let what = keep.text().trim().to_owned();
-                keep.set_text("");
+                keep.set_text(drafted);
                 chat.compact.set_visible(false);
                 let command = if what.is_empty() { "/compact".to_owned() } else { format!("/compact {what}") };
                 chat.call(&chat.on_submit, (command, Vec::new()));
