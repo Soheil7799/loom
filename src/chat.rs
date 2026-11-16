@@ -548,7 +548,7 @@ impl Chat {
         // Under the text: attach, the session's pickers and mode, what is happening, send.
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         toolbar.add_css_class("composer-bar");
-        let attach = gtk::Button::with_label("@");
+        let attach = gtk::Button::from_icon_name("text-x-generic-symbolic");
         attach.add_css_class("flat");
         attach.add_css_class("round");
         attach.set_tooltip_text(Some("Mention a file (or drop files here)"));
@@ -567,7 +567,7 @@ impl Chat {
         mic.set_tooltip_text(Some("Speak: click to record, click again to write it here"));
         mic.update_property(&[gtk::accessible::Property::Label("Speak")]);
         mic.set_visible(crate::stt::configured());
-        let send = gtk::Button::with_label("↑");
+        let send = gtk::Button::from_icon_name("mail-send-symbolic");
         send.add_css_class("send");
         send.set_tooltip_text(Some("Send (Enter)"));
         send.update_property(&[gtk::accessible::Property::Label("Send")]);
@@ -2305,8 +2305,9 @@ impl Chat {
         let was = self.working_since.replace(since);
         self.tube.queue_draw();
         self.show_compact();
-        self.send.set_label(if since.is_some() { "■" } else { "↑" });
+        self.send.set_icon_name(if since.is_some() { "media-playback-stop-symbolic" } else { "mail-send-symbolic" });
         self.send.set_tooltip_text(Some(if since.is_some() { "Stop (Esc)" } else { "Send (Enter)" }));
+        self.send.update_property(&[gtk::accessible::Property::Label(if since.is_some() { "Stop" } else { "Send" })]);
         if since.is_some() {
             self.send.add_css_class("stop");
         } else {
