@@ -21,10 +21,12 @@
 @define-color loom_shell #c39bff;
 @define-color loom_line alpha(@window_fg_color, 0.07);
 @define-color loom_shadow alpha(black, 0.32);
+/* Secondary text; a theme of loom's sets its own (the palette's quiet). */
+@define-color loom_quiet alpha(@window_fg_color, 0.68);
 
 window.loom { font-family: Onest, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
 .mono, .tool-title, .chip, .code-block, .diff label, .table-cell.mono { font-family: "JetBrains Mono", Vazirmatn, monospace; }
-.dim { color: alpha(@window_fg_color, 0.68); }
+.dim { color: @loom_quiet; }
 .small { font-size: 0.92em; }
 .title { font-weight: 500; }
 window.loom scrolledwindow undershoot, window.loom scrolledwindow overshoot { background: none; }
@@ -480,16 +482,16 @@ window.prefs stack, window.prefs stack > scrolledwindow, window.prefs stack view
 .prefs-nav row:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
 /* Settings: the add-ons listed under "Add-ons" in the nav. */
 .prefs-nav row.prefs-nav-sub { padding-left: 28px; }
-.prefs-nav-foot { padding: 12px 20px; border-top: 1px solid @loom_line; font-size: 0.85em; opacity: 0.6; }
+.prefs-nav-foot { padding: 12px 20px; border-top: 1px solid @loom_line; font-size: 0.85em; color: @loom_quiet; }
 button.prefs-nav-foot { border-radius: 0; min-height: 0; padding: 12px 20px; }
-button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); opacity: 0.85; }
+button.prefs-nav-foot:hover { background: alpha(@window_fg_color, 0.05); color: @window_fg_color; }
 .prefs-page { padding: 28px 36px 36px; }
 .prefs-heading { font-size: 1.5em; font-weight: 500; margin-bottom: 4px; }
-.prefs-section { font-size: 0.85em; font-weight: 400; opacity: 0.6; margin: 0 0 8px 4px; }
+.prefs-section { font-size: 0.85em; font-weight: 400; color: @loom_quiet; margin: 0 0 8px 4px; }
 .prefs-group { background: alpha(@window_fg_color, 0.035); border: none; border-radius: 10px; }
 .prefs-row { padding: 12px 16px; min-height: 32px; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
 .prefs-row:last-child { border-bottom: none; }
-.prefs-caption { font-size: 0.85em; opacity: 0.6; margin: 8px 4px 0 4px; }
+.prefs-caption { font-size: 0.85em; color: @loom_quiet; margin: 8px 4px 0 4px; }
 .prefs-title { font-weight: 500; }
 .prefs-page dropdown > button, .prefs-page fontbutton > button, .prefs-button {
   min-height: 28px; padding: 0 12px; border-radius: 8px; font-size: 0.92em; font-weight: 400;

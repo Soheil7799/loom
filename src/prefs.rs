@@ -1,5 +1,5 @@
-//! The settings window (Ctrl+,): General, Agents, Appearance, Claude, Advanced, and the
-//! add-ons (Notes, Telegram, Speech to text), each off until switched on. Every change is
+//! The settings window (Ctrl+,): General, Appearance, Agents, Claude, the add-ons (Notes,
+//! Telegram, Remote, Speech to text; each off until switched on) and Advanced. Every change is
 //! saved at once; Esc closes it.
 
 use std::rc::Rc;
@@ -47,15 +47,15 @@ const IDLE: &[(u64, &str)] = &[(0, "Never"), (5, "After 5 min"), (15, "After 15 
 /// The pages: (name, title, icon, an add-on's: listed under Add-ons).
 const PAGES: &[(&str, &str, &str, bool)] = &[
     ("general", "General", "preferences-system-symbolic", false),
-    ("agents", "Agents", "system-users-symbolic", false),
     ("appearance", "Appearance", "applications-graphics-symbolic", false),
+    ("agents", "Agents", "system-users-symbolic", false),
     ("claude", "Claude", "applications-engineering-symbolic", false),
-    ("advanced", "Advanced", "utilities-terminal-symbolic", false),
     ("addons", "Add-ons", "application-x-addon-symbolic", false),
     ("notes", "Notes", "accessories-text-editor-symbolic", true),
     ("telegram", "Telegram", "mail-send-symbolic", true),
     ("remote", "Remote", "phone-symbolic", true),
     ("voice", "Speech to text", "audio-input-microphone-symbolic", true),
+    ("advanced", "Advanced", "utilities-terminal-symbolic", false),
 ];
 
 /// The nav row of page `name` selected (its page shown).
@@ -81,16 +81,16 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     // The nav first: pages link to each other through it.
     let list = gtk::ListBox::builder().selection_mode(gtk::SelectionMode::Single).vexpand(true).build();
     let stack = gtk::Stack::builder().transition_type(gtk::StackTransitionType::Crossfade).transition_duration(120).hexpand(true).build();
-    stack.add_named(&page("General", &general(&s, &window)), Some("general"));
-    stack.add_named(&page("Agents", &agents(&s, &window)), Some("agents"));
+    stack.add_named(&page("General", &general(&s)), Some("general"));
     stack.add_named(&page("Appearance", &appearance(&s)), Some("appearance"));
+    stack.add_named(&page("Agents", &agents(&s, &window)), Some("agents"));
     stack.add_named(&page("Claude", &claude(&window)), Some("claude"));
-    stack.add_named(&page("Advanced", &advanced(&s)), Some("advanced"));
     stack.add_named(&page("Add-ons", &addons(&s, &list)), Some("addons"));
     stack.add_named(&page("Notes", &notes(&s, &window)), Some("notes"));
     stack.add_named(&page("Telegram", &telegram(&s)), Some("telegram"));
     stack.add_named(&page("Remote", &remote(&s)), Some("remote"));
     stack.add_named(&page("Speech to text", &voice(&s)), Some("voice"));
+    stack.add_named(&page("Advanced", &advanced(&s)), Some("advanced"));
 
     // The pages, as loom's own sidebar lists agents.
     let nav = gtk::Box::new(gtk::Orientation::Vertical, 0);
@@ -353,8 +353,8 @@ fn on_done(entry: &(impl IsA<gtk::Editable> + IsA<gtk::Widget>), save: impl Fn(S
     entry.add_controller(focus);
 }
 
-fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+fn general(s: &Settings) -> gtk::Box {
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
     let notifications = section("Notifications");
     row(&notifications, "When an agent asks for permission", "", &switch(s.notify_questions, |s, on| s.notify_questions = on));
@@ -362,71 +362,65 @@ fn general(s: &Settings, window: &gtk::Window) -> gtk::Box {
     caption(&notifications, "Only about agents you aren't looking at.");
     content.append(&notifications);
 
-    let behaviour = section("Behaviour");
+    let sidebar = section("Sidebar");
     row(
-        &behaviour,
-        "Agents that need you first",
+        &sidebar,
+        "Waiting agents first",
         "One waiting for your answer moves to the top of its project until answered.",
         &switch(s.sort_by_urgency, |s, on| s.sort_by_urgency = on),
     );
-    let start = dropdown(&[(true, "The overview"), (false, "The last agent")], s.start_on_overview, |_| String::new(), |s, on| s.start_on_overview = on);
-    row(&behaviour, "When loom starts", "The overview shows every agent at a glance and resumes none until you open it.", &start);
     row(
-        &behaviour,
+        &sidebar,
         "Running section open",
-        "The agents running now, above the projects. Folded, its header still counts who needs you. Ctrl+1…9 go by it; drag to reorder; ☕ keeps one awake.",
+        "Agents running now, above the projects. Folded, its header still counts who needs you.",
         &switch(s.show_running, |s, on| s.show_running = on),
     );
-    row(
-        &behaviour,
-        "Ctrl+Tab cycles running agents only",
-        "Suspended ones are skipped, so passing one doesn't wake it.",
-        &switch(s.cycle_running, |s, on| s.cycle_running = on),
-    );
-    row(&behaviour, "Confirm quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
+    row(&sidebar, "Ctrl+Tab skips suspended agents", "So passing one doesn't wake it.", &switch(s.cycle_running, |s, on| s.cycle_running = on));
+    content.append(&sidebar);
+
+    let lifetime = section("Starting and closing");
+    let start = dropdown(&[(true, "The overview"), (false, "The last agent")], s.start_on_overview, |_| String::new(), |s, on| s.start_on_overview = on);
+    row(&lifetime, "When loom starts", "The overview shows every agent at a glance and wakes none until you open one.", &start);
     // loomd's client: what closing the window does to loomd's agents.
     row(
-        &behaviour,
+        &lifetime,
         "Keep agents working when the window closes",
-        "loomd goes on running them, with your jobs, bridges and scheduled prompts. Off: closing the window stops loomd; conversations go on next time.",
+        "Agents, jobs, bridges and scheduled prompts keep running in the background. Off: closing the window stops them; conversations go on next time.",
         &switch(s.keep_working, |s, on| s.keep_working = on),
     );
+    row(&lifetime, "Ask before quitting while agents work", "", &switch(s.confirm_quit, |s, on| s.confirm_quit = on));
+    content.append(&lifetime);
 
-    row(&behaviour, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
-    content.append(&behaviour);
-
-    let keyboard = section("Keyboard");
-    let shortcuts = flat_button("Show  Ctrl+/");
-    let parent = window.transient_for();
-    shortcuts.connect_clicked(move |_| {
-        if let Some(parent) = &parent {
-            crate::cheatsheet::open(parent);
-        }
-    });
-    row(&keyboard, "Keyboard shortcuts", "Every key loom knows.", &shortcuts);
-    content.append(&keyboard);
+    let tools = section("Editor and terminal");
+    let editor = gtk::Entry::builder().text(&s.editor).placeholder_text("the system's default app").build();
+    editor.add_css_class("mono");
+    on_done(&editor, |text| update(|s| s.editor = text));
+    row_stacked(&tools, "Other editor", "The command Ctrl+Shift+O opens files with (code, gnome-text-editor…); empty uses the app your system opens them with.", &editor);
+    row(&tools, "Hide the scratch terminal when it loses focus", "", &switch(s.scratch_autohide, |s, on| s.scratch_autohide = on));
+    content.append(&tools);
     content
 }
 
 fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
-    let new = section("New agents");
+    let defaults = section("Defaults");
     let modes: Vec<(String, &str)> = MODES.iter().map(|(id, name)| ((*id).to_owned(), *name)).collect();
     let mode = dropdown(&modes, s.default_mode.clone(), |m| m.clone(), |s, m| s.default_mode = m);
-    row(&new, "Permission mode", "What a new agent may do without asking. Shift+Tab changes it per agent.", &mode);
-    content.append(&new);
+    row(&defaults, "Permission mode", "What a new agent may do without asking. Shift+Tab changes it in an agent.", &mode);
 
     // The session's settings (model, effort…), as Claude Code offers them: known once an agent
     // has started.
-    let every = section("Every agent, new or woken");
     let known = KNOWN_OPTIONS.with_borrow(Clone::clone);
     let options: Vec<&serde_json::Value> = known.as_array().into_iter().flatten().filter(|o| o["id"].as_str().is_some_and(|id| id != "mode")).collect();
-    if options.is_empty() {
-        let hint = gtk::Label::builder().label("The model, the effort and the rest show here once an agent has started.").xalign(0.0).wrap(true).build();
-        hint.add_css_class("dim");
-        every.append(&hint);
-    }
+    caption(
+        &defaults,
+        if options.is_empty() {
+            "The model, the effort and the rest show here once an agent has started."
+        } else {
+            "The model, the effort and the rest apply to every agent, new or woken. Changed in an agent, a value stays there (its chip tinted) until set back to this one."
+        },
+    );
     for option in options {
         let Some(id) = option["id"].as_str().map(str::to_owned) else { continue };
         let mut choices: Vec<(String, String)> = vec![(String::new(), "Claude Code's default".to_owned())];
@@ -442,18 +436,13 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
             }
         });
         let name = option["name"].as_str().unwrap_or(&id).to_owned();
-        row(&every, &name, "What every agent starts with, new or woken. Changed in an agent, it is kept for that agent (its chip tinted); back at this value, it follows this again.", &pick);
+        row(&defaults, &name, "", &pick);
     }
-    content.append(&every);
+    content.append(&defaults);
 
     let chat = section("Conversation");
     row(&chat, "Show thinking", "Claude's reasoning, folded under each answer.", &switch(s.show_thinking, |s, on| s.show_thinking = on));
-    row(
-        &chat,
-        "Suggest your next message",
-        "After a turn, Claude Code suggests what you'll write next; → or Tab fills it in.",
-        &switch(s.suggest_prompts, |s, on| s.suggest_prompts = on),
-    );
+    row(&chat, "Suggest your next message", "Shown after each turn; Tab or the Right arrow fills it in.", &switch(s.suggest_prompts, |s, on| s.suggest_prompts = on));
     // How much, then on or off.
     let at = dropdown(COMPACT_TOKENS, s.compact_tokens, |t| format!("At {}K tokens", t / 1000), |s, t| s.compact_tokens = t);
     at.set_sensitive(s.compact_alert);
@@ -463,12 +452,12 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let controls = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     controls.append(&at);
     controls.append(&on);
-    row(&chat, "Remind me to compact", "Every message re-reads the whole context, so a long conversation costs more each turn. Once it holds this much, the meter turns amber and a Compact button shows by it, top right.", &controls);
+    row(&chat, "Remind me to compact", "Long conversations cost more each turn. Past this size, the context meter turns amber and shows a Compact button.", &controls);
     content.append(&chat);
 
-    let resting = section("Idle agents");
+    let resting = section("Background");
     let idle = dropdown(IDLE, s.idle_minutes, |m| format!("After {m} min"), |s, m| s.idle_minutes = m);
-    row(&resting, "Suspend idle agents", "Frees an unwatched agent's memory. Opening it shows its conversation; it starts again with your next message.", &idle);
+    row(&resting, "Suspend idle agents", "Frees an unwatched agent's memory. Opening it shows its conversation; it wakes with your next message.", &idle);
     let tokens = dropdown(REST_TOKENS, s.rest_compact_tokens, |t| format!("Over {}K tokens", t / 1000), |s, t| s.rest_compact_tokens = t);
     tokens.set_sensitive(s.rest_compact);
     let on = switch(s.rest_compact, |s, on| s.rest_compact = on);
@@ -480,29 +469,12 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
     let compact = row(
         &resting,
         "Compact before suspending",
-        "Sums up its conversation first, so resuming it is quick and cheap. Never the open agent, nor one waiting on you.",
+        "Sums up its conversation first, so waking it is quick and cheap. Never the open agent, nor one waiting on you.",
         &controls,
     );
     // Only when idle agents are suspended at all ("Never" is the first choice).
     compact.set_visible(s.idle_minutes != 0);
     idle.connect_selected_notify(move |d| compact.set_visible(d.selected() != 0));
-    content.append(&resting);
-
-    let meaning = section("Meaning search");
-    row(
-        &meaning,
-        "For the code",
-        "loom_find ranks the code by what a question means, not only by its words. A local model does it, through Ollama on this machine.",
-        &switch(s.embed_code, |s, on| s.embed_code = on),
-    );
-    row(&meaning, "For the notes", "The note search agents use goes by meaning too.", &switch(s.embed_notes, |s, on| s.embed_notes = on));
-    let models: Vec<(String, &str)> = EMBED_MODELS.iter().map(|(id, name)| ((*id).to_owned(), *name)).collect();
-    let model = dropdown(&models, s.embed_model.clone(), |m| m.clone(), |s, m| s.embed_model = m);
-    row(&meaning, "Model", "Changing it embeds the code and notes again, once (minutes; the old vectors are kept).", &model);
-    row_stacked(&meaning, "Ollama", "loom starts Ollama when nothing answers and downloads the model when it is missing.", &embeddings_status());
-    content.append(&meaning);
-
-    let schedules = section("Scheduled prompts");
     let open = flat_button("Open the overview");
     let w = window.clone();
     open.connect_clicked(move |_| {
@@ -510,19 +482,19 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
         let _ = w.activate_action("app.show-overview", None);
         w.close();
     });
-    row(&schedules, "Prompts on a schedule", "Set from an agent's menu; listed and paused in the overview (Ctrl+Shift+A).", &open);
-    content.append(&schedules);
+    row(&resting, "Scheduled prompts", "Set from an agent's menu; listed and paused in the overview (Ctrl+Shift+A).", &open);
+    content.append(&resting);
     content
 }
 
 fn appearance(s: &Settings) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
     let colours = section("Colours");
     let mut themes: Vec<(String, &str)> = vec![("system".to_owned(), "System (your GTK theme)")];
     themes.extend(crate::theme::THEMES.iter().map(|(id, name, ..)| ((*id).to_owned(), if *id == "nocturne" { "Nocturne (loom's own)" } else { *name })));
     let theme = dropdown(&themes, s.theme.clone(), |t| t.clone(), |s, t| s.theme = t);
-    row(&colours, "Theme", "System follows your desktop's theme, as noctalia or matugen set it.", &theme);
-    let modes: Vec<(String, &str)> = vec![(String::new(), "As the system"), ("dark".to_owned(), "Dark"), ("light".to_owned(), "Light")];
+    row(&colours, "Theme", "System uses your GTK theme's colours and follows it live.", &theme);
+    let modes: Vec<(String, &str)> = vec![(String::new(), "System"), ("dark".to_owned(), "Dark"), ("light".to_owned(), "Light")];
     row(&colours, "Dark or light", "", &dropdown(&modes, s.theme_mode.clone(), |m| m.clone(), |s, m| s.theme_mode = m));
     content.append(&colours);
     let text = section("Text");
@@ -547,13 +519,13 @@ fn appearance(s: &Settings) -> gtk::Box {
             update(|s| s.terminal_font = name);
         }
     });
-    row(&text, "Terminal font", "The scratchpad and the tray's terminals.", &font);
+    row(&text, "Terminal font", "The scratch terminal and the tray's terminals.", &font);
     content.append(&text);
     content
 }
 
 fn telegram(s: &Settings) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
     // What the bot is doing, at the top, with its switch.
     let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -641,7 +613,7 @@ fn telegram(s: &Settings) -> gtk::Box {
     row_stacked(
         &setup,
         "Your Telegram account",
-        "Its user ID: typed here, or linked above after sending the bot the code. Only this account is obeyed; anyone else writing to the bot is ignored.",
+        "Its user ID, linked with the code above or typed here. The bot ignores everyone else.",
         &user,
     );
     caption(&setup, "Messages pass through Telegram's servers. “Always allow” and ! commands stay in loom.");
@@ -718,7 +690,7 @@ fn telegram(s: &Settings) -> gtk::Box {
 /// (this computer's address and a one-time code); a device that uses it is added only when
 /// the user says yes here.
 fn remote(s: &Settings) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
     let card = gtk::Box::new(gtk::Orientation::Vertical, 12);
     card.add_css_class("prefs-status");
@@ -803,9 +775,9 @@ fn remote(s: &Settings) -> gtk::Box {
     if let Some(rows) = rows_of(&devices) {
         rows.append(&list);
     }
-    let pair = flat_button("Pair a device");
+    let pair = flat_button("Show code");
     pair.connect_clicked(|_| open_pairing(true));
-    row(&devices, "Pair a device", "Shows a code to scan. It stays good for ten minutes.", &pair);
+    row(&devices, "Pair a device", "The code works for ten minutes.", &pair);
     caption(&devices, "A paired device can do what the Telegram bot can: read replies, send messages, answer questions. “Always allow” and ! commands stay in loom.");
     content.append(&devices);
 
@@ -937,16 +909,23 @@ fn draw_qr(cr: &gtk::cairo::Context, width: i32, height: i32, text: &str) {
 }
 
 fn advanced(s: &Settings) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
-    let other = section("Other editor");
-    let editor = gtk::Entry::builder().text(&s.editor).placeholder_text("the system's default app").build();
-    editor.add_css_class("mono");
-    on_done(&editor, |text| update(|s| s.editor = text));
-    row_stacked(&other, "Command", "Ctrl+Shift+O opens the file there (code, gnome-text-editor…); empty uses the app your system opens it with.", &editor);
-    content.append(&other);
+    let meaning = section("Meaning search");
+    row(
+        &meaning,
+        "Search code by meaning",
+        "Agents' loom_find ranks code by what a question means, not only its words. Runs on this machine through Ollama.",
+        &switch(s.embed_code, |s, on| s.embed_code = on),
+    );
+    row(&meaning, "Search notes by meaning", "", &switch(s.embed_notes, |s, on| s.embed_notes = on));
+    let models: Vec<(String, &str)> = EMBED_MODELS.iter().map(|(id, name)| ((*id).to_owned(), *name)).collect();
+    let model = dropdown(&models, s.embed_model.clone(), |m| m.clone(), |s, m| s.embed_model = m);
+    row(&meaning, "Model", "Changing it indexes code and notes again, once (a few minutes; the old index is kept).", &model);
+    row_stacked(&meaning, "Ollama", "loom starts Ollama when nothing answers and downloads the model when it is missing.", &embeddings_status());
+    content.append(&meaning);
 
-    let browser = section("Browser");
+    let browser = section("Agent tools");
     // The browsers found here, by program; the one set stays listed even if it is gone.
     let found = loom_core::browser::found();
     let mut choices: Vec<(String, String)> = vec![(String::new(), match found.first() {
@@ -959,33 +938,31 @@ fn advanced(s: &Settings) -> gtk::Box {
     row(
         &browser,
         "Browser agents use",
-        "A browser of yours, Chromium-based, run by loom with a profile of its own for each project (your own profile and logins are never touched). It runs on a screen of its own (headed when Xvfb is installed), shown in the project's tray. For browsers started from now on.",
+        "Any Chromium-based browser, with a profile of its own per project: yours and your logins are never touched. It shows in the project's tray (headed when Xvfb is installed).",
         &pick,
     );
     let devtools = switch(s.browser_devtools, |s, on| s.browser_devtools = on);
     row(
         &browser,
-        "Chrome DevTools MCP instead of agent-browser",
-        "Agents drive the browser with agent-browser by default: fewer tokens. On, they get Chrome's DevTools MCP instead (more tools: network, console, performance), when agent-browser can't do something. For agents started from now on.",
+        "Use Chrome DevTools MCP",
+        "Off: agents use agent-browser, which costs fewer tokens. On: Chrome's DevTools MCP, with network, console and performance tools.",
         &devtools,
     );
-    content.append(&browser);
-
-    let sandbox = section("Sandbox");
     let strict = switch(s.strict_sandbox, |s, on| s.strict_sandbox = on);
     let can = loom_core::sandbox::available();
     strict.set_sensitive(can || s.strict_sandbox);
     row(
-        &sandbox,
-        "Strict sandbox for agents",
+        &browser,
+        "Strict sandbox",
         if can {
-            "Agents and the jobs they start reach no local socket but loom's, SSH's and GPG's, so none can start a program outside loom's sight. They lose sudo, systemctl --user, notifications, gsettings, podman and portals: run those in the tray yourself. For agents started from now on."
+            "Agents and their jobs reach no local socket except loom's, SSH's and GPG's, so nothing starts outside loom's sight. They lose sudo, systemctl --user, notifications, gsettings, podman and portals: run those in the tray."
         } else {
-            "Needs Linux's Landlock with Unix socket rules (ABI 9), which this kernel lacks."
+            "Needs Linux's Landlock with Unix socket rules, which this kernel lacks."
         },
         &strict,
     );
-    content.append(&sandbox);
+    caption(&browser, "Changes reach agents and browsers started from now on.");
+    content.append(&browser);
 
     let trouble = section("Troubleshooting");
     let open = flat_button("Open folder");
@@ -1013,7 +990,7 @@ fn advanced(s: &Settings) -> gtk::Box {
 
 /// Speech to text: the user's own service (Groq, OpenAI…) or a Whisper server of their own.
 fn voice(s: &Settings) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
     let voice = section("");
     row(&voice, "Use speech to text", "The microphone in the message box, and voice messages sent to the Telegram bot.", &switch(s.stt_enabled, |s, on| s.stt_enabled = on));
     let url = gtk::Entry::builder().text(&s.stt_url).placeholder_text("https://api.groq.com/openai/v1  ·  http://127.0.0.1:8000/v1").build();
@@ -1051,7 +1028,7 @@ fn voice(s: &Settings) -> gtk::Box {
     let test_line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     test_line.append(&result);
     test_line.append(&test);
-    row(&voice, "Check it", "Sends a second of silence to the address.", &test_line);
+    row(&voice, "Test the service", "Sends a second of silence to the address.", &test_line);
     caption(&voice, "What you record goes to the address above, and nowhere else.");
     content.append(&voice);
     content
@@ -1059,7 +1036,7 @@ fn voice(s: &Settings) -> gtk::Box {
 
 /// The add-ons, each off until switched on on its own page.
 fn addons(s: &Settings, list: &gtk::ListBox) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
     let all = section("");
     let entries: [(&str, &str, &str, bool); 4] = [
         ("notes", "Notes", "Keeps what you tell your agents in a vault of notes, by topic (finances, work, study…). The vault opens in Obsidian too.", s.notes_enabled),
@@ -1101,16 +1078,15 @@ fn addons(s: &Settings, list: &gtk::ListBox) -> gtk::Box {
         controls.append(&open);
         row(&all, title, detail, &controls);
     }
-    caption(&all, "Each one is off until you switch it on, and keeps its settings on its own page.");
     content.append(&all);
     content
 }
 
 /// The Notes add-on: on or off, its vault, and its topics.
 fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
     let main = section("");
-    let topics = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let topics = gtk::Box::new(gtk::Orientation::Vertical, 24);
 
     let path = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
     let state = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(60).build();
@@ -1169,7 +1145,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
         update(|s| s.notes_enabled = active);
         refresh();
     });
-    row(&main, "Use Notes", "What you tell your agents is kept in the vault below, sorted by topic.", &on);
+    row(&main, "Use Notes", "Scribe files what you tell your agents into the vault below, by topic. The Notes tab beside the chat shows what it wrote.", &on);
 
     let choose = flat_button("Choose…");
     let (w, refresh) = (window.clone(), show.clone());
@@ -1223,29 +1199,30 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
     place.append(&line);
     place.append(&state);
     row_stacked(&main, "Vault", "A folder Obsidian can open as a vault. Your notes stay plain Markdown files there.", &place);
+    caption(&main, "Your agents can search and read these notes.");
+    let scribe = section("Scribe");
     let calls = gtk::SpinButton::with_range(20.0, 2000.0, 20.0);
     calls.set_value(s.notes_daily_calls as f64);
     calls.connect_value_changed(|b| {
         let value = b.value() as u64;
         update(|s| s.notes_daily_calls = value);
     });
-    row(&main, "Calls a day", "At most this many calls to Claude a day for notes (one per piece of a conversation read, plus one per topic it touches). Past it, checks wait for tomorrow.", &calls);
     let model = dropdown(&[("haiku".to_owned(), "Haiku"), ("sonnet".to_owned(), "Sonnet"), ("opus".to_owned(), "Opus")], s.scribe_model.clone(), Clone::clone, |s, v| s.scribe_model = v);
-    row(&main, "Model", "What Scribe reads and writes your notes with. Haiku is the lightest on your usage limits; Sonnet and Opus take more of them each call. A topic whose file names a model (model: sonnet) uses that one.", &model);
+    row(&scribe, "Model", "What Scribe reads and writes with. Haiku uses the least of your limits; a topic can name its own (model: sonnet).", &model);
     let effort = dropdown(
         &[(String::new(), "Default"), ("low".to_owned(), "Low"), ("medium".to_owned(), "Medium"), ("high".to_owned(), "High"), ("xhigh".to_owned(), "Extra high"), ("max".to_owned(), "Max")],
         s.scribe_effort.clone(),
         Clone::clone,
         |s, v| s.scribe_effort = v,
     );
-    row(&main, "Effort", "How hard it thinks on each call (Default: Claude Code's own). Higher is slower and takes more of your usage limits.", &effort);
-    caption(&main, "Your agents can search and read these notes, and Scribe keeps them up to date from your conversations (the Notes tab beside the chat shows what it wrote and asks).");
+    row(&scribe, "Effort", "How hard it thinks on each call (Default: Claude Code's own). Higher is slower and takes more of your usage limits.", &effort);
+    row(&scribe, "Daily call limit", "At most this many Scribe calls a day (one per piece of conversation read, plus one per topic touched). Past it, checks wait for tomorrow.", &calls);
     // Corrections the user explained: rules in the topics, and tests kept on this machine.
     let corrections = loom_core::hub::corrections_path();
     let kept = std::fs::read_to_string(&corrections).map(|t| t.lines().filter(|l| !l.trim().is_empty()).count()).unwrap_or(0);
     if kept > 0 {
         caption(
-            &main,
+            &scribe,
             &format!(
                 "When you say why Scribe got something wrong, it becomes a rule in that topic (under Rules learned) and a test. {kept} kept: check Scribe still passes them with  loom scribe-eval {} <your vault>",
                 corrections.display()
@@ -1253,6 +1230,7 @@ fn notes(s: &Settings, window: &gtk::Window) -> gtk::Box {
         );
     }
     content.append(&main);
+    content.append(&scribe);
     content.append(&topics);
     show();
     content
@@ -1382,8 +1360,8 @@ fn fill_topics(holder: &gtk::Box, window: &gtk::Window) {
 
 /// loom's own Claude folder: skills, agents and commands for loom's agents only.
 fn claude(window: &gtk::Window) -> gtk::Box {
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 22);
-    let holder = gtk::Box::new(gtk::Orientation::Vertical, 22);
+    let content = gtk::Box::new(gtk::Orientation::Vertical, 24);
+    let holder = gtk::Box::new(gtk::Orientation::Vertical, 24);
     content.append(&holder);
     fill_claude(&holder, window);
     content
@@ -1422,9 +1400,31 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
     line.append(&where_);
     line.append(&open);
-    row_stacked(&folder, "Where", "Skills, agents, commands and hooks only loom's agents use; claude in a terminal doesn't load them.", &line);
+    row_stacked(&folder, "Location", "Skills, agents, commands and hooks only loom's agents use; claude in a terminal doesn't load them.", &line);
+    let edit_hooks = flat_button("Edit");
+    edit_hooks.connect_clicked(edit(crate::plugin::hooks_file()));
+    row(&folder, "Hooks", "Commands run on Claude Code's events (a tool used, a turn ended).", &edit_hooks);
     caption(&folder, "Changes reach agents started or woken from now on.");
     holder.append(&folder);
+
+    // What Claude Code does without asking: the rules "Yes, and don't ask again" added.
+    let rules = section("Allowed without asking");
+    let found = allow_rules();
+    if found.is_empty() {
+        caption(&rules, "No rules yet. “Yes, and don't ask again” on a question adds one.");
+    }
+    for (file, place, rule) in found {
+        let remove = flat_button("Remove");
+        remove.set_tooltip_text(Some(&format!("Claude asks again before this ({})", file.display())));
+        let (file_now, rule_now, holder_now, window_now) = (file.clone(), rule.clone(), holder.clone(), window.clone());
+        remove.connect_clicked(move |_| {
+            if remove_allow_rule(&file_now, &rule_now).is_ok() {
+                fill_claude(&holder_now, &window_now);
+            }
+        });
+        row(&rules, &rule, &place, &remove);
+    }
+    holder.append(&rules);
 
     for kind in crate::plugin::Kind::ALL {
         let group = section(kind.title());
@@ -1490,31 +1490,6 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
         row(&group, &format!("New {}", kind.one()), "", &controls);
         holder.append(&group);
     }
-
-    let hooks = section("Hooks");
-    let edit_hooks = flat_button("Edit");
-    edit_hooks.connect_clicked(edit(crate::plugin::hooks_file()));
-    row(&hooks, "hooks.json", "Commands run on Claude Code's events (a tool used, a turn ended), for loom's agents only.", &edit_hooks);
-    holder.append(&hooks);
-
-    // What Claude Code does without asking: the rules "Yes, and don't ask again" added.
-    let rules = section("Allowed without asking");
-    let found = allow_rules();
-    if found.is_empty() {
-        caption(&rules, "No rules yet. \"Yes, and don't ask again\" on a question adds one.");
-    }
-    for (file, place, rule) in found {
-        let remove = flat_button("Remove");
-        remove.set_tooltip_text(Some(&format!("Claude asks again before this ({})", file.display())));
-        let (file_now, rule_now, holder_now, window_now) = (file.clone(), rule.clone(), holder.clone(), window.clone());
-        remove.connect_clicked(move |_| {
-            if remove_allow_rule(&file_now, &rule_now).is_ok() {
-                fill_claude(&holder_now, &window_now);
-            }
-        });
-        row(&rules, &rule, &place, &remove);
-    }
-    holder.append(&rules);
 }
 
 /// Claude Code's settings files with rules: the user's, and each of loom's projects' local one.
