@@ -300,6 +300,20 @@ impl App {
         inbox.set_hexpand(true);
         inbox.add_css_class("inbox-banner");
         sidebar.append(&inbox);
+        // Away mode on: a band saying until when; a click ends it.
+        let away = gtk::Button::builder().visible(false).build();
+        away.add_css_class("inbox-banner");
+        away.add_css_class("away-banner");
+        away.set_tooltip_text(Some("Claude's own questions are answered \"decide yourself, note it on the board\". Permissions still wait for you. Click to end."));
+        away.connect_clicked(|_| crate::conn::command("window", "set_settings", json!({ "changes": { "away_until": 0 } })));
+        sidebar.append(&away);
+        let show_away = move |s: &settings::Settings| {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+            away.set_visible(s.away_until > now);
+            away.set_label(&format!("Away until {}: agents decide · End", settings::clock(s.away_until)));
+        };
+        show_away(&settings::get());
+        settings::on_change(show_away);
         brand.connect_clicked(|button| {
             if let Some(window) = button.root().and_downcast::<gtk::Window>() {
                 crate::about::open(&window);
@@ -1520,6 +1534,7 @@ impl App {
                     a.schedule_for_remote(id);
                 }
             }),
+            act("Away mode: agents decide their own questions until…", "", |a| a.choose_away()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
             act("About Loom", "", |a| crate::about::open(&a.window)),
@@ -2711,6 +2726,23 @@ impl App {
 
     /// Command `method` for loomd's agent in view (`extra`: its other params); false if none
     /// is in view.
+    /// Away mode: for how long (or ended). While on, Claude's own questions are answered
+    /// "decide yourself, note it on the board"; permissions still wait.
+    fn choose_away(self: &Rc<Self>) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        let set = |until: u64| move || crate::conn::command("window", "set_settings", json!({ "changes": { "away_until": until } }));
+        let mut choices = vec![Choice::new("For 1 hour", "", set(now + 3600)), Choice::new("For 3 hours", "", set(now + 3 * 3600))];
+        for hour in [7, 9] {
+            if let Some(at) = settings::next_clock(hour) {
+                choices.push(Choice::new(format!("Until {hour}:00"), "", set(at)));
+            }
+        }
+        if settings::get().away_until > now {
+            choices.insert(0, Choice::new("I'm back: end away mode", "", set(0)));
+        }
+        self.picker.open("Away: agents decide their own questions (permissions still wait). Until…", choices);
+    }
+
     /// A worktree command on the agent in view, from the palette.
     fn palette_git(self: &Rc<Self>, method: &str) {
         if let Some(id) = self.remote_in_view() {

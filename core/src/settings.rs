@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 pub struct Settings {
     /// Idle agents nobody looks at stop after this many minutes (0: never).
     pub idle_minutes: u64,
+    /// Away until then (unix seconds; 0: here): Claude's own questions are answered "decide
+    /// yourself" (never a permission). Ended by loomd when the time comes.
+    pub away_until: u64,
     pub notify_questions: bool,
     pub notify_done: bool,
     /// Ask before quitting while agents work.
@@ -105,6 +108,7 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             idle_minutes: 45,
+            away_until: 0,
             notify_questions: true,
             notify_done: true,
             confirm_quit: true,
@@ -227,7 +231,36 @@ const WINDOW_ONLY: &[&str] = &[
     "browserDevtools",
     "notesEnabled",
     "notesVault",
+    // answers agents' questions for the user: never turned on by one
+    "awayUntil",
 ];
+
+/// Questions answered for the user while away (said when it ends: loomd).
+pub static AWAY_ANSWERED: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// While away (`away_until` still to come): the answer Claude's own questions get.
+pub fn away_answer() -> Option<String> {
+    let until = get().away_until;
+    (until as i64 > jiff::Timestamp::now().as_second()).then(|| {
+        format!(
+            "I'm away until {} and can't answer now. Decide yourself: take the option you would recommend and carry on. Note the decision and why on the project's board (loom_board_add; if there is no board, in your final message), so I can check it when I'm back.",
+            clock(until)
+        )
+    })
+}
+
+/// The next `hour`:00 to come, local time (tomorrow's once today's is past), unix seconds.
+pub fn next_clock(hour: i8) -> Option<u64> {
+    let now = jiff::Timestamp::now();
+    let today = now.to_zoned(jiff::tz::TimeZone::system()).with().hour(hour).minute(0).second(0).subsec_nanosecond(0).build().ok()?;
+    let at = if today.timestamp() > now { today } else { today.tomorrow().ok()? };
+    u64::try_from(at.timestamp().as_second()).ok()
+}
+
+/// "05:00": unix seconds `at`, in local time.
+pub fn clock(at: u64) -> String {
+    jiff::Timestamp::from_second(at as i64).map(|t| t.to_zoned(jiff::tz::TimeZone::system()).strftime("%H:%M").to_string()).unwrap_or_default()
+}
 /// Settings the API never changes (made by loom itself).
 const MADE: &[&str] = &["remoteKey"];
 
@@ -405,6 +438,7 @@ fn parse(text: &str) -> Settings {
     let flag = |key: &str, default: bool| v[key].as_bool().unwrap_or(default);
     Settings {
         idle_minutes: v["idleMinutes"].as_u64().unwrap_or(d.idle_minutes),
+        away_until: v["awayUntil"].as_u64().unwrap_or(d.away_until),
         notify_questions: flag("notifyQuestions", d.notify_questions),
         notify_done: flag("notifyDone", d.notify_done),
         confirm_quit: flag("confirmQuit", d.confirm_quit),
@@ -464,6 +498,7 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     serde_json::to_string_pretty(&json!({
         "idleMinutes": s.idle_minutes,
+        "awayUntil": s.away_until,
         "notifyQuestions": s.notify_questions,
         "notifyDone": s.notify_done,
         "confirmQuit": s.confirm_quit,
@@ -559,6 +594,19 @@ mod tests {
         new.telegram_token = "2:xyz".into();
         assert_eq!(changes(&s, &new), json!({ "idle_minutes": 9, "telegram_token": "2:xyz" }));
         assert_eq!(with_changes(&s, &changes(&s, &new)).unwrap(), new);
+    }
+
+    #[test]
+    fn away_mode_answers_only_until_its_time() {
+        assert!(WINDOW_ONLY.contains(&"awayUntil"), "an agent never turns it on");
+        let now = jiff::Timestamp::now().as_second() as u64;
+        CURRENT.with(|c| *c.borrow_mut() = Some(Settings { away_until: now + 600, ..Settings::default() }));
+        assert!(away_answer().is_some_and(|a| a.contains(&clock(now + 600)) && a.contains("Decide yourself")));
+        CURRENT.with(|c| *c.borrow_mut() = Some(Settings { away_until: now - 1, ..Settings::default() }));
+        assert!(away_answer().is_none());
+        let seven = next_clock(7).unwrap();
+        assert!(seven > now && seven <= now + 24 * 3600 + 3600 && clock(seven) == "07:00");
+        CURRENT.with(|c| *c.borrow_mut() = None);
     }
 
     #[test]

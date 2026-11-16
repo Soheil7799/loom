@@ -492,6 +492,22 @@ fn commands(daemon: &Rc<Daemon>) {
         let _ = loom_core::rt::timeout_once(Duration::from_millis(200), move || stop.notify_one());
         Ok(serde_json::json!({}))
     });
+    // Away mode ends at its time, said on the desktop with how many questions were decided.
+    let _ = loom_core::rt::every(Duration::from_secs(30), || {
+        let until = loom_core::settings::get().away_until;
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+        if until != 0 && until <= now {
+            loom_core::settings::update(|s| s.away_until = 0);
+            let n = loom_core::settings::AWAY_ANSWERED.swap(0, std::sync::atomic::Ordering::SeqCst);
+            let said = match n {
+                0 => "No agent asked you anything.".to_owned(),
+                1 => "An agent decided a question itself: see its board.".to_owned(),
+                n => format!("Agents decided {n} questions themselves: see their boards."),
+            };
+            desktop("Away mode ended", &said, None);
+        }
+        true
+    });
     // A desktop notice clicked: loom's window shows its agent (`asks`' `show`).
     let (tell, mut clicked) = tokio::sync::mpsc::unbounded_channel::<u32>();
     if CLICKED.set(tell).is_ok() {

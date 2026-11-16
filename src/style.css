@@ -156,6 +156,10 @@ button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
 button.inbox-banner, menubutton.inbox-banner > button { margin: 2px 12px 4px 12px; padding: 8px 12px; border-radius: 8px; background: alpha(@loom_wait, 0.14); }
 menubutton.inbox-banner > button:hover { background: alpha(@loom_wait, 0.22); }
 menubutton.inbox-banner label { color: @loom_wait; font-weight: 500; }
+/* Away mode on: the accent, not the waiting amber (nothing waits on you). */
+button.inbox-banner.away-banner { background: alpha(@accent_color, 0.14); }
+button.inbox-banner.away-banner:hover { background: alpha(@accent_color, 0.22); }
+button.inbox-banner.away-banner label { color: @accent_color; font-weight: 500; }
 .inbox { padding: 8px; }
 .inbox-agent { font-weight: 500; }
 .menu { padding: 4px; }

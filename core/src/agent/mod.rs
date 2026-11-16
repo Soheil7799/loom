@@ -2364,6 +2364,20 @@ impl Agent {
         });
         let form = self.view.form(&message, &params["requestedSchema"], answer);
         let card = form.card();
+        // Away: Claude's own questions (AskUserQuestion's form: question_N fields) are
+        // answered "decide yourself", the card saying so. Never a permission, never an MCP
+        // server's form.
+        let fields = params["requestedSchema"]["properties"].as_object();
+        if let (Some(text), Some(fields)) = (crate::settings::away_answer(), fields.filter(|f| f.contains_key("question_0_custom"))) {
+            let content: serde_json::Map<String, Value> = fields.keys().filter(|k| k.ends_with("_custom")).map(|k| (k.clone(), json!(text))).collect();
+            if let Some(conn) = self.conn.borrow().clone() {
+                conn.respond(rpc, json!({ "action": "accept", "content": content }));
+            }
+            card.resolve("→ You're away: Claude was told to decide itself and note it on the board");
+            crate::settings::AWAY_ANSWERED.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            self.last_active.set(Instant::now());
+            return;
+        }
         self.pending.borrow_mut().push(Pending { serial, rpc, options: Vec::new(), card, title: message.clone(), detail: None, form: Some(form), url: None });
         self.refresh_status();
         self.emit(Event::Asked(message));
