@@ -40,7 +40,32 @@ pub fn add(project: &Path, branch: &str) -> Result<PathBuf, String> {
         return Err(format!("{} is there already", dir.display()));
     }
     git(project, &["worktree", "add", "-b", branch, &dir.to_string_lossy()])?;
+    copy_included(project, &dir);
     Ok(dir)
+}
+
+/// Files git ignores that a new worktree needs too (`.env`, local settings), as the project's
+/// `.worktreeinclude` names them (gitignore patterns, the file Claude Code reads): copied
+/// in, never over one there. Only copied: nothing of the project's is run.
+fn copy_included(project: &Path, dir: &Path) -> usize {
+    if !project.join(".worktreeinclude").is_file() {
+        return 0;
+    }
+    let Ok(listed) = git(project, &["ls-files", "--others", "--ignored", "--exclude-from=.worktreeinclude"]) else { return 0 };
+    let mut copied = 0;
+    for name in listed.lines().filter(|l| !l.is_empty()) {
+        let (from, to) = (project.join(name), dir.join(name));
+        if to.exists() || !from.is_file() {
+            continue;
+        }
+        if let Some(parent) = to.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::copy(&from, &to).is_ok() {
+            copied += 1;
+        }
+    }
+    copied
 }
 
 /// `dir`'s branch merged into what its project has checked out (a merge commit). A conflict
@@ -103,6 +128,21 @@ mod tests {
         git(&project, &["worktree", "add", "-q", "-b", "hand", &other.to_string_lossy()]).unwrap();
         assert_eq!((main_of(&other).as_deref(), crate::repos::project_of(&other)), (Some(project.as_path()), other.clone()));
         assert!(add(&project, "--force").is_err());
+        // What .worktreeinclude names, git-ignored, comes along (and nothing else ignored).
+        std::fs::write(project.join(".gitignore"), ".env\nconfig/local.toml\nbuild/\n").unwrap();
+        std::fs::write(project.join(".worktreeinclude"), ".env\nconfig/local.toml\n").unwrap();
+        git(&project, &["add", ".gitignore", ".worktreeinclude"]).unwrap();
+        git(&project, &["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "ignore"]).unwrap();
+        std::fs::write(project.join(".env"), "KEY=1\n").unwrap();
+        std::fs::create_dir_all(project.join("config")).unwrap();
+        std::fs::write(project.join("config/local.toml"), "x = 1\n").unwrap();
+        std::fs::create_dir_all(project.join("build")).unwrap();
+        std::fs::write(project.join("build/out"), "big\n").unwrap();
+        let with_env = add(&project, "with-env").unwrap();
+        assert_eq!(std::fs::read_to_string(with_env.join(".env")).unwrap(), "KEY=1\n");
+        assert!(with_env.join("config/local.toml").is_file());
+        assert!(!with_env.join("build/out").exists());
+        git(&project, &["worktree", "remove", "--force", &with_env.to_string_lossy()]).unwrap();
         std::fs::write(dir.join("a.txt"), "a\n").unwrap();
         assert!(merge(&dir).unwrap_err().contains("not committed"));
         git(&dir, &["add", "a.txt"]).unwrap();
