@@ -14,6 +14,9 @@ use serde_json::{Value, json};
 pub struct Settings {
     /// Idle agents nobody looks at stop after this many minutes (0: never).
     pub idle_minutes: u64,
+    /// The user's own tool servers (MCP, set for every project) start off for each agent;
+    /// an agent (loom_mcp_on) or the user switches one on for it.
+    pub mcp_on_demand: bool,
     /// Away until then (unix seconds; 0: here): Claude's own questions are answered "decide
     /// yourself" (never a permission). Ended by loomd when the time comes.
     pub away_until: u64,
@@ -108,6 +111,7 @@ impl Default for Settings {
     fn default() -> Settings {
         Settings {
             idle_minutes: 45,
+            mcp_on_demand: true,
             away_until: 0,
             notify_questions: true,
             notify_done: true,
@@ -438,6 +442,7 @@ fn parse(text: &str) -> Settings {
     let flag = |key: &str, default: bool| v[key].as_bool().unwrap_or(default);
     Settings {
         idle_minutes: v["idleMinutes"].as_u64().unwrap_or(d.idle_minutes),
+        mcp_on_demand: v["mcpOnDemand"].as_bool().unwrap_or(d.mcp_on_demand),
         away_until: v["awayUntil"].as_u64().unwrap_or(d.away_until),
         notify_questions: flag("notifyQuestions", d.notify_questions),
         notify_done: flag("notifyDone", d.notify_done),
@@ -498,6 +503,7 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     serde_json::to_string_pretty(&json!({
         "idleMinutes": s.idle_minutes,
+        "mcpOnDemand": s.mcp_on_demand,
         "awayUntil": s.away_until,
         "notifyQuestions": s.notify_questions,
         "notifyDone": s.notify_done,

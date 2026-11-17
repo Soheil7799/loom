@@ -274,6 +274,9 @@ pub struct Agent {
     reply: RefCell<String>,
     /// Messages waiting to be sent: text and attached images (PNG).
     queue: RefCell<VecDeque<(String, Vec<Png>)>>,
+    /// The user's own tool servers switched on for this agent (by it, or by the user): the
+    /// rest start off (Settings: mcp_on_demand).
+    mcp_on: RefCell<std::collections::BTreeSet<String>>,
     /// A recipe's steps still to go: the next is sent when a turn ends (Esc ends the recipe).
     recipe: RefCell<VecDeque<String>>,
     /// `!command` runs and their output, for Claude with the next message (as Claude Code's
@@ -423,6 +426,7 @@ impl Agent {
             workflows: RefCell::default(),
             reply: RefCell::default(),
             queue: RefCell::default(),
+            mcp_on: RefCell::default(),
             recipe: RefCell::default(),
             context: RefCell::default(),
             waiting: RefCell::default(),
@@ -1335,7 +1339,46 @@ impl Agent {
         if !wanted.is_empty() && *self.mode.borrow() != wanted && self.modes.borrow().contains(&wanted) {
             self.set_mode(&wanted);
         }
+        self.mcp_start_off();
         self.send_next();
+    }
+
+    /// The user's own tool servers (set for every project) switched off for this agent, but
+    /// those it wants: each agent runs only what it needs (Settings: mcp_on_demand). Claude
+    /// Code keeps "off" for the folder, so later sessions there don't start them at all.
+    fn mcp_start_off(self: &Rc<Self>) {
+        if !crate::settings::get().mcp_on_demand {
+            return;
+        }
+        let (Some(conn), Some(session)) = (self.conn.borrow().clone(), self.session_id()) else { return };
+        let optional = crate::provider::user_mcp_servers();
+        if optional.is_empty() {
+            return;
+        }
+        let wanted = self.mcp_on.borrow().clone();
+        let asker = conn.clone();
+        conn.request("_session/mcp", json!({ "sessionId": session, "action": "status" }), move |result| {
+            let Ok(status) = result else { return };
+            for server in status["mcpServers"].as_array().into_iter().flatten() {
+                let Some(name) = server["name"].as_str().filter(|n| optional.iter().any(|o| o == n)) else { continue };
+                let on = server["status"].as_str() != Some("disabled");
+                let want = wanted.contains(name);
+                if on != want {
+                    asker.request("_session/mcp", json!({ "sessionId": session, "action": "toggle", "server": name, "enabled": want }), |_| {});
+                }
+            }
+        });
+    }
+
+    /// One of the user's own tool servers switched on for this agent (it asked: loom_mcp_on),
+    /// kept on when it starts again.
+    pub fn mcp_wanted(self: &Rc<Self>, server: &str) -> Result<(), String> {
+        let optional = crate::provider::user_mcp_servers();
+        if !optional.iter().any(|s| s == server) {
+            return Err(format!("no tool server named {server} (the user's are: {})", optional.join(", ")));
+        }
+        self.mcp("toggle", server, true);
+        Ok(())
     }
 
     fn set_mode(self: &Rc<Self>, mode: &str) {
@@ -2661,6 +2704,14 @@ impl Agent {
             self.view.show_mcp(None);
             return;
         };
+        // What the user or the agent switches on or off stays so when it starts again.
+        if action == "toggle" {
+            if enabled {
+                self.mcp_on.borrow_mut().insert(server.to_owned());
+            } else {
+                self.mcp_on.borrow_mut().retain(|s| s != server);
+            }
+        }
         let weak = Rc::downgrade(self);
         let refresh = action != "status";
         conn.request("_session/mcp", json!({ "sessionId": session, "action": action, "server": server, "enabled": enabled }), move |result| {

@@ -38,6 +38,17 @@ use tools::ToolUse;
 /// protocol is not documented; a newer Claude Code may change it).
 pub const BUILT_FOR: &str = "2.1.312";
 
+/// The tool servers (MCP) the user set for every project (`mcpServers` of Claude Code's
+/// `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`): the ones loom starts off.
+pub fn user_mcp_servers() -> Vec<String> {
+    let file = std::env::var_os("CLAUDE_CONFIG_DIR").map_or_else(|| crate::paths::home().join(".claude.json"), |d| PathBuf::from(d).join(".claude.json"));
+    let Ok(text) = std::fs::read_to_string(file) else { return Vec::new() };
+    let config: Value = serde_json::from_str(&text).unwrap_or_default();
+    let mut names: Vec<String> = config["mcpServers"].as_object().into_iter().flatten().map(|(name, _)| name.clone()).collect();
+    names.sort();
+    names
+}
+
 /// The `claude` program: on PATH, else where its installers put it (a launcher's PATH may
 /// leave those out).
 pub fn program() -> PathBuf {

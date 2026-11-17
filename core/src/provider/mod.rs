@@ -4,6 +4,7 @@
 //! Claude Code's stream-json protocol and back.
 
 mod claude;
+pub use claude::user_mcp_servers;
 mod process;
 
 use std::path::Path;

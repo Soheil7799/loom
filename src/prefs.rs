@@ -438,6 +438,12 @@ fn agents(s: &Settings, window: &gtk::Window) -> gtk::Box {
         let name = option["name"].as_str().unwrap_or(&id).to_owned();
         row(&defaults, &name, "", &pick);
     }
+    row(
+        &defaults,
+        "Your tool servers on demand",
+        "Your MCP servers set for every project start off; an agent switches on the one it needs (or you do, in its usage menu). Saves their memory per agent.",
+        &switch(s.mcp_on_demand, |s, on| s.mcp_on_demand = on),
+    );
     content.append(&defaults);
 
     let chat = section("Conversation");

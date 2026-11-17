@@ -483,6 +483,8 @@ impl Workspace {
             })(),
             // Its project's browser (browser.rs), started if it isn't running.
             "browser" => agent.as_ref().ok_or_else(gone).and_then(|agent| crate::browser::open(&agent.project, params["show"].as_bool() == Some(true))),
+            // One of the user's own tool servers, switched on for the agent that asks.
+            "mcp_on" => agent.as_ref().ok_or_else(gone).and_then(|agent| agent.mcp_wanted(params["server"].as_str().unwrap_or_default()).map(|()| json!({}))),
             // The Notes vault, for the MCP server's note tools (null: Notes is off).
             "notes_info" => Ok(json!({ "vault": crate::vault::current().map(|v| v.to_string_lossy().into_owned()) })),
             // Meaning search as Settings has it, for loom_find and the note search.

@@ -250,6 +250,17 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
             }, "required": ["card", "note"] }
         }
     ]);
+    // The user's own tool servers, off until an agent wants one (Settings: mcp_on_demand).
+    let optional = crate::provider::user_mcp_servers();
+    if let (false, Some(list)) = (optional.is_empty(), all.as_array_mut()) {
+        list.push(json!({
+            "name": "loom_mcp_on",
+            "description": format!("Switch on one of the user's tool servers (MCP) for yourself: they start off in loom, so each agent runs only what it needs. Off now unless you switched them on: {}. Its tools come within a few seconds (look them up with tool search).", optional.join(", ")),
+            "inputSchema": { "type": "object", "properties": {
+                "server": { "type": "string", "enum": optional }
+            }, "required": ["server"] }
+        }));
+    }
     // The user's notes, only when they have them on.
     if let (Some(vault), Some(list)) = (notes, all.as_array_mut()) {
         let folders: Vec<String> = crate::topics::list(vault).into_iter().filter(|t| t.enabled).map(|t| t.folder).collect();
@@ -523,6 +534,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_open" => call(socket, agent, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
         "loom_edit" => edit(socket, agent, args, cancelled),
         "loom_notify" => call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
+        "loom_mcp_on" => call(socket, agent, "mcp_on", args.clone()).map(|_| "Switched on: its tools come within a few seconds.".to_owned()),
         "loom_agents" => call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
         "loom_find" => find(socket, agent, args),
         "loom_browser" => browser(socket, agent, args),
