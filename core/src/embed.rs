@@ -96,10 +96,14 @@ pub fn hash(text: &str) -> u64 {
 
 /// The vectors one model gave, kept in `~/.cache/loom/embeddings/<model>.vec`: records of
 /// hash (u64), length (u32) and the floats, all little-endian, appended by any process (one
-/// write each) and read by all.
+/// write each) and read by all. Only where each vector is (16 bytes a vector) is held in
+/// memory: a vector is read from the file when a search needs it (the file runs to hundreds of
+/// MB, and each agent's `loom mcp` and loomd would otherwise hold all of it).
 pub struct Vectors {
     path: PathBuf,
-    map: HashMap<u64, Vec<f32>>,
+    /// Each hash's vector: where its floats start in the file, and how many.
+    at: HashMap<u64, (u64, u32)>,
+    file: Option<std::fs::File>,
     /// How far the file is read (what other processes append after is read at the next look).
     read_to: u64,
 }
@@ -112,38 +116,50 @@ impl Vectors {
     }
 
     fn at(path: PathBuf) -> Vectors {
-        let mut vectors = Vectors { path, map: HashMap::new(), read_to: 0 };
+        let mut vectors = Vectors { path, at: HashMap::new(), file: None, read_to: 0 };
         vectors.reload();
         vectors
     }
 
-    /// What was appended since the last look (a record still being written waits).
+    /// Where the vectors appended since the last look are (a record still being written
+    /// waits): only their headers are read, the floats skipped.
     pub fn reload(&mut self) {
-        let Ok(mut file) = std::fs::File::open(&self.path) else { return };
-        if file.seek(SeekFrom::Start(self.read_to)).is_err() {
+        if self.file.is_none() {
+            self.file = std::fs::File::open(&self.path).ok();
+        }
+        let Some(file) = &self.file else { return };
+        let Ok(length) = file.metadata().map(|m| m.len()) else { return };
+        let mut reader = std::io::BufReader::with_capacity(1 << 16, file);
+        if reader.seek(SeekFrom::Start(self.read_to)).is_err() {
             return;
         }
-        let mut bytes = Vec::new();
-        if file.read_to_end(&mut bytes).is_err() {
-            return;
-        }
-        let mut at = 0;
-        while bytes.len() - at >= 12 {
-            let hash = u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap_or_default());
-            let n = u32::from_le_bytes(bytes[at + 8..at + 12].try_into().unwrap_or_default()) as usize;
-            let end = at + 12 + n * 4;
-            if end > bytes.len() {
+        let mut header = [0u8; 12];
+        while length.saturating_sub(self.read_to) >= 12 && reader.read_exact(&mut header).is_ok() {
+            let hash = u64::from_le_bytes(header[..8].try_into().unwrap_or_default());
+            let n = u32::from_le_bytes(header[8..].try_into().unwrap_or_default());
+            let floats = self.read_to + 12;
+            if floats + u64::from(n) * 4 > length {
                 break;
             }
-            let v = bytes[at + 12..end].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
-            self.map.insert(hash, v);
-            at = end;
+            self.at.insert(hash, (floats, n));
+            self.read_to = floats + u64::from(n) * 4;
+            if reader.seek_relative(i64::from(n) * 4).is_err() {
+                break;
+            }
         }
-        self.read_to += at as u64;
     }
 
-    pub fn get(&self, hash: u64) -> Option<&[f32]> {
-        self.map.get(&hash).map(Vec::as_slice)
+    pub fn has(&self, hash: u64) -> bool {
+        self.at.contains_key(&hash)
+    }
+
+    /// The vector of `hash`, read from the file.
+    pub fn get(&self, hash: u64) -> Option<Vec<f32>> {
+        use std::os::unix::fs::FileExt;
+        let (offset, n) = *self.at.get(&hash)?;
+        let mut bytes = vec![0u8; n as usize * 4];
+        self.file.as_ref()?.read_exact_at(&mut bytes, offset).ok()?;
+        Some(bytes.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect())
     }
 
     /// New vectors kept, for every process.
@@ -192,7 +208,7 @@ impl Meaning {
         let missing: Vec<(u64, String)> = {
             let mut vectors = self.vectors.lock().unwrap_or_else(|e| e.into_inner());
             vectors.reload();
-            pieces.iter().filter(|(h, _)| vectors.get(*h).is_none()).cloned().collect()
+            pieces.iter().filter(|(h, _)| !vectors.has(*h)).cloned().collect()
         };
         if !missing.is_empty() {
             if let Some(why) = self.failed.lock().unwrap_or_else(|e| e.into_inner()).take() {
@@ -415,10 +431,10 @@ mod tests {
         let mut one = Vectors::at(path.clone());
         let mut other = Vectors::at(path.clone());
         one.add(vec![(hash("fn a"), vec![0.6, 0.8]), (hash("fn b"), vec![1.0, 0.0])]).unwrap();
-        assert_eq!(one.get(hash("fn a")), Some(&[0.6, 0.8][..]));
+        assert_eq!(one.get(hash("fn a")), Some(vec![0.6, 0.8]));
         assert_eq!(other.get(hash("fn b")), None);
         other.reload();
-        assert_eq!(other.get(hash("fn b")), Some(&[1.0, 0.0][..]));
+        assert_eq!(other.get(hash("fn b")), Some(vec![1.0, 0.0]));
         // a record half written (another process mid-write) waits for the rest
         let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
         file.write_all(&hash("fn c").to_le_bytes()).unwrap();
@@ -427,7 +443,7 @@ mod tests {
         file.write_all(&1u32.to_le_bytes()).unwrap();
         file.write_all(&0.5f32.to_le_bytes()).unwrap();
         other.reload();
-        assert_eq!(other.get(hash("fn c")), Some(&[0.5][..]));
+        assert_eq!(other.get(hash("fn c")), Some(vec![0.5]));
         let _ = std::fs::remove_file(&path);
     }
 
