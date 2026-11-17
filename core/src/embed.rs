@@ -53,7 +53,9 @@ impl Model {
         let mut out = Vec::with_capacity(texts.len());
         for chunk in texts.chunks(BATCH) {
             let input: Vec<String> = chunk.iter().map(|t| self.worded(t, query)).collect();
-            let answer = call(&client, &format!("{}/api/embed", self.url), Some(json!({ "model": self.name, "input": input, "truncate": true })))?;
+            // The model leaves memory a minute after its last use (Ollama keeps it 5 by default:
+            // ~600 MB held between searches that come minutes apart).
+            let answer = call(&client, &format!("{}/api/embed", self.url), Some(json!({ "model": self.name, "input": input, "truncate": true, "keep_alive": "1m" })))?;
             let vectors = answer["embeddings"].as_array().ok_or_else(|| format!("{} answered without vectors", self.name))?;
             for v in vectors {
                 let mut v: Vec<f32> = v.as_array().into_iter().flatten().filter_map(|x| x.as_f64()).map(|x| x as f32).collect();
