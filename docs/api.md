@@ -1625,3 +1625,16 @@ Who: agent. Result: `the tool's answer`.
 |---|---|---|
 | `name` | string | a loom tool's request (run_job, job_output, open_file, …) |
 | `params` | object? | its parameters |
+
+### `find_code`
+
+Code search (loom_find): by meaning when Settings has it on, else by words. loomd keeps one index per folder, shared by every agent and the window.
+
+Who: window, cli, agent. Result: `{found: [{path, line, head, doc, also, peek}], note, used: [{path, line, text}]}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `query` | string | what to find, in words or a name |
+| `root` | string | the folder to search, absolute (an agent: its own folder, or one in its project) |
+| `project` | string? | people: the project whose concept cards count too (default: root) |
+| `limit` | integer? | how many places (default 10, at most 25) |

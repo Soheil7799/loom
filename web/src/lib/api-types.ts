@@ -1320,6 +1320,18 @@ export type ToolParams = {
   params?: Record<string, unknown>;
 };
 
+/** Code search (loom_find): by meaning when Settings has it on, else by words. loomd keeps one index per folder, shared by every agent and the window. Result: {found: [{path, line, head, doc, also, peek}], note, used: [{path, line, text}]} */
+export type FindCodeParams = {
+  /** what to find, in words or a name */
+  query: string;
+  /** the folder to search, absolute (an agent: its own folder, or one in its project) */
+  root: string;
+  /** people: the project whose concept cards count too (default: root) */
+  project?: string;
+  /** how many places (default 10, at most 25) */
+  limit?: number;
+};
+
 /** Every command's name and the type of its params. */
 export interface Commands {
   "send": SendParams;
@@ -1432,4 +1444,5 @@ export interface Commands {
   "notes_open": NotesOpenParams;
   "notes_close": NotesCloseParams;
   "tool": ToolParams;
+  "find_code": FindCodeParams;
 }

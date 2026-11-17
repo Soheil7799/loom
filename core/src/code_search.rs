@@ -24,6 +24,20 @@ const SOURCE: &[&str] = &[
 ];
 /// Written by tools, read by nobody: not searched.
 const LOCKS: &[&str] = &["package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lock", "Cargo.lock", "composer.lock", "Gemfile.lock", "poetry.lock"];
+/// Data, not code, past this size: a config or a page is small, a scraped dump or an export
+/// isn't.
+const BIGGEST_DATA: u64 = 64 * 1024;
+
+/// A file of a kind that holds data as often as code (JSON, markup, text).
+fn is_data(path: &str) -> bool {
+    let extension = path.rsplit('.').next().unwrap_or_default().to_ascii_lowercase();
+    ["json", "jsonc", "html", "htm", "xml", "txt", "csv"].contains(&extension.as_str())
+}
+
+/// Folders of other people's code (installed packages) and of what tools made (builds,
+/// caches): not searched, even where git doesn't ignore them (a project's node_modules can
+/// hold more files than all of its own code).
+const NOT_YOURS: &[&str] = &["node_modules", "bower_components", "jspm_packages", "vendor", "site-packages", "venv", "Pods", "target", "dist", "__pycache__", "coverage", "cache"];
 /// Lines shown under an answer (the definition's next lines: often enough not to Read).
 const PEEK: usize = 5;
 const BIGGEST: u64 = 512 * 1024;
@@ -37,7 +51,10 @@ struct Piece {
     head: String,
     /// The first line of its doc comment.
     doc: String,
+    /// Its words and how often, as made (handed to the index's vocabulary, then emptied).
     terms: Vec<(String, u32)>,
+    /// The same words as the index's numbers: each word is kept once in the index.
+    ids: Box<[(u32, u32)]>,
     len: u32,
     /// A concept card's own (its files and symbols, checked when it is found).
     card: Option<(Vec<String>, Vec<String>)>,
@@ -57,8 +74,10 @@ pub struct Index {
     /// The project's concept cards (`<project>/.loom/map`), searched with the code.
     map: Option<PathBuf>,
     files: HashMap<String, File>,
-    /// term → (file, piece, count), rebuilt when a file changed.
-    postings: HashMap<String, Vec<(usize, usize, u32)>>,
+    /// Every word met, by its number (kept once, however many pieces have it).
+    vocab: HashMap<String, u32>,
+    /// word number → (file, piece, count), rebuilt when a file changed.
+    postings: Vec<Vec<(u32, u32, u32)>>,
     order: Vec<String>,
     average: f64,
 }
@@ -84,7 +103,7 @@ pub fn map_of(project: &Path) -> PathBuf {
 impl Index {
     /// The code under `root` (the agent's folder), and the cards in `map`.
     pub fn new(root: &Path, map: Option<PathBuf>) -> Index {
-        Index { root: root.to_path_buf(), map, files: HashMap::new(), postings: HashMap::new(), order: Vec::new(), average: 1.0 }
+        Index { root: root.to_path_buf(), map, files: HashMap::new(), vocab: HashMap::new(), postings: Vec::new(), order: Vec::new(), average: 1.0 }
     }
 
     pub fn root(&self) -> &Path {
@@ -100,6 +119,8 @@ impl Index {
             .filter(|f| !f.ends_with('/') && !f.split('/').any(|part| part.starts_with('.')))
             .filter(|f| Path::new(f).extension().is_some_and(|e| SOURCE.contains(&e.to_string_lossy().to_lowercase().as_str())))
             .filter(|f| !LOCKS.contains(&f.rsplit('/').next().unwrap_or(f)) && !f.contains(".min."))
+            // nor others' code and what tools made, even where git doesn't ignore it
+            .filter(|f| !f.split('/').any(|part| NOT_YOURS.contains(&part)))
             .map(|f| (f.clone(), self.root.join(&f)))
             .collect();
         if let Some(map) = &self.map {
@@ -115,7 +136,7 @@ impl Index {
         let mut kept = HashMap::with_capacity(listed.len());
         for (shown, path) in listed {
             let Ok(meta) = std::fs::metadata(&path) else { continue };
-            if meta.len() > BIGGEST {
+            if meta.len() > BIGGEST || (meta.len() > BIGGEST_DATA && is_data(&shown)) {
                 continue;
             }
             let stamp = (meta.modified().unwrap_or(SystemTime::UNIX_EPOCH), meta.len());
@@ -127,7 +148,17 @@ impl Index {
                     changed = true;
                     let text = std::fs::read(&path).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default();
                     let is_card = self.map.as_ref().is_some_and(|m| path.starts_with(m));
-                    let pieces = if is_card { card(&path, &text).into_iter().collect() } else { pieces(&shown, &text) };
+                    let mut pieces: Vec<Piece> = if is_card { card(&path, &text).into_iter().collect() } else { pieces(&shown, &text) };
+                    for piece in &mut pieces {
+                        let vocab = &mut self.vocab;
+                        piece.ids = std::mem::take(&mut piece.terms)
+                            .into_iter()
+                            .map(|(word, n)| {
+                                let next = vocab.len() as u32;
+                                (*vocab.entry(word).or_insert(next), n)
+                            })
+                            .collect();
+                    }
                     kept.insert(shown, File { stamp, pieces });
                 }
             }
@@ -147,8 +178,12 @@ impl Index {
             for (p, piece) in self.files[path].pieces.iter().enumerate() {
                 total += piece.len as u64;
                 count += 1;
-                for (term, n) in &piece.terms {
-                    self.postings.entry(term.clone()).or_default().push((f, p, *n));
+                for &(id, n) in &piece.ids {
+                    let id = id as usize;
+                    if self.postings.len() <= id {
+                        self.postings.resize_with(id + 1, Vec::new);
+                    }
+                    self.postings[id].push((f as u32, p as u32, n));
                 }
             }
         }
@@ -173,9 +208,10 @@ impl Index {
         let n = self.pieces() as f64;
         let mut scores: HashMap<(usize, usize), f64> = HashMap::new();
         for term in &terms {
-            let Some(list) = self.postings.get(term) else { continue };
+            let Some(list) = self.vocab.get(term).and_then(|id| self.postings.get(*id as usize)).filter(|l| !l.is_empty()) else { continue };
             let idf = (1.0 + (n - list.len() as f64 + 0.5) / (list.len() as f64 + 0.5)).ln();
             for &(f, p, tf) in list {
+                let (f, p) = (f as usize, p as usize);
                 let len = self.files[&self.order[f]].pieces[p].len as f64;
                 let tf = tf as f64;
                 *scores.entry((f, p)).or_default() += idf * tf * 2.2 / (tf + 1.2 * (0.25 + 0.75 * len / self.average));
@@ -345,7 +381,7 @@ fn card(path: &Path, text: &str) -> Option<Piece> {
     }
     let len = counts.values().sum::<u32>() / 2;
     let text: String = text.chars().take(4000).collect();
-    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), len, card: Some((files, symbols)), text, peek: Vec::new() })
+    Some(Piece { line: 1, head: format!("card: {title}"), doc, terms: counts.into_iter().collect(), ids: Box::default(), len, card: Some((files, symbols)), text, peek: Vec::new() })
 }
 
 /// `text` cut at its definitions: each from its line to the next one's, with the comment
@@ -387,7 +423,7 @@ fn pieces(path: &str, text: &str) -> Vec<Piece> {
         };
         let len = counts.values().sum();
         let text = format!("{path}\n{}", lines[above..end.min(start + 40)].join("\n"));
-        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), len, card: None, text, peek: peek(&lines, start, end) });
+        out.push(Piece { line: start + 1, head, doc, terms: counts.into_iter().collect(), ids: Box::default(), len, card: None, text, peek: peek(&lines, start, end) });
     }
     // Names given as strings (an API command's handler, a match arm on a name, a spec entry):
     // pieces of their own over the lines that follow, beside the function they are in.
@@ -411,7 +447,7 @@ fn pieces(path: &str, text: &str) -> Vec<Piece> {
         let len = counts.values().sum();
         let text = format!("{path}\n{}", lines[above..end].join("\n"));
         let doc = doc_lines.first().map(|d| d.chars().take(140).collect()).unwrap_or_default();
-        out.push(Piece { line: i + 1, head: line.trim().chars().take(140).collect(), doc, terms: counts.into_iter().collect(), len, card: None, text, peek: peek(&lines, i, end) });
+        out.push(Piece { line: i + 1, head: line.trim().chars().take(140).collect(), doc, terms: counts.into_iter().collect(), ids: Box::default(), len, card: None, text, peek: peek(&lines, i, end) });
     }
     out
 }
@@ -531,6 +567,51 @@ fn stem(word: String) -> String {
     word
 }
 
+/// One index per folder searched, in loomd: every agent's loom_find there and the window's
+/// own search share it (each process kept its own before). One unused for half an hour goes.
+static SHARED: std::sync::LazyLock<std::sync::Mutex<HashMap<PathBuf, (std::sync::Arc<std::sync::Mutex<Index>>, std::time::Instant)>>> = std::sync::LazyLock::new(Default::default);
+/// The meaning model's search, shared the same way.
+static MEANING: std::sync::Mutex<Option<crate::embed::Meaning>> = std::sync::Mutex::new(None);
+
+/// What a search found: the places, a note when meaning search couldn't answer (words did),
+/// and where an exact name asked is used.
+pub struct Answer {
+    pub found: Vec<Found>,
+    pub note: Option<String>,
+    pub used: Vec<(String, usize, String)>,
+}
+
+/// `query` searched under `root` (with `project`'s concept cards), by meaning when `model`
+/// is given and ready. Blocking (reads files, asks the model): off the core's thread.
+pub fn find(root: &Path, project: &Path, query: &str, limit: usize, model: Option<crate::embed::Model>) -> Answer {
+    let index = {
+        let mut all = SHARED.lock().unwrap_or_else(|e| e.into_inner());
+        all.retain(|_, (_, used)| used.elapsed() < std::time::Duration::from_secs(30 * 60));
+        let entry = all.entry(root.to_path_buf()).or_insert_with(|| (std::sync::Arc::new(std::sync::Mutex::new(Index::new(root, Some(map_of(project))))), std::time::Instant::now()));
+        entry.1 = std::time::Instant::now();
+        entry.0.clone()
+    };
+    let mut index = index.lock().unwrap_or_else(|e| e.into_inner());
+    index.refresh();
+    let (found, note) = match model {
+        None => (index.search(query, limit), None),
+        Some(model) => match crate::embed::scores_in(&MEANING, model, &index.texts(), query) {
+            Ok(scores) => (index.search_by_meaning(query, &scores, limit), None),
+            Err(why) => (index.search(query, limit), Some(why)),
+        },
+    };
+    // One exact name asked (an identifier, a string): where it is used, too.
+    let name = query.trim_matches(|c| c == '"' || c == '\'' || c == '`');
+    let exact = !name.contains(char::is_whitespace) && name.chars().count() >= 3 && name.chars().any(char::is_alphanumeric);
+    let used = if exact { index.used_at(name, 15) } else { Vec::new() };
+    drop(index);
+    // What indexing freed goes back to the system (each search runs on a thread of its own,
+    // whose freed memory would otherwise stay with the process).
+    // SAFETY: malloc_trim only hands free memory back; it touches nothing in use.
+    unsafe { libc::malloc_trim(0) };
+    Answer { found, note, used }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -566,6 +647,20 @@ mod tests {
         std::fs::write(root.join("web.ts"), "export function wipeLane() {}\n").unwrap();
         index.refresh();
         assert_eq!(top(&index, "wipe lane"), Some(("web.ts".into(), 1)));
+        // installed packages are no one's code here, even when git doesn't ignore them
+        std::fs::create_dir_all(root.join("app/node_modules/lib")).unwrap();
+        std::fs::write(root.join("app/node_modules/lib/index.js"), "export function zebraStripes() {}\n").unwrap();
+        index.refresh();
+        assert!(!index.search("zebra stripes", 3).iter().any(|f| f.path.contains("node_modules")));
+        // nor a big data file (a dump), though a small config of the same kind is
+        std::fs::write(root.join("dump.json"), format!("{{\"zebraStripes\": \"{}\"}}\n", "x".repeat(70_000))).unwrap();
+        std::fs::write(root.join("app.json"), "{\"zebraStripes\": true}\n").unwrap();
+        index.refresh();
+        let paths: Vec<String> = index.search("zebra stripes", 5).into_iter().map(|f| f.path).collect();
+        assert!(paths.contains(&"app.json".to_owned()) && !paths.contains(&"dump.json".to_owned()), "{paths:?}");
+        // and loomd's shared search finds the same, by words when no model is given
+        let answer = find(&root, &root, "wipeLane", 3, None);
+        assert_eq!(answer.found.first().map(|f| f.path.as_str()), Some("web.ts"));
         let _ = std::fs::remove_dir_all(&root);
     }
 

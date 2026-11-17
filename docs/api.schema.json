@@ -4156,6 +4156,41 @@
         ]
       },
       "result": "the tool's answer"
+    },
+    "find_code": {
+      "description": "Code search (loom_find): by meaning when Settings has it on, else by words. loomd keeps one index per folder, shared by every agent and the window.",
+      "who": [
+        "window",
+        "cli",
+        "agent"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "query": {
+            "type": "string",
+            "description": "what to find, in words or a name"
+          },
+          "root": {
+            "type": "string",
+            "description": "the folder to search, absolute (an agent: its own folder, or one in its project)"
+          },
+          "project": {
+            "type": "string",
+            "description": "people: the project whose concept cards count too (default: root)"
+          },
+          "limit": {
+            "type": "integer",
+            "description": "how many places (default 10, at most 25)"
+          }
+        },
+        "required": [
+          "query",
+          "root"
+        ]
+      },
+      "result": "{found: [{path, line, head, doc, also, peek}], note, used: [{path, line, text}]}"
     }
   }
 }

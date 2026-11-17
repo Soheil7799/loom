@@ -710,6 +710,46 @@ fn commands(daemon: &Rc<Daemon>) {
         let name = params["name"].as_str().ok_or_else(|| Error::Invalid("which tool?".into()))?;
         daemon.tool(id, name, &params["params"]).map_err(Error::Failed)
     });
+    // Code search (loom_find, the window's "Find code by meaning"): one index per folder,
+    // here, shared by everyone who searches it; searched off loomd's thread.
+    let weak = Rc::downgrade(daemon);
+    hub.handle_later("find_code", move |who, params, reply| {
+        let Some(daemon) = weak.upgrade() else { return reply(Err(Error::NotFound("loom".into()))) };
+        let query = params["query"].as_str().unwrap_or("").trim().to_owned();
+        if query.is_empty() {
+            return reply(Err(Error::Invalid("say what to find".into())));
+        }
+        let limit = params["limit"].as_u64().unwrap_or(10).clamp(1, 25) as usize;
+        let root = PathBuf::from(params["root"].as_str().unwrap_or_default());
+        if !root.is_absolute() {
+            return reply(Err(Error::Invalid("root: the folder to search, absolute".into())));
+        }
+        // An agent searches its own folder or one in its project; people, any folder.
+        let project = match who {
+            Principal::Agent(id) => {
+                let found = id.parse().ok().and_then(|id| daemon.ws.agent(id).or_else(|| daemon.notes.agents().into_iter().find(|a| a.id == id)));
+                let Some(agent) = found else { return reply(Err(Error::Forbidden("an agent loom doesn't know".into()))) };
+                if !(root.starts_with(&agent.cwd) || root.starts_with(&agent.project)) {
+                    return reply(Err(Error::Forbidden("code search, but in the agent's own folder or project".into())));
+                }
+                agent.project.clone()
+            }
+            Principal::Window | Principal::Cli => params["project"].as_str().map_or_else(|| root.clone(), PathBuf::from),
+            Principal::Bridge(_) => return reply(Err(Error::Forbidden("code search, but for agents and people".into()))),
+        };
+        let s = loom_core::settings::get();
+        let model = s.embed_code.then(|| loom_core::embed::Model::from_settings(&s));
+        loom_core::rt::spawn_local(async move {
+            let answer = loom_core::rt::spawn_blocking(move || {
+                let a = loom_core::code_search::find(&root, &project, &query, limit, model);
+                let found: Vec<serde_json::Value> = a.found.iter().map(|f| json!({ "path": f.path, "line": f.line, "head": f.head, "doc": f.doc, "also": f.also, "peek": f.peek })).collect();
+                let used: Vec<serde_json::Value> = a.used.iter().map(|(path, line, text)| json!({ "path": path, "line": line, "text": text })).collect();
+                json!({ "found": found, "note": a.note, "used": used })
+            })
+            .await;
+            reply(answer.map_err(|_| Error::Failed("the search stopped".into())));
+        });
+    });
 }
 
 #[cfg(test)]

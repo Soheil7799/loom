@@ -8,11 +8,6 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::Duration;
 
-/// The project's code index for the user's own meaning search, kept between searches (as the
-/// MCP server keeps loom_find's), and the meaning model's scores of its pieces.
-static FOUND_INDEX: std::sync::Mutex<Option<loom_core::code_search::Index>> = std::sync::Mutex::new(None);
-static FOUND_MEANING: std::sync::Mutex<Option<loom_core::embed::Meaning>> = std::sync::Mutex::new(None);
-
 /// Untouched this long, a window in front counts as away (`set_looking`).
 const IDLE_AWAY: Duration = Duration::from_secs(180);
 
@@ -2927,46 +2922,32 @@ impl App {
         let project = self.current_project();
         crate::conn::tell("Searching…");
         let weak = Rc::downgrade(self);
-        {
-            glib::spawn_future_local(async move {
-                let s = settings::get();
-                let model = s.embed_code.then(|| loom_core::embed::Model::from_settings(&s));
-                let searched = root.clone();
-                let found = gio::spawn_blocking(move || {
-                    let mut held = FOUND_INDEX.lock().unwrap_or_else(|e| e.into_inner());
-                    if held.as_ref().is_none_or(|index| index.root() != searched) {
-                        *held = Some(loom_core::code_search::Index::new(&searched, Some(loom_core::code_search::map_of(&project))));
-                    }
-                    let index = held.as_mut()?;
-                    index.refresh();
-                    Some(match model.and_then(|m| loom_core::embed::scores_in(&FOUND_MEANING, m, &index.texts(), &query).ok()) {
-                        Some(scores) => index.search_by_meaning(&query, &scores, 20),
-                        None => index.search(&query, 20),
+        // loomd's index of the folder, the one agents' loom_find shares.
+        crate::conn::command_result("window", "find_code", json!({ "query": query, "root": root, "project": project, "limit": 20 }), move |answer| {
+            let Some(app) = weak.upgrade() else { return };
+            let found = match answer {
+                Ok(answer) => answer["found"].as_array().cloned().unwrap_or_default(),
+                Err(err) => return crate::conn::tell(&err.to_string()),
+            };
+            if found.is_empty() {
+                crate::conn::tell("Nothing found: try other words (what the code would call it).");
+                return;
+            }
+            let text = |v: &Value| v.as_str().unwrap_or_default().trim().to_owned();
+            let choices = found
+                .iter()
+                .map(|f| {
+                    let line = f["line"].as_u64().unwrap_or(1) as u32;
+                    let (files, path) = (app.files.clone(), root.join(text(&f["path"])));
+                    Choice::new(format!("{}:{line}  {}", text(&f["path"]), text(&f["head"])), text(&f["doc"]), move || {
+                        files.root.set_visible(true);
+                        files.open_file(&path);
+                        files.go_to_line(line);
                     })
                 })
-                .await
-                .ok()
-                .flatten()
-                .unwrap_or_default();
-                let Some(app) = weak.upgrade() else { return };
-                if found.is_empty() {
-                    crate::conn::tell("Nothing found: try other words (what the code would call it).");
-                    return;
-                }
-                let choices = found
-                    .into_iter()
-                    .map(|f| {
-                        let (files, path, line) = (app.files.clone(), root.join(&f.path), f.line as u32);
-                        Choice::new(format!("{}:{}  {}", f.path, f.line, f.head.trim()), f.doc.trim().to_owned(), move || {
-                            files.root.set_visible(true);
-                            files.open_file(&path);
-                            files.go_to_line(line);
-                        })
-                    })
-                    .collect();
-                app.picker.open("Where it is, best first", choices);
-            });
-        }
+                .collect();
+            app.picker.open("Where it is, best first", choices);
+        });
     }
 
     /// The memory files Claude Code reads for the agent in view (its folder's and every parent

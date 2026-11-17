@@ -21,10 +21,8 @@ const PROTOCOL: &str = "2025-06-18";
 
 /// The vault's index, kept between calls (refreshed from the files' times at each one).
 static NOTES: Mutex<Option<crate::notes::Index>> = Mutex::new(None);
-/// The project's code, for loom_find (kept by this process, refreshed at each search).
-static CODE: Mutex<Option<crate::code_search::Index>> = Mutex::new(None);
-/// Meaning search for the code and for the notes, when Settings has it on (embed.rs).
-static CODE_MEANING: Mutex<Option<crate::embed::Meaning>> = Mutex::new(None);
+/// Meaning search for the notes, when Settings has it on (embed.rs). The code's is loomd's
+/// (`find_code`: one index per folder, shared by every agent).
 static NOTES_MEANING: Mutex<Option<crate::embed::Meaning>> = Mutex::new(None);
 
 /// The model, if meaning search is on for `which` ("code", "notes"), as loom's settings say.
@@ -310,7 +308,7 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
 /// Meaning search's indexing started for the code and the notes, when Settings has it on.
 fn warm(socket: &str, agent: u32) {
     if meaning_model(socket, agent, "code").is_some() {
-        let _ = find(socket, agent, &json!({ "query": "warm up", "limit": 1 }));
+        let _ = find(socket, &json!({ "query": "warm up", "limit": 1 }));
     }
     if meaning_model(socket, agent, "notes").is_some() && vault(socket, agent).is_some() {
         let _ = note_tool(socket, agent, "loom_note_search", &json!({ "query": "warm up", "limit": 1 }));
@@ -346,59 +344,47 @@ fn browser(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
 
 /// loom_find: the places in the agent's folder (this process runs in it: a worktree's agent
 /// searches its worktree) and its project's concept cards best matching the query.
-fn find(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
-    let agents = call(socket, agent, "list_agents", json!({}))?;
-    let project = agents.as_array().into_iter().flatten().find(|a| a["you"] == true).and_then(|a| a["project"].as_str()).map(PathBuf::from).ok_or("loom doesn't know this agent's project")?;
-    let root = std::env::current_dir().unwrap_or_else(|_| project.clone());
+fn find(socket: &str, args: &Value) -> Result<String, String> {
+    use crate::api::cli::{Connection, new_id};
     let query = args["query"].as_str().unwrap_or("").trim();
     if query.is_empty() {
         return Err("Say what to find.".into());
     }
-    let limit = args["limit"].as_u64().unwrap_or(10).clamp(1, 25) as usize;
-    let mut held = CODE.lock().unwrap_or_else(|e| e.into_inner());
-    if held.as_ref().is_none_or(|index| index.root() != root) {
-        *held = Some(crate::code_search::Index::new(&root, Some(crate::code_search::map_of(&project))));
-    }
-    let index = held.as_mut().ok_or("no index")?;
-    index.refresh();
-    let (found, note) = match meaning_model(socket, agent, "code") {
-        None => (index.search(query, limit), None),
-        Some(model) => match crate::embed::scores_in(&CODE_MEANING, model, &index.texts(), query) {
-            Ok(scores) => (index.search_by_meaning(query, &scores, limit), None),
-            Err(why) => (index.search(query, limit), Some(why)),
-        },
-    };
+    // Searched in loomd, where every agent's search of a folder shares one index.
+    let root = std::env::current_dir().map_err(|e| e.to_string())?;
+    let mut loom = Connection::open(std::path::Path::new(socket)).map_err(|e| format!("{e}; is loom still open?"))?;
+    let answer = loom.command(&new_id(), "find_code", json!({ "query": query, "limit": args["limit"], "root": root })).map_err(|e| e.message)?;
+    let found = answer["found"].as_array().cloned().unwrap_or_default();
     if found.is_empty() {
         return Ok(format!("Nothing in {} matched those words: try others (what the code would call it), or Grep for an exact string.", root.display()));
     }
+    let text = |v: &Value| v.as_str().unwrap_or_default().to_owned();
     let mut out = format!("In {} (paths relative to it):\n", root.display());
-    if let Some(note) = note {
+    if let Some(note) = answer["note"].as_str() {
         out.push_str(&format!("({note})\n"));
     }
     for (i, f) in found.iter().enumerate() {
-        out.push_str(&format!("{}:{}  {}\n", f.path, f.line, f.head));
-        if !f.doc.is_empty() {
-            out.push_str(&format!("    {}\n", f.doc));
+        out.push_str(&format!("{}:{}  {}\n", text(&f["path"]), f["line"], text(&f["head"])));
+        if !text(&f["doc"]).is_empty() {
+            out.push_str(&format!("    {}\n", text(&f["doc"])));
         }
-        if !f.also.is_empty() {
-            out.push_str(&format!("    also in another checkout: {}\n", f.also.join(", ")));
+        let also: Vec<String> = f["also"].as_array().into_iter().flatten().map(text).collect();
+        if !also.is_empty() {
+            out.push_str(&format!("    also in another checkout: {}\n", also.join(", ")));
         }
         // the best ones with their next lines: often all that was needed, no Read after
         if i < 5 {
-            for line in &f.peek {
-                out.push_str(&format!("    | {line}\n"));
+            for line in f["peek"].as_array().into_iter().flatten() {
+                out.push_str(&format!("    | {}\n", text(line)));
             }
         }
     }
     // One exact name asked (an identifier, a string): where it is used, too.
-    let name = query.trim_matches(|c| c == '"' || c == '\'' || c == '`');
-    if !name.contains(char::is_whitespace) && name.chars().count() >= 3 && name.chars().any(char::is_alphanumeric) {
-        let used = index.used_at(name, 15);
-        if !used.is_empty() {
-            out.push_str(&format!("Used at ({}{}):\n", used.len(), if used.len() == 15 { ", the first" } else { "" }));
-            for (path, line, text) in used {
-                out.push_str(&format!("{path}:{line}  {text}\n"));
-            }
+    let used = answer["used"].as_array().cloned().unwrap_or_default();
+    if !used.is_empty() {
+        out.push_str(&format!("Used at ({}{}):\n", used.len(), if used.len() == 15 { ", the first" } else { "" }));
+        for u in &used {
+            out.push_str(&format!("{}:{}  {}\n", text(&u["path"]), u["line"], text(&u["text"])));
         }
     }
     out.push_str("Not it? Ask again in other words (what the code would call it).");
@@ -536,7 +522,7 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
         "loom_notify" => call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
         "loom_mcp_on" => call(socket, agent, "mcp_on", args.clone()).map(|_| "Switched on: its tools come within a few seconds.".to_owned()),
         "loom_agents" => call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
-        "loom_find" => find(socket, agent, args),
+        "loom_find" => find(socket, args),
         "loom_browser" => browser(socket, agent, args),
         "loom_board" => call(socket, agent, "board", json!({})).map(|v| pretty(&v)),
         "loom_board_add" => call(socket, agent, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),

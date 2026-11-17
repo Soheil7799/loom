@@ -282,6 +282,19 @@ pub const COMMANDS: &[Command] = &[
         later: false,
         about: "An agent's loom tools (its MCP server), as the agent loom found the caller to be.",
     },
+    Command {
+        name: "find_code",
+        who: &["window", "cli", "agent"],
+        params: &[
+            ("query", "string", true, "what to find, in words or a name"),
+            ("root", "string", true, "the folder to search, absolute (an agent: its own folder, or one in its project)"),
+            ("project", "string", false, "people: the project whose concept cards count too (default: root)"),
+            ("limit", "integer", false, "how many places (default 10, at most 25)"),
+        ],
+        result: "{found: [{path, line, head, doc, also, peek}], note, used: [{path, line, text}]}",
+        later: true,
+        about: "Code search (loom_find): by meaning when Settings has it on, else by words. loomd keeps one index per folder, shared by every agent and the window.",
+    },
 ];
 
 pub const RESOURCES: &[Resource] = &[
