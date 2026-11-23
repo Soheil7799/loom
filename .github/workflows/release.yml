@@ -42,8 +42,9 @@ jobs:
       - name: Test and build
         run: |
           rustup update stable --no-self-update
-          cargo test --release --locked --workspace
+          # Built first: the daemon's tests start the loom-remote binary next to loomd.
           cargo build --release --locked --workspace
+          cargo test --release --locked --workspace
 
       - name: Package
         run: |
