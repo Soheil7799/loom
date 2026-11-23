@@ -176,7 +176,7 @@ pub fn list(vault: &Path) -> Vec<Topic> {
         .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("md")))
         .filter_map(|p| std::fs::read_to_string(&p).ok().map(|text| parse(&p, &text)))
         .collect();
-    topics.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    topics.sort_by_key(|a| a.name.to_lowercase());
     topics
 }
 

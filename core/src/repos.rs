@@ -120,6 +120,14 @@ fn walk(dir: &Path, depth: usize, found: &mut Vec<PathBuf>, visited: &mut usize)
     }
 }
 
+/// The repository a folder belongs to (the nearest parent with .git), else the folder. An
+/// agent's worktree loom made belongs to the project it is a worktree of (others, made by
+/// hand, stay projects of their own).
+pub fn project_of(cwd: &Path) -> PathBuf {
+    let found = cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd);
+    crate::worktrees::made_from(found).unwrap_or_else(|| found.to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -145,12 +153,4 @@ mod tests {
         assert_eq!(repo.branch, "main");
         assert_eq!(repo.summary(), "main");
     }
-}
-
-/// The repository a folder belongs to (the nearest parent with .git), else the folder. An
-/// agent's worktree loom made belongs to the project it is a worktree of (others, made by
-/// hand, stay projects of their own).
-pub fn project_of(cwd: &Path) -> PathBuf {
-    let found = cwd.ancestors().find(|dir| dir.join(".git").exists()).unwrap_or(cwd);
-    crate::worktrees::made_from(found).unwrap_or_else(|| found.to_owned())
 }

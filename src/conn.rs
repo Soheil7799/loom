@@ -68,7 +68,7 @@ pub fn command_then(who: &str, method: &str, params: Value, then: impl FnOnce(Op
 /// Does command `method` as the window, then `then` with its answer or why it was refused
 /// (logged under `who` too).
 pub fn command_result(who: &str, method: &str, params: Value, then: impl FnOnce(Result<Value, loom_core::api::Error>) + 'static) {
-    let (who, said) = (who.to_owned(), method.to_owned());
+    let (_who, said) = (who.to_owned(), method.to_owned());
     let reply = move |result: Result<Value, loom_core::api::Error>| {
         if let Err(err) = &result {
             loom_core::log::debug!(who, "{said} refused: {err}");

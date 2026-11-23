@@ -5039,6 +5039,15 @@ fn zoom(step: f64) {
 impl App {
 }
 
+/// The window's own state file (its size, the agents it showed): the window's, not loomd's.
+fn window_state_path(app_id: &str) -> PathBuf {
+    loom_core::state::dir().join(format!("window-{}.json", app_id.rsplit('.').next().unwrap_or("loom")))
+}
+
+fn window_state(app_id: &str) -> Value {
+    std::fs::read_to_string(window_state_path(app_id)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
+}
+
 #[cfg(test)]
 mod loomd_tests {
     use super::*;
@@ -5051,13 +5060,4 @@ mod loomd_tests {
         assert_eq!(loomd_differs(&hello("0.4.0", &all), "0.5.0"), Some(0), "another version");
         assert_eq!(loomd_differs(&hello("0.5.0", &all[1..]), "0.5.0"), Some(1), "the same version, a command short");
     }
-}
-
-/// The window's own state file (its size, the agents it showed): the window's, not loomd's.
-fn window_state_path(app_id: &str) -> PathBuf {
-    loom_core::state::dir().join(format!("window-{}.json", app_id.rsplit('.').next().unwrap_or("loom")))
-}
-
-fn window_state(app_id: &str) -> Value {
-    std::fs::read_to_string(window_state_path(app_id)).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or(Value::Null)
 }

@@ -809,7 +809,7 @@ impl Files {
             // Dragged out like the tree's files (to the chat as @path, or to another app).
             let source = gtk::DragSource::builder().actions(gdk::DragAction::COPY).build();
             let dragged = gio::File::for_path(path);
-            source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(&[dragged.clone()]).to_value())));
+            source.connect_prepare(move |_, _, _| Some(gdk::ContentProvider::for_value(&gdk::FileList::from_array(std::slice::from_ref(&dragged)).to_value())));
             row.add_controller(source);
             self.list.append(&row);
         }
@@ -1172,7 +1172,7 @@ impl Files {
             return;
         }
         let window = self.view.root().and_then(|root| root.downcast::<gtk::Window>().ok());
-        let focus = window.as_ref().and_then(|w| GtkWindowExt::focus(w));
+        let focus = window.as_ref().and_then(GtkWindowExt::focus);
         let offset = self.buffer.cursor_position();
         let scrolled = self.view.vadjustment().map(|a| a.value());
         if !self.load(&path) {

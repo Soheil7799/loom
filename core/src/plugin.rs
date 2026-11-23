@@ -242,7 +242,7 @@ pub fn items(kind: Kind) -> Vec<Item> {
             all.push(Item { kind, description: description(&text), enabled, file, shipped, name });
         }
     }
-    all.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+    all.sort_by_key(|a| a.name.to_lowercase());
     all
 }
 

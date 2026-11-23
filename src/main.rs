@@ -59,7 +59,7 @@ const APP_ID: &str = "dev.shirvani.Loom";
 const CSS: &str = include_str!("style.css");
 
 thread_local! {
-    static RUNNING: std::cell::RefCell<std::rc::Weak<app::App>> = std::cell::RefCell::new(std::rc::Weak::new());
+    static RUNNING: std::cell::RefCell<std::rc::Weak<app::App>> = const { std::cell::RefCell::new(std::rc::Weak::new()) };
 }
 
 // GLib's own Unix signal source (not wrapped by these bindings): its handler runs on the

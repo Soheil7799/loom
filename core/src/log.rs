@@ -108,7 +108,7 @@ pub fn install() {
 macro_rules! debug {
     ($area:expr, $($arg:tt)*) => {
         if $crate::log::on() {
-            $crate::log::write(&$area, &format!($($arg)*));
+            $crate::log::write("api", &format!($($arg)*));
         }
     };
 }

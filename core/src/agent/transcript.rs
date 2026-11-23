@@ -858,6 +858,72 @@ impl View for Recorded {
     }
 }
 
+/// A subagent as the API's `crew/<agent>` has it: times as RFC 3339.
+fn crew_item(c: &Crew) -> Value {
+    let when = |at: Instant| crate::api::time(crate::state::now() as i64 - at.elapsed().as_secs() as i64);
+    json!({ "id": c.key, "name": c.name, "step": c.step, "state": c.state, "started": when(c.started), "at": when(c.at), "ended": c.ended.map(when), "guessed": c.guessed })
+}
+
+/// A workflow as the API has it (`workflows/<agent>`): followed from its files, its end as the
+/// agent tells it.
+struct RecordedWorkflow {
+    tool_id: String,
+    progress: Rc<RefCell<crate::workflow::Progress>>,
+    store: Option<Store>,
+    launch: Launch,
+    /// Stops asked of it that went unanswered (each grows it: a client offers Stop again).
+    unanswered: std::cell::Cell<u64>,
+}
+
+impl RecordedWorkflow {
+    fn publish(&self) {
+        let Some(store) = &self.store else { return };
+        let p = self.progress.borrow();
+        let state = match &p.state {
+            crate::workflow::State::Running => json!("running"),
+            crate::workflow::State::Done(text) => json!(text),
+            crate::workflow::State::Failed => json!("failed"),
+            crate::workflow::State::Stopped => json!("stopped"),
+            crate::workflow::State::Ended => json!("ended"),
+        };
+        let members: Vec<Value> = p.members.iter().map(|m| json!({ "label": m.label, "phase": m.phase, "done": m.result.is_some() })).collect();
+        let (done, all) = p.counts();
+        store.upsert(json!({ "id": self.tool_id, "name": self.launch.name, "summary": self.launch.summary, "task": self.launch.task, "dir": self.launch.dir.to_string_lossy(), "running": !p.done(), "state": state, "done": done, "agents": all, "members": members, "unanswered": self.unanswered.get() }));
+    }
+}
+
+impl Workflow for RecordedWorkflow {
+    fn tool_id(&self) -> String {
+        self.tool_id.clone()
+    }
+    fn name(&self) -> String {
+        self.launch.name.clone()
+    }
+    fn task(&self) -> String {
+        self.launch.task.clone()
+    }
+    fn done(&self) -> bool {
+        self.progress.borrow().done()
+    }
+    fn counts(&self) -> (usize, usize) {
+        self.progress.borrow().counts()
+    }
+    fn stop_unanswered(&self) {
+        if !self.progress.borrow().done() {
+            self.unanswered.set(self.unanswered.get() + 1);
+            self.publish();
+        }
+    }
+    fn ended(&self, status: &str, output: Option<std::path::PathBuf>) {
+        self.progress.borrow_mut().ended(status, output);
+        self.publish();
+    }
+    fn stopped(&self) {
+        self.progress.borrow_mut().state = crate::workflow::State::Stopped;
+        self.publish();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::view::View;
@@ -1162,71 +1228,5 @@ mod tests {
         // A reader from before loom started again: all of it.
         assert_eq!(t.since("another", 2)["reset"], true);
         assert_eq!(t.since("", 999)["reset"], true);
-    }
-}
-
-/// A subagent as the API's `crew/<agent>` has it: times as RFC 3339.
-fn crew_item(c: &Crew) -> Value {
-    let when = |at: Instant| crate::api::time(crate::state::now() as i64 - at.elapsed().as_secs() as i64);
-    json!({ "id": c.key, "name": c.name, "step": c.step, "state": c.state, "started": when(c.started), "at": when(c.at), "ended": c.ended.map(when), "guessed": c.guessed })
-}
-
-/// A workflow as the API has it (`workflows/<agent>`): followed from its files, its end as the
-/// agent tells it.
-struct RecordedWorkflow {
-    tool_id: String,
-    progress: Rc<RefCell<crate::workflow::Progress>>,
-    store: Option<Store>,
-    launch: Launch,
-    /// Stops asked of it that went unanswered (each grows it: a client offers Stop again).
-    unanswered: std::cell::Cell<u64>,
-}
-
-impl RecordedWorkflow {
-    fn publish(&self) {
-        let Some(store) = &self.store else { return };
-        let p = self.progress.borrow();
-        let state = match &p.state {
-            crate::workflow::State::Running => json!("running"),
-            crate::workflow::State::Done(text) => json!(text),
-            crate::workflow::State::Failed => json!("failed"),
-            crate::workflow::State::Stopped => json!("stopped"),
-            crate::workflow::State::Ended => json!("ended"),
-        };
-        let members: Vec<Value> = p.members.iter().map(|m| json!({ "label": m.label, "phase": m.phase, "done": m.result.is_some() })).collect();
-        let (done, all) = p.counts();
-        store.upsert(json!({ "id": self.tool_id, "name": self.launch.name, "summary": self.launch.summary, "task": self.launch.task, "dir": self.launch.dir.to_string_lossy(), "running": !p.done(), "state": state, "done": done, "agents": all, "members": members, "unanswered": self.unanswered.get() }));
-    }
-}
-
-impl Workflow for RecordedWorkflow {
-    fn tool_id(&self) -> String {
-        self.tool_id.clone()
-    }
-    fn name(&self) -> String {
-        self.launch.name.clone()
-    }
-    fn task(&self) -> String {
-        self.launch.task.clone()
-    }
-    fn done(&self) -> bool {
-        self.progress.borrow().done()
-    }
-    fn counts(&self) -> (usize, usize) {
-        self.progress.borrow().counts()
-    }
-    fn stop_unanswered(&self) {
-        if !self.progress.borrow().done() {
-            self.unanswered.set(self.unanswered.get() + 1);
-            self.publish();
-        }
-    }
-    fn ended(&self, status: &str, output: Option<std::path::PathBuf>) {
-        self.progress.borrow_mut().ended(status, output);
-        self.publish();
-    }
-    fn stopped(&self) {
-        self.progress.borrow_mut().state = crate::workflow::State::Stopped;
-        self.publish();
     }
 }

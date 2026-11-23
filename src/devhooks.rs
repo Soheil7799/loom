@@ -257,7 +257,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             std::fs::write(file, out).map_err(|_| "not written")?;
         }
         // The remote bridge as Settings sees it (its pairing ticket…), into a file.
-        "remotestate" => std::fs::write(&argument, crate::bridges::state_of("remote").to_string()).map_err(|_| "not written")?,
+        "remotestate" => std::fs::write(argument, crate::bridges::state_of("remote").to_string()).map_err(|_| "not written")?,
         // "\n" in it: a line break (the control file is a line each).
         "type" => app.chat_in_view().ok_or("no agent")?.input.buffer().set_text(&argument.replace("\\n", "\n")),
         "plancomment" => {

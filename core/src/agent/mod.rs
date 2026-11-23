@@ -3228,7 +3228,7 @@ impl Agent {
                 }
             }
             "usage_update" => {
-                self.recorded.usage_update(&update);
+                self.recorded.usage_update(update);
                 self.view.set_usage(update["used"].as_u64().unwrap_or(0), update["size"].as_u64().unwrap_or(0));
                 self.view.set_spend(cost(&update["cost"]), limit(&update["_meta"]["_claude/rateLimit"]));
                 if !update["_meta"]["loom/limits"].is_null() {
@@ -3386,6 +3386,18 @@ fn message(error: &Value) -> String {
     error["message"].as_str().map(str::to_owned).unwrap_or_else(|| error.to_string())
 }
 
+/// The values a config option offers (`options`, flat or in groups).
+fn option_values(option: &Value) -> Vec<String> {
+    let mut values = Vec::new();
+    for entry in option["options"].as_array().into_iter().flatten() {
+        match entry["options"].as_array() {
+            Some(group) => values.extend(group.iter().filter_map(|v| v["value"].as_str().map(str::to_owned))),
+            None => values.extend(entry["value"].as_str().map(str::to_owned)),
+        }
+    }
+    values
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3414,16 +3426,4 @@ mod tests {
         assert_eq!(agent.wanted_mode.borrow().as_deref(), Some("plan"));
         assert!(agent.choose_mode("nonsense").is_err());
     }
-}
-
-/// The values a config option offers (`options`, flat or in groups).
-fn option_values(option: &Value) -> Vec<String> {
-    let mut values = Vec::new();
-    for entry in option["options"].as_array().into_iter().flatten() {
-        match entry["options"].as_array() {
-            Some(group) => values.extend(group.iter().filter_map(|v| v["value"].as_str().map(str::to_owned))),
-            None => values.extend(entry["value"].as_str().map(str::to_owned)),
-        }
-    }
-    values
 }

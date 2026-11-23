@@ -779,11 +779,10 @@ fn from_line(hub: &Rc<Hub>, v: &Value) -> gtk::Box {
         }
         let (weak, session) = (Rc::downgrade(hub), v["session"].as_str().unwrap_or("").to_owned());
         link.connect_clicked(move |_| {
-            if let Some(hub) = weak.upgrade() {
-                if let Some(open) = hub.on_open.borrow().as_ref() {
+            if let Some(hub) = weak.upgrade()
+                && let Some(open) = hub.on_open.borrow().as_ref() {
                     open(&session);
                 }
-            }
         });
         line.append(&link);
     }

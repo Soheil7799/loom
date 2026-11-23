@@ -82,17 +82,6 @@ fn note_for(installed: &str, built: &str) -> Option<String> {
     }
 }
 
-#[cfg(test)]
-mod version_tests {
-    #[test]
-    fn only_older_or_a_new_minor_version_is_said() {
-        assert!(super::note_for("2.1.330", "2.1.330").is_none());
-        assert!(super::note_for("2.1.345", "2.1.330").is_none());
-        assert!(super::note_for("2.1.329", "2.1.330").unwrap().contains("older"));
-        assert!(super::note_for("2.2.0", "2.1.330").unwrap().contains("newer"));
-    }
-}
-
 impl Conn {
     /// A connection for an agent working in `cwd`. Claude Code starts with the session (on
     /// `session/new`, `session/load`, `session/resume`).
@@ -132,5 +121,16 @@ impl Conn {
 impl Drop for Conn {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn only_older_or_a_new_minor_version_is_said() {
+        assert!(super::note_for("2.1.330", "2.1.330").is_none());
+        assert!(super::note_for("2.1.345", "2.1.330").is_none());
+        assert!(super::note_for("2.1.329", "2.1.330").unwrap().contains("older"));
+        assert!(super::note_for("2.2.0", "2.1.330").unwrap().contains("newer"));
     }
 }

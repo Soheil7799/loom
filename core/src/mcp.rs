@@ -673,6 +673,10 @@ fn describe_job(job: Value) -> String {
     format!("Job {}: {state}\n--- output ---\n{}", job["name"].as_str().unwrap_or("?"), job["output"].as_str().unwrap_or(""))
 }
 
+fn pretty(value: &Value) -> String {
+    serde_json::to_string_pretty(value).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]
@@ -692,8 +696,4 @@ mod tests {
         assert_eq!(said, "Set: OPENAI_API_KEY, DB_PASSWORD, PORT. Still empty: EMPTY. 2 other non-empty lines (not named: they may be secrets themselves).");
         assert!(!said.contains("sk-secret") && !said.contains("hunter") && !said.contains("c2st"));
     }
-}
-
-fn pretty(value: &Value) -> String {
-    serde_json::to_string_pretty(value).unwrap_or_default()
 }

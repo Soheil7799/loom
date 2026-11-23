@@ -95,7 +95,7 @@ pub trait Notes {
 }
 
 thread_local! {
-    static HOST: RefCell<Weak<Host>> = RefCell::new(Weak::new());
+    static HOST: RefCell<Weak<Host>> = const { RefCell::new(Weak::new()) };
 }
 
 /// The bridges' host, while loom runs.

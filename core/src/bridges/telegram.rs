@@ -617,7 +617,6 @@ impl Bot {
             if let Some(bot) = self.online.borrow().clone() {
                 self.set_state(self.connected(&bot, None));
             }
-            return;
         }
         // Anything else is ignored. (The code is never replaced on wrong tries: anyone could
         // then keep it changing; at 8 characters it is not guessed.)

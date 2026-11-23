@@ -104,11 +104,10 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
         line.append(&gtk::Image::from_icon_name(icon));
         line.append(&gtk::Label::builder().label(*title).xalign(0.0).build());
         list.append(&line);
-        if *addon {
-            if let Some(row) = list.last_child() {
+        if *addon
+            && let Some(row) = list.last_child() {
                 row.add_css_class("prefs-nav-sub");
             }
-        }
     }
     let pages = stack.clone();
     list.connect_row_selected(move |_, row| {
@@ -1289,7 +1288,7 @@ fn fill_topics(holder: &gtk::Box, window: &gtk::Window) {
         on.connect_active_notify(move |on| {
             if on.is_active() != now.enabled && crate::topics::set_enabled(&now, on.is_active()).is_ok() {
                 let refill = refill.clone();
-                glib::idle_add_local_once(move || refill());
+                glib::idle_add_local_once(refill);
             }
         });
         controls.append(&on);
@@ -1459,7 +1458,7 @@ fn fill_claude(holder: &gtk::Box, window: &gtk::Window) {
                     crate::plugin::changed();
                     // Rebuilt after the switch has finished moving.
                     let refill = refill.clone();
-                    glib::idle_add_local_once(move || refill());
+                    glib::idle_add_local_once(refill);
                 }
             });
             controls.append(&on);

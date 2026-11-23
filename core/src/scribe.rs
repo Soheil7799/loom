@@ -464,11 +464,10 @@ fn candidates(vault: &Path, index: &crate::notes::Index, topic: &Topic, about: &
     let found = by_meaning.unwrap_or_else(|| index.search(about, Some(&topic.folder), CANDIDATES));
     let mut paths: Vec<String> = found.into_iter().map(|h| h.path).collect();
     for name in ["Overview", "Index", &topic.name] {
-        if let Some(path) = index.resolve(&format!("{}/{name}", topic.folder)) {
-            if !paths.contains(&path) {
+        if let Some(path) = index.resolve(&format!("{}/{name}", topic.folder))
+            && !paths.contains(&path) {
                 paths.push(path);
             }
-        }
     }
     paths.truncate(CANDIDATES + 1);
     paths
@@ -556,13 +555,12 @@ fn ask(system: &str, input: &str, schema: &Value, model: &str) -> Result<Value, 
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| format!("Could not run claude: {e}"))?;
-    if let Some(mut stdin) = child.stdin.take() {
-        if let Err(err) = stdin.write_all(input.as_bytes()) {
+    if let Some(mut stdin) = child.stdin.take()
+        && let Err(err) = stdin.write_all(input.as_bytes()) {
             let _ = child.kill();
             let _ = child.wait();
             return Err(format!("Could not talk to claude: {err}"));
         }
-    }
     let output = child.wait_with_output().map_err(|e| e.to_string())?;
     let answer: Value = serde_json::from_slice(&output.stdout).map_err(|_| {
         let why = String::from_utf8_lossy(&output.stderr);
@@ -791,11 +789,10 @@ pub fn commit(vault: &Path, files: &[String], message: &str) {
     let _ = git(&add);
     let mut commit = vec!["commit", "-q", "-m", message, "--"];
     commit.extend(files.iter().map(String::as_str));
-    if let Ok(out) = git(&commit) {
-        if !out.status.success() {
+    if let Ok(out) = git(&commit)
+        && !out.status.success() {
             crate::log::write("scribe", &format!("commit: {}", String::from_utf8_lossy(&out.stderr).trim()));
         }
-    }
 }
 
 /// What was proposed, kept to be reviewed (the user's OK) across restarts.

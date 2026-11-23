@@ -1889,7 +1889,7 @@ impl Chat {
                 };
                 // Stopping waits on the recorder: not on the main loop.
                 glib::spawn_future_local(async move {
-                    let audio = gio::spawn_blocking(move || audio()).await.unwrap_or_else(|_| Err("the recorder did not stop".to_owned()));
+                    let audio = gio::spawn_blocking(audio).await.unwrap_or_else(|_| Err("the recorder did not stop".to_owned()));
                     match audio {
                         Ok(audio) => crate::stt::transcribe(audio, "voice.wav", "audio/wav", done),
                         Err(why) => done(Err(why)),
@@ -4602,78 +4602,6 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
     removed.chain(added).collect()
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{changed_lines, chip_value, plain_tail, split_shell_runs};
-
-    #[test]
-    fn shell_runs_read_as_commands() {
-        let text = "<bash-input>ls</bash-input>\n<bash-stdout>a\nb</bash-stdout><bash-stderr></bash-stderr>What did it print?";
-        let (commands, rest) = split_shell_runs(text);
-        assert_eq!(commands, vec!["ls".to_owned()]);
-        assert_eq!(rest, "What did it print?");
-        assert_eq!(split_shell_runs("plain"), (Vec::new(), "plain".to_owned()));
-    }
-
-    #[test]
-    fn a_block_keeps_one_direction() {
-        assert_eq!(super::one_direction("<b>which</b> is\nقیمت"), "\u{200E}<b>which</b> is\n\u{200E}قیمت");
-        // An English reply quoting Persian stays left-to-right; Persian stays right-to-left.
-        assert_eq!(super::one_direction("&laquo;قیمت&raquo; is the price of it"), "\u{200E}&laquo;قیمت&raquo; is the price of it");
-        assert_eq!(super::one_direction("قیمت اخرین خرید for"), "\u{200F}قیمت اخرین خرید for");
-        // A path in a Persian sentence does not make it English.
-        assert!(super::one_direction("این فایل را ببین: /home/me/notes/todo.md").starts_with('\u{200F}'));
-        assert!(super::one_direction("فایل <tt>src/app.rs</tt> و <tt>chat.rs</tt> را ببین").starts_with('\u{200F}'));
-        assert_eq!(super::one_direction("123"), "123");
-        assert_eq!(super::one_direction("cargo test\nnext"), "cargo test\nnext");
-    }
-
-    #[test]
-    fn output_reads_as_plain_text() {
-        let raw = "\u{1b}[32mok\u{1b}[0m\r\nstep 1\rstep 2\r\n\u{1b}]0;title\u{7}done\r\n";
-        assert_eq!(plain_tail(raw, 10), "ok\nstep 2\ndone");
-        assert_eq!(plain_tail("a\nb\nc\n", 2), "b\nc");
-    }
-
-    #[test]
-    fn only_the_changed_middle_is_shown() {
-        let d = changed_lines("a\nb\nc\nd", "a\nB\nc\nd");
-        assert_eq!(d, vec![('-', "b"), ('+', "B")]);
-    }
-
-    #[test]
-    fn mcp_tools_read_as_server_and_tool() {
-        assert_eq!(super::tool_title("mcp__loom__loom_run"), "loom · run");
-        assert_eq!(super::tool_title("mcp__github__create_issue"), "github · create issue");
-        assert_eq!(super::tool_title("`ls -la`"), "ls -la");
-        assert_eq!(super::tool_title("python3 - <<EOF\nprint(1)\nEOF"), "python3 - <<EOF …");
-    }
-
-
-    #[test]
-    fn chips_say_what_default_means() {
-        let model = vec![("default".into(), "Default (recommended)".into(), "Opus 5.5".into()), ("opus".into(), "Opus 5.5".into(), "For complex work".into())];
-        assert_eq!(chip_value(&model, "default"), "Opus 5.5");
-        let effort = vec![("default".into(), "Default".into(), String::new())];
-        assert_eq!(chip_value(&effort, "default"), "Default");
-        let long = vec![("x".into(), "A really very long agent name".into(), String::new())];
-        assert_eq!(chip_value(&long, "x"), "A really very lon…");
-    }
-
-    #[test]
-    fn persian_digits_count() {
-        assert_eq!(super::any_digit('۱'), Some(1));
-        assert_eq!(super::any_digit('٣'), Some(3));
-        assert_eq!(super::any_digit('7'), Some(7));
-        assert_eq!(super::any_digit('a'), None);
-    }
-
-    #[test]
-    fn a_new_file_is_all_added() {
-        assert_eq!(changed_lines("", "x\ny"), vec![('+', "x"), ('+', "y")]);
-    }
-}
-
 /// How the summary of a compacted conversation starts (Claude Code's words).
 const SUMMARY_START: &str = "This session is being continued from a previous conversation";
 
@@ -4756,5 +4684,77 @@ fn tokens(n: u64) -> String {
         0..1000 => n.to_string(),
         1000..1_000_000 => format!("{}k", n / 1000),
         _ => format!("{:.1}M", n as f64 / 1e6),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{changed_lines, chip_value, plain_tail, split_shell_runs};
+
+    #[test]
+    fn shell_runs_read_as_commands() {
+        let text = "<bash-input>ls</bash-input>\n<bash-stdout>a\nb</bash-stdout><bash-stderr></bash-stderr>What did it print?";
+        let (commands, rest) = split_shell_runs(text);
+        assert_eq!(commands, vec!["ls".to_owned()]);
+        assert_eq!(rest, "What did it print?");
+        assert_eq!(split_shell_runs("plain"), (Vec::new(), "plain".to_owned()));
+    }
+
+    #[test]
+    fn a_block_keeps_one_direction() {
+        assert_eq!(super::one_direction("<b>which</b> is\nقیمت"), "\u{200E}<b>which</b> is\n\u{200E}قیمت");
+        // An English reply quoting Persian stays left-to-right; Persian stays right-to-left.
+        assert_eq!(super::one_direction("&laquo;قیمت&raquo; is the price of it"), "\u{200E}&laquo;قیمت&raquo; is the price of it");
+        assert_eq!(super::one_direction("قیمت اخرین خرید for"), "\u{200F}قیمت اخرین خرید for");
+        // A path in a Persian sentence does not make it English.
+        assert!(super::one_direction("این فایل را ببین: /home/me/notes/todo.md").starts_with('\u{200F}'));
+        assert!(super::one_direction("فایل <tt>src/app.rs</tt> و <tt>chat.rs</tt> را ببین").starts_with('\u{200F}'));
+        assert_eq!(super::one_direction("123"), "123");
+        assert_eq!(super::one_direction("cargo test\nnext"), "cargo test\nnext");
+    }
+
+    #[test]
+    fn output_reads_as_plain_text() {
+        let raw = "\u{1b}[32mok\u{1b}[0m\r\nstep 1\rstep 2\r\n\u{1b}]0;title\u{7}done\r\n";
+        assert_eq!(plain_tail(raw, 10), "ok\nstep 2\ndone");
+        assert_eq!(plain_tail("a\nb\nc\n", 2), "b\nc");
+    }
+
+    #[test]
+    fn only_the_changed_middle_is_shown() {
+        let d = changed_lines("a\nb\nc\nd", "a\nB\nc\nd");
+        assert_eq!(d, vec![('-', "b"), ('+', "B")]);
+    }
+
+    #[test]
+    fn mcp_tools_read_as_server_and_tool() {
+        assert_eq!(super::tool_title("mcp__loom__loom_run"), "loom · run");
+        assert_eq!(super::tool_title("mcp__github__create_issue"), "github · create issue");
+        assert_eq!(super::tool_title("`ls -la`"), "ls -la");
+        assert_eq!(super::tool_title("python3 - <<EOF\nprint(1)\nEOF"), "python3 - <<EOF …");
+    }
+
+
+    #[test]
+    fn chips_say_what_default_means() {
+        let model = vec![("default".into(), "Default (recommended)".into(), "Opus 5.5".into()), ("opus".into(), "Opus 5.5".into(), "For complex work".into())];
+        assert_eq!(chip_value(&model, "default"), "Opus 5.5");
+        let effort = vec![("default".into(), "Default".into(), String::new())];
+        assert_eq!(chip_value(&effort, "default"), "Default");
+        let long = vec![("x".into(), "A really very long agent name".into(), String::new())];
+        assert_eq!(chip_value(&long, "x"), "A really very lon…");
+    }
+
+    #[test]
+    fn persian_digits_count() {
+        assert_eq!(super::any_digit('۱'), Some(1));
+        assert_eq!(super::any_digit('٣'), Some(3));
+        assert_eq!(super::any_digit('7'), Some(7));
+        assert_eq!(super::any_digit('a'), None);
+    }
+
+    #[test]
+    fn a_new_file_is_all_added() {
+        assert_eq!(changed_lines("", "x\ny"), vec![('+', "x"), ('+', "y")]);
     }
 }

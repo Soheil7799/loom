@@ -91,12 +91,11 @@ pub fn unread(session: &str, finished_only: bool) -> Vec<Entry> {
     for line in text.split_inclusive('\n') {
         let end = offset + line.len() as u64;
         // A line still being written (no newline yet) is not read.
-        if offset >= from && line.ends_with('\n') {
-            if let Ok(v) = serde_json::from_str::<Value>(line) {
+        if offset >= from && line.ends_with('\n')
+            && let Ok(v) = serde_json::from_str::<Value>(line) {
                 let s = |k: &str| v[k].as_str().unwrap_or("").to_owned();
                 entries.push(Entry { offset, end, at: v["at"].as_u64().unwrap_or(0), role: s("role"), text: s("text"), title: s("title"), cwd: s("cwd") });
             }
-        }
         offset = end;
     }
     if finished_only {
@@ -134,11 +133,10 @@ pub fn mark(session: &str) -> u64 {
 
 /// Everything before `offset` is in the notes now.
 pub fn set_mark(session: &str, offset: u64) {
-    if let Some(path) = mark_file(session) {
-        if offset > mark(session) {
+    if let Some(path) = mark_file(session)
+        && offset > mark(session) {
             let _ = std::fs::write(path, offset.to_string());
         }
-    }
 }
 
 /// The conversations with something not read yet (a check after loom starts catches up).
