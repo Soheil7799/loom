@@ -295,7 +295,7 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
     let body = code.trim_end_matches('\n');
     buffer.insert_with_tags(&mut end, body, &[&code_tag]);
     // The block's bottom padding: an empty line of its own, read as nothing.
-    let pad = tag(&buffer, "code-foot", || gtk::TextTag::builder().name("code-foot").paragraph_background_rgba(&grey(0.16)).scale(0.4).left_margin(12).right_margin(12).build());
+    let pad = tag(&buffer, "code-foot", || gtk::TextTag::builder().name("code-foot").paragraph_background_rgba(&grey(0.16)).scale(0.4).left_margin(12).right_margin(12).pixels_below_lines(14).build());
     buffer.insert_with_tags(&mut end, "\n", &[&code_tag]);
     buffer.insert_with_tags(&mut end, if last { " " } else { " \n" }, &[&chrome, &pad]);
 }
@@ -305,6 +305,13 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
 fn insert_markup(view: &gtk::TextView, markup: &str, count: &mut usize) {
     let buffer = view.buffer();
     let mut end = buffer.end_iter();
+    // At most one blank line between blocks (a quote's end and a paragraph's both add one),
+    // none at the start of what follows a block already set apart.
+    let mut markup = markup.to_owned();
+    while markup.contains("\n\n\n") {
+        markup = markup.replace("\n\n\n", "\n\n");
+    }
+    let markup = if end.offset() > 0 { markup.trim_start_matches('\n') } else { markup.as_str() };
     let first_line = end.line();
     let mut open: Vec<Option<gtk::TextTag>> = Vec::new();
     let mut rest = markup;
