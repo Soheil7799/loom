@@ -118,7 +118,8 @@ pub fn host_kind() -> &'static str {
 /// never by a client: a loom started this way hosts none of the user's agents.
 pub fn test_instance() -> bool {
     static TEST: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *TEST.get_or_init(|| std::env::var("LOOM_TEST_INSTANCE").as_deref() == Ok("1"))
+    // Debug builds only: in a release one nothing in the environment can loosen this.
+    *TEST.get_or_init(|| cfg!(debug_assertions) && std::env::var("LOOM_TEST_INSTANCE").as_deref() == Ok("1"))
 }
 
 /// Whether command `method` only reads (asked again and again, as `loom_wait` does), or only

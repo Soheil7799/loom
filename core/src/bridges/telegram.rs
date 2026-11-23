@@ -215,7 +215,7 @@ impl Bot {
         }
         self.candidate.borrow_mut().take();
         self.user.set(user);
-        *self.code.borrow_mut() = (user == 0).then(|| super::random(8));
+        *self.code.borrow_mut() = if user == 0 { super::random(8) } else { None };
         self.online.borrow_mut().take();
         self.set_state(Link::Connecting);
         let generation = self.generation.load(Ordering::SeqCst);
@@ -1357,9 +1357,9 @@ pub fn run(main_loop: impl FnOnce()) -> i32 {
 // ---- the threads ---------------------------------------------------------------------------
 
 fn api() -> String {
-    // A test instance may talk to a stand-in server.
+    // A test instance (debug builds only: the bot token goes there) may talk to a stand-in server.
     match (std::env::var_os("LOOM_CONTROL"), std::env::var("LOOM_TELEGRAM_API")) {
-        (Some(_), Ok(url)) => url,
+        (Some(_), Ok(url)) if cfg!(debug_assertions) => url,
         _ => "https://api.telegram.org".to_owned(),
     }
 }

@@ -100,6 +100,6 @@ Refused commands are logged too. The file is 0600 and never leaves the machine.
 
 ## Tests
 
-A loom started with `LOOM_TEST_INSTANCE=1` lets the CLI answer questions, so end-to-end tests
+A debug build of loom started with `LOOM_TEST_INSTANCE=1` lets the CLI answer questions, so end-to-end tests
 can drive it through the socket (`cargo test --test e2e -- --ignored`). This is set when
 loom starts, never by a client; a loom started that way hosts none of your agents.

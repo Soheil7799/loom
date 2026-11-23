@@ -151,7 +151,7 @@ pub fn accept_device(id: &str, name: &str) {
 /// Opens pairing (a new code for Settings to show) or closes it.
 pub fn pair(open: bool) {
     let Some(host) = HOST.with(|h| h.borrow().upgrade()) else { return };
-    let code = open.then(|| random(12));
+    let code = if open { random(12) } else { None };
     *host.pairing.borrow_mut() = code.clone();
     host.apply(&crate::settings::get());
     if let Some(code) = code {
@@ -260,7 +260,7 @@ impl Host {
     /// Starts bridge `name`: its process, with its API connection handed down.
     fn start(self: &Rc<Self>, name: &'static str) {
         let Some(settings) = self.settings_for(name, &crate::settings::get()) else { return };
-        let secret = random(32);
+        let Some(secret) = random(32) else { return };
         // `loom bridge <name>` (from loomd too: the loom installed beside it).
         let Some(exe) = crate::paths::loom_program() else { return };
         // Its connection to the core API, made here: the bridge gets the other end as fd 3.
@@ -507,8 +507,7 @@ impl Host {
                 crate::rt::spawn_local(async move {
                     let saved = crate::rt::spawn_blocking(move || {
                         let bytes = decode(&data).ok_or("That file could not be read.")?;
-                        let target = crate::files::free_name(&dir.join(name));
-                        std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
+                        let target = crate::files::save_new(&dir, &name, &bytes).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
                         Ok(json!(target.to_string_lossy()))
                     })
                     .await

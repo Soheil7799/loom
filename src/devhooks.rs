@@ -389,7 +389,7 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             app.chat_in_view().ok_or("no agent")?.show_main();
         }
         // Widgets given less room than they need (with their ancestors), and every paned.
-        "squeezed" => squeezed(app.window.upcast_ref(), 0),
+        "squeezed" => squeezed(app.window.upcast_ref()),
         // Every other window too (settings…): <prefix>-1.png, -2…
         "snapall" => {
             let windows: Vec<gtk::Window> = gtk::Window::list_toplevels()
@@ -453,7 +453,7 @@ fn measure(widget: &gtk::Widget, depth: usize, threshold: i32) {
     }
 }
 
-fn squeezed(widget: &gtk::Widget, depth: usize) {
+fn squeezed(widget: &gtk::Widget) {
     let (min_h, _, _, _) = widget.measure(gtk::Orientation::Vertical, -1);
     let (min_w, _, _, _) = widget.measure(gtk::Orientation::Horizontal, -1);
     let (w, h) = (widget.width(), widget.height());
@@ -471,7 +471,7 @@ fn squeezed(widget: &gtk::Widget, depth: usize) {
     }
     let mut child = widget.first_child();
     while let Some(c) = child {
-        squeezed(&c, depth + 1);
+        squeezed(&c);
         child = c.next_sibling();
     }
 }

@@ -23,6 +23,25 @@ pub fn free_name(wanted: &Path) -> PathBuf {
     (2..1000).map(|n| wanted.with_file_name(format!("{stem} ({n}){ext}"))).find(|p| !p.exists()).unwrap_or_else(|| wanted.to_owned())
 }
 
+/// Writes `bytes` to a new file in `dir` (made if missing) named `name`, or "name (2).ext"…
+/// if taken: never over a file and never through a link left in the folder (O_EXCL). Its path.
+pub fn save_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    std::fs::create_dir_all(dir)?;
+    let wanted = dir.join(name);
+    let stem = wanted.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = wanted.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+    for n in 1..1000 {
+        let path = if n == 1 { wanted.clone() } else { dir.join(format!("{stem} ({n}){ext}")) };
+        match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+            Ok(mut file) => return file.write_all(bytes).map(|()| path),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "999 files of that name already"))
+}
+
 /// A file, or a folder with all it holds.
 pub fn copy_all(from: &Path, to: &Path) -> std::io::Result<()> {
     if from.is_dir() {
@@ -114,6 +133,21 @@ mod tests {
         assert_eq!(second, base.join("into/src (2)"));
         std::fs::write(base.join("into/note.md"), "x").unwrap();
         assert_eq!(free_name(&base.join("into/note.md")), base.join("into/note (2).md"));
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn a_saved_file_never_follows_a_link_or_overwrites() {
+        let base = std::env::temp_dir().join(format!("loom-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        let outside = base.join("outside.txt");
+        std::os::unix::fs::symlink(&outside, base.join("photo.jpg")).unwrap();
+        let saved = save_new(&base, "photo.jpg", b"new").unwrap();
+        assert_eq!(saved, base.join("photo (2).jpg"));
+        assert!(!outside.exists());
+        assert_eq!(save_new(&base, "photo.jpg", b"again").unwrap(), base.join("photo (3).jpg"));
+        assert_eq!(std::fs::read(&saved).unwrap(), b"new");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

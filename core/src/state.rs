@@ -195,8 +195,8 @@ pub fn save(app_id: &str, layout: &Layout) {
     }
     // Written aside and renamed, so a crash mid-write can't lose the list.
     let temporary = path.with_extension("json.tmp");
-    if std::fs::write(&temporary, render(layout)).is_ok() {
-        let _ = std::fs::rename(&temporary, &path);
+    if let Err(e) = std::fs::write(&temporary, render(layout)).and_then(|()| std::fs::rename(&temporary, &path)) {
+        eprintln!("loom: the window's layout could not be saved to {}: {e}", path.display());
     }
 }
 

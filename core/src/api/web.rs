@@ -103,7 +103,7 @@ pub fn open(who: Principal, port: u16) -> Result<String, String> {
         *server = Some(Server { port, stop, keys });
     }
     let server = server.as_ref().expect("started above");
-    let token = crate::bridges::random(40);
+    let token = crate::bridges::random(40).ok_or("no randomness for a token")?;
     let mut tokens = server.keys.tokens.lock().unwrap();
     tokens.retain(|(_, _, until)| *until > Instant::now());
     tokens.push((token.clone(), who, Instant::now() + TOKEN_LIFE));
@@ -193,7 +193,9 @@ fn connection(stream: TcpStream, port: u16, keys: &Keys) -> std::io::Result<()> 
         let Some(who) = who else {
             return answer(&mut stream, 403, "text/plain", b"This link was used already, or is too old: open loom's web page again (loom api web).\n", &[]);
         };
-        let session = crate::bridges::random(40);
+        let Some(session) = crate::bridges::random(40) else {
+            return answer(&mut stream, 500, "text/plain", b"No randomness for a session.\n", &[]);
+        };
         keys.sessions.lock().unwrap().insert(session.clone(), who);
         let location = format!("Location: /#{session}");
         return answer(&mut stream, 303, "text/plain", b"", &[&location]);

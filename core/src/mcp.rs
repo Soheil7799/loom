@@ -26,43 +26,24 @@ static NOTES: Mutex<Option<crate::notes::Index>> = Mutex::new(None);
 static NOTES_MEANING: Mutex<Option<crate::embed::Meaning>> = Mutex::new(None);
 
 /// The model, if meaning search is on for `which` ("code", "notes"), as loom's settings say.
-fn meaning_model(socket: &str, agent: u32, which: &str) -> Option<crate::embed::Model> {
-    let info = call(socket, agent, "embed_info", json!({})).ok()?;
+fn meaning_model(socket: &str, which: &str) -> Option<crate::embed::Model> {
+    let info = call(socket, "embed_info", json!({})).ok()?;
     info[which].as_bool().filter(|on| *on)?;
     Some(crate::embed::Model { url: info["url"].as_str()?.trim_end_matches('/').to_owned(), name: info["model"].as_str()?.to_owned() })
 }
 
 
 /// The Notes vault loom has (None: the add-on is off, or no vault chosen).
-fn vault(socket: &str, agent: u32) -> Option<PathBuf> {
-    let info = call(socket, agent, "notes_info", json!({})).ok()?;
+fn vault(socket: &str) -> Option<PathBuf> {
+    let info = call(socket, "notes_info", json!({})).ok()?;
     info["vault"].as_str().map(PathBuf::from)
 }
 
 /// One of the agent's tools, done by loom (`tool` in the core API, for agents only).
-fn call(socket: &str, agent: u32, name: &str, params: Value) -> Result<Value, String> {
+fn call(socket: &str, name: &str, params: Value) -> Result<Value, String> {
     use crate::api::cli::{Connection, new_id};
-    // Started by an older loom, still running (its control socket, not `…-api.sock`): its
-    // protocol, until it is restarted. Goes with the next release.
-    if !socket.ends_with("-api.sock") {
-        return legacy_call(socket, agent, name, params);
-    }
     let mut loom = Connection::open(std::path::Path::new(socket)).map_err(|e| format!("{e}; is loom still open?"))?;
     loom.command(&new_id(), "tool", json!({ "name": name, "params": params })).map_err(|e| e.message)
-}
-
-/// An older loom's control protocol: one request naming the agent, one answer.
-fn legacy_call(socket: &str, agent: u32, method: &str, params: Value) -> Result<Value, String> {
-    use std::io::BufReader;
-    let mut stream = std::os::unix::net::UnixStream::connect(socket).map_err(|e| format!("loom is not reachable ({e}); is it still open?"))?;
-    writeln!(stream, "{}", json!({ "agent": agent, "method": method, "params": params })).map_err(|e| e.to_string())?;
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).map_err(|e| e.to_string())?;
-    let answer: Value = serde_json::from_str(&line).map_err(|e| format!("bad answer from loom: {e}"))?;
-    match answer.get("error").and_then(Value::as_str) {
-        Some(error) => Err(error.to_owned()),
-        None => Ok(answer["ok"].clone()),
-    }
 }
 
 /// Calls in flight, by request id: set to stop one (the client cancelled it).
@@ -70,7 +51,6 @@ type Running = Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>;
 
 pub fn run() -> i32 {
     let socket = std::env::var("LOOM_SOCKET").unwrap_or_default();
-    let agent: u32 = std::env::var("LOOM_AGENT").ok().and_then(|a| a.parse().ok()).unwrap_or(0);
     let stdin = std::io::stdin();
     let stdout = Arc::new(Mutex::new(std::io::stdout()));
     let running: Running = Arc::default();
@@ -96,7 +76,7 @@ pub fn run() -> i32 {
             running.lock().unwrap_or_else(|e| e.into_inner()).insert(id.to_string(), cancelled.clone());
             let (socket, stdout, running, params) = (socket.clone(), stdout.clone(), running.clone(), message["params"].clone());
             std::thread::spawn(move || {
-                let result = call_tool(&socket, agent, &params, &cancelled);
+                let result = call_tool(&socket, &params, &cancelled);
                 running.lock().unwrap_or_else(|e| e.into_inner()).remove(&id.to_string());
                 send(&stdout, json!({ "jsonrpc": "2.0", "id": id, "result": result }));
             });
@@ -105,9 +85,9 @@ pub fn run() -> i32 {
         if method == "initialize" {
             // meaning search's vectors made while the agent starts, not at its first search
             let socket = socket.clone();
-            std::thread::spawn(move || warm(&socket, agent));
+            std::thread::spawn(move || warm(&socket));
         }
-        let notes = matches!(method, "initialize" | "tools/list").then(|| vault(&socket, agent)).flatten();
+        let notes = matches!(method, "initialize" | "tools/list").then(|| vault(&socket)).flatten();
         let reply = match method {
             "initialize" => Ok(json!({
                 "protocolVersion": message["params"]["protocolVersion"].as_str().unwrap_or(PROTOCOL),
@@ -307,18 +287,18 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
 
 /// loom_note_search / loom_note_read, from the index of the vault loom has now.
 /// Meaning search's indexing started for the code and the notes, when Settings has it on.
-fn warm(socket: &str, agent: u32) {
-    if meaning_model(socket, agent, "code").is_some() {
+fn warm(socket: &str) {
+    if meaning_model(socket, "code").is_some() {
         let _ = find(socket, &json!({ "query": "warm up", "limit": 1 }));
     }
-    if meaning_model(socket, agent, "notes").is_some() && vault(socket, agent).is_some() {
-        let _ = note_tool(socket, agent, "loom_note_search", &json!({ "query": "warm up", "limit": 1 }));
+    if meaning_model(socket, "notes").is_some() && vault(socket).is_some() {
+        let _ = note_tool(socket, "loom_note_search", &json!({ "query": "warm up", "limit": 1 }));
     }
 }
 
 /// The project's browser, started by loom, and how to drive it.
-fn browser(socket: &str, agent: u32, args: &Value) -> Result<String, String> {
-    let b = call(socket, agent, "browser", json!({ "show": args["show"].as_bool() == Some(true) }))?;
+fn browser(socket: &str, args: &Value) -> Result<String, String> {
+    let b = call(socket, "browser", json!({ "show": args["show"].as_bool() == Some(true) }))?;
     let port = b["port"].as_u64().ok_or("loom gave no browser port")?;
     if !crate::browser::wait_ready(port as u16, std::time::Duration::from_secs(20)) {
         return Err(format!("the browser was started but doesn't answer on port {port} yet (its log: {}); try again in a moment", crate::state::dir().join("browser.log").display()));
@@ -392,8 +372,8 @@ fn find(socket: &str, args: &Value) -> Result<String, String> {
     Ok(out)
 }
 
-fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<String, String> {
-    let vault = vault(socket, agent).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
+fn note_tool(socket: &str, tool: &str, args: &Value) -> Result<String, String> {
+    let vault = vault(socket).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
     let mut held = NOTES.lock().unwrap_or_else(|e| e.into_inner());
     if held.as_ref().is_none_or(|index| index.root() != vault) {
         *held = Some(crate::notes::Index::new(&vault));
@@ -415,7 +395,7 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
     let query = args["query"].as_str().unwrap_or("");
     let limit = args["limit"].as_u64().unwrap_or(8).clamp(1, 30) as usize;
     let mut meaning_note = String::new();
-    let hits = match meaning_model(socket, agent, "notes") {
+    let hits = match meaning_model(socket, "notes") {
         None => index.search(query, args["folder"].as_str(), limit),
         Some(model) => {
             let texts = index.texts();
@@ -450,8 +430,8 @@ fn note_tool(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<Strin
 
 /// loom_note_topics / loom_note_list / loom_note_recent: what the vault holds, read from its
 /// files (loom's own folder and git's left out).
-fn note_browse(socket: &str, agent: u32, tool: &str, args: &Value) -> Result<String, String> {
-    let vault = vault(socket, agent).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
+fn note_browse(socket: &str, tool: &str, args: &Value) -> Result<String, String> {
+    let vault = vault(socket).ok_or("The Notes add-on is off (or has no vault) in loom's settings.")?;
     let notes = crate::vault::all_notes(&vault);
     let limit = args["limit"].as_u64().unwrap_or(30).clamp(1, 200) as usize;
     match tool {
@@ -502,35 +482,35 @@ fn list_or_none(items: &[String]) -> String {
     if items.is_empty() { "none".to_owned() } else { items.join(", ") }
 }
 
-fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -> Value {
+fn call_tool(socket: &str, params: &Value, cancelled: &AtomicBool) -> Value {
     let args = &params["arguments"];
     let result = match params["name"].as_str().unwrap_or("") {
-        "loom_wait" => wait(socket, agent, args, cancelled),
-        "loom_run" => call(socket, agent, "run_job", with_limit(args)).and_then(|v| {
+        "loom_wait" => wait(socket, args, cancelled),
+        "loom_run" => call(socket, "run_job", with_limit(args)).and_then(|v| {
             let name = v["name"].as_str().unwrap_or("?").to_owned();
             if args["input"].as_bool() != Some(true) {
                 return Ok(format!("Started job {name} in loom's tray. Use loom_wait or loom_output to follow it."));
             }
             // Its terminal in front of the user, to type into.
-            call(socket, agent, "show_job", json!({ "name": name, "message": args["message"] }))?;
+            call(socket, "show_job", json!({ "name": name, "message": args["message"] }))?;
             Ok(format!("Started job {name}; its terminal is open in front of the user, who types into it there. Use loom_wait until it exits (again after each wait: they may take a while), then loom_output."))
         }),
-        "loom_output" => call(socket, agent, "job_output", args.clone()).map(describe_job),
-        "loom_stop" => call(socket, agent, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),
-        "loom_jobs" => call(socket, agent, "list_jobs", json!({})).map(|v| pretty(&v)),
-        "loom_open" => call(socket, agent, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
-        "loom_edit" => edit(socket, agent, args, cancelled),
-        "loom_notify" => call(socket, agent, "notify", args.clone()).map(|_| "Sent.".to_owned()),
-        "loom_mcp_on" => call(socket, agent, "mcp_on", args.clone()).map(|_| "Switched on: its tools come within a few seconds.".to_owned()),
-        "loom_agents" => call(socket, agent, "list_agents", json!({})).map(|v| pretty(&v)),
+        "loom_output" => call(socket, "job_output", args.clone()).map(describe_job),
+        "loom_stop" => call(socket, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),
+        "loom_jobs" => call(socket, "list_jobs", json!({})).map(|v| pretty(&v)),
+        "loom_open" => call(socket, "open_file", args.clone()).map(|_| "Opened in loom's editor.".to_owned()),
+        "loom_edit" => edit(socket, args, cancelled),
+        "loom_notify" => call(socket, "notify", args.clone()).map(|_| "Sent.".to_owned()),
+        "loom_mcp_on" => call(socket, "mcp_on", args.clone()).map(|_| "Switched on: its tools come within a few seconds.".to_owned()),
+        "loom_agents" => call(socket, "list_agents", json!({})).map(|v| pretty(&v)),
         "loom_find" => find(socket, args),
-        "loom_browser" => browser(socket, agent, args),
-        "loom_board" => call(socket, agent, "board", json!({})).map(|v| pretty(&v)),
-        "loom_board_add" => call(socket, agent, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),
-        "loom_board_move" => call(socket, agent, "board_move", args.clone()).map(|_| "Moved.".to_owned()),
-        "loom_board_note" => call(socket, agent, "board_edit", json!({ "card": args["card"], "note": args["note"] })).map(|_| "Noted.".to_owned()),
-        tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, agent, tool, args),
-        tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, agent, tool, args),
+        "loom_browser" => browser(socket, args),
+        "loom_board" => call(socket, "board", json!({})).map(|v| pretty(&v)),
+        "loom_board_add" => call(socket, "board_add", args.clone()).map(|v| format!("Filed as card {}.", v["card"])),
+        "loom_board_move" => call(socket, "board_move", args.clone()).map(|_| "Moved.".to_owned()),
+        "loom_board_note" => call(socket, "board_edit", json!({ "card": args["card"], "note": args["note"] })).map(|_| "Noted.".to_owned()),
+        tool @ ("loom_note_search" | "loom_note_read") => note_tool(socket, tool, args),
+        tool @ ("loom_note_topics" | "loom_note_list" | "loom_note_recent") => note_browse(socket, tool, args),
         other => Err(format!("unknown tool {other}")),
     };
     match result {
@@ -543,7 +523,8 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
 /// whole job: `timeout` signals its own process group).
 fn with_limit(args: &Value) -> Value {
     let mut args = args.clone();
-    if let (Some(secs), Some(command)) = (args["timeout_seconds"].as_u64(), args["command"].as_str()) {
+    // At least 1 s: 0 would turn GNU timeout off, and a "limited" job would run forever.
+    if let (Some(secs), Some(command)) = (args["timeout_seconds"].as_u64().map(|s| s.max(1)), args["command"].as_str()) {
         // A job that asks the user to type keeps the terminal (`--foreground`).
         let foreground = if args["input"].as_bool() == Some(true) { "--foreground " } else { "" };
         args["command"] = format!("timeout {foreground}-k 10 {secs} bash -c '{}'", command.replace('\'', "'\\''")).into();
@@ -551,14 +532,14 @@ fn with_limit(args: &Value) -> Value {
     args
 }
 
-fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
+fn wait(socket: &str, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
     // The soft limit: back to the agent within 2 minutes, so the user's messages are seen.
     let timeout = Duration::from_secs(args["timeout_seconds"].as_u64().unwrap_or(120).min(120));
     let until = args["until"].as_str().filter(|u| !u.is_empty());
     let lines = args["lines"].as_u64().unwrap_or(40);
     let started = Instant::now();
     loop {
-        let job = call(socket, agent, "job_output", json!({ "name": args["name"], "lines": 400 }))?;
+        let job = call(socket, "job_output", json!({ "name": args["name"], "lines": 400 }))?;
         let output = job["output"].as_str().unwrap_or("");
         let matched = until.is_some_and(|u| output.contains(u));
         if !job["running"].as_bool().unwrap_or(false) || matched || started.elapsed() >= timeout {
@@ -582,8 +563,8 @@ fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
 }
 
 /// loom_edit: the file opened for the user, then waiting (cancellable) for Done or Cancel.
-fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
-    let asked = call(socket, agent, "request_edit", json!({ "path": args["path"], "message": args["message"] }))?;
+fn edit(socket: &str, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
+    let asked = call(socket, "request_edit", json!({ "path": args["path"], "message": args["message"] }))?;
     let id = asked["id"].as_u64().ok_or("loom did not open the file")?;
     let path = asked["path"].as_str().unwrap_or("").to_owned();
     let secret = args["secret"].as_bool().unwrap_or(true);
@@ -591,14 +572,14 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
     let template = std::fs::read_to_string(&path).unwrap_or_default();
     loop {
         if cancelled.load(Ordering::Relaxed) {
-            let _ = call(socket, agent, "edit_cancel", json!({ "id": id }));
+            let _ = call(socket, "edit_cancel", json!({ "id": id }));
             return Err("cancelled".to_owned());
         }
-        let state = call(socket, agent, "edit_state", json!({ "id": id }))?;
+        let state = call(socket, "edit_state", json!({ "id": id }))?;
         match state["state"].as_str().unwrap_or("gone") {
             "waiting" => std::thread::sleep(Duration::from_millis(500)),
             "done" => {
-                let _ = call(socket, agent, "edit_cancel", json!({ "id": id }));
+                let _ = call(socket, "edit_cancel", json!({ "id": id }));
                 let text = std::fs::read_to_string(&path).unwrap_or_default();
                 return Ok(if secret {
                     format!("The user filled in {path} and pressed Done. {} Don't read the file or print its values: use it as it is.", keys_set(&template, &text))
@@ -607,7 +588,7 @@ fn edit(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Resul
                 });
             }
             "cancelled" => {
-                let _ = call(socket, agent, "edit_cancel", json!({ "id": id }));
+                let _ = call(socket, "edit_cancel", json!({ "id": id }));
                 return Ok(format!("The user cancelled: {path} was not filled in. Ask them what to do instead."));
             }
             _ => return Err("the request is gone (loom was closed or restarted)".to_owned()),
@@ -686,6 +667,7 @@ mod tests {
         assert_eq!(String::from_utf8_lossy(&out.stdout), "its\n");
         assert_eq!(out.status.code(), Some(124));
         assert_eq!(super::with_limit(&serde_json::json!({ "command": "ls" }))["command"], "ls");
+        assert!(super::with_limit(&serde_json::json!({ "command": "ls", "timeout_seconds": 0 }))["command"].as_str().unwrap().contains(" 1 bash"));
     }
 
     #[test]

@@ -5,16 +5,22 @@
 
 use std::cell::RefCell;
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, ChildStdin, Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
 
 use serde_json::Value;
 
+/// agents.log is started over (the old one kept as agents.log.1) past this size.
+const LOG_MOST: u64 = 8 << 20;
+
 pub struct Process {
-    stdin: RefCell<Option<ChildStdin>>,
+    /// Lines for its stdin, written by a thread of their own: a process that stops reading
+    /// fills the pipe, and that must not stop loom's core thread. None once stopped.
+    stdin: RefCell<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
     child: RefCell<Option<Child>>,
     pid: u32,
     /// "claude 1234": how the debug log names it.
@@ -38,7 +44,12 @@ impl Process {
         if let Some(dir) = log.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        let stderr = std::fs::OpenOptions::new().create(true).append(true).open(&log)?;
+        if std::fs::metadata(&log).is_ok_and(|m| m.len() > LOG_MOST) {
+            let _ = std::fs::rename(&log, log.with_extension("log.1"));
+        }
+        // 0600 like every other log (an agent's stderr may hold anything).
+        let stderr = std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(&log)?;
+        let _ = stderr.set_permissions(std::fs::Permissions::from_mode(0o600));
         let mut command = Command::new(&program[0]);
         command
             .args(&program[1..])
@@ -97,7 +108,19 @@ impl Process {
             let _ = tx.send_blocking(None);
         });
         crate::log::debug!(tag.clone(), "started {} in {}", program.join(" "), cwd.display());
-        let process = Rc::new(Process { stdin: RefCell::new(child.stdin.take()), child: RefCell::new(Some(child)), pid, tag });
+        let (to_stdin, lines) = std::sync::mpsc::channel::<Vec<u8>>();
+        if let Some(mut stdin) = child.stdin.take() {
+            std::thread::spawn(move || {
+                // Ends when the Process drops its sender (stopped), closing the pipe with it.
+                for line in lines {
+                    if stdin.write_all(&line).and_then(|()| stdin.flush()).is_err() {
+                        eprintln!("loom: the agent is not reading");
+                        break;
+                    }
+                }
+            });
+        }
+        let process = Rc::new(Process { stdin: RefCell::new(Some(to_stdin)), child: RefCell::new(Some(child)), pid, tag });
         crate::rt::spawn_local(async move {
             while let Ok(line) = rx.recv().await {
                 let end = line.is_none();
@@ -119,9 +142,7 @@ impl Process {
             let mut line = value.to_string();
             crate::log::debug!(self.tag.clone(), "→ {} [{} bytes]", crate::log::cut(&line), line.len());
             line.push('\n');
-            if stdin.write_all(line.as_bytes()).and_then(|()| stdin.flush()).is_err() {
-                eprintln!("loom: the agent is not reading");
-            }
+            let _ = stdin.send(line.into_bytes());
         }
     }
 
@@ -134,12 +155,13 @@ impl Process {
         unsafe { libc::kill(-group, libc::SIGTERM) };
         std::thread::spawn(move || {
             for _ in 0..30 {
-                if matches!(child.try_wait(), Ok(Some(_))) {
+                if exited(group) {
                     break;
                 }
                 std::thread::sleep(Duration::from_millis(100));
             }
             // Whatever is left of the group (the leader may go first and leave its children).
+            // The leader is not reaped yet, so its id (the group's) can't have gone to another.
             // SAFETY: as above.
             unsafe { libc::kill(-group, libc::SIGKILL) };
             let _ = child.wait();
@@ -147,8 +169,33 @@ impl Process {
     }
 }
 
+/// Whether child `pid` has exited, leaving it unreaped (WNOWAIT): its id stays taken.
+fn exited(pid: i32) -> bool {
+    // SAFETY: waitid(2) fills `info`, a zeroed siginfo_t of our own.
+    unsafe {
+        let mut info: libc::siginfo_t = std::mem::zeroed();
+        libc::waitid(libc::P_PID, pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) == 0 && info.si_pid() != 0
+    }
+}
+
 impl Drop for Process {
     fn drop(&mut self) {
         self.stop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn an_exited_child_stays_unreaped_until_waited() {
+        let mut child = std::process::Command::new("true").spawn().unwrap();
+        let pid = child.id() as i32;
+        let start = std::time::Instant::now();
+        while !super::exited(pid) {
+            assert!(start.elapsed().as_secs() < 5, "never seen to exit");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Still ours to reap: the id was not given back in between.
+        assert!(child.wait().unwrap().success());
     }
 }

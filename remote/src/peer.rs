@@ -22,15 +22,20 @@ fn load() -> Value {
     std::fs::read(config_path()).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok()).unwrap_or_else(|| json!({}))
 }
 
+/// Saved aside and renamed (a crash mid-write can't lose the device key), owner-only: the
+/// folder 0700, the file made anew at 0600 whatever an older one's mode was.
 fn save(config: &Value) -> Result<(), String> {
-    use std::os::unix::fs::OpenOptionsExt;
     use std::io::Write;
+    use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     let path = config_path();
     if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| e.to_string())?;
     }
-    let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o600).open(&path).map_err(|e| e.to_string())?;
-    file.write_all(serde_json::to_string_pretty(config).unwrap_or_default().as_bytes()).map_err(|e| e.to_string())
+    let temporary = path.with_extension("json.tmp");
+    let _ = std::fs::remove_file(&temporary);
+    let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary).map_err(|e| e.to_string())?;
+    file.write_all(serde_json::to_string_pretty(config).unwrap_or_default().as_bytes()).map_err(|e| e.to_string())?;
+    std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
 }
 
 /// This device's key, made the first time.

@@ -412,8 +412,9 @@ fn set(settings: Settings, save: bool) {
                 .open(&temporary)
                 .and_then(|mut f| f.write_all(render(&settings).as_bytes()))
         };
-        if written.is_ok() {
-            let _ = std::fs::rename(&temporary, &file);
+        // Not silent: a new token or key that isn't on disk is gone after a restart.
+        if let Err(e) = written.and_then(|()| std::fs::rename(&temporary, &file)) {
+            eprintln!("loom: settings could not be saved to {}: {e}", file.display());
         }
     }
     let listeners = LISTENERS.with(|l| l.borrow().clone());

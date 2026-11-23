@@ -56,34 +56,34 @@ impl Link {
     }
 }
 
-/// Characters nobody can guess (from /dev/urandom).
-pub fn random(len: usize) -> String {
+/// Characters nobody can guess, or None when the system has no randomness to give (never a
+/// weaker stand-in: these are tokens and pairing codes).
+pub fn random(len: usize) -> Option<String> {
     const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    random_bytes(len).iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect()
+    random_bytes(len).map(|bytes| bytes.iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect())
 }
 
-/// `len` random bytes from /dev/urandom, as hex (a key: nothing weaker will do).
+/// `len` random bytes as hex (a key: nothing weaker will do).
 pub fn random_hex(len: usize) -> Option<String> {
-    urandom(len).map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
+    random_bytes(len).map(|bytes| bytes.iter().map(|b| format!("{b:02x}")).collect())
 }
 
-fn urandom(len: usize) -> Option<Vec<u8>> {
-    use std::io::Read;
+/// `len` bytes from the kernel's generator (getrandom(2), no file to open).
+fn random_bytes(len: usize) -> Option<Vec<u8>> {
     let mut bytes = vec![0u8; len];
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).ok().map(|()| bytes)
-}
-
-fn random_bytes(len: usize) -> Vec<u8> {
-    let mut bytes = vec![0u8; len];
-    if let Some(random) = urandom(len) {
-        bytes = random;
-    } else {
-        let seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos()) ^ u128::from(std::process::id());
-        for (i, b) in bytes.iter_mut().enumerate() {
-            *b = (seed >> ((i % 16) * 8)) as u8;
+    let mut filled = 0;
+    while filled < len {
+        // SAFETY: the pointer and length stay inside `bytes`.
+        let n = unsafe { libc::getrandom(bytes[filled..].as_mut_ptr().cast(), len - filled, 0) };
+        if n < 0 {
+            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return None;
         }
+        filled += n as usize;
     }
-    bytes
+    Some(bytes)
 }
 
 /// A question as a bridge got it.

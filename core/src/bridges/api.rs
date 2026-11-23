@@ -42,8 +42,7 @@ pub fn serve() {
         crate::rt::spawn_local(async move {
             let saved = crate::rt::spawn_blocking(move || {
                 let bytes = super::decode(&data).ok_or("That file could not be read.")?;
-                let target = crate::files::free_name(&dir.join(name));
-                std::fs::create_dir_all(&dir).and_then(|()| std::fs::write(&target, &bytes)).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
+                let target = crate::files::save_new(&dir, &name, &bytes).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
                 Ok::<_, String>(json!({ "path": target.to_string_lossy() }))
             })
             .await
