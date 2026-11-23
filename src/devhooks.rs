@@ -27,6 +27,7 @@
 //! - `mode`: next permission mode
 //! - `split`: what Ctrl+\ does · `swap`: what Alt+←/→ does (the two change places)
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
+//! - `fakereply` / `fakestream`: a reply with every kind of Markdown, at once / typed in
 //! - `fakeform`: a one-question form with long options, in the focused chat
 //! - `minwidth:<px>`: each window's widgets whose minimum width is at least px (what holds it wide)
 //! - `stop`: what Esc does while the focused agent works (through the chat)
@@ -83,6 +84,9 @@ pub fn watch(app: &Rc<App>) {
         glib::ControlFlow::Continue
     });
 }
+
+/// A reply with every kind of Markdown (fakereply, fakestream).
+const SAMPLE: &str = "## Heading two\n\nA paragraph with **bold**, *italic*, `inline code`, a path `src/app.rs:42` and [a link](https://example.com). Double-click a word, then drag across sentences.\n\n- First item that is long enough to wrap onto a second line so the hanging indent shows\n- Second item\n    - Nested item\n\n1. One\n2. Two\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nAfter the code.\n\n| Name | Value |\n|---|---|\n| a | 1 |\n\n> A quote that runs long enough to wrap onto a second line, so its bar runs beside both.\n>\n> And its second paragraph.\n\nThe end.";
 
 fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
     let (command, argument) = line.split_once(':').unwrap_or((line, ""));
@@ -210,7 +214,20 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
         // A reply with every kind of Markdown, for looking at the chat's text.
         "fakereply" => {
             let chat = app.chat_in_view().ok_or("no agent")?.clone();
-            chat.agent_text_with("## Heading two\n\nA paragraph with **bold**, *italic*, `inline code`, a path `src/app.rs:42` and [a link](https://example.com). Double-click a word, then drag across sentences.\n\n- First item that is long enough to wrap onto a second line so the hanging indent shows\n- Second item\n    - Nested item\n\n1. One\n2. Two\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nAfter the code.\n\n| Name | Value |\n|---|---|\n| a | 1 |\n\n> A quote.\n\nThe end.", None);
+            chat.agent_text_with(SAMPLE, None);
+        }
+        // The same reply typed in a few characters at a time, as an agent's streams in (to
+        // watch the redraw, and select the text before it meanwhile).
+        "fakestream" => {
+            let chat = app.chat_in_view().ok_or("no agent")?.clone();
+            let chars: Vec<char> = SAMPLE.chars().collect();
+            let at = std::rc::Rc::new(std::cell::Cell::new(0));
+            glib::timeout_add_local(Duration::from_millis(50), move || {
+                let end = (at.get() + 3).min(chars.len());
+                chat.agent_text_with(&chars[at.get()..end].iter().collect::<String>(), Some("fakestream"));
+                at.set(end);
+                if end == chars.len() { glib::ControlFlow::Break } else { glib::ControlFlow::Continue }
+            });
         }
         // A one-question form with long options (as AskUserQuestion sends), for width checks.
         "fakeform" => {

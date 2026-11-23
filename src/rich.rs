@@ -141,6 +141,25 @@ fn ornaments(view: &gtk::TextView, snapshot: &gtk::Snapshot) {
             snapshot.append_border(&box_, &[1.0; 4], &[faint(0.14); 4]);
         }
     }
+    // Quotes: a bar beside each, through the blank lines between its paragraphs.
+    if let Some(quote) = table.lookup("quote") {
+        let mut bars: Vec<(f32, f32)> = Vec::new();
+        for start in starts(&buffer, &quote) {
+            let mut end = start;
+            end.forward_to_tag_toggle(Some(&quote));
+            let (y0, y1) = (top(&start), bottom(&end));
+            match bars.last_mut() {
+                Some(bar) if y0 - bar.1 < 30.0 => bar.1 = y1,
+                _ => bars.push((y0, y1)),
+            }
+        }
+        for (y0, y1) in bars {
+            let bar = RoundedRect::from_rect(Rect::new(3.0, y0 + 2.0, 3.0, (y1 - y0 - 4.0).max(0.0)), 1.5);
+            snapshot.push_rounded_clip(&bar);
+            snapshot.append_color(&faint(0.35), bar.bounds());
+            snapshot.pop();
+        }
+    }
     // A line across: a hairline through the middle of its line.
     if let Some(rule) = table.lookup("rule") {
         for start in starts(&buffer, &rule) {
@@ -630,6 +649,18 @@ fn indent_lines(view: &gtk::TextView, from_line: i32) {
             end.forward_to_line_end();
         }
         let text = buffer.text(&start, &end, false);
+        // A quote's line: set in, its bar painted (ornaments) in place of the "▎" kept hidden.
+        if text.starts_with("▎ ") {
+            let quote = tag(&buffer, "quote", || gtk::TextTag::builder().name("quote").left_margin(16).build());
+            let mark = tag(&buffer, "quote-mark", || gtk::TextTag::builder().name("quote-mark").invisible(true).build());
+            let chrome = tag(&buffer, "chrome", || gtk::TextTag::builder().name("chrome").build());
+            buffer.apply_tag(&quote, &start, &end);
+            let mut after = start;
+            after.forward_chars(2);
+            buffer.apply_tag(&mark, &start, &after);
+            buffer.apply_tag(&chrome, &start, &after);
+            continue;
+        }
         let spaces = text.len() - text.trim_start_matches(' ').len();
         let body = &text[spaces..];
         let digits = body.chars().take_while(char::is_ascii_digit).count();

@@ -49,6 +49,8 @@ fn segments_with(markdown: &str, keep_lines: bool) -> Vec<Segment> {
     let mut text = String::new();
     // Ordered lists hold the next number.
     let mut in_link = false;
+    // Inside a quote: every line of it starts with its bar ("▎ ").
+    let mut quotes = 0usize;
     let mut lists: Vec<Option<u64>> = Vec::new();
     let mut code: Option<(String, String)> = None;
     let mut table: Option<Vec<Vec<String>>> = None;
@@ -119,7 +121,11 @@ fn segments_with(markdown: &str, keep_lines: bool) -> Vec<Segment> {
                     in_link = true;
                     text.push_str(&format!("<a href=\"{}\">", escape(&dest_url)));
                 }
-                Tag::BlockQuote(_) => text.push_str("▎ "),
+                Tag::BlockQuote(_) => {
+                    quotes += 1;
+                    text.push_str("▎ ");
+                }
+                Tag::Paragraph if quotes > 0 && !text.ends_with("▎ ") => text.push_str("▎ "),
                 Tag::List(start) => {
                     if lists.is_empty() && !text.is_empty() && !text.ends_with("\n\n") {
                         text.push('\n');
@@ -157,7 +163,10 @@ fn segments_with(markdown: &str, keep_lines: bool) -> Vec<Segment> {
             Event::End(tag) => match tag {
                 TagEnd::Heading(_) => text.push_str("</span>\n\n"),
                 TagEnd::Emphasis => text.push_str("</i>"),
-                TagEnd::BlockQuote(_) => text.push_str("\n\n"),
+                TagEnd::BlockQuote(_) => {
+                    quotes = quotes.saturating_sub(1);
+                    text.push_str("\n\n");
+                }
                 TagEnd::Strong => text.push_str("</b>"),
                 TagEnd::Strikethrough => text.push_str("</s>"),
                 TagEnd::Link => {
@@ -186,8 +195,9 @@ fn segments_with(markdown: &str, keep_lines: bool) -> Vec<Segment> {
                     text.push_str(&span);
                 }
             }
+            Event::SoftBreak if keep_lines && quotes > 0 => text.push_str("\n▎ "),
             Event::SoftBreak => text.push(if keep_lines { '\n' } else { ' ' }),
-            Event::HardBreak => text.push('\n'),
+            Event::HardBreak => text.push_str(if quotes > 0 { "\n▎ " } else { "\n" }),
             Event::Rule => {
                 flush(&mut text, &mut out);
                 out.push(Segment::Rule);
@@ -250,6 +260,12 @@ pub fn looks_like_path(text: &str) -> bool {
 #[cfg(test)]
 mod typed_tests {
     use super::*;
+
+    #[test]
+    fn every_line_of_a_quote_has_its_bar() {
+        let out = segments("> one\n>\n> two");
+        assert_eq!(out, vec![Segment::Text("▎ one\n\n▎ two".into())]);
+    }
 
     #[test]
     fn a_typed_dash_line_is_a_rule_not_a_heading() {
