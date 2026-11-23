@@ -1,6 +1,6 @@
 <h1><picture><source media="(prefers-color-scheme: dark)" srcset="data/logo/wordmark-dark.svg"><img alt="loom" src="data/logo/wordmark-light.svg" height="96"></picture></h1>
 
-A light, keyboard-first home for coding agents, written in Rust with GTK 4.
+A light, keyboard-first home for coding agents, written in Rust with GTK 4. Website: [loom.shirvani.dev](https://loom.shirvani.dev).
 
 Each agent is a Claude Code session, driven by loom and shown as a chat, not a terminal.
 Agents are grouped by project, and a project may hold several git repos.
