@@ -59,19 +59,37 @@ pub fn describe() -> String {
     }
 }
 
-/// Said when the installed Claude Code is not the version loom was built and tested against
-/// (its protocol is not documented, so a newer one may change what loom reads); nothing when
-/// they match. Reads `claude --version` (once): call it off the main loop.
+/// Said when the installed Claude Code may not speak what loom reads (its protocol is not
+/// documented): older than the version loom was built and tested against, or a newer minor
+/// version (2.1.x to 2.2). Newer patch versions say nothing: Claude Code ships one nearly
+/// every day. Reads `claude --version` (once): call it off the main loop.
 pub fn version_note() -> Option<String> {
-    let built = claude::BUILT_FOR;
     let Some(installed) = claude::installed_version() else {
         return Some("Claude Code was not found: install it, then start the agent again.".to_owned());
     };
+    note_for(&installed, claude::BUILT_FOR)
+}
+
+fn note_for(installed: &str, built: &str) -> Option<String> {
     let number = |v: &str| v.split('.').map(|p| p.parse::<u64>().unwrap_or(0)).collect::<Vec<_>>();
-    match number(&installed).cmp(&number(built)) {
-        std::cmp::Ordering::Equal => None,
-        std::cmp::Ordering::Greater => Some(format!("Claude Code {installed} is newer than {built}, the version this loom was built for. If something looks wrong or stops working, check for a loom update.")),
-        std::cmp::Ordering::Less => Some(format!("Claude Code {installed} is older than {built}, the version this loom was built for. If something looks wrong or stops working, update Claude Code.")),
+    let (new, old) = (number(installed), number(built));
+    if new < old {
+        Some(format!("Claude Code {installed} is older than {built}, the version this loom was built for. If something looks wrong or stops working, update Claude Code."))
+    } else if new.get(..2) != old.get(..2) {
+        Some(format!("Claude Code {installed} is newer than {built}, the version this loom was built for. If something looks wrong or stops working, check for a loom update."))
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod version_tests {
+    #[test]
+    fn only_older_or_a_new_minor_version_is_said() {
+        assert!(super::note_for("2.1.330", "2.1.330").is_none());
+        assert!(super::note_for("2.1.345", "2.1.330").is_none());
+        assert!(super::note_for("2.1.329", "2.1.330").unwrap().contains("older"));
+        assert!(super::note_for("2.2.0", "2.1.330").unwrap().contains("newer"));
     }
 }
 

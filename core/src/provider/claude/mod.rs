@@ -36,7 +36,7 @@ use tools::ToolUse;
 
 /// The Claude Code version this provider was built and tested against (its stream-json
 /// protocol is not documented; a newer Claude Code may change it).
-pub const BUILT_FOR: &str = "2.1.312";
+pub const BUILT_FOR: &str = "2.1.330";
 
 /// The tool servers (MCP) the user set for every project (`mcpServers` of Claude Code's
 /// `~/.claude.json`, or `$CLAUDE_CONFIG_DIR/.claude.json`): the ones loom starts off.
