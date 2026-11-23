@@ -86,6 +86,8 @@ pub fn tool_title(title: &str) -> String {
 /// How long after its background work has ended Claude is given to go on by itself before
 /// the turn counts as done.
 const SETTLE: Duration = Duration::from_secs(8);
+/// A self-started turn with no word of its end is taken as over after this long quiet.
+const QUIET_END: Duration = Duration::from_secs(300);
 /// At most this many messages from before a compaction are shown when a conversation is
 /// opened again (the newest).
 const EARLIER: usize = 400;
@@ -1472,7 +1474,7 @@ impl Agent {
     }
 
     /// Claude is at work without a prompt from loom (it went on by itself after a background
-    /// task): shown as working until it has been quiet a moment.
+    /// task): shown as working until that turn ends (self_turn_ended).
     fn note_activity(self: &Rc<Self>) {
         if self.replaying.get() || self.turn.get() {
             return;
@@ -1487,7 +1489,9 @@ impl Agent {
             timer.remove();
         }
         let weak = Rc::downgrade(self);
-        let timer = crate::rt::timeout_once(Duration::from_secs(4), move || {
+        // Only a fallback: the turn's end is said (self_turn_ended). A tool may run minutes
+        // in between (a build, loom_wait), so quiet alone is no end.
+        let timer = crate::rt::timeout_once(QUIET_END, move || {
             let Some(agent) = weak.upgrade() else { return };
             agent.quiet_timer.take();
             agent.end_autonomous(true);
@@ -3121,6 +3125,8 @@ impl Agent {
                 Some("failed") => self.view.notice("Compacting failed.", "error"),
                 _ => {}
             },
+            // The end of a turn Claude started by itself (the CLI's `result` without a prompt).
+            "self_turn_ended" => self.end_autonomous(true),
             "agent_thought_chunk" => self.view.thought(text()),
             // Only a replay echoes what was typed; live, the chat already shows it.
             "user_message_chunk" if self.replaying.get() => match update["content"]["type"].as_str() {

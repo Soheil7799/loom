@@ -48,6 +48,8 @@ pub struct Info {
     pub command: String,
     pub running: bool,
     pub exit_code: Option<i64>,
+    /// The agent that started it (None: the user).
+    pub by: Option<u32>,
 }
 
 /// One project's jobs. Cheap to clone; every clone is the same set.
@@ -437,6 +439,7 @@ fn info(job: &Job) -> Info {
         command: state.command.clone(),
         running: state.outcome.is_none(),
         exit_code: state.outcome.flatten(),
+        by: state.by,
     }
 }
 

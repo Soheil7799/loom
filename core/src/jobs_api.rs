@@ -114,6 +114,8 @@ fn item(jobs: &Jobs, id: Id, restarting: bool) {
         "command": info.command,
         "status": status,
         "exit_code": info.exit_code,
+        // The agent that started it (null: the user).
+        "agent": info.by,
         // Runs started (a new one: a new number, even when its start and end come together),
         // and when the last one ended.
         "runs": runs,

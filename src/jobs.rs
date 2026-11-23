@@ -464,10 +464,12 @@ impl Job {
                 let code = item["exit_code"].as_i64();
                 self.finish(code);
                 // Told of an end seen happen, or of one just over when it came (a quick job's);
-                // not of one long over (a tray opened later).
+                // not of one long over (a tray opened later). An agent's job is not: the agent
+                // reads its end itself, and its own turn's end is the word worth having.
                 let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
                 let just = loom_core::api::seconds(&item["ended"]).is_some_and(|at| now - at < 10);
                 if (!before.is_empty() || just)
+                    && item["agent"].is_null()
                     && let Some(told) = self.tray.upgrade().and_then(|tray| tray.on_finish.borrow().clone())
                 {
                     told(&self.title.label(), code);

@@ -761,7 +761,9 @@ impl Link {
             return;
         }
         let prompt = self.prompt.borrow_mut().take();
-        let Some(reply) = prompt else { return };
+        // A turn Claude started by itself (after a background task) ends here too: said, so
+        // loom stops showing it as working when it truly has, not after a quiet moment.
+        let Some(reply) = prompt else { return self.send(None, json!({ "sessionUpdate": "self_turn_ended" })) };
         let text = message["result"].as_str().unwrap_or("").to_owned();
         // The message the turn started from: its file changes can be undone to it.
         let meta = self.turn_meta();
