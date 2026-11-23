@@ -147,76 +147,34 @@ fn readable(buffer: &gtk::TextBuffer, start: &gtk::TextIter, end: &gtk::TextIter
     out
 }
 
-/// What a message's body holds, in order: runs of text and code (one view each), tables and
-/// lines across (widgets of their own).
-#[derive(PartialEq)]
-enum Block<'a> {
-    Text(Vec<&'a Segment>),
-    Table(&'a Vec<Vec<String>>),
-    Rule,
-}
-
-fn blocks(segments: &[Segment]) -> Vec<Block<'_>> {
-    let mut out: Vec<Block> = Vec::new();
-    for segment in segments {
-        match segment {
-            Segment::Table(rows) => out.push(Block::Table(rows)),
-            Segment::Rule => out.push(Block::Rule),
-            _ => match out.last_mut() {
-                Some(Block::Text(run)) => run.push(segment),
-                _ => out.push(Block::Text(vec![segment])),
-            },
-        }
-    }
-    out
-}
-
-/// Shows `segments` in `body` in place of `shown` (what it showed): blocks that came out the
-/// same keep their widgets, and a text block that changed (a reply streaming in) is filled
-/// anew in its own view.
+/// Shows `segments` in `body` (a message's) in place of `shown`, what it showed: one text
+/// view for all of it, filled anew when they changed (a reply streaming in).
 pub fn show(body: &gtk::Box, shown: &[Segment], segments: &[Segment]) {
-    let (old, new) = (blocks(shown), blocks(segments));
-    let mut children = Vec::new();
-    let mut child = body.first_child();
-    while let Some(widget) = child {
-        child = widget.next_sibling();
-        children.push(widget);
-    }
-    // (something else in the body: all drawn again)
-    let same = children.len() == old.len();
-    let mut keep = if same { old.iter().zip(&new).take_while(|(a, b)| a == b).count() } else { 0 };
-    if same && keep < old.len().min(new.len())
-        && let (Block::Text(_), Block::Text(run)) = (&old[keep], &new[keep])
-        && let Some(view) = children[keep].downcast_ref::<gtk::TextView>()
-    {
-        fill(view, run);
-        keep += 1;
-    }
-    for widget in children.iter().skip(if same { keep } else { 0 }) {
-        body.remove(widget);
-    }
-    for block in &new[keep.min(new.len())..] {
-        body.append(&match block {
-            Block::Text(run) => {
-                let view = view();
-                fill(&view, run);
-                view.upcast::<gtk::Widget>()
+    let only = body.first_child().filter(|c| c.next_sibling().is_none()).and_downcast::<gtk::TextView>();
+    let view = match only {
+        Some(_) if shown == segments => return,
+        Some(view) => view,
+        None => {
+            while let Some(child) = body.first_child() {
+                body.remove(&child);
             }
-            Block::Table(rows) => crate::chat::table_view(rows).upcast(),
-            Block::Rule => crate::chat::rule_view().upcast(),
-        });
-    }
+            let view = view();
+            body.append(&view);
+            view
+        }
+    };
+    fill(&view, segments);
 }
 
-/// Shows `segments` (text and code only) in `view`, in place of what it showed.
-pub fn fill(view: &gtk::TextView, segments: &[&Segment]) {
+/// Shows `segments` in `view`, in place of what it showed.
+pub fn fill(view: &gtk::TextView, segments: &[Segment]) {
     let buffer = view.buffer();
     buffer.set_text("");
     // The last fill's links and copies go with its text.
     let table = buffer.tag_table();
     let mut old = Vec::new();
     table.foreach(|tag| {
-        if action_of(tag).is_some() {
+        if action_of(tag).is_some() || tag.name().is_some_and(|n| n.starts_with("tab:")) {
             old.push(tag.clone());
         }
     });
@@ -232,7 +190,8 @@ pub fn fill(view: &gtk::TextView, segments: &[&Segment]) {
                 insert_markup(view, markup, &mut count);
             }
             Segment::Code { lang, code } => insert_code(view, lang, code, i == last, &mut count),
-            Segment::Table(_) | Segment::Rule => {}
+            Segment::Table(rows) => insert_table(view, rows, &mut count),
+            Segment::Rule => insert_rule(view),
         }
     }
 }
@@ -253,14 +212,8 @@ fn grey(alpha: f32) -> gdk::RGBA {
 
 fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: &mut usize) {
     let buffer = view.buffer();
+    set_apart(&buffer);
     let mut end = buffer.end_iter();
-    // On a line of its own, a blank line after the text before it (the buffer's end counts
-    // as a line's end, so the last character is what tells).
-    let text = buffer.text(&buffer.start_iter(), &end, false);
-    if !text.is_empty() {
-        let breaks = text.chars().rev().take_while(|c| *c == '\n').count();
-        buffer.insert(&mut end, &"\n".repeat(2usize.saturating_sub(breaks)));
-    }
     let chrome = tag(&buffer, "chrome", || gtk::TextTag::builder().name("chrome").build());
     let head = tag(&buffer, "code-head", || {
         gtk::TextTag::builder()
@@ -304,7 +257,7 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
 /// get their indents.
 fn insert_markup(view: &gtk::TextView, markup: &str, count: &mut usize) {
     let buffer = view.buffer();
-    let mut end = buffer.end_iter();
+    let end = buffer.end_iter();
     // At most one blank line between blocks (a quote's end and a paragraph's both add one),
     // none at the start of what follows a block already set apart.
     let mut markup = markup.to_owned();
@@ -313,6 +266,14 @@ fn insert_markup(view: &gtk::TextView, markup: &str, count: &mut usize) {
     }
     let markup = if end.offset() > 0 { markup.trim_start_matches('\n') } else { markup.as_str() };
     let first_line = end.line();
+    insert_inline(view, markup, count);
+    indent_lines(view, first_line);
+}
+
+/// Inserts markup at the buffer's end as its tags.
+fn insert_inline(view: &gtk::TextView, markup: &str, count: &mut usize) {
+    let buffer = view.buffer();
+    let mut end = buffer.end_iter();
     let mut open: Vec<Option<gtk::TextTag>> = Vec::new();
     let mut rest = markup;
     while !rest.is_empty() {
@@ -333,7 +294,89 @@ fn insert_markup(view: &gtk::TextView, markup: &str, count: &mut usize) {
         let tags: Vec<&gtk::TextTag> = open.iter().flatten().collect();
         buffer.insert_with_tags(&mut end, &text, &tags);
     }
-    indent_lines(view, first_line);
+}
+
+/// What comes next starts on a line of its own after a blank one (the buffer's end counts as
+/// a line's end, so its last characters tell).
+fn set_apart(buffer: &gtk::TextBuffer) {
+    let mut end = buffer.end_iter();
+    let text = buffer.text(&buffer.start_iter(), &end, false);
+    if !text.is_empty() {
+        let breaks = text.chars().rev().take_while(|c| *c == '\n').count();
+        buffer.insert(&mut end, &"\n".repeat(2usize.saturating_sub(breaks)));
+    }
+}
+
+/// A table as text: a row a line, its cells at tab stops measured to fit the widest cell of
+/// each column (up to a limit; a longer one wraps). Copied, its cells come tab-separated, as
+/// a spreadsheet takes them.
+fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
+    const GAP: i32 = 28;
+    const WIDEST: i32 = 360;
+    let buffer = view.buffer();
+    set_apart(&buffer);
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![0; columns];
+    for (r, row) in rows.iter().enumerate() {
+        for (c, cell) in row.iter().enumerate() {
+            let width = view.create_pango_layout(Some(&unescape(&strip_tags(cell)))).pixel_size().0;
+            // The header is bold: a little wider.
+            let width = if r == 0 { width * 11 / 10 } else { width };
+            widths[c] = widths[c].max(width.min(WIDEST));
+        }
+    }
+    let mut tabs = pango::TabArray::new(columns.saturating_sub(1) as i32, true);
+    let mut x = 0;
+    for (c, width) in widths.iter().take(columns.saturating_sub(1)).enumerate() {
+        x += width + GAP;
+        tabs.set_tab(c as i32, pango::TabAlign::Left, x);
+    }
+    *count += 1;
+    let stops = gtk::TextTag::builder().name(format!("tab:{count}")).tabs(&tabs).left_margin(12).right_margin(12).pixels_above_lines(5).pixels_below_lines(5).build();
+    buffer.tag_table().add(&stops);
+    let head = tag(&buffer, "table-head", || gtk::TextTag::builder().name("table-head").weight(600).scale(0.9).foreground_rgba(&grey(1.0)).paragraph_background_rgba(&grey(0.12)).build());
+    let body = tag(&buffer, "table-row", || gtk::TextTag::builder().name("table-row").paragraph_background_rgba(&grey(0.05)).build());
+    let foot = tag(&buffer, "table-end", || gtk::TextTag::builder().name("table-end").pixels_below_lines(14).build());
+    for (r, row) in rows.iter().enumerate() {
+        let start = buffer.end_iter().offset();
+        for (c, cell) in row.iter().enumerate() {
+            if c > 0 {
+                buffer.insert(&mut buffer.end_iter(), "\t");
+            }
+            insert_inline(view, cell, count);
+        }
+        let (from, to) = (buffer.iter_at_offset(start), buffer.end_iter());
+        buffer.apply_tag(&stops, &from, &to);
+        buffer.apply_tag(if r == 0 { &head } else { &body }, &from, &to);
+        if r + 1 == rows.len() {
+            buffer.apply_tag(&foot, &from, &to);
+        }
+        buffer.insert(&mut buffer.end_iter(), "\n");
+    }
+}
+
+/// A line across: a thin full-width paragraph, read as nothing.
+fn insert_rule(view: &gtk::TextView) {
+    let buffer = view.buffer();
+    set_apart(&buffer);
+    let chrome = tag(&buffer, "chrome", || gtk::TextTag::builder().name("chrome").build());
+    let rule = tag(&buffer, "rule", || gtk::TextTag::builder().name("rule").paragraph_background_rgba(&grey(0.3)).scale(0.12).build());
+    buffer.insert_with_tags(&mut buffer.end_iter(), " \n", &[&chrome, &rule]);
+}
+
+/// Markup's text alone.
+fn strip_tags(markup: &str) -> String {
+    let mut out = String::with_capacity(markup.len());
+    let mut inside = false;
+    for c in markup.chars() {
+        match c {
+            '<' => inside = true,
+            '>' => inside = false,
+            _ if !inside => out.push(c),
+            _ => {}
+        }
+    }
+    out
 }
 
 /// The tag for one opening markup element (None: one this view ignores).
@@ -439,5 +482,10 @@ mod tests {
     #[test]
     fn entities_come_back_as_text() {
         assert_eq!(super::unescape("a &lt;b&gt; &amp; &quot;c&quot; &#39; &#x41; &bogus"), "a <b> & \"c\" ' A &bogus");
+    }
+
+    #[test]
+    fn a_cell_measures_by_its_text() {
+        assert_eq!(super::strip_tags("<b>bold</b> and <tt>c&lt;</tt>"), "bold and c&lt;");
     }
 }
