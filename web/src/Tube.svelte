@@ -1,5 +1,5 @@
 <script lang="ts">
-  // The tube down the left of a conversation (its motion after starview's live dot): one hose,
+  // The tube down the left of a conversation: one hose,
   // the tube and a swell per bead drawn through a "goo" filter so they melt into one shape;
   // beads above it, glossy and glowing, still. While the agent works, a live bead shuttles
   // between its latest entry and the tube's end (where the next one lands), on a spring.
