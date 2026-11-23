@@ -207,6 +207,11 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let options = [("go".to_owned(), "Yes, start".to_owned(), "allow_once".to_owned()), ("keep".to_owned(), "No, keep planning".to_owned(), "reject_once".to_owned())];
             chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
         }
+        // A reply with every kind of Markdown, for looking at the chat's text.
+        "fakereply" => {
+            let chat = app.chat_in_view().ok_or("no agent")?.clone();
+            chat.agent_text_with("## Heading two\n\nA paragraph with **bold**, *italic*, `inline code`, a path `src/app.rs:42` and [a link](https://example.com). Double-click a word, then drag across sentences.\n\n- First item that is long enough to wrap onto a second line so the hanging indent shows\n- Second item\n    - Nested item\n\n1. One\n2. Two\n\n```rust\nfn main() {\n    println!(\"hello\");\n}\n```\n\nAfter the code.\n\n| Name | Value |\n|---|---|\n| a | 1 |\n\n> A quote.\n\nThe end.", None);
+        }
         // A one-question form with long options (as AskUserQuestion sends), for width checks.
         "fakeform" => {
             let chat = app.chat_in_view().ok_or("no agent")?.clone();

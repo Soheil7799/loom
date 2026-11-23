@@ -37,6 +37,7 @@ use loom_core::topics;
 use loom_core::vault;
 use loom_core::mcp;
 mod picker;
+mod rich;
 mod prefs;
 use loom_core::quickopen;
 use loom_core::repos;

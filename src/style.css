@@ -218,6 +218,10 @@ button.page-back { min-width: 28px; min-height: 28px; padding: 0; border-radius:
 /* Reading: air between lines; code a little tighter. */
 .msg-agent label, .msg-user label, .reader label { line-height: 1.4; }
 .msg-agent label.code-block, .reader label.code-block { line-height: 1.35; }
+/* A message's text as one read-only view (rich.rs): the chat's colours, no box of its own. */
+textview.msg-text, textview.msg-text > text { background: none; background-color: transparent; color: inherit; }
+textview.msg-text > text { line-height: 1.4; }
+textview.msg-text > text > selection { background-color: alpha(@accent_color, 0.32); color: inherit; }
 .thought { opacity: 0.68; }
 .notice { opacity: 0.75; }
 .notice.warning { opacity: 1; }

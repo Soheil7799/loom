@@ -2637,6 +2637,12 @@ pub fn selected_text(widget: &gtk::Widget) -> Option<String> {
         let (a, b) = (a.min(b) as usize, a.max(b) as usize);
         return Some(label.text().chars().skip(a).take(b - a).collect());
     }
+    // A message's text view (rich.rs): its selection as a copy gives it.
+    if let Some(view) = widget.downcast_ref::<gtk::TextView>()
+        && let Some(text) = crate::rich::selection(view)
+    {
+        return Some(text);
+    }
     let mut child = widget.first_child();
     while let Some(next) = child {
         if let Some(text) = selected_text(&next) {

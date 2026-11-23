@@ -56,6 +56,17 @@ fn has_class_inside(widget: &gtk::Widget, class: &str) -> bool {
 }
 
 /// A link clicked in chat text: files go to the app, the web to the browser (GTK's default).
+/// Opens a link clicked in a message's text: a file in loom's editor (or what the app does
+/// with it), a web address in the browser.
+pub(crate) fn open_link(uri: &str, from: &gtk::Widget) {
+    let handler = OPEN_LINK.with(|h| h.borrow().clone());
+    if handler.is_some_and(|open| open(uri, from)) {
+        return;
+    }
+    let window = from.root().and_downcast::<gtk::Window>();
+    gtk::UriLauncher::new(uri).launch(window.as_ref(), gio::Cancellable::NONE, |_| {});
+}
+
 fn link_clicked(label: &gtk::Label, uri: &str) -> glib::Propagation {
     let web = ["http://", "https://", "mailto:"].iter().any(|p| uri.starts_with(p));
     if web {
@@ -1250,6 +1261,15 @@ impl Chat {
         keys.connect_key_pressed(move |_, key, keycode, modifiers| {
             let Some(chat) = weak.upgrade() else { return glib::Propagation::Proceed };
             if chat.paste_image(keycode, modifiers) {
+                return glib::Propagation::Stop;
+            }
+            // Ctrl+C with nothing selected here: what is selected in the chat (its text never
+            // takes the focus from here).
+            if modifiers.contains(gdk::ModifierType::CONTROL_MASK)
+                && matches!(key, gdk::Key::c | gdk::Key::C)
+                && !chat.input.buffer().has_selection()
+                && crate::rich::copy_selected(chat.input.upcast_ref())
+            {
                 return glib::Propagation::Stop;
             }
             chat.key(key, modifiers)
@@ -3797,14 +3817,10 @@ impl Message {
         // Thinking as written; what the user sent as Markdown (code boxes, lines, lists…),
         // their line breaks kept.
         if self.kind == Kind::User {
-            for segment in markdown::typed_segments(rest.trim()) {
-                match segment {
-                    Segment::Text(markup) => self.body.append(&text_label(&markup)),
-                    Segment::Code { code, .. } => self.body.append(&code_label(&code)),
-                    Segment::Table(rows) => self.body.append(&table_view(&rows)),
-                    Segment::Rule => self.body.append(&rule_view()),
-                }
-            }
+            // In a box of its own: the command lines above stay.
+            let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            crate::rich::show(&text, &[], &markdown::typed_segments(rest.trim()));
+            self.body.append(&text);
         } else {
             self.body.append(&text_label(&glib::markup_escape_text(rest.trim())));
         }
@@ -3815,25 +3831,7 @@ impl Message {
     fn render_agent(&self, text: &str) {
         let segments = markdown::segments(text);
         let mut shown = self.shown.borrow_mut();
-        let mut children = Vec::new();
-        let mut child = self.body.first_child();
-        while let Some(widget) = child {
-            child = widget.next_sibling();
-            children.push(widget);
-        }
-        // (something else in the body: all drawn again)
-        let keep = if children.len() == shown.len() { shown.iter().zip(&segments).take_while(|(a, b)| a == b).count() } else { 0 };
-        for widget in &children[keep..] {
-            self.body.remove(widget);
-        }
-        for segment in &segments[keep..] {
-            self.body.append(&match segment {
-                Segment::Text(markup) => text_label(markup).upcast::<gtk::Widget>(),
-                Segment::Code { code, .. } => code_label(code).upcast(),
-                Segment::Table(rows) => table_view(rows).upcast(),
-                Segment::Rule => rule_view().upcast(),
-            });
-        }
+        crate::rich::show(&self.body, &shown, &segments);
         *shown = segments;
     }
 }
