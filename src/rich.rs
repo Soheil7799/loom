@@ -13,27 +13,18 @@ use crate::markdown::Segment;
 /// A read-only view for a message's text: clicks on links and on "copy", the pointer over
 /// them, and copying without the code blocks' header lines.
 pub fn view() -> gtk::TextView {
-    let view = gtk::TextView::builder()
-        .editable(false)
-        .cursor_visible(false)
-        .wrap_mode(gtk::WrapMode::WordChar)
-        .hexpand(true)
+    let view: MsgView = glib::Object::builder()
+        .property("editable", false)
+        .property("cursor-visible", false)
+        .property("wrap-mode", gtk::WrapMode::WordChar)
+        .property("hexpand", true)
         // Selecting doesn't take the focus from the message box: typing goes on there, and
         // its Ctrl+C copies what is selected here (copy_selected).
-        .focus_on_click(false)
+        .property("focus-on-click", false)
         .build();
+    let view = view.upcast::<gtk::TextView>();
     view.add_css_class("msg-text");
-    // One selection in the chat at a time: a new one clears the last.
-    view.buffer().connect_has_selection_notify(glib::clone!(#[weak] view, move |buffer| {
-        if !buffer.has_selection() {
-            return;
-        }
-        let last = SELECTED.with(|s| s.replace(view.downgrade()));
-        if let Some(last) = last.upgrade().filter(|last| *last != view) {
-            let buffer = last.buffer();
-            buffer.place_cursor(&buffer.iter_at_mark(&buffer.get_insert()));
-        }
-    }));
+    watch_selection(&view, &view.buffer());
     let click = gtk::GestureClick::new();
     click.set_button(gdk::BUTTON_PRIMARY);
     click.connect_released(|gesture, presses, x, y| {
@@ -65,9 +56,138 @@ pub fn view() -> gtk::TextView {
     view
 }
 
+mod imp {
+    use gtk::subclass::prelude::*;
+    use gtk::{glib, prelude::*};
+
+    #[derive(Default)]
+    pub struct MsgView;
+
+    #[glib::object_subclass]
+    impl ObjectSubclass for MsgView {
+        const NAME: &'static str = "LoomMsgView";
+        type Type = super::MsgView;
+        type ParentType = gtk::TextView;
+    }
+
+    impl ObjectImpl for MsgView {}
+    impl WidgetImpl for MsgView {}
+
+    impl TextViewImpl for MsgView {
+        fn snapshot_layer(&self, layer: gtk::TextViewLayer, snapshot: gtk::Snapshot) {
+            if layer == gtk::TextViewLayer::BelowText {
+                super::ornaments(self.obj().upcast_ref(), &snapshot);
+            }
+            self.parent_snapshot_layer(layer, snapshot);
+        }
+    }
+}
+
+glib::wrapper! {
+    /// A text view that paints its blocks' shapes under the text (`ornaments`).
+    pub struct MsgView(ObjectSubclass<imp::MsgView>) @extends gtk::TextView, gtk::Widget, @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Scrollable;
+}
+
+/// Space kept under a code block or a table (the last line's pixels below, not the box's).
+const BELOW: i32 = 14;
+
+/// The shapes under a message's text: code blocks and tables as rounded boxes (a table with
+/// its header band and lines between rows), a line across as a hairline. In the text's own
+/// colour, faint, so they suit any theme.
+fn ornaments(view: &gtk::TextView, snapshot: &gtk::Snapshot) {
+    use gtk::{graphene::Rect, gsk::RoundedRect};
+    let buffer = view.buffer();
+    let table = buffer.tag_table();
+    let width = view.width() as f32;
+    let fg = view.color();
+    let faint = |alpha: f32| gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), alpha);
+    let top = |at: &gtk::TextIter| view.line_yrange(at).0 as f32;
+    let bottom = |at: &gtk::TextIter| {
+        let (y, height) = view.line_yrange(at);
+        (y + height) as f32
+    };
+    let rounded = |y0: f32, y1: f32| RoundedRect::from_rect(Rect::new(0.0, y0, width, (y1 - y0).max(0.0)), 8.0);
+    // Code: from its header line to its padding line.
+    if let (Some(head), Some(foot)) = (table.lookup("code-head"), table.lookup("code-foot")) {
+        for start in starts(&buffer, &head) {
+            let mut end = start;
+            if !end.forward_to_tag_toggle(Some(&foot)) {
+                continue;
+            }
+            let box_ = rounded(top(&start), bottom(&end) - BELOW as f32);
+            snapshot.push_rounded_clip(&box_);
+            snapshot.append_color(&faint(0.07), box_.bounds());
+            snapshot.pop();
+        }
+    }
+    // Tables: the header line and the rows under it.
+    if let (Some(head), Some(row)) = (table.lookup("table-head"), table.lookup("table-row")) {
+        for start in starts(&buffer, &head) {
+            let mut lines = vec![start];
+            let mut line = start;
+            while line.forward_line() && line.has_tag(&row) {
+                lines.push(line);
+            }
+            let last = lines.last().copied().unwrap_or(start);
+            let below = if lines.len() > 1 { BELOW as f32 } else { 0.0 };
+            let box_ = rounded(top(&start), bottom(&last) - below);
+            snapshot.push_rounded_clip(&box_);
+            snapshot.append_color(&faint(0.03), box_.bounds());
+            snapshot.append_color(&faint(0.06), &Rect::new(0.0, top(&start), width, bottom(&start) - top(&start)));
+            for line in &lines[1..] {
+                snapshot.append_color(&faint(0.1), &Rect::new(0.0, top(line), width, 1.0));
+            }
+            snapshot.pop();
+            snapshot.append_border(&box_, &[1.0; 4], &[faint(0.14); 4]);
+        }
+    }
+    // A line across: a hairline through the middle of its line.
+    if let Some(rule) = table.lookup("rule") {
+        for start in starts(&buffer, &rule) {
+            let middle = (top(&start) + bottom(&start)) / 2.0;
+            snapshot.append_color(&faint(0.2), &Rect::new(0.0, middle.round(), width, 1.0));
+        }
+    }
+}
+
+/// Where each stretch of text with `tag` starts.
+fn starts(buffer: &gtk::TextBuffer, tag: &gtk::TextTag) -> Vec<gtk::TextIter> {
+    let mut out = Vec::new();
+    let mut at = buffer.start_iter();
+    loop {
+        if !at.starts_tag(Some(tag)) && !at.forward_to_tag_toggle(Some(tag)) {
+            break;
+        }
+        if at.starts_tag(Some(tag)) {
+            out.push(at);
+        }
+        if !at.forward_to_tag_toggle(Some(tag)) {
+            break;
+        }
+    }
+    out
+}
+
+/// One selection in the chat at a time: one made in `buffer` (`view`'s) clears the last.
+fn watch_selection(view: &gtk::TextView, buffer: &gtk::TextBuffer) {
+    buffer.connect_has_selection_notify(glib::clone!(#[weak] view, move |buffer| {
+        if !buffer.has_selection() {
+            return;
+        }
+        let last = SELECTED.with(|s| s.replace(view.downgrade()));
+        if let Some(last) = last.upgrade().filter(|last| *last != view) {
+            let buffer = last.buffer();
+            buffer.place_cursor(&buffer.iter_at_mark(&buffer.get_insert()));
+        }
+    }));
+}
+
 thread_local! {
     /// The message text view a selection was last made in.
     static SELECTED: std::cell::RefCell<glib::WeakRef<gtk::TextView>> = std::cell::RefCell::default();
+    /// Numbers for links' and copies' tags, never the same twice (a redraw from the middle
+    /// keeps the tags before it).
+    static NEXT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 /// Copies what is selected in the chat's text, if anything: whether it did.
@@ -151,39 +271,59 @@ fn readable(buffer: &gtk::TextBuffer, start: &gtk::TextIter, end: &gtk::TextIter
 /// view for all of it, filled anew when they changed (a reply streaming in).
 pub fn show(body: &gtk::Box, shown: &[Segment], segments: &[Segment]) {
     let only = body.first_child().filter(|c| c.next_sibling().is_none()).and_downcast::<gtk::TextView>();
-    let view = match only {
-        Some(_) if shown == segments => return,
-        Some(view) => view,
+    match only {
+        Some(view) => fill(&view, shown, segments),
         None => {
             while let Some(child) = body.first_child() {
                 body.remove(&child);
             }
             let view = view();
+            fill(&view, &[], segments);
             body.append(&view);
-            view
         }
-    };
-    fill(&view, segments);
+    }
 }
 
-/// Shows `segments` in `view`, in place of what it showed.
-pub fn fill(view: &gtk::TextView, segments: &[Segment]) {
-    let buffer = view.buffer();
-    buffer.set_text("");
-    // The last fill's links and copies go with its text.
-    let table = buffer.tag_table();
-    let mut old = Vec::new();
-    table.foreach(|tag| {
-        if action_of(tag).is_some() || tag.name().is_some_and(|n| n.starts_with("tab:")) {
-            old.push(tag.clone());
-        }
-    });
-    for tag in old {
-        table.remove(&tag);
+/// Shows `segments` in `view`, in place of `shown` (what it showed). A reply streaming in
+/// changes at its end: only what changed is drawn again (each segment starts at a mark
+/// "seg<n>"), so the text before it, and a selection in it, stay. Anything else is drawn
+/// into a new buffer swapped in whole (cheaper than clearing a buffer of many tags).
+pub fn fill(view: &gtk::TextView, shown: &[Segment], segments: &[Segment]) {
+    let same = shown.iter().zip(segments).take_while(|(a, b)| a == b).count();
+    if same == shown.len() && same == segments.len() {
+        return;
     }
-    let mut count = 0;
+    // The old last segment was drawn as the last (its end trimmed): drawn again too.
+    let from = same.min(shown.len().saturating_sub(1));
+    let buffer = view.buffer();
+    let kept = (from > 0).then(|| buffer.mark(&format!("seg{from}"))).flatten();
+    let from = match kept {
+        Some(mark) => {
+            let (mut start, mut end) = (buffer.iter_at_mark(&mark), buffer.end_iter());
+            buffer.delete(&mut start, &mut end);
+            from
+        }
+        None => {
+            let fresh = gtk::TextBuffer::new(None);
+            watch_selection(view, &fresh);
+            view.set_buffer(Some(&fresh));
+            0
+        }
+    };
+    let buffer = view.buffer();
+    for n in segments.len()..shown.len().max(segments.len()) {
+        if let Some(mark) = buffer.mark(&format!("seg{n}")) {
+            buffer.delete_mark(&mark);
+        }
+    }
+    let mut count = NEXT.get();
     let last = segments.len().saturating_sub(1);
-    for (i, segment) in segments.iter().enumerate() {
+    for (i, segment) in segments.iter().enumerate().skip(from) {
+        let name = format!("seg{i}");
+        match buffer.mark(&name) {
+            Some(mark) => buffer.move_mark(&mark, &buffer.end_iter()),
+            None => drop(buffer.create_mark(Some(&name), &buffer.end_iter(), true)),
+        }
         match segment {
             Segment::Text(markup) => {
                 let markup = if i == last { markup.trim_end() } else { markup.as_str() };
@@ -194,6 +334,7 @@ pub fn fill(view: &gtk::TextView, segments: &[Segment]) {
             Segment::Rule => insert_rule(view),
         }
     }
+    NEXT.set(count);
 }
 
 /// A tag of the buffer's, made the first time by `make`.
@@ -218,7 +359,6 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
     let head = tag(&buffer, "code-head", || {
         gtk::TextTag::builder()
             .name("code-head")
-            .paragraph_background_rgba(&grey(0.16))
             .justification(gtk::Justification::Right)
             .scale(0.8)
             .foreground_rgba(&grey(1.0))
@@ -232,7 +372,6 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
             .name("code")
             .family("JetBrains Mono, monospace")
             .scale(0.92)
-            .paragraph_background_rgba(&grey(0.16))
             .wrap_mode(gtk::WrapMode::Char)
             .left_margin(12)
             .right_margin(12)
@@ -246,11 +385,76 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
     buffer.insert_with_tags(&mut end, "copy", &[&chrome, &head, &copy]);
     buffer.insert_with_tags(&mut end, "\n", &[&chrome, &head]);
     let body = code.trim_end_matches('\n');
+    let at = end.offset();
     buffer.insert_with_tags(&mut end, body, &[&code_tag]);
+    colour_code(view, at, body, lang);
+    let mut end = buffer.end_iter();
     // The block's bottom padding: an empty line of its own, read as nothing.
-    let pad = tag(&buffer, "code-foot", || gtk::TextTag::builder().name("code-foot").paragraph_background_rgba(&grey(0.16)).scale(0.4).left_margin(12).right_margin(12).pixels_below_lines(14).build());
+    let pad = tag(&buffer, "code-foot", || gtk::TextTag::builder().name("code-foot").scale(0.4).left_margin(12).right_margin(12).pixels_below_lines(BELOW).build());
     buffer.insert_with_tags(&mut end, "\n", &[&code_tag]);
     buffer.insert_with_tags(&mut end, if last { " " } else { " \n" }, &[&chrome, &pad]);
+}
+
+/// Colours the code at character `at` of `view`'s buffer as loom's editor would (GtkSourceView's
+/// highlighting for `lang`, in the scheme that suits the window), its colours copied over as
+/// tags. Unknown languages stay plain.
+fn colour_code(view: &gtk::TextView, at: i32, code: &str, lang: &str) {
+    use sourceview::prelude::*;
+    if lang.is_empty() || code.is_empty() {
+        return;
+    }
+    let languages = sourceview::LanguageManager::default();
+    let id = match lang.to_ascii_lowercase().as_str() {
+        "sh" | "bash" | "shell" | "zsh" | "console" | "shellsession" => "sh".to_owned(),
+        "js" | "javascript" | "jsx" | "mjs" => "js".to_owned(),
+        "ts" | "typescript" | "tsx" => "typescript".to_owned(),
+        "py" | "python" => "python3".to_owned(),
+        "rs" => "rust".to_owned(),
+        "yml" => "yaml".to_owned(),
+        "md" => "markdown".to_owned(),
+        "c++" | "cxx" => "cpp".to_owned(),
+        "golang" => "go".to_owned(),
+        other => other.to_owned(),
+    };
+    let Some(language) = languages.language(&id).or_else(|| languages.guess_language(Some(&format!("x.{lang}")), None)) else { return };
+    let source = sourceview::Buffer::new(None);
+    source.set_language(Some(&language));
+    let scheme = if crate::files::is_dark(view) { "Adwaita-dark" } else { "Adwaita" };
+    source.set_style_scheme(sourceview::StyleSchemeManager::default().scheme(scheme).as_ref());
+    source.set_text(code);
+    let (start, end) = source.bounds();
+    source.ensure_highlight(&start, &end);
+    let buffer = view.buffer();
+    let mut here = start;
+    while here < end {
+        let mut next = here;
+        if !next.forward_to_tag_toggle(None::<&gtk::TextTag>) || next > end {
+            next = end;
+        }
+        // The colour of the strongest tag that gives one (tags come weakest first).
+        let tags = here.tags();
+        let colour = tags.iter().rev().filter(|t| t.is_foreground_set()).find_map(|t| t.foreground_rgba());
+        let bold = tags.iter().rev().find(|t| t.is_weight_set()).is_some_and(|t| t.weight() >= 600);
+        let italic = tags.iter().rev().find(|t| t.is_style_set()).is_some_and(|t| t.style() == pango::Style::Italic);
+        if let Some(colour) = colour {
+            let name = format!("fg:{}:{bold}:{italic}", colour.to_str());
+            let tag = tag(&buffer, &name, || {
+                let tag = gtk::TextTag::builder().name(&name).foreground_rgba(&colour).build();
+                if bold {
+                    tag.set_weight(700);
+                }
+                if italic {
+                    tag.set_style(pango::Style::Italic);
+                }
+                tag
+            });
+            buffer.apply_tag(&tag, &buffer.iter_at_offset(at + here.offset()), &buffer.iter_at_offset(at + next.offset()));
+        }
+        if next == here {
+            break;
+        }
+        here = next;
+    }
 }
 
 /// Inserts the markup `markdown.rs` writes as the buffer's tags; then list items and quotes
@@ -300,11 +504,15 @@ fn insert_inline(view: &gtk::TextView, markup: &str, count: &mut usize) {
 /// a line's end, so its last characters tell).
 fn set_apart(buffer: &gtk::TextBuffer) {
     let mut end = buffer.end_iter();
-    let text = buffer.text(&buffer.start_iter(), &end, false);
-    if !text.is_empty() {
-        let breaks = text.chars().rev().take_while(|c| *c == '\n').count();
-        buffer.insert(&mut end, &"\n".repeat(2usize.saturating_sub(breaks)));
+    if end.offset() == 0 {
+        return;
     }
+    let mut at = end;
+    let mut breaks = 0;
+    while breaks < 2 && at.backward_char() && at.char() == '\n' {
+        breaks += 1;
+    }
+    buffer.insert(&mut end, &"\n".repeat(2 - breaks));
 }
 
 /// A table as text: a row a line, its cells at tab stops measured to fit the widest cell of
@@ -334,9 +542,9 @@ fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
     *count += 1;
     let stops = gtk::TextTag::builder().name(format!("tab:{count}")).tabs(&tabs).left_margin(12).right_margin(12).pixels_above_lines(5).pixels_below_lines(5).build();
     buffer.tag_table().add(&stops);
-    let head = tag(&buffer, "table-head", || gtk::TextTag::builder().name("table-head").weight(600).scale(0.9).foreground_rgba(&grey(1.0)).paragraph_background_rgba(&grey(0.12)).build());
-    let body = tag(&buffer, "table-row", || gtk::TextTag::builder().name("table-row").paragraph_background_rgba(&grey(0.05)).build());
-    let foot = tag(&buffer, "table-end", || gtk::TextTag::builder().name("table-end").pixels_below_lines(14).build());
+    let head = tag(&buffer, "table-head", || gtk::TextTag::builder().name("table-head").weight(600).scale(0.9).foreground_rgba(&grey(1.0)).build());
+    let body = tag(&buffer, "table-row", || gtk::TextTag::builder().name("table-row").build());
+    let foot = tag(&buffer, "table-end", || gtk::TextTag::builder().name("table-end").pixels_below_lines(BELOW).build());
     for (r, row) in rows.iter().enumerate() {
         let start = buffer.end_iter().offset();
         for (c, cell) in row.iter().enumerate() {
@@ -360,7 +568,7 @@ fn insert_rule(view: &gtk::TextView) {
     let buffer = view.buffer();
     set_apart(&buffer);
     let chrome = tag(&buffer, "chrome", || gtk::TextTag::builder().name("chrome").build());
-    let rule = tag(&buffer, "rule", || gtk::TextTag::builder().name("rule").paragraph_background_rgba(&grey(0.3)).scale(0.12).build());
+    let rule = tag(&buffer, "rule", || gtk::TextTag::builder().name("rule").scale(0.6).build());
     buffer.insert_with_tags(&mut buffer.end_iter(), " \n", &[&chrome, &rule]);
 }
 
