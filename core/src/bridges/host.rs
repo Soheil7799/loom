@@ -32,7 +32,6 @@ use std::time::{Duration, Instant};
 use data_encoding::BASE64_NOPAD;
 use serde_json::{Value, json};
 
-use crate::agent::view::Png;
 use crate::agent::{Agent, Asking, Event};
 use crate::settings::Settings;
 use crate::workspace::Workspace;
@@ -64,7 +63,6 @@ struct Running {
 
 pub struct Host {
     ws: RefCell<Weak<Workspace>>,
-    to_png: RefCell<Option<ToPng>>,
     app_id: String,
     /// Where an older loom's bridge socket was (removed if left).
     socket: PathBuf,
@@ -169,7 +167,6 @@ impl Host {
     pub fn new(app_id: &str) -> Rc<Host> {
         Rc::new(Host {
             ws: RefCell::new(Weak::new()),
-            to_png: RefCell::default(),
             app_id: app_id.to_owned(),
             socket: old_socket_path(app_id),
             running: RefCell::default(),
@@ -185,7 +182,6 @@ impl Host {
     pub fn attach(self: &Rc<Self>, ws: &Rc<Workspace>, to_png: ToPng) {
         *self.ws.borrow_mut() = Rc::downgrade(ws);
         crate::agent::commands::set_to_png(to_png.clone());
-        *self.to_png.borrow_mut() = Some(to_png);
         HOST.with(|h| *h.borrow_mut() = Rc::downgrade(self));
         let _ = std::fs::remove_file(&self.socket);
         self.apply(&crate::settings::get());
@@ -462,57 +458,29 @@ impl Host {
         let result = match method {
             "hello" => Ok(json!({ "settings": self.settings_for(bridge, &crate::settings::get()), "agents": agents() })),
             "agents" => Ok(agents()),
-            // A message: pictures (any format the UI reads) go as pasted ones. A shell command
-            // (`!…`) runs only from loom's own window, never from a bridge.
-            "send" if p["text"].as_str().unwrap_or("").trim_start().starts_with('!') => Err("! commands run only from loom itself.".to_owned()),
-            // Pictures are read off the UI's thread (they may be large), then sent.
-            "send" => {
+            // A message (pictures as pasted ones) and a file for the agent: the core API's own
+            // `send` and `save`, as this bridge, so their checks (no `!` commands from a bridge,
+            // files saved under <bridge>-files/ without following links) live in one place.
+            "send" | "save" => {
                 let id = match agent() {
                     Ok(agent) => agent.id,
                     Err(why) => return answer(Err(why)),
                 };
-                let data: Vec<String> = p["images"].as_array().into_iter().flatten().map(|d| d.as_str().unwrap_or("").to_owned()).collect();
-                let (to_png, text) = (self.to_png.borrow().clone(), p["text"].as_str().unwrap_or("").to_owned());
-                let (host, reply) = (self.clone(), reply.clone());
-                crate::rt::spawn_local(async move {
-                    let images = crate::rt::spawn_blocking(move || {
-                        data.into_iter()
-                            .map(|data| {
-                                let bytes = decode(&data).ok_or("That picture could not be read.")?;
-                                let to_png = to_png.as_ref().ok_or("Pictures can't be read here.")?;
-                                to_png(bytes).map(Png::from).map_err(|_| "That picture could not be read.".to_owned())
-                            })
-                            .collect::<Result<Vec<Png>, String>>()
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("That picture could not be read.".into()));
-                    respond(&reply, images.and_then(|images| {
+                let params = if method == "send" {
+                    json!({ "agent": id.to_string(), "text": p["text"], "images": p["images"] })
+                } else {
+                    json!({ "agent": id.to_string(), "name": p["name"], "data": p["data"] })
+                };
+                let (host, reply, send) = (self.clone(), reply.clone(), method == "send");
+                crate::api::hub().connect(crate::api::Principal::Bridge(bridge.to_owned())).command_later(&crate::api::cli::new_id(), method, params, move |result| {
+                    respond(&reply, result.map_err(|e| e.to_string()).and_then(|done| {
+                        if !send {
+                            return Ok(done["path"].clone());
+                        }
                         let ws = host.ws.borrow().upgrade().ok_or("loom is closing")?;
                         let agent = host.find(&ws, id).ok_or("That agent is closed.")?;
-                        agent.submit_with(text, images);
                         Ok(host.view(&ws, &agent))
                     }));
-                });
-                return;
-            }
-            // A file for the agent: saved in its folder, under <bridge>-files/, off the UI's
-            // thread. Its path back.
-            "save" => {
-                let dir = match agent() {
-                    Ok(agent) => agent.cwd.join(format!("{bridge}-files")),
-                    Err(why) => return answer(Err(why)),
-                };
-                let (name, data) = (safe_name(p["name"].as_str().unwrap_or("")), p["data"].as_str().unwrap_or("").to_owned());
-                let reply = reply.clone();
-                crate::rt::spawn_local(async move {
-                    let saved = crate::rt::spawn_blocking(move || {
-                        let bytes = decode(&data).ok_or("That file could not be read.")?;
-                        let target = crate::files::save_new(&dir, &name, &bytes).map_err(|e| format!("Could not save it in the agent's folder: {e}"))?;
-                        Ok(json!(target.to_string_lossy()))
-                    })
-                    .await
-                    .unwrap_or_else(|_| Err("Could not save it in the agent's folder.".into()));
-                    respond(&reply, saved);
                 });
                 return;
             }
