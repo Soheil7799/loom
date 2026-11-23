@@ -118,7 +118,7 @@ pub fn open(parent: &impl IsA<gtk::Window>) {
     list.select_row(list.row_at_index(0).as_ref());
     nav.append(&list);
     // The versions, and About behind them.
-    let foot_label = gtk::Label::builder().label(format!("loom {} · {}", env!("CARGO_PKG_VERSION"), crate::provider::describe())).xalign(0.0).build();
+    let foot_label = gtk::Label::builder().label(format!("loom {} · {}", env!("CARGO_PKG_VERSION"), crate::provider::describe())).xalign(0.0).ellipsize(gtk::pango::EllipsizeMode::End).build();
     foot_label.add_css_class("mono");
     let foot = gtk::Button::builder().child(&foot_label).tooltip_text("About Loom").build();
     foot.add_css_class("flat");
@@ -230,7 +230,7 @@ fn texts(title: &str, detail: &str) -> gtk::Box {
     let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
     text.set_hexpand(true);
     text.set_valign(gtk::Align::Center);
-    let title = gtk::Label::builder().label(title).xalign(0.0).build();
+    let title = gtk::Label::builder().label(title).xalign(0.0).wrap(true).wrap_mode(gtk::pango::WrapMode::WordChar).build();
     title.add_css_class("prefs-title");
     text.append(&title);
     if !detail.is_empty() {
@@ -292,6 +292,9 @@ fn dropdown<T: PartialEq + Clone + 'static>(choices: &[(T, &str)], current: T, e
     }
     let names: Vec<&str> = options.iter().map(|(_, n)| n.as_str()).collect();
     let dropdown = gtk::DropDown::from_strings(&names);
+    // The choice shown shortens to fit (a long one would hold the window wide); the list keeps it whole.
+    dropdown.set_factory(Some(&label_factory(true)));
+    dropdown.set_list_factory(Some(&label_factory(false)));
     dropdown.set_selected(options.iter().position(|(v, _)| *v == current).unwrap_or(0) as u32);
     dropdown.connect_selected_notify(move |d| {
         if let Some((value, _)) = options.get(d.selected() as usize) {
@@ -300,6 +303,26 @@ fn dropdown<T: PartialEq + Clone + 'static>(choices: &[(T, &str)], current: T, e
         }
     });
     dropdown
+}
+
+/// A dropdown's rows as labels of their strings, shortened with "…" when `ellipsize`.
+fn label_factory(ellipsize: bool) -> gtk::SignalListItemFactory {
+    let factory = gtk::SignalListItemFactory::new();
+    factory.connect_setup(move |_, item| {
+        let label = gtk::Label::builder().xalign(0.0).build();
+        if ellipsize {
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        }
+        item.downcast_ref::<gtk::ListItem>().map(|item| item.set_child(Some(&label)));
+    });
+    factory.connect_bind(|_, item| {
+        let Some(item) = item.downcast_ref::<gtk::ListItem>() else { return };
+        let text = item.item().and_downcast::<gtk::StringObject>().map(|s| s.string());
+        if let (Some(label), Some(text)) = (item.child().and_downcast::<gtk::Label>(), text) {
+            label.set_label(&text);
+        }
+    });
+    factory
 }
 
 thread_local! {
@@ -538,7 +561,7 @@ fn telegram(s: &Settings) -> gtk::Box {
     let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
     dot.add_css_class("dot");
-    let title = gtk::Label::builder().xalign(0.0).build();
+    let title = gtk::Label::builder().xalign(0.0).wrap(true).wrap_mode(gtk::pango::WrapMode::WordChar).build();
     title.add_css_class("prefs-title");
     let detail = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(52).selectable(true).build();
     detail.add_css_class("dim");
@@ -702,7 +725,7 @@ fn remote(s: &Settings) -> gtk::Box {
     let head = gtk::Box::new(gtk::Orientation::Horizontal, 12);
     let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
     dot.add_css_class("dot");
-    let title = gtk::Label::builder().xalign(0.0).build();
+    let title = gtk::Label::builder().xalign(0.0).wrap(true).wrap_mode(gtk::pango::WrapMode::WordChar).build();
     title.add_css_class("prefs-title");
     let detail = gtk::Label::builder().xalign(0.0).wrap(true).max_width_chars(52).selectable(true).build();
     detail.add_css_class("dim");

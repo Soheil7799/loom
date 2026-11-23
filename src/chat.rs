@@ -3465,9 +3465,10 @@ impl Chat {
                     for (i, (option, on)) in options.iter().zip(picked).enumerate() {
                         let line = gtk::Box::new(gtk::Orientation::Vertical, 1);
                         let shown = if number_these && i < 9 { format!("{}  {}", i + 1, option.name) } else { option.name.clone() };
-                        line.append(&gtk::Label::builder().label(shown).xalign(0.0).wrap(true).build());
+                        // WordChar: a long word (a path, an identifier) breaks too, never widening the window.
+                        line.append(&gtk::Label::builder().label(shown).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build());
                         if !option.about.is_empty() {
-                            let about = gtk::Label::builder().label(&option.about).xalign(0.0).wrap(true).build();
+                            let about = gtk::Label::builder().label(&option.about).xalign(0.0).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
                             about.add_css_class("dim");
                             about.add_css_class("small");
                             line.append(&about);
@@ -3548,7 +3549,7 @@ impl Chat {
         let skip = gtk::Button::with_label("Skip");
         skip.add_css_class("plain");
         let hint_text = if numbered { "1–9 pick (Alt+1–9 while typing) · Esc stops the turn" } else { "Esc stops the turn" };
-        let hint = gtk::Label::builder().label(hint_text).xalign(0.0).hexpand(true).build();
+        let hint = gtk::Label::builder().label(hint_text).xalign(0.0).hexpand(true).wrap(true).wrap_mode(pango::WrapMode::WordChar).build();
         hint.add_css_class("dim");
         hint.add_css_class("small");
         buttons.append(&send);

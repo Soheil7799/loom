@@ -27,6 +27,8 @@
 //! - `mode`: next permission mode
 //! - `split`: what Ctrl+\ does · `swap`: what Alt+←/→ does (the two change places)
 //! - `answer:<n>`: answer the focused agent's first question with option n (from 1)
+//! - `fakeform`: a one-question form with long options, in the focused chat
+//! - `minwidth:<px>`: each window's widgets whose minimum width is at least px (what holds it wide)
 //! - `stop`: what Esc does while the focused agent works (through the chat)
 //! - `agent:<n>`: focus the n-th agent (from 1) · `row:<n>`: open sidebar row n (from 0)
 //! - `new:<folder>`: start an agent in a folder
@@ -204,6 +206,26 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             let plan = "## Plan\n\nAdd a **price estimate** column to the purchase form.\n\n```sql\nALTER TABLE items ADD estimate numeric;\n```\n\nThen show the sum under the table.";
             let options = [("go".to_owned(), "Yes, start".to_owned(), "allow_once".to_owned()), ("keep".to_owned(), "No, keep planning".to_owned(), "reject_once".to_owned())];
             chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
+        }
+        // A one-question form with long options (as AskUserQuestion sends), for width checks.
+        "fakeform" => {
+            let chat = app.chat_in_view().ok_or("no agent")?.clone();
+            let long = "This option comes with a long description, the way agents write them: it explains the trade-off in a full sentence or two so the reader can decide without asking again, and it should wrap, never widen the window.";
+            let schema = serde_json::json!({ "properties": { "q": { "type": "string", "title": "Which way should the cache be invalidated when a project is renamed or moved?", "oneOf": [
+                { "const": "a", "title": "Invalidate everything on every rename, the simplest and safest choice", "description": long },
+                { "const": "b", "title": "Only_the_renamed_project_with_a_very_long_identifier_name_that_has_no_spaces_anywhere", "description": long }
+            ] } }, "required": ["q"] });
+            chat.form("Claude asks one question", &schema, std::rc::Rc::new(|v: Option<serde_json::Value>| eprintln!("FORM {v:?}")));
+        }
+        // Each window's widgets whose minimum width is at least <px> (what keeps it wide).
+        "minwidth" => {
+            let threshold = argument.parse().unwrap_or(600);
+            for window in gtk::Window::list_toplevels() {
+                if window.is_visible() {
+                    eprintln!("MINWIDTH window {:?}", window.downcast_ref::<gtk::Window>().and_then(|w| w.title()));
+                    measure(&window, 0, threshold);
+                }
+            }
         }
         // Presses the last button labelled <label> (the newest card's).
         "click" => {
