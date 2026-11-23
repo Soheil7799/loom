@@ -534,6 +534,8 @@ impl Link {
                 Some((s["name"].as_str()?.to_owned(), json!({ "command": s["command"], "args": s["args"], "env": env })))
             })
             .collect();
+        // Long Bash calls are turned to the tray only when the agent has the tray's tools.
+        let tray = servers.contains_key("loom");
         if !servers.is_empty() {
             program.push("--mcp-config".to_owned());
             program.push(json!({ "mcpServers": servers }).to_string());
@@ -587,7 +589,8 @@ impl Link {
         *self.session.borrow_mut() = Some(id.clone());
         let me = self.me.clone();
         let suggestions = options["promptSuggestions"].as_bool().unwrap_or(true);
-        self.control(json!({ "subtype": "initialize", "hooks": null, "promptSuggestions": suggestions, "perTaskStopAffordance": true, "agentProgressSummaries": true }), move |result| {
+        let hooks = if tray { json!({ "PreToolUse": [{ "matcher": "Bash", "hookCallbackIds": ["loom-tray"] }] }) } else { Value::Null };
+        self.control(json!({ "subtype": "initialize", "hooks": hooks, "promptSuggestions": suggestions, "perTaskStopAffordance": true, "agentProgressSummaries": true }), move |result| {
             let Some(link) = me.upgrade() else { return };
             match result {
                 // No login (and no API key): said when the session opens, as loom offers its
@@ -1285,6 +1288,14 @@ impl Link {
                     self.sub_state(sub, json!({ "state": "requires_action" }));
                 }
                 (self.on_incoming)(Incoming::Call { id: Some(rpc.into()), method: "session/request_permission".to_owned(), params: json!({ "sessionId": session, "toolCall": call, "options": options }) });
+            }
+            // loom's PreToolUse hook on Bash (see start).
+            Some("hook_callback") => {
+                let response = match tools::to_tray(&request["input"]["tool_input"]) {
+                    Some(reason) => json!({ "hookSpecificOutput": { "hookEventName": "PreToolUse", "permissionDecision": "deny", "permissionDecisionReason": reason } }),
+                    None => json!({}),
+                };
+                self.answer_control(&request_id, response);
             }
             Some("elicitation") => {
                 let mut params = json!({ "mode": request["mode"].as_str().unwrap_or("form"), "sessionId": self.session_id(), "message": request["message"] });

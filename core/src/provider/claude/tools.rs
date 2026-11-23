@@ -288,6 +288,15 @@ pub fn tool_call(tool: &ToolUse, cwd: &Path) -> Value {
     update
 }
 
+/// Why a Bash call must go to loom's job tray instead (loom's PreToolUse hook): sent to the
+/// background or let run past 2 minutes, it hides from the user and holds the agent up.
+pub fn to_tray(input: &Value) -> Option<&'static str> {
+    let long = input["run_in_background"].as_bool() == Some(true) || input["timeout"].as_u64().is_some_and(|ms| ms > 120_000);
+    long.then_some(
+        "loom: long or background commands run in loom's job tray, where the user sees and can stop them. Run this with loom_run (a name, and timeout_seconds as its hard limit), then follow it with loom_wait or loom_output.",
+    )
+}
+
 /// The tool call as a permission question shows it.
 pub fn permission_call(tool: &ToolUse, cwd: &Path) -> Value {
     let facts = facts(&tool.name, &tool.input, cwd);
@@ -800,6 +809,14 @@ mod tests {
 
     fn tool(name: &str, input: Value) -> ToolUse {
         ToolUse { id: "t1".into(), name: name.into(), input }
+    }
+
+    #[test]
+    fn long_bash_goes_to_the_tray() {
+        assert!(to_tray(&json!({ "command": "cargo test" })).is_none());
+        assert!(to_tray(&json!({ "command": "ls", "timeout": 60000 })).is_none());
+        assert!(to_tray(&json!({ "command": "pytest", "timeout": 600000 })).is_some());
+        assert!(to_tray(&json!({ "command": "npm run dev", "run_in_background": true })).is_some());
     }
 
     #[test]

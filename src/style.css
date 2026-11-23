@@ -220,6 +220,7 @@ button.page-back { min-width: 28px; min-height: 28px; padding: 0; border-radius:
 .msg-agent label.code-block, .reader label.code-block { line-height: 1.35; }
 .thought { opacity: 0.68; }
 .notice { opacity: 0.75; }
+.notice.warning { opacity: 1; }
 .notice.error { color: @loom_err; opacity: 1; }
 box.notice.error { padding: 12px 16px; border-radius: 8px; border: none; background: alpha(@loom_err, 0.13); }
 box.notice.error label { color: @window_fg_color; }

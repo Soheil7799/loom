@@ -262,6 +262,8 @@ pub struct Agent {
     ready: Cell<bool>,
     turn: Cell<bool>,
     replaying: Cell<bool>,
+    /// Compactions seen since loom opened this conversation.
+    compactions: Cell<u32>,
     /// Counts starts and read-backs: a read-back whose number moved on (it started, or was
     /// read back again, meanwhile) drops what it read.
     readings: Cell<u64>,
@@ -420,6 +422,7 @@ impl Agent {
             ready: Cell::new(false),
             turn: Cell::new(false),
             replaying: Cell::new(false),
+            compactions: Cell::new(0),
             readings: Cell::new(0),
             reading_back: Cell::new(false),
             whole: Cell::new(new_conversation),
@@ -3106,7 +3109,15 @@ impl Agent {
                     self.view.notice("Compacting the conversation…", "dim");
                     self.emit(Event::Compacting);
                 }
-                Some("completed") => self.view.notice("Compacted: Claude carries on with a summary of what came before.", "dim"),
+                Some("completed") => {
+                    self.view.notice("Compacted: Claude carries on with a summary of what came before.", "dim");
+                    self.compactions.set(self.compactions.get() + 1);
+                    // Each summary drops detail; by the second one the agent forgets what it was told.
+                    if self.compactions.get() >= 2 && !self.replaying.get() {
+                        let n = self.compactions.get();
+                        self.view.notice(&format!("Compacted {n} times: each summary drops detail. For new work, a new agent with a handoff file remembers better."), "warning");
+                    }
+                }
                 Some("failed") => self.view.notice("Compacting failed.", "error"),
                 _ => {}
             },

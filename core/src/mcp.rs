@@ -138,12 +138,13 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
     let mut all = json!([
         {
             "name": "loom_run",
-            "description": "Run a shell command as a named job in loom's job tray, in the project folder, where the user sees it live. Use for anything long-running or streaming (dev server, watch mode, build, test suite, install, log tail). Returns at once; then loom_wait or loom_output. Running a name again reruns that job.",
+            "description": "Run a shell command as a named job in loom's job tray, in the project folder, where the user sees it live. Use for anything long-running or streaming (dev server, watch mode, build, test suite, install, log tail), and for anything over 2 minutes. Returns at once; then loom_wait or loom_output. Running a name again reruns that job.",
             "inputSchema": { "type": "object", "properties": {
                 "name": name,
                 "command": { "type": "string", "description": "Shell command (bash -c)" },
                 "cwd": { "type": "string", "description": "Folder to run in (e.g. one repo of the project), relative to yours; default the project folder" },
                 "restart": { "type": "boolean", "description": "Stop the job if it is still running and start this instead (default false)" },
+                "timeout_seconds": { "type": "integer", "description": "Hard limit: loom stops the job after this many seconds (exit code 124). Set it for tests, builds and scripts; leave it out for dev servers and watchers" },
                 "input": { "type": "boolean", "description": "The command asks the user to type something: sudo's password, a passphrase, a y/n. Its terminal opens in front of them and they type into it there (never put a password in the command or ask for it in the chat); then loom_wait until it exits. Default false" },
                 "message": { "type": "string", "description": "With input: what they are asked for, shown with the terminal (\"Your sudo password, to install the package\")" }
             }, "required": ["name", "command"] }
@@ -158,11 +159,11 @@ fn tools(notes: Option<&std::path::Path>) -> Value {
         },
         {
             "name": "loom_wait",
-            "description": "Wait until a job exits, or until its output contains some text (e.g. 'ready on'), or a timeout. Returns the state and the last lines.",
+            "description": "Wait until a job exits, or until its output contains some text (e.g. 'ready on'), or at most 2 minutes. Returns the state and the last lines. The job keeps running after the wait ends: wait again if it should, so you see the user's messages in between.",
             "inputSchema": { "type": "object", "properties": {
                 "name": name,
                 "until": { "type": "string", "description": "Return as soon as the output contains this text" },
-                "timeout_seconds": { "type": "integer", "description": "Default 120, max 1800" },
+                "timeout_seconds": { "type": "integer", "description": "Default and max 120" },
                 "lines": { "type": "integer", "description": "Lines of output to return (default 40)" }
             }, "required": ["name"] }
         },
@@ -505,14 +506,14 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
     let args = &params["arguments"];
     let result = match params["name"].as_str().unwrap_or("") {
         "loom_wait" => wait(socket, agent, args, cancelled),
-        "loom_run" => call(socket, agent, "run_job", args.clone()).and_then(|v| {
+        "loom_run" => call(socket, agent, "run_job", with_limit(args)).and_then(|v| {
             let name = v["name"].as_str().unwrap_or("?").to_owned();
             if args["input"].as_bool() != Some(true) {
                 return Ok(format!("Started job {name} in loom's tray. Use loom_wait or loom_output to follow it."));
             }
             // Its terminal in front of the user, to type into.
             call(socket, agent, "show_job", json!({ "name": name, "message": args["message"] }))?;
-            Ok(format!("Started job {name}; its terminal is open in front of the user, who types into it there. Use loom_wait until it exits (a long timeout: they may take a while), then loom_output."))
+            Ok(format!("Started job {name}; its terminal is open in front of the user, who types into it there. Use loom_wait until it exits (again after each wait: they may take a while), then loom_output."))
         }),
         "loom_output" => call(socket, agent, "job_output", args.clone()).map(describe_job),
         "loom_stop" => call(socket, agent, "stop_job", args.clone()).map(|_| "Stopped.".to_owned()),
@@ -538,8 +539,21 @@ fn call_tool(socket: &str, agent: u32, params: &Value, cancelled: &AtomicBool) -
     }
 }
 
+/// loom_run's arguments, the command under `timeout` when it has a hard limit (it stops the
+/// whole job: `timeout` signals its own process group).
+fn with_limit(args: &Value) -> Value {
+    let mut args = args.clone();
+    if let (Some(secs), Some(command)) = (args["timeout_seconds"].as_u64(), args["command"].as_str()) {
+        // A job that asks the user to type keeps the terminal (`--foreground`).
+        let foreground = if args["input"].as_bool() == Some(true) { "--foreground " } else { "" };
+        args["command"] = format!("timeout {foreground}-k 10 {secs} bash -c '{}'", command.replace('\'', "'\\''")).into();
+    }
+    args
+}
+
 fn wait(socket: &str, agent: u32, args: &Value, cancelled: &AtomicBool) -> Result<String, String> {
-    let timeout = Duration::from_secs(args["timeout_seconds"].as_u64().unwrap_or(120).min(1800));
+    // The soft limit: back to the agent within 2 minutes, so the user's messages are seen.
+    let timeout = Duration::from_secs(args["timeout_seconds"].as_u64().unwrap_or(120).min(120));
     let until = args["until"].as_str().filter(|u| !u.is_empty());
     let lines = args["lines"].as_u64().unwrap_or(40);
     let started = Instant::now();
@@ -661,6 +675,15 @@ fn describe_job(job: Value) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn hard_limit_stops_the_job() {
+        let args = super::with_limit(&serde_json::json!({ "command": "echo 'it''s'; sleep 5", "timeout_seconds": 1 }));
+        let out = std::process::Command::new("bash").arg("-c").arg(args["command"].as_str().unwrap()).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&out.stdout), "its\n");
+        assert_eq!(out.status.code(), Some(124));
+        assert_eq!(super::with_limit(&serde_json::json!({ "command": "ls" }))["command"], "ls");
+    }
+
     #[test]
     fn only_key_names_come_back() {
         let template = "OPENAI_API_KEY=\nDB_PASSWORD=\nEMPTY=\nPORT: 8080\n";
