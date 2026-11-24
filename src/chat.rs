@@ -2892,15 +2892,13 @@ impl Chat {
         match kind {
             Kind::Agent => {
                 body.add_css_class("msg-agent");
-                let wrap = gtk::Overlay::builder().child(&body).build();
+                // The message, then its buttons in a row under it (shown on hover): never over
+                // the text, where they would take its clicks.
+                let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                wrap.append(&body);
                 wrap.add_css_class("msg-wrap");
-                let copy = gtk::Button::with_label("copy");
-                copy.add_css_class("copy");
-                copy.add_css_class("flat");
-                copy.set_halign(gtk::Align::End);
-                copy.set_valign(gtk::Align::Start);
-                copy.set_tooltip_text(Some("Copy the message (Markdown)"));
-                wrap.add_overlay(&copy);
+                let copy = action_button("edit-copy-symbolic", "Copy the message (Markdown)");
+                wrap.append(&action_row(&[&copy], gtk::Align::Start));
                 self.list.append(&wrap);
                 let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default(), shown: RefCell::default() });
                 *self.turn_result.borrow_mut() = Some(message.clone());
@@ -2909,9 +2907,7 @@ impl Chat {
                 copy.connect_clicked(move |button| {
                     if let Some(message) = weak.upgrade() {
                         button.clipboard().set_text(message.text.borrow().trim());
-                        button.set_label("copied");
-                        let button = button.clone();
-                        glib::timeout_add_local_once(Duration::from_millis(1200), move || button.set_label("copy"));
+                        done(button, "edit-copy-symbolic");
                     }
                 });
                 return message;
@@ -2919,25 +2915,16 @@ impl Chat {
             Kind::User => {
                 self.fold_turn();
                 body.add_css_class("msg-user");
-                let wrap = gtk::Overlay::builder().child(&body).build();
+                let wrap = gtk::Box::new(gtk::Orientation::Vertical, 0);
+                wrap.append(&body);
                 wrap.add_css_class("msg-wrap");
                 wrap.add_css_class("msg-wrap-user");
-                let actions = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-                actions.set_halign(gtk::Align::End);
-                actions.set_valign(gtk::Align::Start);
-                let copy = gtk::Button::with_label("copy");
-                let edit = gtk::Button::with_label("edit");
-                edit.set_tooltip_text(Some("Put it back in the input to change and send again"));
+                let copy = action_button("edit-copy-symbolic", "Copy the message");
+                let edit = action_button("document-edit-symbolic", "Edit: back in the input to change and send again");
                 // Its files too: in the menu only.
                 let rewind_files = gtk::Button::with_label("rewind with files");
-                let rewind = gtk::Button::with_label("rewind");
-                rewind.set_tooltip_text(Some("A copy of the conversation from just before this message, with it in the input to change (this one is kept)"));
-                for button in [&copy, &edit, &rewind] {
-                    button.add_css_class("copy");
-                    button.add_css_class("flat");
-                    actions.append(button);
-                }
-                wrap.add_overlay(&actions);
+                let rewind = action_button("edit-undo-symbolic", "Rewind: a copy of the conversation from just before this message, with it in the input to change (this one is kept)");
+                wrap.append(&action_row(&[&copy, &edit, &rewind], gtk::Align::End));
                 self.list.append(&wrap);
                 *self.turn_start.borrow_mut() = Some(wrap.clone().upcast());
                 let message = Rc::new(Message { kind, text: RefCell::default(), body, scheduled: Cell::new(false), id: RefCell::default(), entry: RefCell::default(), shown: RefCell::default() });
@@ -2951,6 +2938,7 @@ impl Chat {
                 copy.connect_clicked(move |button| {
                     if let Some(message) = weak.upgrade() {
                         button.clipboard().set_text(message.text.borrow().trim());
+                        done(button, "edit-copy-symbolic");
                     }
                 });
                 for (button, callback, files) in [(&rewind, &self.on_rewind, false), (&rewind_files, &self.on_rewind_files, true)] {
@@ -4674,7 +4662,38 @@ const SUMMARY_START: &str = "This session is being continued from a previous con
 /// A message's right-click menu: what is selected in it, its own buttons' actions, and a quote
 /// of it (or of the selection) into the input. Over the text's own menu (Capture); the Menu
 /// key or Shift+F10 too.
-fn message_menu(wrap: &gtk::Overlay, message: &Rc<Message>, input: &gtk::TextView, actions: Vec<(&'static str, gtk::Button)>) {
+/// A message's button: an icon, its name in the tooltip (and for screen readers).
+fn action_button(icon: &str, tip: &str) -> gtk::Button {
+    let button = gtk::Button::from_icon_name(icon);
+    button.add_css_class("flat");
+    button.set_tooltip_text(Some(tip));
+    button.update_property(&[gtk::accessible::Property::Label(tip.split(':').next().unwrap_or(tip))]);
+    button
+}
+
+/// A message's buttons in a row under it, faint until the message is hovered or one is focused.
+fn action_row(buttons: &[&gtk::Button], align: gtk::Align) -> gtk::Box {
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 2);
+    row.add_css_class("msg-actions");
+    row.set_halign(align);
+    for button in buttons {
+        row.append(*button);
+    }
+    row
+}
+
+/// A button's work done: a check mark in place of its icon for a moment.
+fn done(button: &gtk::Button, icon: &'static str) {
+    button.set_icon_name("object-select-symbolic");
+    button.add_css_class("done");
+    let button = button.clone();
+    glib::timeout_add_local_once(Duration::from_millis(1200), move || {
+        button.set_icon_name(icon);
+        button.remove_css_class("done");
+    });
+}
+
+fn message_menu(wrap: &gtk::Box, message: &Rc<Message>, input: &gtk::TextView, actions: Vec<(&'static str, gtk::Button)>) {
     let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).propagation_phase(gtk::PropagationPhase::Capture).build();
     let (at, message, input) = (wrap.downgrade(), Rc::downgrade(message), input.downgrade());
     click.connect_pressed(|gesture, _, _, _| {

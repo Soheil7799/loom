@@ -916,6 +916,25 @@ fn place_diagram(view: &gtk::TextView, n: usize, picture: Result<gdk::Texture, S
     }
 }
 
+/// Tests: a click on the first diagram switch found under `list`.
+#[cfg(debug_assertions)]
+pub fn press_switch(list: &gtk::Widget) -> Result<(), String> {
+    for view in messages(list) {
+        let buffer = view.buffer();
+        let mut at = buffer.start_iter();
+        loop {
+            if at.tags().iter().any(|t| t.name().is_some_and(|n| n.starts_with("show:"))) {
+                clicked(&view, &at);
+                return Ok(());
+            }
+            if !at.forward_char() {
+                break;
+            }
+        }
+    }
+    Err("no diagram switch".into())
+}
+
 /// A diagram's "code" / "view" clicked: the other one shown.
 fn toggle_diagram(view: &gtk::TextView, at: &gtk::TextIter) {
     let Some(n) = at.tags().iter().find_map(|t| t.name()?.strip_prefix("show:")?.trim_end_matches(':').parse::<usize>().ok()) else { return };

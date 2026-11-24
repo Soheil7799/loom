@@ -240,11 +240,15 @@ separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg
 .msg-images { margin: 2px 0 8px 0; }
 .msg-image { border-radius: 8px; border: none; }
 .shell-line { font-family: "JetBrains Mono", monospace; font-size: 0.92em; opacity: 0.75; }
-.msg-wrap button.copy, .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.85em; opacity: 0; border-radius: 4px; }
-.code-wrap button.copy { margin: 4px; background: alpha(@window_bg_color, 0.8); }
-.msg-wrap:hover button.copy, .code-wrap:hover button.copy { opacity: 0.8; }
-.msg-wrap-user .copy { opacity: 0; }
-.msg-wrap-user:hover .copy { opacity: 0.8; }
+.code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.85em; opacity: 0; border-radius: 4px; margin: 4px; background: alpha(@window_bg_color, 0.8); }
+.code-wrap:hover button.copy { opacity: 0.8; }
+/* A message's buttons, under it: they come in as the pointer reaches the message. */
+.msg-actions { margin-top: 2px; opacity: 0; transition: opacity 160ms ease-out; }
+.msg-wrap:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+.msg-actions button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.55); transition: background 120ms ease-out, color 120ms ease-out; }
+.msg-actions button:hover { color: @window_fg_color; background: alpha(@window_fg_color, 0.08); }
+.msg-actions button:active { background: alpha(@window_fg_color, 0.14); }
+.msg-actions button.done { color: @accent_color; }
 .turn-footer { font-size: 0.85em; opacity: 0.6; margin: -4px 0 4px 2px; }
 /* A footer with its Undo file changes beside it. */
 button.latest { border-radius: 8px; padding: 4px 16px; background: @window_bg_color; border: none; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.35); }
