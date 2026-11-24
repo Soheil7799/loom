@@ -917,7 +917,6 @@ fn place_diagram(view: &gtk::TextView, n: usize, picture: Result<gdk::Texture, S
 }
 
 /// Tests: a click on the first diagram switch found under `list`.
-#[cfg(debug_assertions)]
 pub fn press_switch(list: &gtk::Widget) -> Result<(), String> {
     for view in messages(list) {
         let buffer = view.buffer();
