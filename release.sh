@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Gets a release ready: `./release.sh 0.2.0` sets that version (every crate's Cargo.toml, Cargo.lock),
-# commits it and tags v0.2.0. Pushing the tag (`git push origin main v0.2.0`) has GitHub
+# commits it, runs GitHub's build and tests here first (ci-check.sh) and only then tags v0.2.0. Pushing the tag (`git push origin main v0.2.0`) has GitHub
 # build and publish the release (.github/workflows/release.yml).
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -26,6 +26,11 @@ done
 cargo update --workspace --offline --quiet # Cargo.lock follows
 if [[ -n $(git status --porcelain) ]]; then
     git commit -q -am "loom $version"
+fi
+# GitHub's build of the tag, run here first (ci-check.sh): a tag that fails there is never made.
+if ! ./ci-check.sh; then
+    echo "ci-check failed: v$version is not tagged. Fix it, commit, and run ./release.sh $version again." >&2
+    exit 1
 fi
 git tag -a "v$version" -m "loom $version"
 echo "Tagged v$version. To publish it: git push origin main v$version"
