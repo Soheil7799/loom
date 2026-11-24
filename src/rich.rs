@@ -822,20 +822,35 @@ thread_local! {
     static KEYS: std::cell::RefCell<std::collections::HashMap<usize, u64>> = std::cell::RefCell::default();
 }
 
-/// Draws diagram `n` (its "img:n:" paragraph says "Drawing…" meanwhile, softly pulsing).
+/// Draws diagram `n` (its "img:n:" paragraph says "Drawing…" meanwhile).
 /// The last block of a reply may still be streaming in: drawn once it stayed as it is a
 /// moment (redrawn meanwhile, its tags are gone and this does nothing).
 fn draw_diagram(view: &gtk::TextView, n: usize, lang: &str, code: &str, last: bool) {
     let key = diagram_key(lang, code);
     KEYS.with(|k| k.borrow_mut().insert(n, key));
-    if AS_CODE.with(|a| a.borrow().contains(&key)) {
-        show_diagram_code(view, n, true);
-    }
     let dark = crate::files::is_dark(view);
     let widest = (room(view) - 24).clamp(120, 1200);
-    if let Some(texture) = PICTURES.with(|p| p.borrow().get(&(key, widest, dark)).cloned()) {
-        place_diagram(view, n, Ok(texture));
-        return;
+    // Never changed while it is being filled: what is kept (shown as code, a picture drawn
+    // before) is put in once the fill is done.
+    let held = view.downgrade();
+    let as_code = AS_CODE.with(|a| a.borrow().contains(&key));
+    let drawn = PICTURES.with(|p| p.borrow().get(&(key, widest, dark)).cloned());
+    if as_code || drawn.is_some() {
+        glib::idle_add_local_once(move || {
+            let Some(view) = held.upgrade() else { return };
+            if view.buffer().tag_table().lookup(&format!("img:{n}:")).is_none() {
+                return;
+            }
+            if as_code {
+                show_diagram_code(&view, n, true);
+            }
+            if let Some(texture) = drawn {
+                place_diagram(&view, n, Ok(texture));
+            }
+        });
+        if PICTURES.with(|p| p.borrow().contains_key(&(key, widest, dark))) {
+            return;
+        }
     }
     let (weak, mermaid, code) = (view.downgrade(), lang.eq_ignore_ascii_case("mermaid"), code.to_owned());
     let draw = move || {
@@ -863,29 +878,6 @@ fn draw_diagram(view: &gtk::TextView, n: usize, lang: &str, code: &str, last: bo
             place_diagram(&view, n, texture);
         });
     };
-    // "Drawing…" pulses (its colour, not its text: a screen reader isn't told it again and
-    // again) until the picture or the reason takes its place.
-    let weak = view.downgrade();
-    let started = std::time::Instant::now();
-    glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
-        let Some(view) = weak.upgrade() else { return glib::ControlFlow::Break };
-        let buffer = view.buffer();
-        let Some(img) = buffer.tag_table().lookup(&format!("img:{n}:")) else { return glib::ControlFlow::Break };
-        let mut start = buffer.start_iter();
-        if !start.starts_tag(Some(&img)) && !start.forward_to_tag_toggle(Some(&img)) {
-            return glib::ControlFlow::Break;
-        }
-        let mut end = start;
-        end.forward_to_line_end();
-        if !buffer.text(&start, &end, true).starts_with("Drawing") {
-            img.set_foreground_rgba(None);
-            return glib::ControlFlow::Break;
-        }
-        let fg = view.color();
-        let phase = started.elapsed().as_secs_f32() / 1.2 * std::f32::consts::TAU;
-        img.set_foreground_rgba(Some(&gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35 + 0.3 * (0.5 + 0.5 * phase.cos()))));
-        glib::ControlFlow::Continue
-    });
     if last {
         glib::timeout_add_local_once(std::time::Duration::from_millis(1200), draw);
     } else {
@@ -912,8 +904,6 @@ fn place_diagram(view: &gtk::TextView, n: usize, picture: Result<gdk::Texture, S
             from.backward_char();
             buffer.apply_tag(&img, &from, &start);
             buffer.apply_tag(&chrome, &from, &start);
-            // (a picture has no words: a screen reader is told where they are)
-            view.update_property(&[gtk::accessible::Property::Description("Has a diagram; its code is under its \"code\" switch")]);
         }
         Err(why) => {
             // Its code shown, and why it isn't drawn kept in sight under it.
