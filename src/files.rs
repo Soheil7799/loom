@@ -736,6 +736,8 @@ impl Files {
         });
         let (dirty, unsaved) = (files.dirty.clone(), save.clone());
         files.buffer.connect_modified_changed(move |buffer| {
+            dirty.set_label("●");
+            dirty.remove_css_class("saved");
             dirty.set_visible(buffer.is_modified());
             unsaved.set_visible(buffer.is_modified());
         });
@@ -1148,6 +1150,20 @@ impl Files {
                 self.opened_at.set(modified_time(&path));
                 self.warned.set(None);
                 self.notice("");
+                if explicit {
+                    // Saved: the unsaved dot becomes a check a moment, then goes.
+                    self.dirty.set_label("✓");
+                    self.dirty.add_css_class("saved");
+                    self.dirty.set_visible(true);
+                    let dirty = self.dirty.clone();
+                    glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
+                        if dirty.has_css_class("saved") {
+                            dirty.remove_css_class("saved");
+                            dirty.set_label("●");
+                            dirty.set_visible(false);
+                        }
+                    });
+                }
                 true
             }
             Err(err) => {

@@ -177,6 +177,10 @@ button.menu-item { padding: 8px 12px; border-radius: 4px; font-weight: normal; }
 .dot.failed { min-width: 8px; min-height: 8px; margin: 2px; background: @loom_err; border-radius: 1px; }
 .dot.suspended { background: none; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.35); }
 @keyframes spin { to { transform: rotate(360deg); } }
+.dot { transition: background-color 200ms ease-out; }
+/* Blocked: one soft pulse when it starts waiting, then still. */
+@keyframes nudge { 50% { opacity: 0.4; } }
+.dot.blocked { animation: nudge 400ms ease-out 1; }
 /* Hover fills ease in and out; a press shows at once. */
 button, row { transition: background-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out; }
 button:active, row:active { transition-duration: 0ms; }
@@ -357,6 +361,9 @@ textview.input, textview.input text { background: transparent; }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 500; }
 button.send { min-width: 30px; min-height: 30px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 600; transition: opacity 120ms ease; }
 button.send.empty { opacity: 0.35; }
+/* A message on its way to loomd: the box's fill breathes until loomd has it. */
+@keyframes sending { to { background-color: alpha(@accent_color, 0.10); } }
+.composer.sending { animation: sending 500ms ease-in-out infinite alternate; }
 @media (prefers-reduced-motion: no-preference) {
   button.send { transition: opacity 120ms ease, transform 90ms ease-out; }
   button.send:active { transform: scale(0.92); }
@@ -385,6 +392,13 @@ button.attachment-remove { min-height: 20px; min-width: 20px; padding: 0; margin
 .chip { padding: 2px 12px; min-height: 0; border-radius: 6px; font-size: 0.92em; }
 .tray button.chip { background: alpha(@window_fg_color, 0.06); }
 .tray button.chip:hover { background: alpha(@window_fg_color, 0.12); }
+/* A job's chip: fades in when it starts, flashes its outcome once when it ends. */
+@keyframes fade-in { from { opacity: 0; } }
+@keyframes settle-ok { from { background-color: alpha(@loom_ok, 0.35); } }
+@keyframes settle-err { from { background-color: alpha(@loom_err, 0.35); } }
+.tray button.chip.fresh { animation: fade-in 200ms ease-out; }
+.tray button.chip.just-done { animation: settle-ok 600ms ease-out; }
+.tray button.chip.just-failed { animation: settle-err 600ms ease-out; }
 .dock { padding: 8px; background: @sidebar_bg_color; }
 .docked, .peek-frame { padding: 4px; }
 button.small { padding: 0 8px; min-height: 24px; font-size: 0.92em; }
@@ -419,6 +433,9 @@ button.small { padding: 0 8px; min-height: 24px; font-size: 0.92em; }
 .badge.new { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
 .badge.edited { color: @accent_color; background: alpha(@accent_color, 0.14); }
 .dirty { color: @loom_warn; }
+popover.copied-note > contents { padding: 4px 10px; color: @accent_color; font-size: 0.9em; }
+@keyframes saved { 0% { opacity: 0; } 12% { opacity: 1; } 80% { opacity: 1; } 100% { opacity: 0; } }
+.dirty.saved { color: @loom_ok; animation: saved 1200ms ease-out forwards; }
 .editor { font-family: "JetBrains Mono", Vazirmatn, monospace; }
 .editor-message { padding: 4px 12px 8px 12px; color: @loom_warn; font-size: 0.92em; }
 listview.tree { background: transparent; padding: 4px 0; }

@@ -384,6 +384,9 @@ impl RemoteAgent {
                 let chat = Rc::downgrade(&agent.chat);
                 let params = json!({ "text": text, "images": images, "agent": agent.id.to_string() });
                 crate::conn::command_result(&format!("agent {}", agent.id), "send", params, move |result| {
+                    if let Some(chat) = chat.upgrade() {
+                        chat.sent();
+                    }
                     if let (Err(err), Some(chat)) = (result, chat.upgrade()) {
                         chat.notice(&err.to_string(), "error");
                         if chat.draft().is_empty() {

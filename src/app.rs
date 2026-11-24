@@ -441,7 +441,8 @@ impl App {
         // Middle: chat (and the pinned one) over the dock, the tray at the bottom.
         // No transition: switching agents is instant (and a crossfade breaks when the outgoing
         // chat is moved to the split mid-fade).
-        let chat_stack = gtk::Stack::builder().vexpand(true).build();
+        // (pages, unlike agents, come in with a short crossfade: set_visible_child_full)
+        let chat_stack = gtk::Stack::builder().vexpand(true).transition_duration(120).build();
         let welcome = gtk::Box::new(gtk::Orientation::Vertical, 0);
         welcome.add_css_class("chat");
         chat_stack.add_named(&welcome, Some("empty"));
@@ -3280,7 +3281,7 @@ impl App {
     /// Every agent on one page (no agent has the keyboard meanwhile).
     pub fn show_overview(self: &Rc<Self>) {
         self.leave_notes();
-        self.chat_stack.set_visible_child_name("overview");
+        self.chat_stack.set_visible_child_full("overview", gtk::StackTransitionType::Crossfade);
         // The files panel is an agent's: closed here, back as it was when an agent is opened.
         if self.files.root.is_visible() {
             self.files_hidden_for_overview.set(true);
@@ -3399,7 +3400,7 @@ impl App {
 
     /// Everything Scribe wrote in the notes, in the main area (no agent has the keyboard).
     pub fn show_notes_history(self: &Rc<Self>) {
-        self.chat_stack.set_visible_child_name("notes");
+        self.chat_stack.set_visible_child_full("notes", gtk::StackTransitionType::Crossfade);
         self.hub.fill_page();
         self.refresh_sidebar();
         self.hub.focus_page();
@@ -3544,7 +3545,7 @@ impl App {
         let back = self.back_to.get().and_then(|id| self.remote_item(id));
         self.board.set_back(back.as_ref().and_then(|item| item["title"].as_str()));
         self.leave_notes();
-        self.chat_stack.set_visible_child_name("project");
+        self.chat_stack.set_visible_child_full("project", gtk::StackTransitionType::Crossfade);
         self.history.show(project, cwd, &self.project_label(project));
         self.board.show(project, &self.project_label(project));
         let tray = self.tray_for(project);

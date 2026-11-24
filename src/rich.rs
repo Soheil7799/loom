@@ -419,7 +419,14 @@ fn clicked(view: &gtk::TextView, at: &gtk::TextIter) {
         // there, the message not redrawn meanwhile).
         buffer.delete(&mut word_start, &mut word_end);
         let mark = buffer.create_mark(None, &word_start, true);
-        buffer.insert_with_tags(&mut word_start, "copied", &[&tag]);
+        view.announce("Copied", gtk::AccessibleAnnouncementPriority::Medium);
+        // (in the accent, as every "copied" in loom)
+        let tint = self::tag(&buffer, "copied", || {
+            #[allow(deprecated)]
+            let accent = view.style_context().lookup_color("accent_color").unwrap_or_else(|| grey(1.0));
+            gtk::TextTag::builder().name("copied").foreground_rgba(&accent).build()
+        });
+        buffer.insert_with_tags(&mut word_start, "copied", &[&tag, &tint]);
         let (buffer, tag) = (buffer.clone(), tag.clone());
         glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
             if mark.is_deleted() {
@@ -882,6 +889,29 @@ fn draw_diagram(view: &gtk::TextView, n: usize, lang: &str, code: &str, last: bo
             }
         });
     };
+    // "Drawing…" breathes (its dots) until the picture or the reason takes its place.
+    let weak = view.downgrade();
+    let mut step = 0;
+    glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+        let Some(view) = weak.upgrade() else { return glib::ControlFlow::Break };
+        let buffer = view.buffer();
+        let Some(img) = buffer.tag_table().lookup(&format!("img:{n}:")) else { return glib::ControlFlow::Break };
+        let mut start = buffer.start_iter();
+        if !start.starts_tag(Some(&img)) && !start.forward_to_tag_toggle(Some(&img)) {
+            return glib::ControlFlow::Break;
+        }
+        let mut end = start;
+        end.forward_to_line_end();
+        if !buffer.text(&start, &end, true).starts_with("Drawing") {
+            return glib::ControlFlow::Break;
+        }
+        step = (step + 1) % 4;
+        let tags = start.tags();
+        buffer.delete(&mut start, &mut end);
+        let tags: Vec<&gtk::TextTag> = tags.iter().collect();
+        buffer.insert_with_tags(&mut start, &format!("Drawing{}", ".".repeat(step)), &tags);
+        glib::ControlFlow::Continue
+    });
     if last {
         glib::timeout_add_local_once(std::time::Duration::from_millis(1200), draw);
     } else {

@@ -130,6 +130,10 @@ pub struct Chat {
     composer: gtk::Box,
     shell_badge: gtk::Label,
     working_since: Cell<Option<std::time::Instant>>,
+    /// When the reply last grew (its end ring breathes while words come in).
+    last_words: Rc<Cell<Option<std::time::Instant>>>,
+    /// The tube is redrawn every frame for that.
+    breathing: Rc<Cell<bool>>,
     /// The turn's word ("Weaving…").
     verb: Cell<&'static str>,
     latest: gtk::Button,
@@ -673,6 +677,8 @@ impl Chat {
             composer: composer.clone(),
             shell_badge,
             working_since: Cell::new(None),
+            last_words: Rc::default(),
+            breathing: Rc::default(),
             verb: Cell::new(VERBS[0]),
             latest: latest.clone(),
             cwd: RefCell::default(),
@@ -1624,8 +1630,17 @@ impl Chat {
             }
         }
         if self.working_since.get().is_some() {
+            // Words coming in: the ring breathes (1.2 s a breath), else it stays full.
+            let alpha = match self.last_words.get().filter(|t| t.elapsed() < BREATH_AFTER) {
+                Some(_) => {
+                    let phase = self.working_since.get().map_or(0.0, |s| s.elapsed().as_secs_f32()) / 1.2 * std::f32::consts::TAU;
+                    0.55 + 0.45 * (0.5 + 0.5 * phase.cos())
+                }
+                None => 1.0,
+            };
+            let color = gdk::RGBA::new(accent.red(), accent.green(), accent.blue(), accent.alpha() * alpha);
             let ring = gtk::gsk::RoundedRect::from_rect(Rect::new(x - 6.0, end - 14.0, 12.0, 12.0), 6.0);
-            snapshot.append_border(&ring, &[2.0; 4], &[accent; 4]);
+            snapshot.append_border(&ring, &[2.0; 4], &[color; 4]);
         }
     }
 
@@ -1886,7 +1901,23 @@ impl Chat {
         self.show_attachments();
         self.stick.set(true);
         self.set_suggestion(None);
+        // Until loomd has it, the box says it is on its way (`sent`; given up after 10 s, the
+        // refusal said by then).
+        if self.on_submit.borrow().is_some() {
+            self.composer.add_css_class("sending");
+            let composer = self.composer.downgrade();
+            glib::timeout_add_local_once(Duration::from_secs(10), move || {
+                if let Some(composer) = composer.upgrade() {
+                    composer.remove_css_class("sending");
+                }
+            });
+        }
         self.call(&self.on_submit, (text, images));
+    }
+
+    /// loomd took the message (or refused it): the box stops saying it is on its way.
+    pub fn sent(&self) {
+        self.composer.remove_css_class("sending");
     }
 
     /// Send dims while there is nothing to send (and nothing to stop).
@@ -2795,6 +2826,25 @@ impl Chat {
         let Some(message) = self.entries.borrow().get(id).cloned().filter(|_| field == "text") else { return };
         message.text.borrow_mut().push_str(text);
         message.render_soon();
+        self.breathe();
+    }
+
+    /// Words came in: the tube's end ring breathes, redrawn each frame until they stop
+    /// (or the turn ends, or the chat is off screen).
+    fn breathe(&self) {
+        self.last_words.set(Some(std::time::Instant::now()));
+        if self.breathing.replace(true) {
+            return;
+        }
+        let (last, breathing) = (self.last_words.clone(), self.breathing.clone());
+        self.tube.add_tick_callback(move |tube, _| {
+            tube.queue_draw();
+            if tube.is_mapped() && last.get().is_some_and(|t| t.elapsed() < BREATH_AFTER) {
+                return glib::ControlFlow::Continue;
+            }
+            breathing.set(false);
+            glib::ControlFlow::Break
+        });
     }
 
     pub fn user(&self, text: &str) {
@@ -4657,6 +4707,9 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
 }
 
 /// How the summary of a compacted conversation starts (Claude Code's words).
+/// The reply's end ring breathes until this long after its last words.
+const BREATH_AFTER: std::time::Duration = std::time::Duration::from_millis(1500);
+
 const SUMMARY_START: &str = "This session is being continued from a previous conversation";
 
 /// A message's button: an icon, its name in the tooltip (and for screen readers).
@@ -4681,6 +4734,7 @@ fn action_row(buttons: &[&gtk::Button], align: gtk::Align) -> gtk::Box {
 
 /// A button's work done: a check mark in place of its icon for a moment.
 fn done(button: &gtk::Button, icon: &'static str) {
+    button.announce("Done", gtk::AccessibleAnnouncementPriority::Medium);
     button.set_icon_name("object-select-symbolic");
     button.add_css_class("done");
     let button = button.clone();

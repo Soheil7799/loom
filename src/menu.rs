@@ -129,9 +129,28 @@ impl Menu {
     }
 }
 
-/// Puts `text` on the clipboard.
+/// Puts `text` on the clipboard, and says so a moment by `widget` ("Copied").
 pub fn copy(widget: &impl IsA<gtk::Widget>, text: &str) {
-    widget.as_ref().clipboard().set_text(text);
+    let widget = widget.as_ref();
+    widget.clipboard().set_text(text);
+    copied(widget);
+}
+
+/// "Copied", a moment, by `widget` (and to screen readers).
+pub fn copied(widget: &gtk::Widget) {
+    widget.announce("Copied", gtk::AccessibleAnnouncementPriority::Medium);
+    if !widget.is_mapped() {
+        return;
+    }
+    let note = gtk::Label::new(Some("Copied"));
+    let popover = gtk::Popover::builder().child(&note).has_arrow(false).autohide(false).can_focus(false).build();
+    popover.add_css_class("copied-note");
+    popover.set_parent(widget);
+    popover.popup();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
+        popover.popdown();
+        popover.unparent();
+    });
 }
 
 /// Opens `path` (a folder, or a file in its app) the way the desktop does.
