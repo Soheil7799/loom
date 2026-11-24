@@ -429,34 +429,30 @@ pub fn fill(view: &gtk::TextView, shown: &[Segment], segments: &[Segment]) {
     // (and so is the new last one, when segments went: it is drawn as the last now)
     let from = same.min(shown.len().saturating_sub(1)).min(segments.len().saturating_sub(1));
     let buffer = view.buffer();
+    // Drawn again from segment `from` on (each starts at a mark "seg<n>"), or all of it. Always
+    // in the same buffer: a new buffer swapped into a live view left GTK's line cache pointing
+    // at the old one's lines, and it crashed drawing them.
     let kept = (from > 0).then(|| buffer.mark(&format!("seg{from}"))).flatten();
-    let from = match kept {
-        Some(mark) => {
-            let (mut start, mut end) = (buffer.iter_at_mark(&mark), buffer.end_iter());
-            // The links', copies' and tables' own tags in what goes, gone with it (a reply
-            // streaming in would pile them up otherwise).
-            let table = buffer.tag_table();
-            let mut own = Vec::new();
-            table.foreach(|tag| {
-                let numbered = action_of(tag).is_some() || tag.name().is_some_and(|n| ["tab:", "src:", "img:"].iter().any(|p| n.starts_with(p)));
-                let mut at = start;
-                if numbered && (at.has_tag(tag) || at.forward_to_tag_toggle(Some(tag))) {
-                    own.push(tag.clone());
-                }
-            });
-            buffer.delete(&mut start, &mut end);
-            for tag in own {
-                table.remove(&tag);
-            }
-            from
-        }
-        None => {
-            let fresh = gtk::TextBuffer::new(None);
-            watch_selection(view, &fresh);
-            view.set_buffer(Some(&fresh));
-            0
-        }
+    let (mut start, from) = match kept {
+        Some(mark) => (buffer.iter_at_mark(&mark), from),
+        None => (buffer.start_iter(), 0),
     };
+    let mut end = buffer.end_iter();
+    // The links', copies', tables' and diagrams' own tags in what goes, gone with it (a reply
+    // streaming in would pile them up otherwise).
+    let table = buffer.tag_table();
+    let mut own = Vec::new();
+    table.foreach(|tag| {
+        let numbered = action_of(tag).is_some() || tag.name().is_some_and(|n| ["tab:", "src:", "img:"].iter().any(|p| n.starts_with(p)));
+        let mut at = start;
+        if numbered && (at.has_tag(tag) || at.forward_to_tag_toggle(Some(tag))) {
+            own.push(tag.clone());
+        }
+    });
+    buffer.delete(&mut start, &mut end);
+    for tag in own {
+        table.remove(&tag);
+    }
     let buffer = view.buffer();
     for n in segments.len()..shown.len().max(segments.len()) {
         if let Some(mark) = buffer.mark(&format!("seg{n}")) {
