@@ -385,13 +385,17 @@ fn action_of(tag: &gtk::TextTag) -> Option<(String, String)> {
     let name = tag.name()?;
     let (kind, rest) = name.split_once(':')?;
     let (_, what) = rest.split_once(':')?;
-    matches!(kind, "link" | "copy").then(|| (kind.to_owned(), what.to_owned()))
+    matches!(kind, "link" | "copy" | "show").then(|| (kind.to_owned(), what.to_owned()))
 }
 
 fn clicked(view: &gtk::TextView, at: &gtk::TextIter) {
     let Some((kind, what)) = at.tags().iter().find_map(action_of) else { return };
     if kind == "link" {
         crate::chat::open_link(&what, view.upcast_ref());
+        return;
+    }
+    if kind == "show" {
+        toggle_diagram(view, at);
         return;
     }
     // "copy": the code under this header line, to its end.
@@ -401,7 +405,8 @@ fn clicked(view: &gtk::TextView, at: &gtk::TextIter) {
     start.forward_line();
     let mut end = start;
     end.forward_to_tag_toggle(Some(&code_tag));
-    let code = buffer.text(&start, &end, false);
+    // (with the code a diagram hides while it is shown as a picture)
+    let code = buffer.text(&start, &end, true);
     view.clipboard().set_text(code.trim_end_matches('\n'));
     let mut word_start = *at;
     let mut word_end = *at;
@@ -488,7 +493,7 @@ pub fn fill(view: &gtk::TextView, shown: &[Segment], segments: &[Segment]) {
             let table = buffer.tag_table();
             let mut own = Vec::new();
             table.foreach(|tag| {
-                let numbered = action_of(tag).is_some() || tag.name().is_some_and(|n| n.starts_with("tab:"));
+                let numbered = action_of(tag).is_some() || tag.name().is_some_and(|n| ["tab:", "src:", "img:"].iter().any(|p| n.starts_with(p)));
                 let mut at = start;
                 if numbered && (at.has_tag(tag) || at.forward_to_tag_toggle(Some(tag))) {
                     own.push(tag.clone());
@@ -586,11 +591,27 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
     buffer.tag_table().add(&copy);
     let label = if lang.is_empty() { String::new() } else { format!("{lang}   ") };
     buffer.insert_with_tags(&mut end, &label, &[&chrome, &head]);
+    // A diagram: shown as a picture, its code hidden; "code" / "view" switches between them.
+    let diagram = crate::diagram::is_diagram(lang).then(|| {
+        let n = *count;
+        let show = gtk::TextTag::builder().name(format!("show:{n}:")).underline(pango::Underline::None).weight(600).build();
+        let src = gtk::TextTag::builder().name(format!("src:{n}:")).invisible(true).build();
+        let img = gtk::TextTag::builder().name(format!("img:{n}:")).left_margin(12).right_margin(12).pixels_above_lines(4).build();
+        for t in [&show, &src, &img] {
+            buffer.tag_table().add(t);
+        }
+        buffer.insert_with_tags(&mut end, "code", &[&chrome, &head, &show]);
+        buffer.insert_with_tags(&mut end, "   ", &[&chrome, &head]);
+        (n, src, img)
+    });
     buffer.insert_with_tags(&mut end, "copy", &[&chrome, &head, &copy]);
     buffer.insert_with_tags(&mut end, "\n", &[&chrome, &head]);
     let body = code.trim_end_matches('\n');
     let at = end.offset();
-    buffer.insert_with_tags(&mut end, body, &[&code_tag]);
+    match &diagram {
+        Some((_, src, _)) => buffer.insert_with_tags(&mut end, body, &[&code_tag, src]),
+        None => buffer.insert_with_tags(&mut end, body, &[&code_tag]),
+    }
     // A big block still streaming in (the last one) is coloured once it is not the last:
     // colouring it per chunk would cost more with every line.
     if !last || body.len() < 12_000 {
@@ -599,7 +620,15 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
     let mut end = buffer.end_iter();
     // The block's bottom padding: an empty line of its own, read as nothing.
     let pad = tag(&buffer, "code-foot", || gtk::TextTag::builder().name("code-foot").scale(0.4).left_margin(12).right_margin(12).pixels_below_lines(BELOW).build());
-    buffer.insert_with_tags(&mut end, "\n", &[&code_tag]);
+    match &diagram {
+        Some((n, src, img)) => {
+            buffer.insert_with_tags(&mut end, "\n", &[&code_tag, src]);
+            buffer.insert_with_tags(&mut end, "Drawing…\n", &[&chrome, img]);
+            draw_diagram(view, *n, lang, body, last);
+            end = buffer.end_iter();
+        }
+        None => buffer.insert_with_tags(&mut end, "\n", &[&code_tag]),
+    }
     buffer.insert_with_tags(&mut end, if last { " " } else { " \n" }, &[&chrome, &pad]);
 }
 
@@ -754,15 +783,7 @@ fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
             natural[c] = natural[c].max(layout(r, cell).pixel_size().0);
         }
     }
-    // The width there is: the view's, or (not laid out yet) its nearest laid out ancestor's.
-    let mut width = view.width();
-    let mut up = view.parent();
-    while width <= 0 {
-        let Some(w) = up else { break };
-        width = w.width();
-        up = w.parent();
-    }
-    let width = if width > 0 { width } else { 600 };
+    let width = room(view);
     let widths = fit_columns(&natural, width - 2 * MARGIN - GAP * columns.saturating_sub(1) as i32);
     if let Some(view) = view.downcast_ref::<MsgView>() {
         view.imp().fitted.set(width);
@@ -823,6 +844,102 @@ fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
             buffer.insert(&mut buffer.end_iter(), "\n");
         }
     }
+}
+
+/// The width there is: the view's, or (not laid out yet) its nearest laid out ancestor's.
+fn room(view: &gtk::TextView) -> i32 {
+    let mut width = view.width();
+    let mut up = view.parent();
+    while width <= 0 {
+        let Some(w) = up else { break };
+        width = w.width();
+        up = w.parent();
+    }
+    if width > 0 { width } else { 600 }
+}
+
+/// Draws diagram `n` (its "img:n:" paragraph says "Drawing…" meanwhile). The last block of a
+/// reply may still be streaming in: drawn once it stayed as it is a moment (redrawn meanwhile,
+/// its tags are gone and this does nothing).
+fn draw_diagram(view: &gtk::TextView, n: usize, lang: &str, code: &str, last: bool) {
+    let (weak, mermaid, code) = (view.downgrade(), lang.eq_ignore_ascii_case("mermaid"), code.to_owned());
+    let dark = crate::files::is_dark(view);
+    let draw = move || {
+        let Some(view) = weak.upgrade() else { return };
+        if view.buffer().tag_table().lookup(&format!("img:{n}:")).is_none() {
+            return;
+        }
+        let widest = (room(&view) - 24).clamp(120, 1200);
+        if !mermaid {
+            place_diagram(&view, n, crate::diagram::texture(code.as_bytes(), widest));
+            return;
+        }
+        let weak = view.downgrade();
+        glib::spawn_future_local(async move {
+            let svg = gtk::gio::spawn_blocking(move || crate::diagram::mermaid(&code, dark)).await.unwrap_or_else(|_| Err("the drawing stopped".into()));
+            if let Some(view) = weak.upgrade() {
+                place_diagram(&view, n, svg.and_then(|svg| crate::diagram::texture(svg.as_bytes(), widest)));
+            }
+        });
+    };
+    if last {
+        glib::timeout_add_local_once(std::time::Duration::from_millis(1200), draw);
+    } else {
+        draw();
+    }
+}
+
+/// Diagram `n`'s picture in place of "Drawing…", or why it isn't (its code shown instead).
+fn place_diagram(view: &gtk::TextView, n: usize, picture: Result<gdk::Texture, String>) {
+    let buffer = view.buffer();
+    let table = buffer.tag_table();
+    let (Some(img), Some(chrome)) = (table.lookup(&format!("img:{n}:")), table.lookup("chrome")) else { return };
+    let mut start = buffer.start_iter();
+    if !start.starts_tag(Some(&img)) && !start.forward_to_tag_toggle(Some(&img)) {
+        return;
+    }
+    let mut end = start;
+    end.forward_to_line_end();
+    buffer.delete(&mut start, &mut end);
+    match picture {
+        Ok(texture) => {
+            buffer.insert_paintable(&mut start, &texture);
+            let mut from = start;
+            from.backward_char();
+            buffer.apply_tag(&img, &from, &start);
+            buffer.apply_tag(&chrome, &from, &start);
+        }
+        Err(why) => {
+            buffer.insert_with_tags(&mut start, &format!("Not drawn: {why}"), &[&chrome, &img]);
+            show_diagram_code(view, n, true);
+        }
+    }
+}
+
+/// A diagram's "code" / "view" clicked: the other one shown.
+fn toggle_diagram(view: &gtk::TextView, at: &gtk::TextIter) {
+    let Some(n) = at.tags().iter().find_map(|t| t.name()?.strip_prefix("show:")?.trim_end_matches(':').parse::<usize>().ok()) else { return };
+    let hidden = view.buffer().tag_table().lookup(&format!("src:{n}:")).is_some_and(|src| src.is_invisible());
+    show_diagram_code(view, n, hidden);
+}
+
+/// Diagram `n` as its code (`code`) or its picture; the switch then names the other.
+fn show_diagram_code(view: &gtk::TextView, n: usize, code: bool) {
+    let buffer = view.buffer();
+    let table = buffer.tag_table();
+    let (Some(src), Some(img), Some(show)) = (table.lookup(&format!("src:{n}:")), table.lookup(&format!("img:{n}:")), table.lookup(&format!("show:{n}:"))) else { return };
+    src.set_invisible(!code);
+    img.set_invisible(code);
+    let mut start = buffer.start_iter();
+    if !start.starts_tag(Some(&show)) && !start.forward_to_tag_toggle(Some(&show)) {
+        return;
+    }
+    let tags = start.tags();
+    let mut end = start;
+    end.forward_to_tag_toggle(Some(&show));
+    buffer.delete(&mut start, &mut end);
+    let tags: Vec<&gtk::TextTag> = tags.iter().collect();
+    buffer.insert_with_tags(&mut start, if code { "view" } else { "code" }, &tags);
 }
 
 /// Columns' widths in `room`: as wide as their widest cell when they all fit; else the narrow
@@ -965,7 +1082,7 @@ fn indent_lines(view: &gtk::TextView, from_line: i32) {
     }
 }
 
-fn unescape(text: &str) -> String {
+pub fn unescape(text: &str) -> String {
     if !text.contains('&') {
         return text.to_owned();
     }
