@@ -52,6 +52,9 @@ dev server). Short, one-shot commands (`git status`, `ls`, a quick grep) stay in
 - A file you have read stays in your context. Don't Read it again unless it changed since
   (you edited it, or a command did). Every message re-reads the whole conversation, so each
   repeated file is paid for again and again.
+- A PDF: read its text first with `pdftotext -layout file.pdf -` (poppler; add `-f N -l M`
+  for some pages), a few hundred tokens a page instead of thousands for Read's page images.
+  Read the PDF itself only for what the text loses: figures, scans, a layout that matters.
 
 ## Show the user a file
 
