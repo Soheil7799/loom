@@ -2050,7 +2050,7 @@ dependencies = [
 
 [[package]]
 name = "loom"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "async-channel",
  "gtk4",
@@ -2067,7 +2067,7 @@ dependencies = [
 
 [[package]]
 name = "loom-core"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "async-channel",
  "data-encoding",
@@ -2088,7 +2088,7 @@ dependencies = [
 
 [[package]]
 name = "loom-link"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "data-encoding",
  "iroh",
@@ -2098,7 +2098,7 @@ dependencies = [
 
 [[package]]
 name = "loom-remote"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "data-encoding",
  "iroh",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "loomd"
-version = "0.7.3"
+version = "0.7.4"
 dependencies = [
  "image",
  "loom-core",
