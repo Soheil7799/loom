@@ -740,6 +740,12 @@ impl App {
             let Some(app) = weak.upgrade() else { return };
             let Some(chat) = app.chat_in_view() else { return };
             let buffer = chat.input.buffer();
+            // A review's next note joins the notes already there.
+            let typed = buffer.text(&buffer.start_iter(), &buffer.end_iter(), false);
+            let text = match text.strip_prefix(crate::files::REVIEW) {
+                Some(note) if typed.contains(crate::files::REVIEW) => note.to_owned(),
+                _ => text,
+            };
             buffer.place_cursor(&buffer.end_iter());
             buffer.insert_at_cursor(&text);
             chat.input.grab_focus();
@@ -1306,6 +1312,7 @@ impl App {
             }
             "graphwin" => self.files.graph_window(),
             "diff" => self.files.diff_for_tests(argument),
+            "review" => self.files.review_for_tests(),
             "fork" => {
                 if self.remote_do("fork", json!({})) {
                     self.expect_copy.set(true);

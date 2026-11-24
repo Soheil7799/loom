@@ -61,6 +61,53 @@ pub fn hunks(diff: &str) -> Vec<(String, Vec<String>)> {
     out
 }
 
+/// A whole repository's diff cut into its files: (path, that file's diff), in order.
+pub fn by_file(diff: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for line in diff.split_inclusive('\n') {
+        if line.starts_with("diff --git ") {
+            out.push((String::new(), String::new()));
+        }
+        let Some((path, text)) = out.last_mut() else { continue };
+        // The new name, or the old one for a file deleted (+++ /dev/null).
+        let name = line.strip_prefix("+++ b/").or_else(|| line.strip_prefix("--- a/").filter(|_| path.is_empty()));
+        if let Some(name) = name.filter(|_| !text.contains("\n@@")) {
+            *path = name.trim_end_matches('\n').to_owned();
+        }
+        text.push_str(line);
+    }
+    out.retain(|(path, _)| !path.is_empty());
+    out
+}
+
+/// Each line of a hunk (as `hunks` gives them) with its number in the file: the new file's
+/// for a line kept or added, the old one's for a line taken out ("12", "was 12").
+pub fn numbers(head: &str, lines: &[String]) -> Vec<String> {
+    // "@@ -old,count +new,count @@"
+    let start = |sign: char| {
+        head.split_whitespace().find_map(|w| w.strip_prefix(sign)).and_then(|w| w.split(',').next()?.parse::<usize>().ok()).unwrap_or(1)
+    };
+    let (mut old, mut new) = (start('-'), start('+'));
+    lines
+        .iter()
+        .map(|line| match line.chars().next() {
+            Some('-') => {
+                old += 1;
+                format!("was {}", old - 1)
+            }
+            Some('+') => {
+                new += 1;
+                (new - 1).to_string()
+            }
+            _ => {
+                old += 1;
+                new += 1;
+                (new - 1).to_string()
+            }
+        })
+        .collect()
+}
+
 /// Hunk `n` (from 0) of `diff` as a patch of its own: the file's header, then that hunk.
 fn hunk_patch(diff: &str, n: usize) -> Option<String> {
     let lines: Vec<&str> = diff.split_inclusive('\n').collect();
@@ -105,6 +152,16 @@ pub fn revert(path: &Path, hunk: Option<(usize, &str)>) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_repository_diff_cuts_into_files_with_their_line_numbers() {
+        let diff = "diff --git a/a.rs b/a.rs\nindex 1..2 100644\n--- a/a.rs\n+++ b/a.rs\n@@ -3,3 +3,3 @@ fn x\n keep\n-old\n+new\n keep\ndiff --git a/gone.rs b/gone.rs\ndeleted file mode 100644\n--- a/gone.rs\n+++ /dev/null\n@@ -1 +0,0 @@\n-bye\n";
+        let files = by_file(diff);
+        assert_eq!(files.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["a.rs", "gone.rs"]);
+        assert!(files[0].1.ends_with(" keep\n") && !files[0].1.contains("gone"));
+        let (head, lines) = hunks(&files[0].1).remove(0);
+        assert_eq!(numbers(&head, &lines), ["3", "was 4", "4", "5"]);
+    }
 
     #[test]
     fn a_hunk_goes_back_alone_and_a_whole_file_too() {

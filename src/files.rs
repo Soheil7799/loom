@@ -183,7 +183,15 @@ impl Files {
         pick_line.add_css_class("repo-bar");
         pick_line.set_visible(false);
         root.append(&pick_line);
-        changes_view.append(&repo_line);
+        let review = gtk::Button::with_label("Review");
+        review.add_css_class("flat");
+        review.add_css_class("small");
+        review.set_tooltip_text(Some("Every change in one window: leave notes on lines, then send them as one message"));
+        let repo_row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        repo_line.set_hexpand(true);
+        repo_row.append(&repo_line);
+        repo_row.append(&review);
+        changes_view.append(&repo_row);
         changes_view.append(&changes_scroller);
         let commit_entry = gtk::Entry::builder().placeholder_text("Commit message (commits what is staged)").hexpand(true).build();
         let commit = gtk::Button::with_label("Commit");
@@ -698,6 +706,14 @@ impl Files {
         ask.connect_clicked(move |_| {
             if let Some(files) = weak.upgrade() {
                 files.ask();
+            }
+        });
+        let weak = Rc::downgrade(&files);
+        review.connect_clicked(move |_| {
+            if let Some(files) = weak.upgrade()
+                && let Some(repo) = files.changes_repo.borrow().clone()
+            {
+                files.review_all(&repo);
             }
         });
         let weak = Rc::downgrade(&files);
@@ -1484,6 +1500,12 @@ impl Files {
     /// The whole graph in a window of its own: who and when too, dragged around to look; a
     /// click opens a commit.
     /// A changed file of the repo the Changes view shows, in its window (devhooks).
+    pub fn review_for_tests(&self) {
+        if let Some(repo) = self.changes_repo.borrow().clone() {
+            self.review_all(&repo);
+        }
+    }
+
     pub fn diff_for_tests(&self, file: &str) {
         if let Some(repo) = self.changes_repo.borrow().clone() {
             self.show_diff(&repo, file);
@@ -1702,6 +1724,26 @@ impl Files {
     }
 
     /// A file's changes against the last commit (a new file: all of it), in a window.
+    /// Every change in `repo` since the last commit, in one window to review and leave notes on.
+    fn review_all(&self, repo: &Path) {
+        let (me, repo) = (self.me.borrow().clone(), repo.to_owned());
+        glib::spawn_future_local(async move {
+            let reading = repo.clone();
+            let diff = gio::spawn_blocking(move || loom_core::files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD"]).unwrap_or_default())
+                .await
+                .unwrap_or_default();
+            let Some(files) = me.upgrade() else { return };
+            let changed = loom_core::changes::by_file(&diff);
+            if changed.is_empty() {
+                files.repo_line.set_label("Nothing changed since the last commit (new files: open each).");
+            } else if diff.lines().count() > 6000 {
+                files.diff_window(&format!("{} changed files — changes", changed.len()), &diff);
+            } else {
+                files.change_window(&repo, changed);
+            }
+        });
+    }
+
     fn show_diff(&self, repo: &Path, file: &str) {
         let (me, repo, file) = (self.me.borrow().clone(), repo.to_owned(), file.to_owned());
         glib::spawn_future_local(async move {
@@ -1721,21 +1763,24 @@ impl Files {
             let Some(files) = me.upgrade() else { return };
             // A change of git's, not too long to list line by line: one to act on, hunk by hunk.
             if tracked && diff.lines().count() <= 3000 {
-                files.change_window(&repo, &file, &diff);
+                files.change_window(&repo, vec![(file, diff)]);
             } else {
                 files.diff_window(&format!("{file} — changes"), &diff);
             }
         });
     }
 
-    /// A changed file's diff in a window, as the web page's: each change (hunk) with Undo
-    /// (only it goes back, if the file still reads as shown), the whole file thrown away, and a
-    /// click on a line: a note on it, into the chat's box for the next message.
-    fn change_window(&self, repo: &Path, file: &str, diff: &str) {
+    /// Changed files' diffs in a window, as the web page's: each change (hunk) with Undo
+    /// (only it goes back, if the file still reads as shown), a file alone thrown away, and a
+    /// click on a line: a note on it, into the chat's box for the next message (one message
+    /// for every note: a review of the agent's work).
+    fn change_window(&self, repo: &Path, changed: Vec<(String, String)>) {
+        let one = changed.len() == 1;
+        let title = if one { changed[0].0.clone() } else { format!("{} changed files", changed.len()) };
         let body = gtk::Box::new(gtk::Orientation::Vertical, 10);
         body.add_css_class("change-window");
         let bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-        let name = gtk::Label::builder().label(file).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
+        let name = gtk::Label::builder().label(&title).xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::Start).build();
         name.add_css_class("mono");
         let hint = gtk::Label::new(Some("Click a line to leave a note on it"));
         hint.add_css_class("dim");
@@ -1745,14 +1790,55 @@ impl Files {
         throw.set_tooltip_text(Some("Every change to it goes back to the last commit (asks first)"));
         bar.append(&name);
         bar.append(&hint);
-        bar.append(&throw);
+        if one {
+            bar.append(&throw);
+        }
         body.append(&bar);
-        let window = gtk::Window::builder().title(format!("{file} — changes")).default_width(900).default_height(640).build();
+        let window = gtk::Window::builder().title(format!("{title} — changes")).default_width(900).default_height(640).build();
         window.add_css_class("loom");
         if let Some(parent) = self.root.root().and_downcast::<gtk::Window>() {
             window.set_transient_for(Some(&parent));
         }
-        let (me, path) = (self.me.borrow().clone(), repo.join(file));
+        let me = self.me.borrow().clone();
+        for (file, diff) in &changed {
+            let (file, path) = (file.as_str(), repo.join(file));
+            if !one {
+                let heading = gtk::Label::builder().label(file).xalign(0.0).ellipsize(pango::EllipsizeMode::Start).build();
+                heading.add_css_class("mono");
+                heading.add_css_class("heading");
+                body.append(&heading);
+            }
+            self.hunk_cards(&body, &window, repo, file, &path, diff, one);
+        }
+        let (me, held, repo, name) = (me.clone(), window.downgrade(), repo.to_owned(), changed[0].0.clone());
+        throw.connect_clicked(move |_| {
+            if let Some(files) = me.upgrade() {
+                files.revert(&repo, &name);
+            }
+            if let Some(window) = held.upgrade() {
+                window.close();
+            }
+        });
+        let keys = gtk::EventControllerKey::new();
+        let held = window.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape
+                && let Some(window) = held.upgrade()
+            {
+                window.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        window.add_controller(keys);
+        window.set_child(Some(&gtk::ScrolledWindow::builder().child(&body).vexpand(true).build()));
+        window.present();
+    }
+
+    /// One file's changes as cards in `body`: each hunk with its Undo, its lines open to notes.
+    #[allow(clippy::too_many_arguments)]
+    fn hunk_cards(&self, body: &gtk::Box, window: &gtk::Window, repo: &Path, file: &str, path: &Path, diff: &str, one: bool) {
+        let me = self.me.borrow().clone();
         for (n, (head, lines)) in loom_core::changes::hunks(diff).into_iter().enumerate() {
             let card = gtk::Box::new(gtk::Orientation::Vertical, 0);
             card.add_css_class("hunk");
@@ -1782,9 +1868,11 @@ impl Files {
                 }
                 list.append(&row);
             }
+            let numbers = loom_core::changes::numbers(&head, &lines);
             let (me_note, name, shown) = (me.clone(), file.to_owned(), lines.clone());
             list.connect_row_activated(move |_, row| {
                 let Some(line) = shown.get(row.index() as usize).cloned() else { return };
+                let number = numbers.get(row.index() as usize).cloned().unwrap_or_default();
                 let entry = gtk::Entry::builder().placeholder_text("Your note on this line… Enter").width_chars(40).build();
                 let popover = gtk::Popover::builder().child(&entry).build();
                 popover.set_parent(row);
@@ -1796,7 +1884,7 @@ impl Files {
                     if let (false, Some(files)) = (note.is_empty(), me.upgrade())
                         && let Some(ask) = files.on_ask.borrow().clone()
                     {
-                        ask(format!("About your changes:\n- {name}, the line `{}`: {note}\n", line.trim()));
+                        ask(format!("{REVIEW}- {name}:{number}, `{}`: {note}\n", line.trim()));
                     }
                     if let Some(popover) = held.upgrade() {
                         popover.popdown();
@@ -1806,7 +1894,7 @@ impl Files {
             });
             card.append(&list);
             body.append(&card);
-            let (me, path, held, repo, name) = (me.clone(), path.clone(), window.downgrade(), repo.to_owned(), file.to_owned());
+            let (me, path, held, repo, name) = (me.clone(), path.to_owned(), window.downgrade(), repo.to_owned(), file.to_owned());
             let shown = std::iter::once(head).chain(lines).collect::<Vec<_>>().join("\n");
             undo.connect_clicked(move |_| {
                 let Some(files) = me.upgrade() else { return };
@@ -1816,7 +1904,11 @@ impl Files {
                             window.close();
                         }
                         files.fill_changes();
-                        files.show_diff(&repo, &name);
+                        if one {
+                            files.show_diff(&repo, &name);
+                        } else {
+                            files.review_all(&repo);
+                        }
                     }
                     Err(why) => {
                         let parent = held.upgrade();
@@ -1825,29 +1917,6 @@ impl Files {
                 }
             });
         }
-        let (me, held, repo, name) = (me.clone(), window.downgrade(), repo.to_owned(), file.to_owned());
-        throw.connect_clicked(move |_| {
-            if let Some(files) = me.upgrade() {
-                files.revert(&repo, &name);
-            }
-            if let Some(window) = held.upgrade() {
-                window.close();
-            }
-        });
-        let keys = gtk::EventControllerKey::new();
-        let held = window.downgrade();
-        keys.connect_key_pressed(move |_, key, _, _| {
-            if key == gtk::gdk::Key::Escape
-                && let Some(window) = held.upgrade()
-            {
-                window.close();
-                return glib::Propagation::Stop;
-            }
-            glib::Propagation::Proceed
-        });
-        window.add_controller(keys);
-        window.set_child(Some(&gtk::ScrolledWindow::builder().child(&body).vexpand(true).build()));
-        window.present();
     }
 
     fn diff_window(&self, file: &str, diff: &str) -> gtk::Window {
@@ -2627,6 +2696,9 @@ fn draw_lanes(cr: &gtk::cairo::Context, layout: &loom_core::lanes::Layout, edges
         let _ = cr.fill();
     }
 }
+
+/// The first line of a review's notes in the message box (written once, however many notes).
+pub const REVIEW: &str = "About your changes:\n";
 
 /// The text selected in a label under `widget` (the Read view), if any.
 pub fn selected_text(widget: &gtk::Widget) -> Option<String> {
