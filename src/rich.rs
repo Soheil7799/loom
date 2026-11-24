@@ -153,6 +153,10 @@ fn ornaments(view: &gtk::TextView, snapshot: &gtk::Snapshot) {
         for start in starts(&buffer, &block) {
             let mut end = start;
             end.forward_to_tag_toggle(Some(&block));
+            // The tag runs through the last line's newline: measure that line, not the next.
+            if end.starts_line() && end > start {
+                end.backward_char();
+            }
             let (y0, y1) = (top(&start), bottom(&end));
             match boxes.last_mut() {
                 Some(b) if y0 - b.1 < 2.0 => b.1 = y1,

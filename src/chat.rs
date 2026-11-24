@@ -1384,6 +1384,27 @@ impl Chat {
         true
     }
 
+    /// Enter in a code block: a new line, not a send (and an opened block gets its closing fence).
+    fn fence_enter(&self) -> bool {
+        let buffer = self.input.buffer();
+        let cursor = buffer.iter_at_mark(&buffer.get_insert());
+        let mut line_start = cursor;
+        line_start.set_line_offset(0);
+        let mut line_end = cursor;
+        if !line_end.ends_line() {
+            line_end.forward_to_line_end();
+        }
+        let before = buffer.text(&buffer.start_iter(), &line_start, false);
+        let line = buffer.text(&line_start, &line_end, false);
+        let after = buffer.text(&line_end, &buffer.end_iter(), false);
+        let Some((text, back)) = fence_newline(&before, &line, &after, cursor == line_end) else { return false };
+        buffer.insert_at_cursor(&text);
+        let mut at = buffer.iter_at_mark(&buffer.get_insert());
+        at.backward_chars(back);
+        buffer.place_cursor(&at);
+        true
+    }
+
     fn key(self: &Rc<Self>, key: gdk::Key, modifiers: gdk::ModifierType) -> glib::Propagation {
         let shift = modifiers.contains(gdk::ModifierType::SHIFT_MASK);
         let ctrl = modifiers.contains(gdk::ModifierType::CONTROL_MASK);
@@ -1397,6 +1418,7 @@ impl Chat {
                 self.submit();
                 self.call(&self.on_send_now, ());
             }
+            gdk::Key::Return | gdk::Key::KP_Enter if !shift && self.fence_enter() => {}
             gdk::Key::Return | gdk::Key::KP_Enter if !shift => self.submit(),
             // The prediction in the empty input: in, not sent.
             gdk::Key::Right | gdk::Key::Tab if !completing && self.input.buffer().char_count() == 0 && self.suggestion.borrow().is_some() => {
@@ -4482,12 +4504,13 @@ fn mark_markdown(buffer: &gtk::TextBuffer) {
         let n = chars.len();
         let lead = chars.iter().take_while(|c| c.is_whitespace()).count();
         let rest: String = chars[lead..].iter().collect();
+        // A block's lines are tagged with their newline, so an empty line inside still counts.
         if rest.starts_with("```") {
-            apply("md-block", at, at + n);
+            apply("md-block", at, at + n + 1);
             apply("md-mark", at, at + n);
             fenced = !fenced;
         } else if fenced {
-            apply("md-block", at, at + n);
+            apply("md-block", at, at + n + 1);
         } else if rest.starts_with('#') && rest.trim_start_matches('#').starts_with(' ') {
             let hashes = rest.chars().take_while(|c| *c == '#').count();
             apply("md-mark", at + lead, at + lead + hashes);
@@ -4544,6 +4567,22 @@ fn mark_markdown(buffer: &gtk::TextBuffer) {
             }
         }
         at += n + 1;
+    }
+}
+
+/// What Enter types in the message box when it is about code blocks, and how many characters
+/// the cursor goes back after it: None when Enter should send. `before` is the text above the
+/// cursor's line, `line` that line, `after` the rest; `at_end` the cursor at the line's end.
+fn fence_newline(before: &str, line: &str, after: &str, at_end: bool) -> Option<(String, i32)> {
+    let fence = |l: &str| l.trim_start().starts_with("```");
+    let open = before.lines().filter(|l| fence(l)).count() % 2 == 1;
+    match (open, fence(line)) {
+        // Opening a block with nothing closing it below: close it, the cursor on the line between.
+        (false, true) if at_end && !after.lines().any(fence) => Some(("\n\n```".into(), 4)),
+        (false, true) => Some(("\n".into(), 0)),
+        // Inside a block, Enter is a new line; on its closing fence, it sends.
+        (true, false) => Some(("\n".into(), 0)),
+        _ => None,
     }
 }
 
@@ -4715,7 +4754,21 @@ fn tokens(n: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{changed_lines, chip_value, plain_tail, split_shell_runs};
+    use super::{changed_lines, chip_value, fence_newline, plain_tail, split_shell_runs};
+
+    #[test]
+    fn enter_closes_an_opened_code_block_and_types_lines_inside_one() {
+        let close = Some(("\n\n```".to_string(), 4));
+        let line = Some(("\n".to_string(), 0));
+        assert_eq!(fence_newline("", "```rust", "", true), close);
+        assert_eq!(fence_newline("Look:\n", "  ```", "", true), close);
+        // Already closed below: only a new line.
+        assert_eq!(fence_newline("", "```", "\n\n```", true), line);
+        assert_eq!(fence_newline("```\n", "let a = 1;", "\n```", true), line);
+        // On the closing fence, or in prose, Enter sends.
+        assert_eq!(fence_newline("```\nx\n", "```", "", true), None);
+        assert_eq!(fence_newline("```\nx\n```\n", "done", "", true), None);
+    }
 
     #[test]
     fn shell_runs_read_as_commands() {
