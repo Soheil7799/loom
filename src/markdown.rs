@@ -4,7 +4,7 @@
 use gtk::glib::markup_escape_text as escape;
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Segment {
     /// Pango markup.
     Text(String),

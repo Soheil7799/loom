@@ -6,7 +6,7 @@
 //! the buffer's tags, links and the code blocks' "copy" included, so the view needs no state
 //! of its own beside its buffer.
 
-use gtk::{gdk, glib, pango, prelude::*};
+use gtk::{gdk, glib, pango, prelude::*, subclass::prelude::ObjectSubclassIsExt};
 
 use crate::markdown::Segment;
 
@@ -61,7 +61,12 @@ mod imp {
     use gtk::{glib, prelude::*};
 
     #[derive(Default)]
-    pub struct MsgView;
+    pub struct MsgView {
+        /// What it shows, kept while it has a table (drawn again at a new width).
+        pub segments: std::cell::RefCell<Vec<crate::markdown::Segment>>,
+        /// The width its tables were fitted to (0: no table).
+        pub fitted: std::cell::Cell<i32>,
+    }
 
     #[glib::object_subclass]
     impl ObjectSubclass for MsgView {
@@ -71,7 +76,23 @@ mod imp {
     }
 
     impl ObjectImpl for MsgView {}
-    impl WidgetImpl for MsgView {}
+
+    impl WidgetImpl for MsgView {
+        fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
+            self.parent_size_allocate(width, height, baseline);
+            // Tables fit their columns to the width: drawn again when it changed (after this
+            // allocation, never inside it).
+            let fitted = self.fitted.get();
+            if fitted > 0 && (width - fitted).abs() > 24 {
+                self.fitted.set(width);
+                let view = self.obj().clone();
+                glib::idle_add_local_once(move || {
+                    let segments = view.imp().segments.borrow().clone();
+                    super::fill(view.upcast_ref(), &[], &segments);
+                });
+            }
+        }
+    }
 
     impl TextViewImpl for MsgView {
         fn snapshot_layer(&self, layer: gtk::TextViewLayer, snapshot: gtk::Snapshot) {
@@ -128,19 +149,26 @@ fn ornaments(view: &gtk::TextView, snapshot: &gtk::Snapshot) {
     }
     // Tables: the header line and the rows under it.
     if let (Some(head), Some(row)) = (table.lookup("table-head"), table.lookup("table-row")) {
+        let more = table.lookup("table-more");
         for start in starts(&buffer, &head) {
+            // (a row's own lines past its first, its cells wrapped: no line above them)
             let mut lines = vec![start];
+            let mut header_end = start;
             let mut line = start;
-            while line.forward_line() && line.has_tag(&row) {
+            while line.forward_line() && (line.has_tag(&row) || line.has_tag(&head)) {
+                if line.has_tag(&head) {
+                    header_end = line;
+                }
                 lines.push(line);
             }
             let last = lines.last().copied().unwrap_or(start);
-            let below = if lines.len() > 1 { BELOW as f32 } else { 0.0 };
+            // (the space kept under the table, but the row's own 5 px)
+            let below = if last.has_tag(&row) { (BELOW - 5) as f32 } else { 0.0 };
             let box_ = rounded(top(&start), bottom(&last) - below);
             snapshot.push_rounded_clip(&box_);
             snapshot.append_color(&faint(0.03), box_.bounds());
-            snapshot.append_color(&faint(0.06), &Rect::new(0.0, top(&start), width, bottom(&start) - top(&start)));
-            for line in &lines[1..] {
+            snapshot.append_color(&faint(0.06), &Rect::new(0.0, top(&start), width, bottom(&header_end) - top(&start)));
+            for line in lines.iter().filter(|l| l.has_tag(&row) && !more.as_ref().is_some_and(|m| l.has_tag(m))) {
                 snapshot.append_color(&faint(0.1), &Rect::new(0.0, top(line), width, 1.0));
             }
             snapshot.pop();
@@ -503,6 +531,13 @@ pub fn fill(view: &gtk::TextView, shown: &[Segment], segments: &[Segment]) {
         }
     }
     NEXT.set(count);
+    if let Some(view) = view.downcast_ref::<MsgView>() {
+        let tables = segments.iter().any(|s| matches!(s, Segment::Table(_)));
+        *view.imp().segments.borrow_mut() = if tables { segments.to_vec() } else { Vec::new() };
+        if !tables {
+            view.imp().fitted.set(0);
+        }
+    }
 }
 
 /// A tag of the buffer's, made the first time by `make`.
@@ -692,18 +727,44 @@ fn set_apart(buffer: &gtk::TextBuffer) {
 /// a spreadsheet takes them.
 fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
     const GAP: i32 = 28;
-    const WIDEST: i32 = 360;
+    const MARGIN: i32 = 12;
     let buffer = view.buffer();
     set_apart(&buffer);
     let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
-    let mut widths = vec![0; columns];
+    // Each cell measured as Pango would draw it (the header bold), on one line.
+    let layout = |r: usize, cell: &str| {
+        let layout = view.create_pango_layout(None);
+        // (a link is no element of Pango's: measured as plain text)
+        let mut markup = String::new();
+        let mut rest = cell;
+        while let Some(at) = rest.find("<a ") {
+            markup.push_str(&rest[..at]);
+            markup.push_str("<span>");
+            rest = rest[at..].split_once('>').map_or("", |(_, after)| after);
+        }
+        markup.push_str(rest);
+        let markup = markup.replace("</a>", "</span>");
+        layout.set_markup(&if r == 0 { format!("<b>{markup}</b>") } else { markup });
+        layout
+    };
+    let mut natural = vec![0; columns];
     for (r, row) in rows.iter().enumerate() {
         for (c, cell) in row.iter().enumerate() {
-            let width = view.create_pango_layout(Some(&unescape(&strip_tags(cell)))).pixel_size().0;
-            // The header is bold: a little wider.
-            let width = if r == 0 { width * 11 / 10 } else { width };
-            widths[c] = widths[c].max(width.min(WIDEST));
+            natural[c] = natural[c].max(layout(r, cell).pixel_size().0);
         }
+    }
+    // The width there is: the view's, or (not laid out yet) its nearest laid out ancestor's.
+    let mut width = view.width();
+    let mut up = view.parent();
+    while width <= 0 {
+        let Some(w) = up else { break };
+        width = w.width();
+        up = w.parent();
+    }
+    let width = if width > 0 { width } else { 600 };
+    let widths = fit_columns(&natural, width - 2 * MARGIN - GAP * columns.saturating_sub(1) as i32);
+    if let Some(view) = view.downcast_ref::<MsgView>() {
+        view.imp().fitted.set(width);
     }
     let mut tabs = pango::TabArray::new(columns.saturating_sub(1) as i32, true);
     let mut x = 0;
@@ -712,29 +773,113 @@ fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
         tabs.set_tab(c as i32, pango::TabAlign::Left, x);
     }
     *count += 1;
-    let stops = gtk::TextTag::builder().name(format!("tab:{count}")).tabs(&tabs).left_margin(12).right_margin(12)
-        // A row too long for the view wraps under its last column, not under the first.
-        .indent(-x).pixels_above_lines(5).pixels_below_lines(5).build();
+    let stops = gtk::TextTag::builder().name(format!("tab:{count}")).tabs(&tabs).left_margin(MARGIN).right_margin(MARGIN)
+        // A line still too long (a word wider than its column) wraps under its last column.
+        .indent(-x).build();
     buffer.tag_table().add(&stops);
-    let head = tag(&buffer, "table-head", || gtk::TextTag::builder().name("table-head").weight(600).scale(0.9).foreground_rgba(&grey(1.0)).build());
-    let body = tag(&buffer, "table-row", || gtk::TextTag::builder().name("table-row").build());
+    // Made in this order once per buffer: a later tag's spacing wins over an earlier one's.
+    let head = tag(&buffer, "table-head", || gtk::TextTag::builder().name("table-head").weight(600).scale(0.9).foreground_rgba(&grey(1.0)).pixels_above_lines(5).pixels_below_lines(5).build());
+    let body = tag(&buffer, "table-row", || gtk::TextTag::builder().name("table-row").pixels_above_lines(5).pixels_below_lines(5).build());
+    let more = tag(&buffer, "table-more", || gtk::TextTag::builder().name("table-more").pixels_above_lines(0).build());
+    let cut = tag(&buffer, "table-cut", || gtk::TextTag::builder().name("table-cut").pixels_below_lines(0).build());
     let foot = tag(&buffer, "table-end", || gtk::TextTag::builder().name("table-end").pixels_below_lines(BELOW).build());
     for (r, row) in rows.iter().enumerate() {
-        let start = buffer.end_iter().offset();
-        for (c, cell) in row.iter().enumerate() {
-            if c > 0 {
-                buffer.insert(&mut buffer.end_iter(), "\t");
+        // Each cell cut into the lines it takes in its column; the row is as tall as its tallest.
+        let cells: Vec<Vec<String>> = row
+            .iter()
+            .enumerate()
+            .map(|(c, cell)| {
+                let layout = layout(r, cell);
+                layout.set_width(widths[c] * pango::SCALE);
+                layout.set_wrap(pango::WrapMode::WordChar);
+                let text = layout.text();
+                let cuts: Vec<usize> = layout.lines_readonly().iter().skip(1).map(|line| text[..line.start_index() as usize].chars().count()).collect();
+                split_markup(cell, &cuts)
+            })
+            .collect();
+        let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        for k in 0..height {
+            let start = buffer.end_iter().offset();
+            for (c, lines) in cells.iter().enumerate() {
+                if c > 0 {
+                    buffer.insert(&mut buffer.end_iter(), "\t");
+                }
+                if let Some(part) = lines.get(k) {
+                    insert_inline(view, part.trim_start(), count);
+                }
             }
-            insert_inline(view, cell, count);
+            let (from, to) = (buffer.iter_at_offset(start), buffer.end_iter());
+            buffer.apply_tag(&stops, &from, &to);
+            buffer.apply_tag(if r == 0 { &head } else { &body }, &from, &to);
+            if k > 0 {
+                buffer.apply_tag(&more, &from, &to);
+            }
+            if k + 1 < height {
+                buffer.apply_tag(&cut, &from, &to);
+            } else if r + 1 == rows.len() {
+                buffer.apply_tag(&foot, &from, &to);
+            }
+            buffer.insert(&mut buffer.end_iter(), "\n");
         }
-        let (from, to) = (buffer.iter_at_offset(start), buffer.end_iter());
-        buffer.apply_tag(&stops, &from, &to);
-        buffer.apply_tag(if r == 0 { &head } else { &body }, &from, &to);
-        if r + 1 == rows.len() {
-            buffer.apply_tag(&foot, &from, &to);
-        }
-        buffer.insert(&mut buffer.end_iter(), "\n");
     }
+}
+
+/// Columns' widths in `room`: as wide as their widest cell when they all fit; else the narrow
+/// ones keep theirs and the wide ones share what is left, in proportion.
+fn fit_columns(natural: &[i32], room: i32) -> Vec<i32> {
+    let room = room.max(natural.len() as i32 * 40);
+    if natural.iter().sum::<i32>() <= room {
+        return natural.to_vec();
+    }
+    let mut fixed = vec![false; natural.len()];
+    loop {
+        let left = room - natural.iter().zip(&fixed).filter(|(_, f)| **f).map(|(w, _)| w).sum::<i32>();
+        let open: Vec<usize> = (0..natural.len()).filter(|&c| !fixed[c]).collect();
+        let fair = left / open.len().max(1) as i32;
+        let narrow: Vec<usize> = open.iter().copied().filter(|&c| natural[c] <= fair).collect();
+        if narrow.is_empty() {
+            let wide: i32 = open.iter().map(|&c| natural[c]).sum::<i32>().max(1);
+            return (0..natural.len()).map(|c| if fixed[c] { natural[c] } else { (natural[c] as i64 * left as i64 / wide as i64) as i32 }).collect();
+        }
+        narrow.into_iter().for_each(|c| fixed[c] = true);
+    }
+}
+
+/// `markup` cut before each of `cuts` (offsets in its text, ascending): each piece closes the
+/// elements open at its end and opens them again at the next one's start.
+fn split_markup(markup: &str, cuts: &[usize]) -> Vec<String> {
+    let mut pieces = vec![String::new()];
+    let mut open: Vec<(String, String)> = Vec::new();
+    let (mut at, mut next) = (0usize, cuts.iter().peekable());
+    let mut rest = markup;
+    while let Some(c) = rest.chars().next() {
+        // A cut before what comes next (a closing element stays with the text it closes).
+        if !rest.starts_with("</") && next.peek().is_some_and(|&&cut| cut == at) {
+            next.next();
+            let piece = pieces.last_mut().expect("a piece");
+            open.iter().rev().for_each(|(_, name)| piece.push_str(&format!("</{name}>")));
+            pieces.push(open.iter().map(|(element, _)| element.as_str()).collect());
+        }
+        if c == '<' {
+            let end = rest.find('>').map_or(rest.len(), |e| e + 1);
+            let element = &rest[..end];
+            if element.starts_with("</") {
+                open.pop();
+            } else {
+                let name = element[1..].split(|c: char| c == ' ' || c == '>').next().unwrap_or_default().to_owned();
+                open.push((element.to_owned(), name));
+            }
+            pieces.last_mut().expect("a piece").push_str(element);
+            rest = &rest[end..];
+            continue;
+        }
+        // An entity is one character of the text.
+        let len = if c == '&' { rest.find(';').map_or(1, |e| e + 1) } else { c.len_utf8() };
+        pieces.last_mut().expect("a piece").push_str(&rest[..len]);
+        rest = &rest[len..];
+        at += 1;
+    }
+    pieces
 }
 
 /// A line across: a thin full-width paragraph, read as nothing.
@@ -744,21 +889,6 @@ fn insert_rule(view: &gtk::TextView) {
     let chrome = tag(&buffer, "chrome", || gtk::TextTag::builder().name("chrome").build());
     let rule = tag(&buffer, "rule", || gtk::TextTag::builder().name("rule").scale(0.6).build());
     buffer.insert_with_tags(&mut buffer.end_iter(), " \n", &[&chrome, &rule]);
-}
-
-/// Markup's text alone.
-fn strip_tags(markup: &str) -> String {
-    let mut out = String::with_capacity(markup.len());
-    let mut inside = false;
-    for c in markup.chars() {
-        match c {
-            '<' => inside = true,
-            '>' => inside = false,
-            _ if !inside => out.push(c),
-            _ => {}
-        }
-    }
-    out
 }
 
 /// The tag for one opening markup element (None: one this view ignores).
@@ -879,7 +1009,16 @@ mod tests {
     }
 
     #[test]
-    fn a_cell_measures_by_its_text() {
-        assert_eq!(super::strip_tags("<b>bold</b> and <tt>c&lt;</tt>"), "bold and c&lt;");
+    fn a_wrapped_cell_keeps_its_styles_on_every_line() {
+        let pieces = super::split_markup("one <b>two &amp; three</b> four", &[4, 10]);
+        assert_eq!(pieces, ["one ", "<b>two &amp; </b>", "<b>three</b> four"]);
+        assert_eq!(super::split_markup("plain", &[]), ["plain"]);
+    }
+
+    #[test]
+    fn columns_share_the_room_the_narrow_keeping_theirs() {
+        assert_eq!(super::fit_columns(&[50, 100], 400), [50, 100]);
+        assert_eq!(super::fit_columns(&[50, 600, 200], 450), [50, 200, 200]);
+        assert_eq!(super::fit_columns(&[600, 300], 450), [300, 150]);
     }
 }
