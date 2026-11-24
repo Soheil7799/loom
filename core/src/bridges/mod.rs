@@ -60,7 +60,17 @@ impl Link {
 /// weaker stand-in: these are tokens and pairing codes).
 pub fn random(len: usize) -> Option<String> {
     const LETTERS: &[u8] = b"abcdefghjkmnpqrstuvwxyz23456789";
-    random_bytes(len).map(|bytes| bytes.iter().map(|b| LETTERS[*b as usize % LETTERS.len()] as char).collect())
+    // Bytes from 248 up are thrown away: 248 is 8 × 31, so every letter stays as likely.
+    let fair = 256 - 256 % LETTERS.len();
+    let mut out = String::with_capacity(len);
+    while out.len() < len {
+        for b in random_bytes(len * 2)? {
+            if (b as usize) < fair && out.len() < len {
+                out.push(LETTERS[b as usize % LETTERS.len()] as char);
+            }
+        }
+    }
+    Some(out)
 }
 
 /// `len` random bytes as hex (a key: nothing weaker will do).
@@ -103,5 +113,16 @@ pub fn asking_from(v: &Value) -> Asking {
         writable: v["writable"].as_bool().unwrap_or(false),
         summary: v["summary"].as_str().unwrap_or("").to_owned(),
         blank: v["blank"].as_bool().unwrap_or(false),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn codes_are_as_long_as_asked_and_of_the_letters_only() {
+        let code = super::random(40).unwrap();
+        assert_eq!(code.chars().count(), 40);
+        assert!(code.chars().all(|c| "abcdefghjkmnpqrstuvwxyz23456789".contains(c)), "{code}");
+        assert_eq!(super::random_hex(16).unwrap().len(), 32);
     }
 }

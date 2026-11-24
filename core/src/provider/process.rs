@@ -20,7 +20,7 @@ const LOG_MOST: u64 = 8 << 20;
 pub struct Process {
     /// Lines for its stdin, written by a thread of their own: a process that stops reading
     /// fills the pipe, and that must not stop loom's core thread. None once stopped.
-    stdin: RefCell<Option<std::sync::mpsc::Sender<Vec<u8>>>>,
+    stdin: RefCell<Option<std::sync::mpsc::SyncSender<Vec<u8>>>>,
     child: RefCell<Option<Child>>,
     pid: u32,
     /// "claude 1234": how the debug log names it.
@@ -108,7 +108,8 @@ impl Process {
             let _ = tx.send_blocking(None);
         });
         crate::log::debug!(tag.clone(), "started {} in {}", program.join(" "), cwd.display());
-        let (to_stdin, lines) = std::sync::mpsc::channel::<Vec<u8>>();
+        // Bounded: an agent that stops reading can't make loom keep its lines without end.
+        let (to_stdin, lines) = std::sync::mpsc::sync_channel::<Vec<u8>>(256);
         if let Some(mut stdin) = child.stdin.take() {
             std::thread::spawn(move || {
                 // Ends when the Process drops its sender (stopped), closing the pipe with it.
@@ -142,7 +143,9 @@ impl Process {
             let mut line = value.to_string();
             crate::log::debug!(self.tag.clone(), "→ {} [{} bytes]", crate::log::cut(&line), line.len());
             line.push('\n');
-            let _ = stdin.send(line.into_bytes());
+            if stdin.try_send(line.into_bytes()).is_err() {
+                eprintln!("loom: the agent is not reading; a message to it was dropped");
+            }
         }
     }
 

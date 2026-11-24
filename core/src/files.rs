@@ -24,17 +24,26 @@ pub fn free_name(wanted: &Path) -> PathBuf {
 }
 
 /// Writes `bytes` to a new file in `dir` (made if missing) named `name`, or "name (2).ext"…
-/// if taken: never over a file and never through a link left in the folder (O_EXCL). Its path.
+/// if taken: never over a file, never through a link left in the folder (O_EXCL), and not
+/// into a folder that is itself a link. Its path.
 pub fn save_new(dir: &Path, name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
     use std::io::Write;
     std::fs::create_dir_all(dir)?;
+    if std::fs::symlink_metadata(dir)?.file_type().is_symlink() {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "the folder is a link"));
+    }
     let wanted = dir.join(name);
     let stem = wanted.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let ext = wanted.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
     for n in 1..1000 {
         let path = if n == 1 { wanted.clone() } else { dir.join(format!("{stem} ({n}){ext}")) };
         match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(mut file) => return file.write_all(bytes).map(|()| path),
+            // A write that fails (a full disk) leaves no half file behind.
+            Ok(mut file) => {
+                return file.write_all(bytes).map(|()| path.clone()).inspect_err(|_| {
+                    let _ = std::fs::remove_file(&path);
+                });
+            }
             Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
             Err(e) => return Err(e),
         }
@@ -148,6 +157,9 @@ mod tests {
         assert!(!outside.exists());
         assert_eq!(save_new(&base, "photo.jpg", b"again").unwrap(), base.join("photo (3).jpg"));
         assert_eq!(std::fs::read(&saved).unwrap(), b"new");
+        // Nor into a folder that is a link.
+        std::os::unix::fs::symlink(&base, base.join("linked")).unwrap();
+        assert!(save_new(&base.join("linked"), "x", b"x").is_err());
         let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -278,18 +278,24 @@ fn clicked(view: &gtk::TextView, at: &gtk::TextIter) {
             word_start.backward_to_tag_toggle(Some(&tag));
         }
         word_end.forward_to_tag_toggle(Some(&tag));
-        // "copied" a moment, in place of "copy".
+        // "copied" a moment, in place of "copy" (found again by a mark: only if it is still
+        // there, the message not redrawn meanwhile).
         buffer.delete(&mut word_start, &mut word_end);
+        let mark = buffer.create_mark(None, &word_start, true);
         buffer.insert_with_tags(&mut word_start, "copied", &[&tag]);
         let (buffer, tag) = (buffer.clone(), tag.clone());
         glib::timeout_add_local_once(std::time::Duration::from_millis(1200), move || {
-            let mut start = buffer.start_iter();
-            if start.forward_to_tag_toggle(Some(&tag)) || start.starts_tag(Some(&tag)) {
-                let mut end = start;
-                end.forward_to_tag_toggle(Some(&tag));
+            if mark.is_deleted() {
+                return;
+            }
+            let mut start = buffer.iter_at_mark(&mark);
+            let mut end = start;
+            end.forward_chars(6);
+            if buffer.text(&start, &end, false) == "copied" && start.has_tag(&tag) {
                 buffer.delete(&mut start, &mut end);
                 buffer.insert_with_tags(&mut start, "copy", &[&tag]);
             }
+            buffer.delete_mark(&mark);
         });
     }
 }
@@ -338,13 +344,28 @@ pub fn fill(view: &gtk::TextView, shown: &[Segment], segments: &[Segment]) {
         return;
     }
     // The old last segment was drawn as the last (its end trimmed): drawn again too.
-    let from = same.min(shown.len().saturating_sub(1));
+    // (and so is the new last one, when segments went: it is drawn as the last now)
+    let from = same.min(shown.len().saturating_sub(1)).min(segments.len().saturating_sub(1));
     let buffer = view.buffer();
     let kept = (from > 0).then(|| buffer.mark(&format!("seg{from}"))).flatten();
     let from = match kept {
         Some(mark) => {
             let (mut start, mut end) = (buffer.iter_at_mark(&mark), buffer.end_iter());
+            // The links', copies' and tables' own tags in what goes, gone with it (a reply
+            // streaming in would pile them up otherwise).
+            let table = buffer.tag_table();
+            let mut own = Vec::new();
+            table.foreach(|tag| {
+                let numbered = action_of(tag).is_some() || tag.name().is_some_and(|n| n.starts_with("tab:"));
+                let mut at = start;
+                if numbered && (at.has_tag(tag) || at.forward_to_tag_toggle(Some(tag))) {
+                    own.push(tag.clone());
+                }
+            });
             buffer.delete(&mut start, &mut end);
+            for tag in own {
+                table.remove(&tag);
+            }
             from
         }
         None => {
@@ -431,7 +452,11 @@ fn insert_code(view: &gtk::TextView, lang: &str, code: &str, last: bool, count: 
     let body = code.trim_end_matches('\n');
     let at = end.offset();
     buffer.insert_with_tags(&mut end, body, &[&code_tag]);
-    colour_code(view, at, body, lang);
+    // A big block still streaming in (the last one) is coloured once it is not the last:
+    // colouring it per chunk would cost more with every line.
+    if !last || body.len() < 12_000 {
+        colour_code(view, at, body, lang);
+    }
     let mut end = buffer.end_iter();
     // The block's bottom padding: an empty line of its own, read as nothing.
     let pad = tag(&buffer, "code-foot", || gtk::TextTag::builder().name("code-foot").scale(0.4).left_margin(12).right_margin(12).pixels_below_lines(BELOW).build());

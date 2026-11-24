@@ -30,11 +30,16 @@ fn save(config: &Value) -> Result<(), String> {
     let path = config_path();
     if let Some(dir) = path.parent() {
         std::fs::DirBuilder::new().recursive(true).mode(0o700).create(dir).map_err(|e| e.to_string())?;
+        // An older folder too (DirBuilder's mode is for one it makes).
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700));
     }
     let temporary = path.with_extension("json.tmp");
     let _ = std::fs::remove_file(&temporary);
     let mut file = std::fs::OpenOptions::new().write(true).create_new(true).mode(0o600).open(&temporary).map_err(|e| e.to_string())?;
     file.write_all(serde_json::to_string_pretty(config).unwrap_or_default().as_bytes()).map_err(|e| e.to_string())?;
+    // On disk before it replaces the old one: a power cut can't leave an empty key file.
+    file.sync_all().map_err(|e| e.to_string())?;
     std::fs::rename(&temporary, &path).map_err(|e| e.to_string())
 }
 

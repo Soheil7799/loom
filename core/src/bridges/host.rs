@@ -150,6 +150,9 @@ pub fn accept_device(id: &str, name: &str) {
 pub fn pair(open: bool) {
     let Some(host) = HOST.with(|h| h.borrow().upgrade()) else { return };
     let code = if open { random(12) } else { None };
+    if open && code.is_none() {
+        eprintln!("loom: no randomness for a pairing code; pairing stays closed");
+    }
     *host.pairing.borrow_mut() = code.clone();
     host.apply(&crate::settings::get());
     if let Some(code) = code {
@@ -256,7 +259,10 @@ impl Host {
     /// Starts bridge `name`: its process, with its API connection handed down.
     fn start(self: &Rc<Self>, name: &'static str) {
         let Some(settings) = self.settings_for(name, &crate::settings::get()) else { return };
-        let Some(secret) = random(32) else { return };
+        let Some(secret) = random(32) else {
+            eprintln!("loom: no randomness for bridge {name}'s secret; it is not started");
+            return;
+        };
         // `loom bridge <name>` (from loomd too: the loom installed beside it).
         let Some(exe) = crate::paths::loom_program() else { return };
         // Its connection to the core API, made here: the bridge gets the other end as fd 3.

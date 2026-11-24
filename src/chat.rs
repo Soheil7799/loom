@@ -1321,9 +1321,9 @@ impl Chat {
         self.input.connect_map(markdown_tags);
         self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
-                // Marked as typed, so nothing shows unstyled first; a long paste once typing
-                // pauses (it is not re-marked per key).
-                if buffer.char_count() < 20_000 {
+                // Marked as typed, so nothing shows unstyled first; a long text once typing
+                // pauses (re-marking it all per key would lag).
+                if buffer.char_count() < 2_000 {
                     mark_markdown(buffer);
                 } else if !chat.markdown_due.replace(true) {
                     let (weak, buffer) = (Rc::downgrade(&chat), buffer.clone());
