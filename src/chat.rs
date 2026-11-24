@@ -355,7 +355,7 @@ impl Chat {
         root.add_css_class("chat");
 
         // Header: title and place on the left, state, mode and context use on the right.
-        let header = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         header.add_css_class("header");
         let names = gtk::Box::new(gtk::Orientation::Vertical, 0);
         names.set_hexpand(true);
@@ -503,7 +503,7 @@ impl Chat {
         views.add_named(&scroll_area, Some("main"));
         let aside = gtk::Box::new(gtk::Orientation::Vertical, 0);
         aside.add_css_class("aside");
-        let aside_bar = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let aside_bar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         aside_bar.add_css_class("aside-bar");
         let back = gtk::Button::with_label("← Main conversation");
         back.add_css_class("flat");
@@ -1588,8 +1588,14 @@ impl Chat {
         let Some(origin) = self.list.compute_point(area, &Point::new(0.0, 0.0)) else { return };
         // left of the column, in the free margin (never off the edge in a narrow window)
         let x = (origin.x() - 16.0).max(8.0);
-        let rgba = |r: f32, g: f32, b: f32, a: f32| gdk::RGBA::new(r, g, b, a);
-        let accent = rgba(0.48, 0.64, 0.97, 1.0);
+        // The theme's own colours (the accent, "needs you", "failed"), so every theme of
+        // loom's and the desktop's draws it in its colours.
+        #[allow(deprecated)]
+        let named = |name: &str, fallback: (f32, f32, f32)| area.style_context().lookup_color(name).unwrap_or_else(|| gdk::RGBA::new(fallback.0, fallback.1, fallback.2, 1.0));
+        let accent = named("accent_color", (0.48, 0.64, 0.97));
+        let wait = named("loom_wait", (0.88, 0.69, 0.41));
+        let failed = named("loom_err", (0.97, 0.46, 0.56));
+        let alpha = |c: &gdk::RGBA, a: f32| gdk::RGBA::new(c.red(), c.green(), c.blue(), a);
         let mut marks: Vec<(f32, &str)> = Vec::new();
         let mut end = None;
         let mut child = self.list.first_child();
@@ -1610,7 +1616,7 @@ impl Chat {
             }
         }
         let (Some(first), Some(end)) = (marks.iter().find(|(_, k)| *k == "turn").map(|(y, _)| *y), end) else { return };
-        snapshot.append_color(&rgba(0.48, 0.64, 0.97, 0.28), &Rect::new(x - 1.5, first, 3.0, end - first));
+        snapshot.append_color(&alpha(&accent, 0.28), &Rect::new(x - 1.5, first, 3.0, end - first));
         let dot = |y: f32, r: f32, color: &gdk::RGBA| {
             let rect = Rect::new(x - r, y - r, 2.0 * r, 2.0 * r);
             snapshot.push_rounded_clip(&gtk::gsk::RoundedRect::from_rect(rect, r));
@@ -1625,10 +1631,10 @@ impl Chat {
                     snapshot.save();
                     snapshot.translate(&Point::new(x, y));
                     snapshot.rotate(45.0);
-                    snapshot.append_color(&rgba(0.88, 0.69, 0.41, 1.0), &Rect::new(-4.25, -4.25, 8.5, 8.5));
+                    snapshot.append_color(&wait, &Rect::new(-4.25, -4.25, 8.5, 8.5));
                     snapshot.restore();
                 }
-                _ => dot(y, 4.5, &rgba(0.97, 0.46, 0.56, 1.0)),
+                _ => dot(y, 4.5, &failed),
             }
         }
         if self.working_since.get().is_some() {
@@ -2185,7 +2191,7 @@ impl Chat {
             return;
         }
         for (_, name, description) in &found {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             let name = gtk::Label::new(Some(name));
             name.add_css_class("mono");
             let description = gtk::Label::builder()
@@ -2377,12 +2383,11 @@ impl Chat {
             let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             line.append(&check);
             line.append(&words);
-            let item = gtk::Button::builder().child(&line).build();
+            // One of a set, the current one checked (a screen reader says which).
+            let item = gtk::Button::builder().child(&line).accessible_role(gtk::AccessibleRole::MenuItemRadio).build();
             item.add_css_class("flat");
             item.add_css_class("menu-item");
-            if value == current {
-                item.update_property(&[gtk::accessible::Property::Description("current")]);
-            }
+            item.update_state(&[gtk::accessible::State::Checked(if value == current { gtk::AccessibleTristate::True } else { gtk::AccessibleTristate::False })]);
             let callback = self.on_option.borrow().clone();
             let (id, value, popover) = (id.to_owned(), value.clone(), popover.clone());
             item.connect_clicked(move |_| {
@@ -3069,7 +3074,7 @@ impl Chat {
         {
             self.list.remove(&last);
         }
-        let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         line.add_css_class("notice");
         line.add_css_class(class);
         let label = text_label(&glib::markup_escape_text(text));
@@ -3550,11 +3555,11 @@ impl Chat {
     /// A form to fill in: `schema` is the request's JSON schema (an object of fields, in the
     /// order they are asked). `answer` gets the filled-in content, or None when skipped.
     pub fn form(&self, message: &str, schema: &Value, answer: Rc<dyn Fn(Option<Value>)>) -> Rc<FormCard> {
-        let root = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
         root.add_css_class("permission-card");
         root.add_css_class("question-card");
         root.append(&text_label(&format!("<b>{}</b>", glib::markup_escape_text(message))));
-        let controls = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let controls = gtk::Box::new(gtk::Orientation::Vertical, 12);
         let model = Rc::new(RefCell::new(FormModel::from_schema(schema)));
         let mut widgets = Vec::new();
         // Digits pick in the first question with options: its options are numbered.
@@ -4358,7 +4363,7 @@ fn usage_note(text: &str) -> gtk::Label {
 /// "Weekly (7d)   ▬▬▬▭▭  57%" over "Resets in 1d 5h".
 fn usage_row(name: &str, share: f64, value: &str, detail: &str) -> gtk::Box {
     let row = gtk::Box::new(gtk::Orientation::Vertical, 3);
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let label = gtk::Label::builder().label(name).xalign(0.0).width_chars(14).build();
     let bar = gtk::LevelBar::builder().min_value(0.0).max_value(1.0).value(share.clamp(0.0, 1.0)).hexpand(true).valign(gtk::Align::Center).build();
     bar.set_mode(gtk::LevelBarMode::Continuous);

@@ -68,15 +68,18 @@ impl NotesPanel {
         root.add_css_class("notes-panel");
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header.add_css_class("panel-header");
-        let topics_tab = gtk::ToggleButton::builder().label("Topics").active(true).tooltip_text("Your topics and their notes, newest first").build();
-        let history_tab = gtk::ToggleButton::builder().label("History").group(&topics_tab).tooltip_text("Scribe's questions, changes waiting for your OK, what was written").build();
-        let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let topics_tab = gtk::ToggleButton::builder().label("Topics").active(true).tooltip_text("Your topics and their notes, newest first").accessible_role(gtk::AccessibleRole::Tab).build();
+        let history_tab = gtk::ToggleButton::builder().label("History").group(&topics_tab).tooltip_text("Scribe's questions, changes waiting for your OK, what was written").accessible_role(gtk::AccessibleRole::Tab).build();
+        // Tabs to a screen reader (a tab list, the chosen one selected), drawn as one control.
+        let tabs = gtk::Box::builder().accessible_role(gtk::AccessibleRole::TabList).build();
         tabs.add_css_class("segmented");
         for tab in [&topics_tab, &history_tab] {
             tab.add_css_class("flat");
             tab.add_css_class("tab");
             tab.remove_css_class("text-button");
             tab.remove_css_class("toggle");
+            tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]);
+            tab.connect_toggled(|tab| tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]));
             tabs.append(tab);
         }
         header.append(&tabs);

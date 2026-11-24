@@ -47,6 +47,8 @@ impl BoardView {
         let back = gtk::Button::builder().icon_name("go-previous-symbolic").valign(gtk::Align::Center).visible(false).build();
         back.add_css_class("flat");
         back.add_css_class("page-back");
+        back.set_tooltip_text(Some("Back to the agent"));
+        back.update_property(&[gtk::accessible::Property::Label("Back to the agent")]);
         back.set_cursor_from_name(Some("pointer"));
         let named = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         named.append(&back);
@@ -179,7 +181,7 @@ impl BoardView {
         // its own colour by name (a dot beside the name: never colour alone)
         column.add_css_class(&format!("lane-{}", name.to_lowercase().replace(' ', "-")));
         let head = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-        let dot = gtk::Label::new(Some("●"));
+        let dot = gtk::Box::builder().valign(gtk::Align::Center).build();
         dot.add_css_class("board-lane-dot");
         head.append(&dot);
         let label = gtk::Label::builder().label(&name).xalign(0.0).hexpand(true).build();

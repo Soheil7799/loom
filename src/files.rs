@@ -116,12 +116,13 @@ impl Files {
 
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         header.add_css_class("panel-header");
-        let agent_tab = gtk::ToggleButton::builder().label("Agent").active(true).tooltip_text("Files the agent wrote").build();
-        let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").build();
-        let changes_tab = gtk::ToggleButton::builder().label("Changes").group(&agent_tab).tooltip_text("Git status of the repos in this project").build();
-        let graph_tab = gtk::ToggleButton::builder().label("Graph").group(&agent_tab).tooltip_text("The repo's commits and where each branch is").build();
-        let notes_tab = gtk::ToggleButton::builder().label("Notes").group(&agent_tab).tooltip_text("Your notes: Scribe's questions, changes waiting for your OK, what it wrote").visible(false).build();
-        let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        let agent_tab = gtk::ToggleButton::builder().label("Agent").active(true).tooltip_text("Files the agent wrote").accessible_role(gtk::AccessibleRole::Tab).build();
+        let project_tab = gtk::ToggleButton::builder().label("Project").group(&agent_tab).tooltip_text("The project's files").accessible_role(gtk::AccessibleRole::Tab).build();
+        let changes_tab = gtk::ToggleButton::builder().label("Changes").group(&agent_tab).tooltip_text("Git status of the repos in this project").accessible_role(gtk::AccessibleRole::Tab).build();
+        let graph_tab = gtk::ToggleButton::builder().label("Graph").group(&agent_tab).tooltip_text("The repo's commits and where each branch is").accessible_role(gtk::AccessibleRole::Tab).build();
+        let notes_tab = gtk::ToggleButton::builder().label("Notes").group(&agent_tab).tooltip_text("Your notes: Scribe's questions, changes waiting for your OK, what it wrote").visible(false).accessible_role(gtk::AccessibleRole::Tab).build();
+        // Tabs to a screen reader (a tab list, the chosen one selected), drawn as one control.
+        let tabs = gtk::Box::builder().accessible_role(gtk::AccessibleRole::TabList).build();
         tabs.add_css_class("segmented");
         for tab in [&agent_tab, &project_tab, &changes_tab, &graph_tab, &notes_tab] {
             tab.add_css_class("flat");
@@ -130,6 +131,8 @@ impl Files {
             // whatever is chosen): these are drawn as one segmented control instead.
             tab.remove_css_class("text-button");
             tab.remove_css_class("toggle");
+            tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]);
+            tab.connect_toggled(|tab| tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]));
             tabs.append(tab);
         }
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);

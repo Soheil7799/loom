@@ -63,7 +63,8 @@ impl Menu {
     /// Opens at (x, y) in `on`'s coordinates. The menu goes away with its popover.
     pub fn popup(self, on: &impl IsA<gtk::Widget>, x: f64, y: f64) {
         let on = on.as_ref();
-        let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        // A menu and its items to a screen reader, not a box of buttons.
+        let content = gtk::Box::builder().orientation(gtk::Orientation::Vertical).accessible_role(gtk::AccessibleRole::Menu).build();
         let popover = gtk::Popover::builder().has_arrow(false).position(gtk::PositionType::Bottom).halign(gtk::Align::Start).child(&content).build();
         popover.add_css_class("context-menu");
         popover.set_parent(on);
@@ -82,7 +83,7 @@ impl Menu {
                     hint.add_css_class("menu-hint");
                     line.append(&hint);
                 }
-                let button = gtk::Button::builder().child(&line).sensitive(item.enabled).build();
+                let button = gtk::Button::builder().child(&line).sensitive(item.enabled).accessible_role(gtk::AccessibleRole::MenuItem).build();
                 button.add_css_class("flat");
                 button.add_css_class("menu-item");
                 if item.danger {

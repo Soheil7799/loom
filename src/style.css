@@ -141,7 +141,7 @@ button.running-project:hover { background: alpha(@window_fg_color, 0.14); color:
 button.awake { min-width: 24px; min-height: 24px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.3); }
 /* In Running: on the second line, small, and shown on hover (or when on). */
 .running-row button.awake { min-width: 16px; min-height: 16px; opacity: 0; }
-.running-row:hover button.awake, .running-row button.awake.on { opacity: 1; }
+.running-row:hover button.awake, .running-row:focus-within button.awake, .running-row button.awake.on { opacity: 1; }
 .running-row:hover button.awake { color: alpha(@window_fg_color, 0.6); }
 button.awake.on, .running-row:hover button.awake.on { color: @loom_warn; }
 
@@ -245,7 +245,7 @@ box.notice.choice { padding: 12px 16px; border-radius: 8px; border: none; backgr
 box.notice.choice label { color: @window_fg_color; }
 .starting-note { padding: 40px 0; color: @loom_quiet; }
 .code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 12px; font-size: 0.92em; }
-.md-table { border-radius: 8px; border: 1px solid @loom_line; }
+.md-table { border-radius: 8px; background: alpha(@window_fg_color, 0.03); }
 .md-table .table-head { font-size: 0.85em; font-weight: 400; color: @loom_quiet; padding: 8px 12px; border-bottom: 1px solid @loom_line; }
 .md-table .table-cell { padding: 4px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.04); }
 separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg_color, 0.15); }
@@ -253,7 +253,7 @@ separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg
 .msg-image { border-radius: 8px; border: none; }
 .shell-line { font-family: "JetBrains Mono", monospace; font-size: 0.92em; opacity: 0.75; }
 .code-wrap button.copy { padding: 0 8px; min-height: 20px; font-size: 0.85em; opacity: 0; border-radius: 4px; margin: 4px; background: alpha(@window_bg_color, 0.8); }
-.code-wrap:hover button.copy { opacity: 0.8; }
+.code-wrap:hover button.copy, .code-wrap:focus-within button.copy { opacity: 0.8; }
 /* A message's buttons, under it: they come in as the pointer reaches the message. */
 .msg-actions { margin-top: 2px; opacity: 0; transition: opacity 160ms ease-out; }
 .msg-wrap:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
@@ -356,7 +356,7 @@ textview.input, textview.input text { background: transparent; }
 .composer-bar menubutton.chip-picker arrow { -gtk-icon-size: 10px; min-width: 10px; margin-left: 4px; opacity: 0.45; }
 .composer-bar button.round { min-width: 32px; min-height: 32px; padding: 0; border-radius: 8px; opacity: 0.7; }
 .composer-bar button.round:hover { opacity: 1; background: alpha(@window_fg_color, 0.08); }
-.composer-bar button.mention { font-family: "JetBrains Mono", monospace; font-size: 1.05em; font-weight: 600; }
+.composer-bar button.mention { font-family: "JetBrains Mono", monospace; font-weight: 600; }
 /* A session setting the agent chose for itself (not the default): tinted. */
 .composer-bar menubutton.chip-picker.chosen > button { color: @accent_color; background: alpha(@accent_color, 0.14); }
 .composer-bar menubutton.chip-picker.chosen > button:hover, .composer-bar menubutton.chip-picker.chosen > button:checked { background: alpha(@accent_color, 0.22); }
@@ -461,7 +461,7 @@ listview.tree { background: transparent; padding: 4px 0; }
 .git-code.staged { box-shadow: inset 0 -2px 0 alpha(@loom_ok, 0.8); }
 .commit-line { margin: 8px; }
 .change-row .change-actions { opacity: 0; }
-.change-row:hover .change-actions { opacity: 1; }
+.change-row:hover .change-actions, .change-row:focus-within .change-actions { opacity: 1; }
 /* Graph: commits and branch heads. */
 .repo-bar { margin: 2px 12px 4px 12px; }
 list.graph { background: transparent; }
@@ -484,7 +484,7 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .editor-title { padding: 12px 12px 8px 16px; border-bottom: 1px solid @loom_line; }
 .editor-name { font-weight: 500; }
 .editor-path { font-size: 0.85em; color: @loom_quiet; }
-.editor-path:hover { opacity: 0.8; }
+.editor-path:hover { color: @window_fg_color; }
 button.editor-close { min-width: 28px; min-height: 28px; padding: 0; border-radius: 6px; }
 .editor-tabs { padding: 2px 12px 4px 12px; }
 .editor-tab { border-radius: 6px; background: alpha(@window_fg_color, 0.04); }
@@ -591,7 +591,7 @@ list.history row.history-new:selected { background: alpha(@accent_color, 0.16); 
 .history-note { padding: 4px 16px; }
 .history-filter { margin: 0 0 4px 0; }
 .history-delete { opacity: 0; }
-list.history row:hover .history-delete { opacity: 0.7; }
+list.history row:hover .history-delete, list.history row:focus-within .history-delete { opacity: 0.7; }
 
 /* The board (board.rs): lanes side by side. Doing, the live lane, is the one in colour. */
 .board-heading { padding: 16px 24px 8px 24px; }
@@ -602,8 +602,8 @@ list.history row:hover .history-delete { opacity: 0.7; }
 .board-lane.lane-doing { background: alpha(@loom_run, 0.07); }
 .board-lane.lane-done { background: alpha(black, 0.08); }
 .board-lane-title { font-size: 0.85em; font-weight: 400; color: @loom_quiet; }
-.board-lane-dot { font-size: 0.7em; color: alpha(@window_fg_color, 0.4); }
-.lane-doing .board-lane-dot { color: @loom_run; }
+.board-lane-dot { min-width: 8px; min-height: 8px; border-radius: 99px; background: alpha(@window_fg_color, 0.4); }
+.lane-doing .board-lane-dot { background: @loom_run; }
 .board-lane menubutton.flat, .board-lane > box > button.flat { opacity: 0.35; transition: opacity 120ms ease-out; }
 .board-lane:hover menubutton.flat, .board-lane:hover > box > button.flat, .board-lane > box > button.flat:focus-visible { opacity: 1; }
 button.board-card { padding: 8px 12px; border-radius: 8px; background: alpha(@window_fg_color, 0.065); box-shadow: 0 1px 3px @loom_shadow; font-weight: normal; transition: background 120ms ease-out; }
@@ -707,3 +707,13 @@ list.notes-topics row.notes-note { padding-left: 20px; }
 list.notes-topics row.notes-more { padding-left: 20px; }
 list.notes-topics row.notes-conflicts label.notes-topic-name { color: @loom_warn; }
 .conflict-actions { padding: 12px; background: @window_bg_color; border-top: 1px solid @loom_line; }
+
+/* High contrast (the desktop's setting): the faint fills and hairlines loom draws with get
+   strong enough to see. */
+@media (prefers-contrast: more) {
+  .msg-user { background: alpha(@window_fg_color, 0.14); }
+  .composer { background: alpha(@window_fg_color, 0.10); border-color: alpha(@window_fg_color, 0.45); }
+  .tray button.chip, .segmented, button.board-card { background: alpha(@window_fg_color, 0.16); }
+  .header, .hunk-head, .composer .queued { border-color: alpha(@window_fg_color, 0.4); }
+  .msg-actions button, .placeholder { color: @window_fg_color; }
+}

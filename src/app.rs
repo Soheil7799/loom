@@ -290,8 +290,8 @@ impl App {
         by.add_css_class("brand-by");
         lockup.append(&wordmark);
         lockup.append(&by);
-        let brand = gtk::Button::builder().child(&lockup).tooltip_text("About Loom").hexpand(true).focus_on_click(false).build();
-        brand.update_property(&[gtk::accessible::Property::Label("About Loom")]);
+        let brand = gtk::Button::builder().child(&lockup).tooltip_text("About loom").hexpand(true).focus_on_click(false).build();
+        brand.update_property(&[gtk::accessible::Property::Label("About loom")]);
         brand.add_css_class("flat");
         brand.add_css_class("brand-button");
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -332,7 +332,7 @@ impl App {
         let away = gtk::Button::builder().visible(false).build();
         away.add_css_class("inbox-banner");
         away.add_css_class("away-banner");
-        away.set_tooltip_text(Some("Claude's own questions are answered \"decide yourself, note it on the board\". Permissions still wait for you. Click to end."));
+        away.set_tooltip_text(Some("Away: Claude decides its own questions and notes them on the board; permissions still wait for you. Click to end."));
         away.connect_clicked(|_| crate::conn::command("window", "set_settings", json!({ "changes": { "away_until": 0 } })));
         sidebar.append(&away);
         let show_away = move |s: &settings::Settings| {
@@ -389,7 +389,7 @@ impl App {
         sections.append(&sections_filler);
         let notes_chat = crate::notes_chat::NotesChat::new();
         // Back to the agents, with how many work and wait meanwhile.
-        let notes_back = gtk::Button::builder().child(&gtk::Label::builder().label("←  Agents").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build()).tooltip_text("Back to the agents (Ctrl+Shift+M)").build();
+        let notes_back = gtk::Button::builder().child(&gtk::Label::builder().label("← Agents").xalign(0.0).ellipsize(pango::EllipsizeMode::End).build()).tooltip_text("Back to the agents (Ctrl+Shift+M)").build();
         notes_back.add_css_class("flat");
         notes_back.add_css_class("notes-back");
         notes_chat.side.append(&notes_back);
@@ -584,7 +584,7 @@ impl App {
         toast_close.add_css_class("flat");
         toast_close.set_tooltip_text(Some("Dismiss"));
         toast_close.update_property(&[gtk::accessible::Property::Label("Dismiss")]);
-        let toast_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+        let toast_box = gtk::Box::new(gtk::Orientation::Horizontal, 8);
         toast_box.add_css_class("toast");
         toast_box.append(&toast_dot);
         toast_box.append(&toast_label);
@@ -602,7 +602,7 @@ impl App {
 
         // Floating bits.
         let picker = Picker::new(&chat_stack);
-        let run_entry = gtk::Entry::builder().placeholder_text("Command to run here (name: command names the chip)").width_chars(56).build();
+        let run_entry = gtk::Entry::builder().placeholder_text("A command (name: command names its chip)").width_chars(56).build();
         run_entry.add_css_class("mono");
         let run = gtk::Popover::builder().child(&run_entry).position(gtk::PositionType::Top).build();
         run.set_parent(&bar_stack);
@@ -1602,7 +1602,7 @@ impl App {
             act("Next from the board: give this agent a card…", "", |a| a.card_for_agent()),
             act("Settings", "Ctrl+,", |a| crate::prefs::open(&a.window)),
             act("Keyboard shortcuts", "Ctrl+/", |a| crate::cheatsheet::open(&a.window)),
-            act("About Loom", "", |a| crate::about::open(&a.window)),
+            act("About loom", "", |a| crate::about::open(&a.window)),
         ];
         // Agents before commands: those waiting on you, then the last used.
         let mut agents = self.remote_items();
@@ -2337,7 +2337,7 @@ impl App {
                 format!("{tip}{stops}")
             }
             "failed" => {
-                gtk::AlertDialog::builder().message("loomd refuses this window").detail(tip).buttons(["OK"]).build().show(Some(&self.window));
+                gtk::AlertDialog::builder().message("loomd refuses this window").detail(tip).buttons(["Close"]).build().show(Some(&self.window));
                 return;
             }
             _ => return,
@@ -2985,7 +2985,7 @@ impl App {
     /// off the main thread (by meaning when Settings has it on for code, else by words), the
     /// places found picked from and opened at their line.
     fn find_by_meaning(self: &Rc<Self>) {
-        let entry = gtk::Entry::builder().width_chars(44).placeholder_text("What are you looking for? Say it as you'd describe it").build();
+        let entry = gtk::Entry::builder().width_chars(44).placeholder_text("Describe what you're looking for").build();
         let weak = Rc::downgrade(self);
         entry.connect_activate(move |entry| {
             let query = entry.text().trim().to_owned();
@@ -4277,7 +4277,7 @@ impl App {
                     _ => {}
                 }
             }
-            let mut text = "←  Agents".to_owned();
+            let mut text = "← Agents".to_owned();
             if working > 0 {
                 text.push_str(&format!(" · {working} working"));
             }
@@ -4387,7 +4387,7 @@ impl App {
         self.card_buttons();
         if projects.is_empty() {
             let hint = gtk::Label::builder()
-                .label("No projects yet.\nCtrl+Shift+N starts an agent in a folder.")
+                .label("No projects yet\nCtrl+Shift+N starts an agent in a folder.")
                 .xalign(0.0)
                 .wrap(true)
                 .build();
@@ -4436,7 +4436,7 @@ impl App {
             let column = gtk::Box::new(gtk::Orientation::Vertical, 4);
             column.append(&self.project_icon(path, 32));
             column.append(&spine);
-            let strip = gtk::Button::builder().child(&column).tooltip_text(format!("Fold {name} (its board and conversations: its name in the header)")).build();
+            let strip = gtk::Button::builder().child(&column).tooltip_text(format!("Fold {name}")).build();
             strip.add_css_class("card-strip");
             strip.set_cursor_from_name(Some("pointer"));
             strip.update_property(&[gtk::accessible::Property::Label(&format!("Fold {name}"))]);
@@ -4503,20 +4503,20 @@ impl App {
         if waiting > 0 {
             let badge = gtk::Label::new(Some(&format!("⚑ {waiting}")));
             badge.add_css_class("badge-wait");
-            badge.set_tooltip_text(Some("waiting for you"));
+            badge.set_tooltip_text(Some("Waiting for you"));
             line.append(&badge);
         }
         if working > 0 {
             let badge = gtk::Label::new(Some(&format!("● {working}")));
             badge.add_css_class("badge-busy");
-            badge.set_tooltip_text(Some("working"));
+            badge.set_tooltip_text(Some("Working"));
             line.append(&badge);
         }
         if project.collapsed && !agents.is_empty() {
             let count = gtk::Label::new(Some(&format!("({})", agents.len())));
             count.add_css_class("dim");
             count.add_css_class("small");
-            count.set_tooltip_text(Some("agents in it"));
+            count.set_tooltip_text(Some("Agents in it"));
             line.append(&count);
         }
         let add = gtk::Button::with_label("+");
@@ -4778,7 +4778,7 @@ impl App {
         while let Some(child) = self.welcome.first_child() {
             self.welcome.remove(&child);
         }
-        let middle = gtk::Box::new(gtk::Orientation::Vertical, 10);
+        let middle = gtk::Box::new(gtk::Orientation::Vertical, 12);
         middle.set_valign(gtk::Align::Center);
         middle.set_halign(gtk::Align::Center);
         middle.set_vexpand(true);
@@ -5041,7 +5041,7 @@ fn said_line(agent: &SideAgent, overview: &[Value]) -> String {
 }
 
 fn agent_row(agent: &SideAgent, alike: bool, scribe_asks: bool) -> gtk::ListBoxRow {
-    let line = gtk::Box::new(gtk::Orientation::Horizontal, 10);
+    let line = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
     dot.add_css_class("dot");
     let status = agent.status;
