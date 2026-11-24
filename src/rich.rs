@@ -304,33 +304,47 @@ pub fn span_selection(list: &gtk::Widget) {
         SPANNING.set(view.is_some());
         *start.borrow_mut() = view;
     }));
-    drag.connect_drag_update(glib::clone!(#[strong] start, move |drag, dx, dy| {
-        let (Some(list), Some(from), Some((x0, y0))) = (drag.widget(), start.borrow().clone(), drag.start_point()) else { return };
-        let (x, y) = (x0 + dx, y0 + dy);
-        let Some(to) = message_at(&list, x, y) else { return };
-        let views = messages(&list);
-        let (Some(i), Some(j)) = (views.iter().position(|v| *v == from), views.iter().position(|v| *v == to)) else { return };
-        let (lo, hi) = (i.min(j), i.max(j));
-        for (k, view) in views.iter().enumerate() {
-            let buffer = view.buffer();
-            if k == i {
-                continue;
-            } else if k < lo || k > hi {
-                if buffer.has_selection() {
-                    buffer.place_cursor(&buffer.start_iter());
-                }
-            } else if k != j {
-                buffer.select_range(&buffer.start_iter(), &buffer.end_iter());
-            } else if let Some(point) = list.compute_point(view, &gtk::graphene::Point::new(x as f32, y as f32)) {
-                let (bx, by) = view.window_to_buffer_coords(gtk::TextWindowType::Widget, point.x() as i32, point.y() as i32);
-                let at = view.iter_at_location(bx, by).unwrap_or_else(|| if j > i { buffer.end_iter() } else { buffer.start_iter() });
-                if j > i { buffer.select_range(&buffer.start_iter(), &at) } else { buffer.select_range(&at, &buffer.end_iter()) }
-            }
+    // (the text view claims the drag once it selects, and a drag gesture here is cancelled
+    // then: the pointer is followed by a motion controller, which nothing cancels)
+    let motion = gtk::EventControllerMotion::new();
+    motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+    motion.connect_motion(glib::clone!(#[strong] start, move |motion, x, y| {
+        if !motion.current_event_state().contains(gdk::ModifierType::BUTTON1_MASK) {
+            SPANNING.set(false);
+            return;
         }
-        SPAN.with(|s| *s.borrow_mut() = if lo == hi { Vec::new() } else { views[lo..=hi].iter().map(|v| v.downgrade()).collect() });
+        let (Some(list), Some(from)) = (motion.widget(), start.borrow().clone()) else { return };
+        extend_span(&list, &from, x, y);
     }));
+    list.add_controller(motion);
     drag.connect_drag_end(|_, _, _| SPANNING.set(false));
     list.add_controller(drag);
+}
+
+/// A selection begun in `from` runs to (x, y) in `list`: the messages between are selected
+/// whole, the one there up to that point (`from` selects its own part itself).
+fn extend_span(list: &gtk::Widget, from: &gtk::TextView, x: f64, y: f64) {
+    let Some(to) = message_at(list, x, y) else { return };
+    let views = messages(list);
+    let (Some(i), Some(j)) = (views.iter().position(|v| v == from), views.iter().position(|v| *v == to)) else { return };
+    let (lo, hi) = (i.min(j), i.max(j));
+    for (k, view) in views.iter().enumerate() {
+        let buffer = view.buffer();
+        if k == i {
+            continue;
+        } else if k < lo || k > hi {
+            if buffer.has_selection() {
+                buffer.place_cursor(&buffer.start_iter());
+            }
+        } else if k != j {
+            buffer.select_range(&buffer.start_iter(), &buffer.end_iter());
+        } else if let Some(point) = list.compute_point(view, &gtk::graphene::Point::new(x as f32, y as f32)) {
+            let (bx, by) = view.window_to_buffer_coords(gtk::TextWindowType::Widget, point.x() as i32, point.y() as i32);
+            let at = view.iter_at_location(bx, by).unwrap_or_else(|| if j > i { buffer.end_iter() } else { buffer.start_iter() });
+            if j > i { buffer.select_range(&buffer.start_iter(), &at) } else { buffer.select_range(&at, &buffer.end_iter()) }
+        }
+    }
+    SPAN.with(|s| *s.borrow_mut() = if lo == hi { Vec::new() } else { views[lo..=hi].iter().map(|v| v.downgrade()).collect() });
 }
 
 /// The message text view at (x, y) in `list`.
