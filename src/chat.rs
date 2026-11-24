@@ -448,6 +448,7 @@ impl Chat {
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 16);
         list.add_css_class("messages");
+        crate::rich::span_selection(list.upcast_ref());
         let earlier = gtk::Button::builder().visible(false).halign(gtk::Align::Center).build();
         earlier.add_css_class("earlier");
         list.append(&earlier);
