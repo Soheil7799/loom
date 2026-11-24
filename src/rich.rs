@@ -515,6 +515,17 @@ pub fn show(body: &gtk::Box, shown: &[Segment], segments: &[Segment]) {
             let view = view();
             fill(&view, &[], segments);
             body.append(&view);
+            // A new text view lays its lines out in an idle after its first frame, and may
+            // not draw them until something else redraws it (a sent message stayed blank
+            // until the reply came): drawn again once that is done.
+            let held = view.downgrade();
+            glib::idle_add_local_full(glib::Priority::LOW, move || {
+                if let Some(view) = held.upgrade() {
+                    view.queue_resize();
+                    view.queue_draw();
+                }
+                glib::ControlFlow::Break
+            });
         }
     }
 }

@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 use std::rc::{Rc, Weak};
 
+use gtk::prelude::*;
 use loom_core::api::{Body, Op};
 use serde_json::Value;
 
@@ -74,11 +75,33 @@ impl Follow {
                     items[from..].iter().for_each(|item| self.item(&chat, item));
                 }
                 Body::Changes { ops } => {
+                    // What arrives live (not the snapshot read back) comes in with a short fade.
+                    let list = chat.messages();
+                    let before = list.last_child();
                     for op in &ops {
                         match op {
                             Op::Upsert { item } => self.item(&chat, item),
                             Op::Append { id, field, text } if matches!(self.of, Of::Conversation) => chat.entry_append(id, field, text),
                             _ => {}
+                        }
+                    }
+                    if matches!(self.of, Of::Conversation) {
+                        chat.refresh_thinking();
+                        let mut new = match &before {
+                            Some(before) if before.parent().as_ref() == Some(&list) => before.next_sibling(),
+                            _ => list.first_child(),
+                        };
+                        while let Some(widget) = new {
+                            if !widget.has_css_class("thinking") {
+                                widget.add_css_class("enter");
+                                let held = widget.downgrade();
+                                gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
+                                    if let Some(widget) = held.upgrade() {
+                                        widget.remove_css_class("enter");
+                                    }
+                                });
+                            }
+                            new = widget.next_sibling();
                         }
                     }
                 }

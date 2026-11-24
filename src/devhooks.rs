@@ -212,6 +212,10 @@ fn run(app: &Rc<App>, line: &str) -> Result<(), String> {
             chat.permission("Ready to code?", Some(plan), true, &options, std::rc::Rc::new(|id: String| eprintln!("CHOSE {id}")));
         }
         // A reply with every kind of Markdown, for looking at the chat's text.
+        "fakeuser" => {
+            let id = format!("fake-{}", glib::monotonic_time());
+            app.chat_in_view().ok_or("no agent")?.entry(&serde_json::json!({ "id": id, "kind": "user", "text": argument }));
+        }
         "pressswitch" => crate::rich::press_switch(&app.chat_in_view().ok_or("no agent")?.messages())?,
         "fakereply" => {
             let chat = app.chat_in_view().ok_or("no agent")?.clone();

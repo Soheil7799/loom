@@ -147,6 +147,8 @@ pub struct Chat {
     thoughts: RefCell<Vec<glib::WeakRef<gtk::Expander>>>,
     scroller: gtk::ScrolledWindow,
     list: gtk::Box,
+    /// Dots where the reply will be, while a turn has said nothing yet.
+    thinking: gtk::Box,
     plan: gtk::Box,
     plan_revealer: gtk::Revealer,
     pub input: gtk::TextView,
@@ -692,6 +694,16 @@ impl Chat {
             thoughts: RefCell::default(),
             scroller,
             list,
+            thinking: {
+                let dots = gtk::Box::new(gtk::Orientation::Horizontal, 5);
+                dots.add_css_class("thinking");
+                dots.set_halign(gtk::Align::Start);
+                for _ in 0..3 {
+                    dots.append(&gtk::Box::builder().css_classes(["thinking-dot"]).valign(gtk::Align::Center).build());
+                }
+                dots.update_property(&[gtk::accessible::Property::Label("Thinking")]);
+                dots
+            },
             plan,
             plan_revealer,
             input,
@@ -2391,9 +2403,29 @@ impl Chat {
         }
     }
 
+    /// The dots where the reply will be: shown while a turn runs and your message is still
+    /// the last thing in the chat (gone with the reply's first words or tool).
+    pub fn refresh_thinking(&self) {
+        let mut last = self.list.last_child();
+        if last.as_ref() == Some(self.thinking.upcast_ref()) {
+            last = last.and_then(|w| w.prev_sibling());
+        }
+        let want = self.working_since.get().is_some() && last.is_some_and(|w| w.has_css_class("msg-wrap-user"));
+        let shown = self.thinking.parent().is_some();
+        if want && (!shown || self.list.last_child().as_ref() != Some(self.thinking.upcast_ref())) {
+            if shown {
+                self.list.remove(&self.thinking);
+            }
+            self.list.append(&self.thinking);
+        } else if !want && shown {
+            self.list.remove(&self.thinking);
+        }
+    }
+
     /// A turn runs (Some: since when) or not: the composer says so, and send becomes stop.
     pub fn set_working(self: &Rc<Self>, since: Option<std::time::Instant>) {
         let was = self.working_since.replace(since);
+        self.refresh_thinking();
         self.tube.queue_draw();
         self.show_compact();
         self.send.set_icon_name(if since.is_some() { "media-playback-stop-symbolic" } else { "go-up-symbolic" });
