@@ -243,6 +243,27 @@ fn a_projects_board_is_a_file_in_it() {
     assert!(board["lanes"][0]["cards"].as_array().unwrap().iter().any(|c| c["id"] == card), "{board}");
 }
 
+#[test]
+fn a_card_tried_twice_gets_two_agents_in_worktrees_of_their_own() {
+    let (d, mut c) = start("Tries", json!({}), &[fake_claude()], &[]);
+    let project = d.root.join("project");
+    let git = |args: &[&str]| assert!(std::process::Command::new("git").arg("-C").arg(&project).args(args).status().unwrap().success());
+    std::fs::create_dir_all(&project).unwrap();
+    git(&["init", "-q", "-b", "main"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "--allow-empty", "-m", "start"]);
+    command(&mut c, "new_agent", json!({ "folder": project }));
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "Fix the tooltip" }))["card"].clone();
+    let agents = command(&mut c, "board_tries", json!({ "project": project, "card": card }))["agents"].as_array().unwrap().clone();
+    assert_eq!(agents.len(), 2);
+    let folders: Vec<String> = agents.iter().map(|a| agent_item(&mut c, a.as_str().unwrap())["cwd"].as_str().unwrap().to_owned()).collect();
+    assert!(folders[0] != folders[1] && folders.iter().all(|f| f.contains("project.worktrees")), "{folders:?}");
+    let board = command(&mut c, "board", json!({ "project": project }));
+    assert!(board["lanes"][2]["cards"].as_array().unwrap().iter().any(|c| c["id"] == card), "the card goes to Doing: {board}");
+    // tried again: the branches are there already, refused before any agent starts
+    let again = c.command(&new_id(), "board_tries", json!({ "project": project, "card": card }));
+    assert!(again.is_err(), "{again:?}");
+}
+
 fn agent_tests() -> bool {
     std::env::var_os("LOOM_E2E_AGENT").is_some()
 }

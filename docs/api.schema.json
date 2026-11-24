@@ -3977,6 +3977,36 @@
       },
       "result": "{agent}"
     },
+    "board_tries": {
+      "description": "The same card tried by 2 or 3 new agents at once, each in a worktree of its own (branches card-<id>-try-<n>), to compare and keep one: the card goes to Doing, each logs its work on it.",
+      "who": [
+        "window",
+        "cli"
+      ],
+      "later": true,
+      "params": {
+        "type": "object",
+        "properties": {
+          "project": {
+            "type": "string",
+            "description": ""
+          },
+          "card": {
+            "type": "integer",
+            "description": ""
+          },
+          "tries": {
+            "type": "integer",
+            "description": "2 (default) or 3"
+          }
+        },
+        "required": [
+          "project",
+          "card"
+        ]
+      },
+      "result": "{agents}"
+    },
     "board_archive": {
       "description": "Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids.",
       "who": [

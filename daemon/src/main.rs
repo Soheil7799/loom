@@ -619,11 +619,7 @@ fn commands(daemon: &Rc<Daemon>) {
         let id = params["card"].as_u64().ok_or_else(|| Error::Invalid("which card?".into()))? as u32;
         let board = loom_core::board::Board::load(&project);
         let card = board.cards().find(|c| c.id == id).ok_or_else(|| Error::NotFound(format!("card c{id}")))?;
-        let mut message = format!("Work on card c{id} of this project's board: {}", card.title);
-        if !card.body.trim().is_empty() {
-            message.push_str(&format!("\n\n{}", card.body.trim()));
-        }
-        message.push_str(&format!("\n\nWhen it is done, note what you did on c{id} and move it to Done (loom_board_note, loom_board_move)."));
+        let message = card_message(card, None);
         // An agent of this project's, given (it takes the card after its turn, if working), or a
         // new one; checked before the card moves.
         let given = match params["agent"].as_str() {
@@ -642,6 +638,49 @@ fn commands(daemon: &Rc<Daemon>) {
         agent.submit_with(message, Vec::new());
         daemon.ws.publish_agents();
         Ok(json!({ "agent": agent.id.to_string() }))
+    });
+    // The same card tried by two or three agents at once, each in a worktree of its own, for
+    // the user to compare and keep one (Merge its branch back, Remove the others' worktrees).
+    let weak = Rc::downgrade(daemon);
+    hub.handle_later("board_tries", move |who, params, reply| {
+        if !human(who) {
+            return reply(Err(Error::Forbidden("starting agents".into())));
+        }
+        let project = match params["project"].as_str().map(|p| loom_core::project_files::inside(p, &loom_core::project_files::projects())) {
+            Some(Ok(project)) => project,
+            _ => return reply(Err(Error::Forbidden("only a project of the sidebar's".into()))),
+        };
+        let Some(id) = params["card"].as_u64().map(|id| id as u32) else { return reply(Err(Error::Invalid("which card?".into()))) };
+        let tries = params["tries"].as_u64().unwrap_or(2).clamp(2, 3) as usize;
+        let board = loom_core::board::Board::load(&project);
+        let Some(card) = board.cards().find(|c| c.id == id).cloned() else { return reply(Err(Error::NotFound(format!("card c{id}")))) };
+        let weak = weak.clone();
+        loom_core::rt::spawn_local(async move {
+            let at = project.clone();
+            let made = loom_core::rt::spawn_blocking(move || (1..=tries).map(|n| loom_core::worktrees::add(&at, &format!("card-{id}-try-{n}"))).collect::<Result<Vec<_>, _>>())
+                .await
+                .unwrap_or_else(|_| Err("git stopped".into()));
+            let Some(daemon) = weak.upgrade() else { return reply(Err(Error::NotFound("loom".into()))) };
+            let dirs = match made {
+                Ok(dirs) => dirs,
+                Err(why) => return reply(Err(Error::Invalid(why))),
+            };
+            if let Err(why) = loom_core::board::act(&project, "board_move", &json!({ "card": id, "lane": "Doing" }), "you").expect("a board command") {
+                return reply(Err(Error::Invalid(why)));
+            }
+            let agents: Vec<String> = dirs
+                .into_iter()
+                .enumerate()
+                .map(|(n, dir)| {
+                    let agent = daemon.ws.add_agent(Saved::new(dir));
+                    agent.card.set(Some(id));
+                    agent.submit_with(card_message(&card, Some((n + 1, tries))), Vec::new());
+                    agent.id.to_string()
+                })
+                .collect();
+            daemon.ws.publish_agents();
+            reply(Ok(json!({ "agents": agents })));
+        });
     });
     let weak = Rc::downgrade(daemon);
     hub.handle("close_agent", move |who, params| {
@@ -762,4 +801,21 @@ mod tests {
         assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
         assert!(super::to_png(b"not a picture".to_vec()).is_err());
     }
+}
+
+/// What an agent put on a card is told: the card's words, and how to log its work on it. One
+/// of several tries (n of all) leaves the card where it is: the user keeps one try.
+fn card_message(card: &loom_core::board::Card, of: Option<(usize, usize)>) -> String {
+    let id = card.id;
+    let mut message = format!("Work on card c{id} of this project's board: {}", card.title);
+    if !card.body.trim().is_empty() {
+        message.push_str(&format!("\n\n{}", card.body.trim()));
+    }
+    match of {
+        None => message.push_str(&format!("\n\nWhen it is done, note what you did on c{id} and move it to Done (loom_board_note, loom_board_move).")),
+        Some((n, all)) => message.push_str(&format!(
+            "\n\nYou are try {n} of {all}: other agents work on the same card at once, each in a worktree of its own, and the user keeps the best. Work and commit only in your folder. When it is done, note what you did on c{id} (loom_board_note), starting with \"Try {n}:\"; leave the card in its lane."
+        )),
+    }
+    message
 }

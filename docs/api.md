@@ -1543,6 +1543,18 @@ Who: window, cli. Result: `{agent}`.
 | `card` | integer |  |
 | `agent` | string? | one of the project's agents to give it to (none: a new agent) |
 
+### `board_tries`
+
+The same card tried by 2 or 3 new agents at once, each in a worktree of its own (branches card-<id>-try-<n>), to compare and keep one: the card goes to Doing, each logs its work on it.
+
+Who: window, cli. Result: `{agents}`, once done.
+
+| Param | Type | |
+|---|---|---|
+| `project` | string |  |
+| `card` | integer |  |
+| `tries` | integer? | 2 (default) or 3 |
+
 ### `board_archive`
 
 Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids.

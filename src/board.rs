@@ -363,12 +363,11 @@ impl BoardView {
         if card["done"] != true {
             // Who works on it: a new agent, or one of the project's running ones.
             let running = self.running.borrow().clone().map(|f| f(&self.project.borrow())).unwrap_or_default();
-            let mut names = vec!["A new agent".to_owned()];
+            let mut names = vec!["A new agent".to_owned(), "Two tries to compare".to_owned()];
             names.extend(running.iter().map(|(_, title)| title.clone()));
             let names: Vec<&str> = names.iter().map(String::as_str).collect();
             let who = gtk::DropDown::from_strings(&names);
-            who.set_tooltip_text(Some("Who works on it: a new agent, or a running one (after its turn, if it works)"));
-            who.set_visible(!running.is_empty());
+            who.set_tooltip_text(Some("Who works on it: a new agent, two new ones each in a worktree of its own (review both, keep one), or a running one (after its turn, if it works)"));
             let work = gtk::Button::with_label("Work on this");
             work.set_tooltip_text(Some("The agent gets the card as its message, and the card moves to Doing"));
             let (weak, shut, chosen) = (Rc::downgrade(self), popover.clone(), who.clone());
@@ -379,10 +378,11 @@ impl BoardView {
                 let (weak, work, shut) = (Rc::downgrade(&view), work.clone(), shut.clone());
                 let project = view.project.borrow().clone();
                 let mut params = json!({ "project": project, "card": id });
-                if let Some((agent, _)) = (chosen.selected() as usize).checked_sub(1).and_then(|i| running.get(i)) {
+                if let Some((agent, _)) = (chosen.selected() as usize).checked_sub(2).and_then(|i| running.get(i)) {
                     params["agent"] = agent.to_string().into();
                 }
-                crate::conn::command_result("board", "board_work", params, move |answer| {
+                let method = if chosen.selected() == 1 { "board_tries" } else { "board_work" };
+                crate::conn::command_result("board", method, params, move |answer| {
                     work.set_sensitive(true);
                     work.set_label("Work on this");
                     let Some(view) = weak.upgrade() else { return };
@@ -391,7 +391,9 @@ impl BoardView {
                             shut.popdown();
                             view.reload();
                             let told = view.on_agent.borrow().clone();
-                            if let (Some(told), Some(agent)) = (told, answer["agent"].as_str().and_then(|a| a.parse().ok())) {
+                            // (two tries: the first of them in view)
+                            let agent = answer["agent"].as_str().or_else(|| answer["agents"][0].as_str());
+                            if let (Some(told), Some(agent)) = (told, agent.and_then(|a| a.parse().ok())) {
                                 told(agent);
                             }
                         }
