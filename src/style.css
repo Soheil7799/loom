@@ -343,9 +343,10 @@ list.workflow-agents label.running { color: @accent_color; }
 
 /* Composer: a soft fill, 12 px corners (a panel); brighter while typing. */
 .input-box { padding: 12px 28px 16px 28px; }
-/* The message box: a quiet card; focus brightens the fill and lifts the shadow (no edge). */
-.composer { border-radius: 12px; background: alpha(@window_fg_color, 0.045); border: none; box-shadow: 0 4px 16px @loom_shadow; transition: background 120ms ease-out, box-shadow 120ms ease-out; }
-.composer:focus-within { background: alpha(@window_fg_color, 0.08); box-shadow: 0 6px 24px @loom_shadow; }
+/* The message box: a quiet card with a hairline edge; focus tints the edge (the owner's
+   choice, the one stroke loom keeps) and lifts the shadow. */
+.composer { border-radius: 12px; background: alpha(@window_fg_color, 0.045); border: 1px solid alpha(@window_fg_color, 0.09); box-shadow: 0 4px 16px @loom_shadow; transition: border-color 120ms ease-out, background 120ms ease-out; }
+.composer:focus-within { background: alpha(@window_fg_color, 0.06); border-color: alpha(@accent_color, 0.55); box-shadow: 0 6px 24px @loom_shadow; }
 .composer.shell-mode, .composer.shell-mode:focus-within { border: none; background: alpha(@loom_shell, 0.12); }
 .shell-badge { font-size: 0.85em; font-weight: 400; padding: 2px 8px; border-radius: 4px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
 textview.input, textview.input text { background: transparent; }
