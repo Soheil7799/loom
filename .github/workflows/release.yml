@@ -42,9 +42,11 @@ jobs:
       - name: Test and build
         run: |
           rustup update stable --no-self-update
-          # Built first: the daemon's tests start the loom-remote binary next to loomd.
+          # Tested as a debug build: the end-to-end tests need LOOM_TEST_INSTANCE, which a
+          # release build ignores. Built first: the daemon's tests start loom-remote beside loomd.
+          cargo build --locked --workspace
+          cargo test --locked --workspace
           cargo build --release --locked --workspace
-          cargo test --release --locked --workspace
 
       - name: Package
         run: |
