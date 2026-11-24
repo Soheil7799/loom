@@ -340,10 +340,9 @@ pub fn span_selection(list: &gtk::Widget) {
         extend_span(&list, &from, x, y);
     }));
     list.add_controller(motion);
-    drag.connect_drag_end(|_, _, _| {
-        trace("drag end".into());
-        SPANNING.set(false);
-    });
+    // (GTK ends this gesture a moment after the press, once the text view takes the drag:
+    // the span goes on until the button is let go, which the motion controller sees)
+    drag.connect_drag_end(|_, _, _| trace("drag end".into()));
     drag.connect_cancel(|_, _| trace("drag gesture cancelled (the text view claimed it)".into()));
     list.add_controller(drag);
 }
