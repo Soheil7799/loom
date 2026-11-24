@@ -609,7 +609,9 @@ fn insert_table(view: &gtk::TextView, rows: &[Vec<String>], count: &mut usize) {
         tabs.set_tab(c as i32, pango::TabAlign::Left, x);
     }
     *count += 1;
-    let stops = gtk::TextTag::builder().name(format!("tab:{count}")).tabs(&tabs).left_margin(12).right_margin(12).pixels_above_lines(5).pixels_below_lines(5).build();
+    let stops = gtk::TextTag::builder().name(format!("tab:{count}")).tabs(&tabs).left_margin(12).right_margin(12)
+        // A row too long for the view wraps under its last column, not under the first.
+        .indent(-x).pixels_above_lines(5).pixels_below_lines(5).build();
     buffer.tag_table().add(&stops);
     let head = tag(&buffer, "table-head", || gtk::TextTag::builder().name("table-head").weight(600).scale(0.9).foreground_rgba(&grey(1.0)).build());
     let body = tag(&buffer, "table-row", || gtk::TextTag::builder().name("table-row").build());
