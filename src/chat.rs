@@ -132,6 +132,8 @@ pub struct Chat {
     working_since: Cell<Option<std::time::Instant>>,
     /// When the reply last grew (its end ring breathes while words come in).
     last_words: Rc<Cell<Option<std::time::Instant>>>,
+    /// Counts the sends, so a send's 10 s give-up leaves a later one's "sending" alone.
+    sending_round: Rc<Cell<u32>>,
     /// The tube is redrawn every frame for that.
     breathing: Rc<Cell<bool>>,
     /// The turn's word ("Weaving…").
@@ -680,6 +682,7 @@ impl Chat {
             shell_badge,
             working_since: Cell::new(None),
             last_words: Rc::default(),
+            sending_round: Rc::default(),
             breathing: Rc::default(),
             verb: Cell::new(VERBS[0]),
             latest: latest.clone(),
@@ -1590,8 +1593,7 @@ impl Chat {
         let x = (origin.x() - 16.0).max(8.0);
         // The theme's own colours (the accent, "needs you", "failed"), so every theme of
         // loom's and the desktop's draws it in its colours.
-        #[allow(deprecated)]
-        let named = |name: &str, fallback: (f32, f32, f32)| area.style_context().lookup_color(name).unwrap_or_else(|| gdk::RGBA::new(fallback.0, fallback.1, fallback.2, 1.0));
+        let named = |name: &str, fallback: (f32, f32, f32)| crate::theme::named(area, name).unwrap_or_else(|| gdk::RGBA::new(fallback.0, fallback.1, fallback.2, 1.0));
         let accent = named("accent_color", (0.48, 0.64, 0.97));
         let wait = named("loom_wait", (0.88, 0.69, 0.41));
         let failed = named("loom_err", (0.97, 0.46, 0.56));
@@ -1657,13 +1659,19 @@ impl Chat {
         if let Some(line) = self.since.take() {
             self.list.remove(&line);
         }
-        *self.seen.borrow_mut() = self.list.last_child().map(|w| w.downgrade());
+        *self.seen.borrow_mut() = self.last_entry().map(|w| w.downgrade());
+    }
+
+    /// The last thing the conversation shows, its turn line ("✻ Pondering…") aside.
+    pub fn last_entry(&self) -> Option<gtk::Widget> {
+        let last = self.list.last_child();
+        if last.as_ref() == Some(self.working.upcast_ref()) { last.and_then(|w| w.prev_sibling()) } else { last }
     }
 
     /// You're back: a line after what you saw, if more came since (as the web page's).
     pub fn returned(&self) {
         let Some(seen) = self.seen.take().and_then(|w| w.upgrade()) else { return };
-        if seen.parent().as_ref() != Some(self.list.upcast_ref()) || self.list.last_child().as_ref() == Some(&seen) || self.since.borrow().is_some() {
+        if seen.parent().as_ref() != Some(self.list.upcast_ref()) || self.last_entry().as_ref() == Some(&seen) || self.since.borrow().is_some() {
             return;
         }
         let line = gtk::Label::builder().label("Since you last looked").xalign(0.0).build();
@@ -1711,7 +1719,8 @@ impl Chat {
                 return;
             }
             child = widget.next_sibling();
-            if widget.is_visible() {
+            // (the turn line is no part of the turn: never folded away with it)
+            if widget.is_visible() && widget != *self.working.upcast_ref::<gtk::Widget>() {
                 body.push(widget);
             }
         }
@@ -1914,9 +1923,12 @@ impl Chat {
         // refusal said by then).
         if self.on_submit.borrow().is_some() {
             self.composer.add_css_class("sending");
-            let composer = self.composer.downgrade();
+            // (only this send's own give-up: a later send has its own)
+            let round = self.sending_round.get() + 1;
+            self.sending_round.set(round);
+            let (composer, rounds) = (self.composer.downgrade(), self.sending_round.clone());
             glib::timeout_add_local_once(Duration::from_secs(10), move || {
-                if let Some(composer) = composer.upgrade() {
+                if let Some(composer) = composer.upgrade().filter(|_| rounds.get() == round) {
                     composer.remove_css_class("sending");
                 }
             });
@@ -3068,7 +3080,7 @@ impl Chat {
 
     fn notice_button(&self, text: &str, button: &str, class: &str, action: Rc<dyn Fn()>) {
         // A retry that failed again replaces its card rather than stacking another.
-        if let Some(last) = self.list.last_child()
+        if let Some(last) = self.last_entry()
             && last.has_css_class("notice")
             && last.first_child().and_downcast::<gtk::Label>().is_some_and(|l| l.text().replace(['\u{200E}', '\u{200F}'], "") == text)
         {
@@ -3095,7 +3107,7 @@ impl Chat {
 
     pub fn notice(&self, text: &str, class: &str) {
         // The same notice again right after itself (a second failed start) says nothing new.
-        if let Some(last) = self.list.last_child().and_downcast::<gtk::Label>()
+        if let Some(last) = self.last_entry().and_downcast::<gtk::Label>()
             && last.has_css_class("notice")
             && last.text().replace(['\u{200E}', '\u{200F}'], "") == text
         {
@@ -4730,10 +4742,10 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
     removed.chain(added).collect()
 }
 
-/// How the summary of a compacted conversation starts (Claude Code's words).
 /// The reply's end ring breathes until this long after its last words.
 const BREATH_AFTER: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// How the summary of a compacted conversation starts (Claude Code's words).
 const SUMMARY_START: &str = "This session is being continued from a previous conversation";
 
 /// `working` at the end of `list` while it says something, out of it while it doesn't.

@@ -66,6 +66,8 @@ mod imp {
         pub segments: std::cell::RefCell<Vec<crate::markdown::Segment>>,
         /// The width its tables were fitted to (0: no table).
         pub fitted: std::cell::Cell<i32>,
+        /// Counts the widths asked for: only the last one refits.
+        pub refit: std::cell::Cell<u32>,
     }
 
     #[glib::object_subclass]
@@ -82,12 +84,20 @@ mod imp {
             self.parent_size_allocate(width, height, baseline);
             // Tables fit their columns to the width: drawn again when it changed (after this
             // allocation, never inside it).
+            // Once the width has settled (not every step of a drag), and never under a
+            // selection (redrawn, it would be lost: the next change of width will do).
             let fitted = self.fitted.get();
-            if fitted > 0 && (width - fitted).abs() > 24 {
-                self.fitted.set(width);
+            if fitted > 0 && (width - fitted).abs() > 24 && !self.obj().buffer().has_selection() {
+                let round = self.refit.get() + 1;
+                self.refit.set(round);
                 let view = self.obj().clone();
-                glib::idle_add_local_once(move || {
-                    let segments = view.imp().segments.borrow().clone();
+                glib::timeout_add_local_once(std::time::Duration::from_millis(150), move || {
+                    let imp = view.imp();
+                    if imp.refit.get() != round || view.buffer().has_selection() {
+                        return;
+                    }
+                    imp.fitted.set(view.width());
+                    let segments = imp.segments.borrow().clone();
                     super::fill(view.upcast_ref(), &[], &segments);
                 });
             }
@@ -340,8 +350,7 @@ fn clicked(view: &gtk::TextView, at: &gtk::TextIter) {
         view.announce("Copied", gtk::AccessibleAnnouncementPriority::Medium);
         // (in the accent, as every "copied" in loom)
         let tint = self::tag(&buffer, "copied", || {
-            #[allow(deprecated)]
-            let accent = view.style_context().lookup_color("accent_color").unwrap_or_else(|| grey(1.0));
+            let accent = crate::theme::named(view, "accent_color").unwrap_or_else(|| grey(1.0));
             gtk::TextTag::builder().name("copied").foreground_rgba(&accent).build()
         });
         buffer.insert_with_tags(&mut word_start, "copied", &[&tag, &tint]);
@@ -794,34 +803,71 @@ fn room(view: &gtk::TextView) -> i32 {
     if width > 0 { width } else { 600 }
 }
 
-/// Draws diagram `n` (its "img:n:" paragraph says "Drawing…" meanwhile). The last block of a
-/// reply may still be streaming in: drawn once it stayed as it is a moment (redrawn meanwhile,
-/// its tags are gone and this does nothing).
+/// A diagram's key: its kind and code (what it shows as, and its drawn pictures, are kept by
+/// it across redraws).
+fn diagram_key(lang: &str, code: &str) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    (lang.to_ascii_lowercase(), code).hash(&mut hasher);
+    hasher.finish()
+}
+
+thread_local! {
+    /// Diagrams drawn, by key, width and theme: a redraw (a resize, a reply going on) shows
+    /// them at once. A few dozen at most.
+    static PICTURES: std::cell::RefCell<std::collections::HashMap<(u64, i32, bool), gdk::Texture>> = std::cell::RefCell::default();
+    /// Diagrams switched to their code (by key), so a redraw keeps them that way.
+    static AS_CODE: std::cell::RefCell<std::collections::HashSet<u64>> = std::cell::RefCell::default();
+    /// Each diagram on screen's key, by its number.
+    static KEYS: std::cell::RefCell<std::collections::HashMap<usize, u64>> = std::cell::RefCell::default();
+}
+
+/// Draws diagram `n` (its "img:n:" paragraph says "Drawing…" meanwhile, softly pulsing).
+/// The last block of a reply may still be streaming in: drawn once it stayed as it is a
+/// moment (redrawn meanwhile, its tags are gone and this does nothing).
 fn draw_diagram(view: &gtk::TextView, n: usize, lang: &str, code: &str, last: bool) {
-    let (weak, mermaid, code) = (view.downgrade(), lang.eq_ignore_ascii_case("mermaid"), code.to_owned());
+    let key = diagram_key(lang, code);
+    KEYS.with(|k| k.borrow_mut().insert(n, key));
+    if AS_CODE.with(|a| a.borrow().contains(&key)) {
+        show_diagram_code(view, n, true);
+    }
     let dark = crate::files::is_dark(view);
+    let widest = (room(view) - 24).clamp(120, 1200);
+    if let Some(texture) = PICTURES.with(|p| p.borrow().get(&(key, widest, dark)).cloned()) {
+        place_diagram(view, n, Ok(texture));
+        return;
+    }
+    let (weak, mermaid, code) = (view.downgrade(), lang.eq_ignore_ascii_case("mermaid"), code.to_owned());
     let draw = move || {
         let Some(view) = weak.upgrade() else { return };
         if view.buffer().tag_table().lookup(&format!("img:{n}:")).is_none() {
             return;
         }
-        let widest = (room(&view) - 24).clamp(120, 1200);
-        if !mermaid {
-            place_diagram(&view, n, crate::diagram::texture(code.as_bytes(), widest));
-            return;
-        }
         let weak = view.downgrade();
         glib::spawn_future_local(async move {
-            let svg = gtk::gio::spawn_blocking(move || crate::diagram::mermaid(&code, dark)).await.unwrap_or_else(|_| Err("the drawing stopped".into()));
-            if let Some(view) = weak.upgrade() {
-                place_diagram(&view, n, svg.and_then(|svg| crate::diagram::texture(svg.as_bytes(), widest)));
+            // Read and drawn off the main thread (a browser may run for Mermaid).
+            let picture = gtk::gio::spawn_blocking(move || crate::diagram::picture(mermaid, &code, widest, dark))
+                .await
+                .unwrap_or_else(|_| Err("the drawing stopped".into()));
+            let Some(view) = weak.upgrade() else { return };
+            let texture = picture.map(|pixels| pixels.texture());
+            if let Ok(texture) = &texture {
+                PICTURES.with(|p| {
+                    let mut pictures = p.borrow_mut();
+                    if pictures.len() >= 48 {
+                        pictures.clear();
+                    }
+                    pictures.insert((key, widest, dark), texture.clone());
+                });
             }
+            place_diagram(&view, n, texture);
         });
     };
-    // "Drawing…" breathes (its dots) until the picture or the reason takes its place.
+    // "Drawing…" pulses (its colour, not its text: a screen reader isn't told it again and
+    // again) until the picture or the reason takes its place.
     let weak = view.downgrade();
-    let mut step = 0;
-    glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+    let started = std::time::Instant::now();
+    glib::timeout_add_local(std::time::Duration::from_millis(80), move || {
         let Some(view) = weak.upgrade() else { return glib::ControlFlow::Break };
         let buffer = view.buffer();
         let Some(img) = buffer.tag_table().lookup(&format!("img:{n}:")) else { return glib::ControlFlow::Break };
@@ -832,13 +878,12 @@ fn draw_diagram(view: &gtk::TextView, n: usize, lang: &str, code: &str, last: bo
         let mut end = start;
         end.forward_to_line_end();
         if !buffer.text(&start, &end, true).starts_with("Drawing") {
+            img.set_foreground_rgba(None);
             return glib::ControlFlow::Break;
         }
-        step = (step + 1) % 4;
-        let tags = start.tags();
-        buffer.delete(&mut start, &mut end);
-        let tags: Vec<&gtk::TextTag> = tags.iter().collect();
-        buffer.insert_with_tags(&mut start, &format!("Drawing{}", ".".repeat(step)), &tags);
+        let fg = view.color();
+        let phase = started.elapsed().as_secs_f32() / 1.2 * std::f32::consts::TAU;
+        img.set_foreground_rgba(Some(&gdk::RGBA::new(fg.red(), fg.green(), fg.blue(), 0.35 + 0.3 * (0.5 + 0.5 * phase.cos()))));
         glib::ControlFlow::Continue
     });
     if last {
@@ -867,10 +912,14 @@ fn place_diagram(view: &gtk::TextView, n: usize, picture: Result<gdk::Texture, S
             from.backward_char();
             buffer.apply_tag(&img, &from, &start);
             buffer.apply_tag(&chrome, &from, &start);
+            // (a picture has no words: a screen reader is told where they are)
+            view.update_property(&[gtk::accessible::Property::Description("Has a diagram; its code is under its \"code\" switch")]);
         }
         Err(why) => {
+            // Its code shown, and why it isn't drawn kept in sight under it.
             buffer.insert_with_tags(&mut start, &format!("Not drawn: {why}"), &[&chrome, &img]);
             show_diagram_code(view, n, true);
+            img.set_invisible(false);
         }
     }
 }
@@ -898,6 +947,9 @@ fn toggle_diagram(view: &gtk::TextView, at: &gtk::TextIter) {
     let Some(n) = at.tags().iter().find_map(|t| t.name()?.strip_prefix("show:")?.trim_end_matches(':').parse::<usize>().ok()) else { return };
     let hidden = view.buffer().tag_table().lookup(&format!("src:{n}:")).is_some_and(|src| src.is_invisible());
     show_diagram_code(view, n, hidden);
+    if let Some(key) = KEYS.with(|k| k.borrow().get(&n).copied()) {
+        AS_CODE.with(|a| if hidden { a.borrow_mut().insert(key) } else { a.borrow_mut().remove(&key) });
+    }
 }
 
 /// Diagram `n` as its code (`code`) or its picture; the switch then names the other.
@@ -961,7 +1013,7 @@ fn split_markup(markup: &str, cuts: &[usize]) -> Vec<String> {
             if element.starts_with("</") {
                 open.pop();
             } else {
-                let name = element[1..].split(|c: char| c == ' ' || c == '>').next().unwrap_or_default().to_owned();
+                let name = element[1..].split([' ', '>']).next().unwrap_or_default().to_owned();
                 open.push((element.to_owned(), name));
             }
             pieces.last_mut().expect("a piece").push_str(element);

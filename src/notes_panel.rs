@@ -78,8 +78,7 @@ impl NotesPanel {
             tab.add_css_class("tab");
             tab.remove_css_class("text-button");
             tab.remove_css_class("toggle");
-            tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]);
-            tab.connect_toggled(|tab| tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]));
+            crate::menu::tab_role(tab);
             tabs.append(tab);
         }
         header.append(&tabs);

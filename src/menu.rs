@@ -137,6 +137,23 @@ pub fn copy(widget: &impl IsA<gtk::Widget>, text: &str) {
     copied(widget);
 }
 
+/// `class` on `widget` for `ms`: a one-shot CSS animation (taken off so it can play again).
+pub fn flash(widget: &impl IsA<gtk::Widget>, class: &'static str, ms: u64) {
+    widget.add_css_class(class);
+    let held = widget.as_ref().downgrade();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || {
+        if let Some(widget) = held.upgrade() {
+            widget.remove_css_class(class);
+        }
+    });
+}
+
+/// A segmented control's toggle as a tab to a screen reader, its "selected" kept in step.
+pub fn tab_role(tab: &gtk::ToggleButton) {
+    tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]);
+    tab.connect_toggled(|tab| tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]));
+}
+
 /// "Copied", a moment, by `widget` (and to screen readers).
 pub fn copied(widget: &gtk::Widget) {
     widget.announce("Copied", gtk::AccessibleAnnouncementPriority::Medium);
@@ -149,8 +166,11 @@ pub fn copied(widget: &gtk::Widget) {
     popover.set_parent(widget);
     popover.popup();
     glib::timeout_add_local_once(std::time::Duration::from_millis(900), move || {
-        popover.popdown();
-        popover.unparent();
+        // (its widget may have gone meanwhile, and the note with it)
+        if popover.parent().is_some() {
+            popover.popdown();
+            popover.unparent();
+        }
     });
 }
 

@@ -77,7 +77,9 @@ impl Follow {
                 Body::Changes { ops } => {
                     // What arrives live (not the snapshot read back) comes in with a short fade.
                     let list = chat.messages();
-                    let before = list.last_child();
+                    // (the turn line moves to the end after them: what came is after the
+                    // last entry before them, the turn line aside)
+                    let before = chat.last_entry();
                     for op in &ops {
                         match op {
                             Op::Upsert { item } => self.item(&chat, item),
@@ -89,17 +91,13 @@ impl Follow {
                         chat.keep_working_last();
                         let mut new = match &before {
                             Some(before) if before.parent().as_ref() == Some(&list) => before.next_sibling(),
-                            _ => list.first_child(),
+                            // (gone meanwhile: what is new can't be told, nothing fades)
+                            Some(_) => None,
+                            None => list.first_child(),
                         };
                         while let Some(widget) = new {
                             if !widget.has_css_class("working") {
-                                widget.add_css_class("enter");
-                                let held = widget.downgrade();
-                                gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {
-                                    if let Some(widget) = held.upgrade() {
-                                        widget.remove_css_class("enter");
-                                    }
-                                });
+                                crate::menu::flash(&widget, "enter", 400);
                             }
                             new = widget.next_sibling();
                         }

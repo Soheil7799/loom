@@ -214,16 +214,21 @@ fn adw_gtk3() -> bool {
     dirs.iter().any(|d| d.join("adw-gtk3/gtk-4.0/gtk.css").is_file())
 }
 
+/// A named colour of the theme's (`accent_color`, `loom_wait`…) as `widget` sees it. GTK
+/// gives no other way to read one than the deprecated style context: kept to this one place.
+pub fn named(widget: &impl IsA<gtk::Widget>, name: &str) -> Option<gdk::RGBA> {
+    #[allow(deprecated)]
+    widget.as_ref().style_context().lookup_color(name)
+}
+
 /// Picks the "waiting for you" colour: of a few clear hues, the one farthest from the
 /// accent (a yellow accent and a yellow "waiting" would read the same).
 pub fn status_colors(widget: &impl IsA<gtk::Widget>) {
-    #[allow(deprecated)]
-    let accent = widget.as_ref().style_context().lookup_color("accent_color");
+    let accent = named(widget, "accent_color");
     let hue = accent.map_or(45.0, |c| hue(f64::from(c.red()), f64::from(c.green()), f64::from(c.blue())));
     // Orange, violet, cyan, pink: none is the red of "failed" or the green of "done". On a
     // light theme (dark text) the deep ones, so they read on white.
-    #[allow(deprecated)]
-    let light = widget.as_ref().style_context().lookup_color("window_fg_color").is_some_and(|c| c.red() + c.green() + c.blue() < 1.5);
+    let light = named(widget, "window_fg_color").is_some_and(|c| c.red() + c.green() + c.blue() < 1.5);
     let candidates = if light {
         [(30.0, "#b35c00"), (270.0, "#6e44c9"), (190.0, "#007a91"), (320.0, "#b02e8f")]
     } else {

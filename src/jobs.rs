@@ -326,7 +326,7 @@ impl Tray {
                 .popup(&job.chip, x, y);
         });
         self.chips.append(&chip);
-        flash(&chip, "fresh", 300);
+        crate::menu::flash(&chip, "fresh", 300);
         self.hint.set_visible(false);
         self.jobs.borrow_mut().push(job.clone());
         // Its output, if the core has told of it yet (else once `jobs` lists it).
@@ -645,17 +645,11 @@ impl Job {
         self.dot.add_css_class(class);
         self.status.set_label(&text);
         if was_running {
-            flash(&self.chip, if class == "failed" { "just-failed" } else { "just-done" }, 700);
+            crate::menu::flash(&self.chip, if class == "failed" { "just-failed" } else { "just-done" }, 700);
         }
     }
 }
 
-/// `class` on `widget` for `ms` (a one-shot CSS animation; taken off so it can play again).
-fn flash(widget: &impl IsA<gtk::Widget>, class: &'static str, ms: u64) {
-    widget.add_css_class(class);
-    let widget = widget.clone().upcast::<gtk::Widget>();
-    glib::timeout_add_local_once(std::time::Duration::from_millis(ms), move || widget.remove_css_class(class));
-}
 
 /// A chip name for a bare command: the program and its first argument.
 fn short_name(line: &str) -> String {

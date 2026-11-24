@@ -69,10 +69,16 @@ pub fn by_file(diff: &str) -> Vec<(String, String)> {
             out.push((String::new(), String::new()));
         }
         let Some((path, text)) = out.last_mut() else { continue };
-        // The new name, or the old one for a file deleted (+++ /dev/null).
+        // The new name, or the old one for a file deleted (+++ /dev/null); git ends a name
+        // with spaces in it with a tab. A change with no text lines (a binary file, a rename,
+        // a mode) has only its "diff --git a/… b/…" line: the name after " b/".
         let name = line.strip_prefix("+++ b/").or_else(|| line.strip_prefix("--- a/").filter(|_| path.is_empty()));
         if let Some(name) = name.filter(|_| !text.contains("\n@@")) {
-            *path = name.trim_end_matches('\n').to_owned();
+            *path = name.trim_end_matches(['\n', '\t']).to_owned();
+        } else if let Some(names) = line.strip_prefix("diff --git a/").filter(|_| path.is_empty())
+            && let Some((_, b)) = names.trim_end().rsplit_once(" b/")
+        {
+            *path = b.to_owned();
         }
         text.push_str(line);
     }
@@ -161,6 +167,10 @@ mod tests {
         assert!(files[0].1.ends_with(" keep\n") && !files[0].1.contains("gone"));
         let (head, lines) = hunks(&files[0].1).remove(0);
         assert_eq!(numbers(&head, &lines), ["3", "was 4", "4", "5"]);
+        // a name with a space (git ends it with a tab); a binary file, no text lines
+        let diff = "diff --git a/my notes.md b/my notes.md\n--- a/my notes.md\t\n+++ b/my notes.md\t\n@@ -1 +1 @@\n-a\n+b\ndiff --git a/logo.png b/logo.png\nBinary files a/logo.png and b/logo.png differ\n";
+        let files = by_file(diff);
+        assert_eq!(files.iter().map(|(p, _)| p.as_str()).collect::<Vec<_>>(), ["my notes.md", "logo.png"]);
     }
 
     #[test]

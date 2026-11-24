@@ -262,6 +262,15 @@ fn a_card_tried_twice_gets_two_agents_in_worktrees_of_their_own() {
     // tried again: the branches are there already, refused before any agent starts
     let again = c.command(&new_id(), "board_tries", json!({ "project": project, "card": card }));
     assert!(again.is_err(), "{again:?}");
+    // A later try failing (its branch taken) takes the first one back: no branch left over
+    // to refuse the next attempt.
+    let card = command(&mut c, "board_add", json!({ "project": project, "title": "Another" }))["card"].as_u64().unwrap();
+    git(&["branch", &format!("card-{card}-try-2")]);
+    let failed = c.command(&new_id(), "board_tries", json!({ "project": project, "card": card }));
+    assert!(failed.is_err(), "{failed:?}");
+    let branches = std::process::Command::new("git").arg("-C").arg(&project).args(["branch", "--list", &format!("card-{card}-try-1")]).output().unwrap();
+    assert!(branches.stdout.is_empty(), "try 1 left behind: {}", String::from_utf8_lossy(&branches.stdout));
+    assert!(!project.with_file_name("project.worktrees").join(format!("card-{card}-try-1")).exists());
 }
 
 fn agent_tests() -> bool {

@@ -774,21 +774,21 @@ impl App {
         // checked as panels open or close and as the window's width changes.
         let fit = {
             let weak = Rc::downgrade(&this);
-            Rc::new(move || {
+            Rc::new(move |shown: Option<&gtk::Widget>| {
                 if let Some(app) = weak.upgrade() {
-                    app.fit_width();
+                    app.fit_width(shown);
                 }
             })
         };
         for widget in [this.sidebar.clone().upcast::<gtk::Widget>(), this.files.root.clone().upcast(), this.notes_panel.root.clone().upcast(), this.files.editor_box.clone().upcast()] {
             let fit = fit.clone();
-            widget.connect_visible_notify(move |_| fit());
+            widget.connect_visible_notify(move |widget| fit(widget.is_visible().then_some(widget)));
         }
         let resized = fit.clone();
         this.window.connect_realize(move |window| {
             if let Some(surface) = window.surface() {
                 let fit = resized.clone();
-                surface.connect_width_notify(move |_| fit());
+                surface.connect_width_notify(move |_| fit(None));
             }
         });
         this.wire(&new_button, &settings_button);
@@ -2618,11 +2618,12 @@ impl App {
         }
     }
 
-    /// Hides the sidebar and the files panel (and brings them back).
     /// What is open must fit the window's width: below what they need side by side, the
     /// open file wins over the files panel, and both over the sidebar. Each comes back when
-    /// the window is wide enough again (with room to spare, so it doesn't flicker).
-    fn fit_width(&self) {
+    /// the window is wide enough again (with room to spare, so it doesn't flicker). `shown`:
+    /// what was just opened, never the one put away for it (else opening it would undo
+    /// itself).
+    fn fit_width(&self, shown: Option<&gtk::Widget>) {
         const CHAT: i32 = 400;
         if self.fitting.replace(true) {
             return;
@@ -2632,19 +2633,20 @@ impl App {
             let panel = self.side_panel();
             let editor = self.files.editor_box.is_visible();
             let need = |sidebar: bool, panel: bool| CHAT + i32::from(sidebar) * 290 + i32::from(panel) * 340 + i32::from(editor) * 320;
-            if self.fit_hid_panel.get() && need(self.sidebar.is_visible(), true) + 40 <= width {
+            let just = |w: &gtk::Widget| shown == Some(w);
+            if shown.is_none() && self.fit_hid_panel.get() && need(self.sidebar.is_visible(), true) + 40 <= width {
                 self.fit_hid_panel.set(false);
                 panel.set_visible(true);
             }
-            if self.fit_hid_sidebar.get() && need(true, panel.is_visible()) + 40 <= width {
+            if shown.is_none() && self.fit_hid_sidebar.get() && need(true, panel.is_visible()) + 40 <= width {
                 self.fit_hid_sidebar.set(false);
                 self.sidebar.set_visible(true);
             }
-            if need(self.sidebar.is_visible(), panel.is_visible()) > width && panel.is_visible() && editor {
+            if need(self.sidebar.is_visible(), panel.is_visible()) > width && panel.is_visible() && editor && !just(&panel) {
                 self.fit_hid_panel.set(true);
                 panel.set_visible(false);
             }
-            if need(self.sidebar.is_visible(), panel.is_visible()) > width && self.sidebar.is_visible() {
+            if need(self.sidebar.is_visible(), panel.is_visible()) > width && self.sidebar.is_visible() && !just(self.sidebar.upcast_ref()) {
                 self.fit_hid_sidebar.set(true);
                 self.sidebar.set_visible(false);
             }
@@ -2652,6 +2654,7 @@ impl App {
         self.fitting.set(false);
     }
 
+    /// Hides the sidebar and the files panel (and brings them back).
     fn zoom(&self) {
         // (zoom decides by itself what shows: nothing is put back for a narrow window)
         self.fit_hid_panel.set(false);

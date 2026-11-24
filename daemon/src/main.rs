@@ -657,15 +657,32 @@ fn commands(daemon: &Rc<Daemon>) {
         let weak = weak.clone();
         loom_core::rt::spawn_local(async move {
             let at = project.clone();
-            let made = loom_core::rt::spawn_blocking(move || (1..=tries).map(|n| loom_core::worktrees::add(&at, &format!("card-{id}-try-{n}"))).collect::<Result<Vec<_>, _>>())
-                .await
-                .unwrap_or_else(|_| Err("git stopped".into()));
+            // All the tries or none: a later one failing takes the ones made before it back
+            // (else their branches would refuse every retry).
+            let made = loom_core::rt::spawn_blocking(move || {
+                let mut dirs = Vec::new();
+                for n in 1..=tries {
+                    match loom_core::worktrees::add(&at, &format!("card-{id}-try-{n}")) {
+                        Ok(dir) => dirs.push(dir),
+                        Err(why) => {
+                            take_back(&dirs);
+                            return Err(why);
+                        }
+                    }
+                }
+                Ok(dirs)
+            })
+            .await
+            .unwrap_or_else(|_| Err("git stopped".into()));
             let Some(daemon) = weak.upgrade() else { return reply(Err(Error::NotFound("loom".into()))) };
             let dirs = match made {
                 Ok(dirs) => dirs,
                 Err(why) => return reply(Err(Error::Invalid(why))),
             };
-            if let Err(why) = loom_core::board::act(&project, "board_move", &json!({ "card": id, "lane": "Doing" }), "you").expect("a board command") {
+            let moved = loom_core::board::act(&project, "board_move", &json!({ "card": id, "lane": "Doing" }), "you").unwrap_or_else(|| Err("no board command".into()));
+            if let Err(why) = moved {
+                // (awaited: an async fn runs only when awaited)
+                let _ = loom_core::rt::spawn_blocking(move || take_back(&dirs)).await;
                 return reply(Err(Error::Invalid(why)));
             }
             let agents: Vec<String> = dirs
@@ -791,15 +808,13 @@ fn commands(daemon: &Rc<Daemon>) {
     });
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn a_jpeg_from_a_phone_becomes_a_png() {
-        let mut jpeg = std::io::Cursor::new(Vec::new());
-        image::RgbImage::from_pixel(4, 3, image::Rgb([200, 30, 30])).write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
-        let png = super::to_png(jpeg.into_inner()).unwrap();
-        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
-        assert!(super::to_png(b"not a picture".to_vec()).is_err());
+/// Worktrees made for tries that won't run, removed with their branches (nothing was done
+/// in them yet). Blocking: off loomd's thread.
+fn take_back(dirs: &[std::path::PathBuf]) {
+    for dir in dirs {
+        if let Err(why) = loom_core::worktrees::remove(dir) {
+            eprintln!("loomd: a try's worktree {} stays: {why}", dir.display());
+        }
     }
 }
 
@@ -818,4 +833,16 @@ fn card_message(card: &loom_core::board::Card, of: Option<(usize, usize)>) -> St
         )),
     }
     message
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn a_jpeg_from_a_phone_becomes_a_png() {
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::RgbImage::from_pixel(4, 3, image::Rgb([200, 30, 30])).write_to(&mut jpeg, image::ImageFormat::Jpeg).unwrap();
+        let png = super::to_png(jpeg.into_inner()).unwrap();
+        assert!(png.starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert!(super::to_png(b"not a picture".to_vec()).is_err());
+    }
 }

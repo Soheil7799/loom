@@ -131,8 +131,7 @@ impl Files {
             // whatever is chosen): these are drawn as one segmented control instead.
             tab.remove_css_class("text-button");
             tab.remove_css_class("toggle");
-            tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]);
-            tab.connect_toggled(|tab| tab.update_state(&[gtk::accessible::State::Selected(Some(tab.is_active()))]));
+            crate::menu::tab_role(tab);
             tabs.append(tab);
         }
         let spacer = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -1519,21 +1518,22 @@ impl Files {
         *self.graph_commits.borrow_mut() = data.iter().map(|c| Some(c.hash.clone())).collect();
     }
 
-    /// The whole graph in a window of its own: who and when too, dragged around to look; a
-    /// click opens a commit.
-    /// A changed file of the repo the Changes view shows, in its window (devhooks).
+    /// Every change of the repo the Changes view shows, in the review window (devhooks).
     pub fn review_for_tests(&self) {
         if let Some(repo) = self.changes_repo.borrow().clone() {
             self.review_all(&repo);
         }
     }
 
+    /// A changed file of the repo the Changes view shows, in its window (devhooks).
     pub fn diff_for_tests(&self, file: &str) {
         if let Some(repo) = self.changes_repo.borrow().clone() {
             self.show_diff(&repo, file);
         }
     }
 
+    /// The whole graph in a window of its own: who and when too, dragged around to look; a
+    /// click opens a commit.
     pub fn graph_window(self: &Rc<Self>) {
         let data = self.graph_data.borrow().clone();
         if data.is_empty() {
@@ -1745,16 +1745,22 @@ impl Files {
         });
     }
 
-    /// A file's changes against the last commit (a new file: all of it), in a window.
     /// Every change in `repo` since the last commit, in one window to review and leave notes on.
     fn review_all(&self, repo: &Path) {
         let (me, repo) = (self.me.borrow().clone(), repo.to_owned());
         glib::spawn_future_local(async move {
             let reading = repo.clone();
-            let diff = gio::spawn_blocking(move || loom_core::files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD"]).unwrap_or_default())
+            let diff = gio::spawn_blocking(move || loom_core::files::git(&reading, &["-c", "core.quotePath=false", "diff", "HEAD"]))
                 .await
-                .unwrap_or_default();
+                .unwrap_or_else(|_| Err("git did not finish".to_owned()));
             let Some(files) = me.upgrade() else { return };
+            let diff = match diff {
+                Ok(diff) => diff,
+                Err(err) => {
+                    files.repo_line.set_label(&format!("git: {}", err.lines().last().unwrap_or(&err)));
+                    return;
+                }
+            };
             let changed = loom_core::changes::by_file(&diff);
             if changed.is_empty() {
                 files.repo_line.set_label("Nothing changed since the last commit (new files: open each).");
@@ -1766,6 +1772,7 @@ impl Files {
         });
     }
 
+    /// A file's changes against the last commit (a new file: all of it), in a window.
     fn show_diff(&self, repo: &Path, file: &str) {
         let (me, repo, file) = (self.me.borrow().clone(), repo.to_owned(), file.to_owned());
         glib::spawn_future_local(async move {
@@ -1829,6 +1836,12 @@ impl Files {
                 heading.add_css_class("mono");
                 heading.add_css_class("heading");
                 body.append(&heading);
+            }
+            if loom_core::changes::hunks(diff).is_empty() {
+                // a binary file, a rename, a mode: changed, with no lines to show
+                let note = gtk::Label::builder().label("Changed, with no text lines to show (a binary file, a rename or its mode).").xalign(0.0).build();
+                note.add_css_class("dim");
+                body.append(&note);
             }
             self.hunk_cards(&body, &window, repo, file, &path, diff, one);
         }
