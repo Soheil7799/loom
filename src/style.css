@@ -177,6 +177,10 @@ button.menu-item { padding: 8px 12px; border-radius: 4px; font-weight: normal; }
 .dot.failed { min-width: 8px; min-height: 8px; margin: 2px; background: @loom_err; border-radius: 1px; }
 .dot.suspended { background: none; box-shadow: inset 0 0 0 1.5px alpha(@window_fg_color, 0.35); }
 @keyframes spin { to { transform: rotate(360deg); } }
+/* Hover fills ease in and out; a press shows at once. */
+button, row { transition: background-color 120ms ease-out, color 120ms ease-out, opacity 120ms ease-out; }
+button:active, row:active { transition-duration: 0ms; }
+@keyframes pop { from { -gtk-icon-transform: scale(0.6); } to { -gtk-icon-transform: scale(1); } }
 
 /* ---- the agent's view ------------------------------------------------------------------- */
 /* Around it: the sidebars' colour; the view itself a rounded panel in it. */
@@ -245,6 +249,8 @@ separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg
 /* A message's buttons, under it: they come in as the pointer reaches the message. */
 .msg-actions { margin-top: 2px; opacity: 0; transition: opacity 160ms ease-out; }
 .msg-wrap:hover .msg-actions, .msg-actions:focus-within { opacity: 1; }
+/* (a moment late: not flickering in and out as the pointer crosses a long chat) */
+.msg-wrap:hover .msg-actions { transition-delay: 80ms; }
 .msg-actions button { min-width: 26px; min-height: 26px; padding: 0; border-radius: 6px; color: alpha(@window_fg_color, 0.55); transition: background 120ms ease-out, color 120ms ease-out; }
 .msg-actions button:hover { color: @window_fg_color; background: alpha(@window_fg_color, 0.08); }
 .msg-actions button:active { background: alpha(@window_fg_color, 0.14); }
@@ -351,6 +357,11 @@ textview.input, textview.input text { background: transparent; }
 button.round { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; font-weight: 500; }
 button.send { min-width: 30px; min-height: 30px; padding: 0; border-radius: 99px; background: @accent_color; color: @accent_fg_color; font-weight: 600; transition: opacity 120ms ease; }
 button.send.empty { opacity: 0.35; }
+@media (prefers-reduced-motion: no-preference) {
+  button.send { transition: opacity 120ms ease, transform 90ms ease-out; }
+  button.send:active { transform: scale(0.92); }
+  .msg-actions button.done image { animation: pop 180ms ease-out; }
+}
 button.send.stop { background: alpha(@window_fg_color, 0.85); color: @window_bg_color; }
 /* The microphone: red while recording, dim while what was said is written down. */
 .composer-bar button.mic, .composer button.mic { min-width: 28px; min-height: 28px; padding: 0; border-radius: 99px; }

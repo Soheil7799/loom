@@ -2923,7 +2923,7 @@ impl Chat {
                 let edit = action_button("document-edit-symbolic", "Edit: back in the input to change and send again");
                 // Its files too: in the menu only.
                 let rewind_files = gtk::Button::with_label("rewind with files");
-                let rewind = action_button("edit-undo-symbolic", "Rewind: a copy of the conversation from just before this message, with it in the input to change (this one is kept)");
+                let rewind = action_button("media-seek-backward-symbolic", "Rewind: a copy of the conversation from just before this message, with it in the input to change (this one is kept)");
                 wrap.append(&action_row(&[&copy, &edit, &rewind], gtk::Align::End));
                 self.list.append(&wrap);
                 *self.turn_start.borrow_mut() = Some(wrap.clone().upcast());
@@ -4659,9 +4659,6 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
 /// How the summary of a compacted conversation starts (Claude Code's words).
 const SUMMARY_START: &str = "This session is being continued from a previous conversation";
 
-/// A message's right-click menu: what is selected in it, its own buttons' actions, and a quote
-/// of it (or of the selection) into the input. Over the text's own menu (Capture); the Menu
-/// key or Shift+F10 too.
 /// A message's button: an icon, its name in the tooltip (and for screen readers).
 fn action_button(icon: &str, tip: &str) -> gtk::Button {
     let button = gtk::Button::from_icon_name(icon);
@@ -4693,6 +4690,9 @@ fn done(button: &gtk::Button, icon: &'static str) {
     });
 }
 
+/// A message's right-click menu: what is selected in it, its own buttons' actions, and a quote
+/// of it (or of the selection) into the input. Over the text's own menu (Capture); the Menu
+/// key or Shift+F10 too.
 fn message_menu(wrap: &gtk::Box, message: &Rc<Message>, input: &gtk::TextView, actions: Vec<(&'static str, gtk::Button)>) {
     let click = gtk::GestureClick::builder().button(gdk::BUTTON_SECONDARY).propagation_phase(gtk::PropagationPhase::Capture).build();
     let (at, message, input) = (wrap.downgrade(), Rc::downgrade(message), input.downgrade());
