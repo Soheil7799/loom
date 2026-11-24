@@ -534,6 +534,7 @@ impl Chat {
 
         // It paints typed code blocks as the chat's boxes (rich.rs).
         let input = crate::rich::editor();
+        input.update_property(&[gtk::accessible::Property::Label("Message")]);
         input.set_wrap_mode(gtk::WrapMode::WordChar);
         input.set_accepts_tab(false);
         input.set_top_margin(12);
@@ -1755,6 +1756,7 @@ impl Chat {
             let remove = gtk::Button::from_icon_name("window-close-symbolic");
             remove.add_css_class("flat");
             remove.set_tooltip_text(Some("Take it back into the input"));
+            remove.update_property(&[gtk::accessible::Property::Label("Take back")]);
             let weak = Rc::downgrade(self);
             remove.connect_clicked(move |_| {
                 if let Some(chat) = weak.upgrade() {
@@ -2055,6 +2057,7 @@ impl Chat {
             remove.set_halign(gtk::Align::End);
             remove.set_valign(gtk::Align::Start);
             remove.set_tooltip_text(Some("Take this image off"));
+            remove.update_property(&[gtk::accessible::Property::Label("Remove the picture")]);
             let weak = Rc::downgrade(self);
             remove.connect_clicked(move |_| {
                 if let Some(chat) = weak.upgrade() {
@@ -3407,6 +3410,14 @@ impl Chat {
     pub fn permission(&self, question: &str, detail: Option<&str>, markdown: bool, options: &[(String, String, String)], choose: Rc<dyn Fn(String)>) -> PermissionCard {
         let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
         root.add_css_class("permission-card");
+        // Said to a screen reader as it appears (on screen: not one read back from history
+        // while another chat is in front).
+        let (held, said) = (root.downgrade(), question.to_owned());
+        glib::idle_add_local_once(move || {
+            if let Some(root) = held.upgrade().filter(|r| r.is_mapped()) {
+                root.announce(&said, gtk::AccessibleAnnouncementPriority::High);
+            }
+        });
         let title = text_label(&format!("<b>{}</b>", glib::markup_escape_text(question)));
         root.append(&title);
         // A plan's comments, by part: (what the part says, the comment).
@@ -3415,7 +3426,7 @@ impl Chat {
         if let Some(detail) = detail.filter(|d| !d.is_empty()) {
             if markdown {
                 // A plan: read as written, headings and lists and code; each part can take a
-                // comment (💬), and Request changes sends them back together.
+                // comment (its pencil), and Request changes sends them back together.
                 let plan = gtk::Box::new(gtk::Orientation::Vertical, 6);
                 plan.add_css_class("plan-detail");
                 for segment in markdown::segments(detail) {
@@ -3434,7 +3445,8 @@ impl Chat {
                     let line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
                     line.add_css_class("plan-part");
                     line.append(&widget);
-                    let add = gtk::Button::with_label("💬");
+                    let add = gtk::Button::from_icon_name("document-edit-symbolic");
+                    add.update_property(&[gtk::accessible::Property::Label("Comment")]);
                     add.add_css_class("flat");
                     add.add_css_class("plan-comment-button");
                     add.set_valign(gtk::Align::Start);
@@ -3485,7 +3497,7 @@ impl Chat {
         let decline = options.iter().find(|(_, _, kind)| kind.starts_with("reject")).map(|(id, _, _)| id.clone());
         if markdown && let Some(decline) = decline {
             request_changes.add_css_class("plain");
-            request_changes.set_tooltip_text(Some("Keep planning, with your comments (💬 on a part adds one)"));
+            request_changes.set_tooltip_text(Some("Keep planning, with your comments (the pencil on a part adds one)"));
             let submit = self.on_submit.borrow().clone();
             let choose = choose.clone();
             request_changes.connect_clicked(move |_| {

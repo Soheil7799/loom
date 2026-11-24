@@ -87,6 +87,9 @@ fn colours(p: &Palette, dark: bool) -> Vec<(&'static str, String)> {
         ("loom_warn", wait),
         ("loom_run", accent),
         ("loom_line", line),
+        // Shell mode's violet, and the soft shadow under floating things: lighter on light.
+        ("loom_shell", if dark { "#c39bff" } else { "#7a4fd1" }.to_owned()),
+        ("loom_shadow", if dark { "rgba(0, 0, 0, 0.32)" } else { "rgba(0, 0, 0, 0.10)" }.to_owned()),
     ]
 }
 
@@ -217,8 +220,15 @@ pub fn status_colors(widget: &impl IsA<gtk::Widget>) {
     #[allow(deprecated)]
     let accent = widget.as_ref().style_context().lookup_color("accent_color");
     let hue = accent.map_or(45.0, |c| hue(f64::from(c.red()), f64::from(c.green()), f64::from(c.blue())));
-    // Orange, violet, cyan, pink: none is the red of "failed" or the green of "done".
-    let candidates = [(30.0, "#ff9e3d"), (270.0, "#c3a6ff"), (190.0, "#5ccfe6"), (320.0, "#f07ad4")];
+    // Orange, violet, cyan, pink: none is the red of "failed" or the green of "done". On a
+    // light theme (dark text) the deep ones, so they read on white.
+    #[allow(deprecated)]
+    let light = widget.as_ref().style_context().lookup_color("window_fg_color").is_some_and(|c| c.red() + c.green() + c.blue() < 1.5);
+    let candidates = if light {
+        [(30.0, "#b35c00"), (270.0, "#6e44c9"), (190.0, "#007a91"), (320.0, "#b02e8f")]
+    } else {
+        [(30.0, "#ff9e3d"), (270.0, "#c3a6ff"), (190.0, "#5ccfe6"), (320.0, "#f07ad4")]
+    };
     let distance = |h: f64| {
         let d = (h - hue).abs() % 360.0;
         d.min(360.0 - d)

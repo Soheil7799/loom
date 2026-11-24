@@ -137,6 +137,7 @@ impl Files {
         let open_button = gtk::Button::from_icon_name("folder-open-symbolic");
         open_button.add_css_class("flat");
         open_button.set_tooltip_text(Some("Open the project folder in the file manager (Ctrl+O opens a file here)"));
+        open_button.update_property(&[gtk::accessible::Property::Label("Open the project folder")]);
         header.append(&tabs);
         header.append(&spacer);
         header.append(&open_button);
@@ -167,7 +168,8 @@ impl Files {
         let tree_scroller = gtk::ScrolledWindow::builder().child(&tree).hscrollbar_policy(gtk::PolicyType::Never).vexpand(true).build();
         let repo_pick = gtk::DropDown::from_strings(&[]);
         repo_pick.set_hexpand(true);
-        let refresh = gtk::Button::with_label("↻");
+        let refresh = gtk::Button::from_icon_name("view-refresh-symbolic");
+        refresh.update_property(&[gtk::accessible::Property::Label("Refresh")]);
         refresh.add_css_class("flat");
         refresh.set_tooltip_text(Some("Read git status again"));
         let pick_line = gtk::Box::new(gtk::Orientation::Horizontal, 6);
@@ -264,6 +266,7 @@ impl Files {
         let close = gtk::Button::from_icon_name("window-close-symbolic");
         close.add_css_class("flat");
         close.add_css_class("editor-close");
+        close.update_property(&[gtk::accessible::Property::Label("Close the file")]);
         close.set_valign(gtk::Align::Center);
         close.set_tooltip_text(Some("Close the file"));
         let find = gtk::SearchEntry::builder().placeholder_text("Find").width_chars(14).visible(false).build();
@@ -2189,6 +2192,7 @@ impl Files {
             let close = gtk::Button::from_icon_name("window-close-symbolic");
             close.add_css_class("flat");
             close.set_tooltip_text(Some("Take it off the tabs"));
+            close.update_property(&[gtk::accessible::Property::Label("Close tab")]);
             let (me, target) = (self.me.borrow().clone(), path.clone());
             go.connect_clicked(move |_| {
                 if let Some(files) = me.upgrade() {

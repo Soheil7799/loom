@@ -189,6 +189,7 @@ impl BoardView {
         count.add_css_class("small");
         let add = gtk::MenuButton::builder().icon_name("list-add-symbolic").tooltip_text(format!("A new card in {name}")).build();
         add.add_css_class("flat");
+        add.update_property(&[gtk::accessible::Property::Label(&format!("New card in {name}"))]);
         add.set_popover(Some(&self.new_card(&name)));
         head.append(&label);
         head.append(&count);

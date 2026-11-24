@@ -226,6 +226,17 @@ fn rows_of(section: &gtk::Box) -> Option<gtk::Box> {
     None
 }
 
+/// `control` named by its row's title and described by its line of explanation (a screen
+/// reader says "Strict sandbox, switch, off", not "switch, off").
+fn name_by(control: &gtk::Widget, text: &gtk::Box) {
+    use gtk::accessible::Relation;
+    let Some(title) = text.first_child() else { return };
+    control.update_relation(&[Relation::LabelledBy(&[title.upcast_ref()])]);
+    if let Some(detail) = title.next_sibling() {
+        control.update_relation(&[Relation::DescribedBy(&[detail.upcast_ref()])]);
+    }
+}
+
 fn texts(title: &str, detail: &str) -> gtk::Box {
     let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
     text.set_hexpand(true);
@@ -247,7 +258,9 @@ fn row(section: &gtk::Box, title: &str, detail: &str, control: &impl IsA<gtk::Wi
     let line = gtk::Box::new(gtk::Orientation::Horizontal, 16);
     line.add_css_class("prefs-row");
     control.as_ref().set_valign(gtk::Align::Center);
-    line.append(&texts(title, detail));
+    let text = texts(title, detail);
+    name_by(control.as_ref(), &text);
+    line.append(&text);
     line.append(control);
     if let Some(rows) = rows_of(section) {
         rows.append(&line);
@@ -259,7 +272,9 @@ fn row(section: &gtk::Box, title: &str, detail: &str, control: &impl IsA<gtk::Wi
 fn row_stacked(section: &gtk::Box, title: &str, detail: &str, control: &impl IsA<gtk::Widget>) {
     let line = gtk::Box::new(gtk::Orientation::Vertical, 8);
     line.add_css_class("prefs-row");
-    line.append(&texts(title, detail));
+    let text = texts(title, detail);
+    name_by(control.as_ref(), &text);
+    line.append(&text);
     control.as_ref().set_hexpand(true);
     line.append(control);
     if let Some(rows) = rows_of(section) {

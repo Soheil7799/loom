@@ -14,14 +14,11 @@
  *   the primary action; gold means "needs you", red a failure, green a change made; the
  *   status bead is each agent's one state colour. */
 
-@define-color loom_ok #87d96c;
-@define-color loom_warn #ffcc66;
-@define-color loom_err #f28779;
-@define-color loom_run #73b8ff;
-@define-color loom_shell #c39bff;
+/* ok, warn, err, run, wait and shadow come from theme.rs, for dark and light alike (fixed
+   pastels here read 1.5:1 on a light theme). */
 @define-color loom_line alpha(@window_fg_color, 0.07);
-@define-color loom_shadow alpha(black, 0.32);
-/* Secondary text; a theme of loom's sets its own (the palette's quiet). */
+/* Secondary text (never dimmed with opacity: on a light theme that falls under 4.5:1); a
+   theme of loom's sets its own (the palette's quiet). */
 @define-color loom_quiet alpha(@window_fg_color, 0.68);
 
 window.loom { font-family: Onest, Vazirmatn, sans-serif; background: @window_bg_color; color: @window_fg_color; }
@@ -53,7 +50,7 @@ tooltip label { font-size: 0.92em; }
 /* The theme gives .sidebar a border of its own: none here (the colour is the edge). */
 window.loom box.sidebar { border: none; box-shadow: none; }
 .sidebar-top { padding: 12px 12px 8px 12px; }
-.brand-by { font-size: 0.85em; font-weight: 400; opacity: 0.6; }
+.brand-by { font-size: 0.85em; font-weight: 400; color: @loom_quiet; }
 button.brand-button { padding: 4px 8px; min-height: 0; border-radius: 6px; }
 button.brand-button:hover { background: alpha(@window_fg_color, 0.05); }
 button.brand-button:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: -2px; }
@@ -87,8 +84,8 @@ scrolledwindow.running-pane { box-shadow: 0 6px 8px -6px @loom_shadow; padding-b
 .agent-title { font-weight: 500; }
 .agent-title.resting { opacity: 0.6; }
 .agents row:selected .agent-title.resting { opacity: 1; }
-.agent-sub { opacity: 0.5; }
-.agents row.agent-row .agent-sub { opacity: 0.85; }
+.agent-sub { color: @loom_quiet; }
+.agents row.agent-row .agent-sub { color: alpha(@window_fg_color, 0.8); }
 .agent-row .dup { opacity: 0.45; }
 .badge-wait { color: @loom_wait; font-size: 0.85em; font-weight: 400; }
 .badge-busy { color: @accent_color; font-size: 0.85em; font-weight: 400; }
@@ -137,7 +134,7 @@ button.card-strip:hover { background: alpha(@window_fg_color, 0.08); }
 .agents row.running-row { margin: 0 12px; padding: 4px 8px; border-radius: 6px; }
 .agents row.running-row:hover { background: alpha(@window_fg_color, 0.05); }
 .agents row.running-row.current { background: alpha(@accent_color, 0.18); box-shadow: 0 1px 3px @loom_shadow; }
-.running-number { font-size: 0.85em; opacity: 0.45; font-family: "JetBrains Mono", monospace; }
+.running-number { font-size: 0.85em; color: @loom_quiet; font-family: "JetBrains Mono", monospace; }
 /* A running agent's project: a neutral tag (the bead is the row's only colour); its page. */
 button.running-project { font-size: 0.85em; font-weight: 400; padding: 0 6px; min-height: 20px; border-radius: 4px; color: alpha(@window_fg_color, 0.7); background: alpha(@window_fg_color, 0.08); box-shadow: none; }
 button.running-project:hover { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; }
@@ -211,14 +208,14 @@ window.loom paned.panels > separator { min-width: 8px; background-color: transpa
 .header button.crumb label { font-size: 1.15em; opacity: 0.68; }
 .header button.crumb:hover label { opacity: 1; }
 .header button.crumb:disabled { background: none; }
-.header .crumb-sep { font-size: 1.15em; opacity: 0.45; }
+.header .crumb-sep { font-size: 1.15em; color: @loom_quiet; }
 .context-bar { min-width: 40px; }
 .context-bar trough { min-height: 4px; border-radius: 99px; background: alpha(@window_fg_color, 0.1); }
 .context-bar block.filled { border-radius: 99px; background: alpha(@window_fg_color, 0.45); }
 .context-bar.full block.filled { background: @loom_warn; }
 .usage-button { padding: 2px 8px; min-height: 0; border-radius: 6px; }
 .usage-pop { padding: 12px; min-width: 340px; }
-.usage-heading { font-size: 0.85em; font-weight: 400; opacity: 0.6; margin-top: 8px; }
+.usage-heading { font-size: 0.85em; font-weight: 400; color: @loom_quiet; margin-top: 8px; }
 /* Claude Code is not the version loom was built for (by the usage meter, and in its popover). */
 .version-warn, label.dim.version-warn { color: @loom_warn; }
 button.compact-alert { padding: 2px 12px; min-height: 0; border-radius: 6px; font-size: 0.92em; color: @loom_warn; background: alpha(@loom_warn, 0.12); box-shadow: none; border: none; }
@@ -246,10 +243,10 @@ box.notice.error label { color: @window_fg_color; }
 /* A question with one way on (Undo file changes?): like an error card, without the alarm. */
 box.notice.choice { padding: 12px 16px; border-radius: 8px; border: none; background: alpha(@window_fg_color, 0.08); box-shadow: 0 1px 3px @loom_shadow; }
 box.notice.choice label { color: @window_fg_color; }
-.starting-note { padding: 40px 0; opacity: 0.68; }
+.starting-note { padding: 40px 0; color: @loom_quiet; }
 .code-block { background: alpha(@window_fg_color, 0.06); border-radius: 8px; padding: 8px 12px; font-size: 0.92em; }
 .md-table { border-radius: 8px; border: 1px solid @loom_line; }
-.md-table .table-head { font-size: 0.85em; font-weight: 400; opacity: 0.68; padding: 8px 12px; border-bottom: 1px solid @loom_line; }
+.md-table .table-head { font-size: 0.85em; font-weight: 400; color: @loom_quiet; padding: 8px 12px; border-bottom: 1px solid @loom_line; }
 .md-table .table-cell { padding: 4px 12px; border-bottom: 1px solid alpha(@window_fg_color, 0.04); }
 separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg_color, 0.15); }
 .msg-images { margin: 2px 0 8px 0; }
@@ -266,7 +263,7 @@ separator.md-rule { margin: 8px 0; min-height: 1px; background: alpha(@window_fg
 .msg-actions button:hover { color: @window_fg_color; background: alpha(@window_fg_color, 0.08); }
 .msg-actions button:active { background: alpha(@window_fg_color, 0.14); }
 .msg-actions button.done { color: @accent_color; }
-.turn-footer { font-size: 0.85em; opacity: 0.6; margin: -4px 0 4px 2px; }
+.turn-footer { font-size: 0.85em; color: @loom_quiet; margin: -4px 0 4px 2px; }
 /* A footer with its Undo file changes beside it. */
 button.latest { border-radius: 8px; padding: 4px 16px; background: @window_bg_color; border: none; box-shadow: 0 6px 16px @loom_shadow; }
 /* A finished turn folded to one line (a click opens it). */
@@ -283,7 +280,7 @@ button.pinned-ask { margin: 8px 24px 0; padding: 8px 16px; min-height: 0; border
 .tool-toggle { padding: 2px 8px; border-radius: 6px; }
 .tool-title { font-size: 0.92em; opacity: 0.85; }
 .tool-card .chevron { opacity: 0.45; font-size: 0.92em; }
-.kind { font-family: "JetBrains Mono", monospace; font-size: 0.85em; opacity: 0.55; }
+.kind { font-family: "JetBrains Mono", monospace; font-size: 0.85em; color: @loom_quiet; }
 .glyph { opacity: 0.85; }
 .glyph.done { color: @loom_ok; }
 .glyph.failed { color: @loom_err; }
@@ -350,7 +347,7 @@ list.workflow-agents label.running { color: @accent_color; }
 .composer.shell-mode, .composer.shell-mode:focus-within { border: none; background: alpha(@loom_shell, 0.12); }
 .shell-badge { font-size: 0.85em; font-weight: 400; padding: 2px 8px; border-radius: 4px; color: @loom_shell; background: alpha(@loom_shell, 0.14); }
 textview.input, textview.input text { background: transparent; }
-.placeholder { opacity: 0.55; }
+.placeholder { color: @loom_quiet; }
 .placeholder.suggesting { opacity: 0.75; }
 .composer-bar { padding: 2px 8px 8px 8px; }
 /* The bar's chips: flat words (the setting dim, its value plain), filled only on hover. */
@@ -388,7 +385,7 @@ label.working { font-size: 0.92em; opacity: 0.85; color: @accent_color; font-var
 .composer .queued { padding: 8px 12px 4px; border-bottom: 1px solid @loom_line; }
 .composer .queued-row { min-height: 24px; }
 .composer .queued-mark { font-size: 0.85em; padding: 2px 6px; border-radius: 4px; background: alpha(@loom_run, 0.15); color: @loom_run; }
-.composer .queued-hint { font-size: 0.85em; opacity: 0.6; padding-top: 2px; }
+.composer .queued-hint { font-size: 0.85em; color: @loom_quiet; padding-top: 2px; }
 /* Images: attached under the input, and sent with a message. */
 .attachments { padding: 12px 12px 0 12px; }
 .attachment { border-radius: 4px; border: none; }
@@ -396,7 +393,7 @@ button.attachment-remove { min-height: 20px; min-width: 20px; padding: 0; margin
 
 /* ---- tray, files, scratch --------------------------------------------------------------- */
 .tray { padding: 4px 8px; min-height: 24px; background: @sidebar_bg_color; }
-.tray .hint { font-size: 0.85em; opacity: 0.6; margin-right: 8px; }
+.tray .hint { font-size: 0.85em; color: @loom_quiet; margin-right: 8px; }
 .chip { padding: 2px 12px; min-height: 0; border-radius: 6px; font-size: 0.92em; }
 .tray button.chip { background: alpha(@window_fg_color, 0.06); }
 .tray button.chip:hover { background: alpha(@window_fg_color, 0.12); }
@@ -411,9 +408,12 @@ button.attachment-remove { min-height: 20px; min-width: 20px; padding: 0; margin
 .docked, .peek-frame { padding: 4px; }
 button.small { padding: 0 8px; min-height: 24px; font-size: 0.92em; }
 .scratch { background: @window_bg_color; border-radius: 8px; padding: 8px; border: none; box-shadow: 0 8px 24px @loom_shadow; }
-.toast { background: mix(@window_bg_color, @loom_wait, 0.14); border: none; border-radius: 8px; padding: 8px 8px 8px 16px; box-shadow: 0 6px 20px @loom_shadow; }
+.toast { background: mix(@window_bg_color, @window_fg_color, 0.06); border: none; border-radius: 8px; padding: 8px 8px 8px 16px; box-shadow: 0 6px 20px @loom_shadow; }
+.toast.question { background: mix(@window_bg_color, @loom_wait, 0.14); }
+.toast.error { background: mix(@window_bg_color, @loom_err, 0.14); }
 .toast button { min-height: 24px; padding: 0 12px; }
-.toast .toast-go { font-weight: 600; color: @loom_wait; }
+.toast .toast-go { font-weight: 600; color: @accent_color; }
+.toast.question .toast-go { color: @loom_wait; }
 .prefix-hint { background: alpha(@window_bg_color, 0.95); border: none; border-radius: 8px; padding: 8px 16px; font-size: 0.92em; box-shadow: 0 6px 20px @loom_shadow; }
 .find-bar { background: alpha(@window_bg_color, 0.97); border: none; border-radius: 8px; padding: 8px 12px; box-shadow: 0 6px 20px @loom_shadow; }
 
@@ -426,7 +426,7 @@ button.small { padding: 0 8px; min-height: 24px; font-size: 0.92em; }
 .segmented .tab:checked { background: alpha(@window_fg_color, 0.14); color: @window_fg_color; opacity: 1; box-shadow: 0 1px 2px @loom_shadow; }
 .segmented .tab:checked label { color: @window_fg_color; }
 .segmented button.tab.news { box-shadow: none; background: alpha(@accent_color, 0.18); }
-.panel-caption { font-size: 0.85em; font-weight: 400; opacity: 0.62; padding: 12px 20px 4px 20px; }
+.panel-caption { font-size: 0.85em; font-weight: 400; color: @loom_quiet; padding: 12px 20px 4px 20px; }
 .files-empty { padding: 28px 20px; }
 .file-list { background: transparent; }
 .file-list row { border-radius: 6px; margin: 2px 8px; padding: 0; }
@@ -470,7 +470,7 @@ list.graph row:hover { background: alpha(@window_fg_color, 0.04); }
 list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window_fg_color; }
 .graph-row { min-height: 24px; }
 .graph-bar { padding: 0 8px 4px; }
-.graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.92em; opacity: 0.55; }
+.graph-hash { font-family: "JetBrains Mono", monospace; font-size: 0.92em; color: @loom_quiet; }
 .ref { font-size: 0.85em; font-weight: 400; padding: 0 6px; border-radius: 4px; }
 .ref.head { color: @accent_fg_color; background: @accent_color; }
 .ref.branch { color: @loom_ok; background: alpha(@loom_ok, 0.14); }
@@ -483,7 +483,7 @@ list.graph row:selected { background: alpha(@accent_color, 0.12); color: @window
 .reader label { font-size: 1em; }
 .editor-title { padding: 12px 12px 8px 16px; border-bottom: 1px solid @loom_line; }
 .editor-name { font-weight: 500; }
-.editor-path { font-size: 0.85em; opacity: 0.45; }
+.editor-path { font-size: 0.85em; color: @loom_quiet; }
 .editor-path:hover { opacity: 0.8; }
 button.editor-close { min-width: 28px; min-height: 28px; padding: 0; border-radius: 6px; }
 .editor-tabs { padding: 2px 12px 4px 12px; }
@@ -518,9 +518,9 @@ list.hunk-lines row.removed { color: @error_color; background: alpha(@error_colo
 .welcome-actions { margin-top: 24px; min-width: 420px; }
 button.welcome-action, button.welcome-project { padding: 12px 16px; border-radius: 8px; background: alpha(@window_fg_color, 0.04); }
 button.welcome-action:hover, button.welcome-project:hover { background: alpha(@accent_color, 0.14); }
-.welcome-heading { margin-top: 24px; font-size: 0.85em; font-weight: 400; opacity: 0.6; }
+.welcome-heading { margin-top: 24px; font-size: 0.85em; font-weight: 400; color: @loom_quiet; }
 .about-body { padding: 28px 32px 24px; }
-.lockup-by { opacity: 0.68; }
+.lockup-by { color: @loom_quiet; }
 .lockup-by link { color: inherit; }
 .lockup-by link:hover { color: @accent_color; }
 
@@ -601,7 +601,7 @@ list.history row:hover .history-delete { opacity: 0.7; }
 .board-lane { min-width: 272px; padding: 8px; border-radius: 12px; background: alpha(black, 0.14); box-shadow: none; }
 .board-lane.lane-doing { background: alpha(@loom_run, 0.07); }
 .board-lane.lane-done { background: alpha(black, 0.08); }
-.board-lane-title { font-size: 0.85em; font-weight: 400; opacity: 0.7; }
+.board-lane-title { font-size: 0.85em; font-weight: 400; color: @loom_quiet; }
 .board-lane-dot { font-size: 0.7em; color: alpha(@window_fg_color, 0.4); }
 .lane-doing .board-lane-dot { color: @loom_run; }
 .board-lane menubutton.flat, .board-lane > box > button.flat { opacity: 0.35; transition: opacity 120ms ease-out; }
@@ -625,15 +625,15 @@ window.cheatsheet { background: @window_bg_color; }
 .cheat-heading { font-size: 0.92em; font-weight: 400; color: @accent_color; margin-bottom: 8px; }
 .cheat-row { padding: 4px 0; border-bottom: 1px solid alpha(@window_fg_color, 0.05); }
 .cheat-card > .cheat-row:last-child { border-bottom: none; }
-.key-plus, .key-or { opacity: 0.45; font-size: 0.85em; }
-.key-note { opacity: 0.6; font-size: 0.85em; margin-left: 4px; }
+.key-plus, .key-or { color: @loom_quiet; font-size: 0.85em; }
+.key-note { color: @loom_quiet; font-size: 0.85em; margin-left: 4px; }
 
 /* The overview: every agent's card, and the schedules beside them. */
 .overview { padding: 24px 24px 32px 24px; }
 .overview-side { margin: 16px 16px 16px 0; padding: 20px 16px; border-radius: 12px; background: alpha(@window_fg_color, 0.05); }
 .overview-side-scroller { background: none; border: none; }
 .overview-title { font-size: 1.5em; font-weight: 500; }
-.overview-heading { font-size: 0.85em; font-weight: 400; opacity: 0.55; margin-top: 8px; }
+.overview-heading { font-size: 0.85em; font-weight: 400; color: @loom_quiet; margin-top: 8px; }
 .overview-cards flowboxchild { padding: 0; border-radius: 8px; }
 .overview-cards flowboxchild:focus-visible { outline: 2px solid alpha(@accent_color, 0.7); outline-offset: 2px; }
 .overview-card { padding: 12px 16px 8px 16px; border-radius: 8px; background: alpha(@window_fg_color, 0.04); border: none; box-shadow: 0 2px 6px @loom_shadow; }
@@ -669,7 +669,7 @@ popover button.menu-item:focus-visible { outline: none; background: alpha(@accen
 /* ---- Notes: Scribe's panel and the Notes view ------------------------------------------- */
 .hub { padding: 12px; }
 .hub-head { padding-bottom: 8px; border-bottom: 1px solid @loom_line; }
-.hub-heading { font-size: 0.85em; font-weight: 400; opacity: 0.6; margin-top: 4px; }
+.hub-heading { font-size: 0.85em; font-weight: 400; color: @loom_quiet; margin-top: 4px; }
 .hub-card { padding: 12px; border-radius: 8px; background: alpha(@window_fg_color, 0.04); }
 .hub-card.ask { border: none; background: alpha(@accent_color, 0.1); }
 .hub-card.written { opacity: 0.85; }

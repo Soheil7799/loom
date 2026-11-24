@@ -37,6 +37,15 @@ enum Row {
     Remote(u32),
 }
 
+/// What a toast says: a question for you (gold), an error (red, kept until dismissed), or a
+/// note (quiet).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Toast {
+    Question,
+    Error,
+    Note,
+}
+
 pub struct App {
     app: gtk::Application,
     app_id: String,
@@ -92,6 +101,11 @@ pub struct App {
     prefix_timeout: RefCell<Option<glib::SourceId>>,
     files_were_open: Cell<bool>,
     editor_was_open: Cell<bool>,
+    /// The side panel and the sidebar put away for a narrow window (`fit_width`), and the
+    /// guard while that runs.
+    fit_hid_panel: Cell<bool>,
+    fit_hid_sidebar: Cell<bool>,
+    fitting: Cell<bool>,
     /// The chat text size (from the settings).
     scale_css: gtk::CssProvider,
     /// "<agent> needs you", over the window while that agent is out of view.
@@ -569,6 +583,7 @@ impl App {
         let toast_close = gtk::Button::from_icon_name("window-close-symbolic");
         toast_close.add_css_class("flat");
         toast_close.set_tooltip_text(Some("Dismiss"));
+        toast_close.update_property(&[gtk::accessible::Property::Label("Dismiss")]);
         let toast_box = gtk::Box::new(gtk::Orientation::Horizontal, 10);
         toast_box.add_css_class("toast");
         toast_box.append(&toast_dot);
@@ -645,6 +660,9 @@ impl App {
             prefix_timeout: RefCell::default(),
             files_were_open: Cell::new(false),
             editor_was_open: Cell::new(false),
+            fit_hid_panel: Cell::new(false),
+            fit_hid_sidebar: Cell::new(false),
+            fitting: Cell::new(false),
             scale_css,
             toast,
             toast_label,
@@ -721,7 +739,7 @@ impl App {
                 && !app.toast_waits()
             {
                 app.toast_remote.set(None);
-                app.reveal_toast(text, false);
+                app.reveal_toast(text, Toast::Error);
             }
         });
         this.wire_hub();
@@ -752,6 +770,27 @@ impl App {
             chat.input.grab_focus();
         }));
         crate::theme::status_colors(&this.window);
+        // A narrow window (half a tiling WM's screen): what opens must fit (`fit_width`),
+        // checked as panels open or close and as the window's width changes.
+        let fit = {
+            let weak = Rc::downgrade(&this);
+            Rc::new(move || {
+                if let Some(app) = weak.upgrade() {
+                    app.fit_width();
+                }
+            })
+        };
+        for widget in [this.sidebar.clone().upcast::<gtk::Widget>(), this.files.root.clone().upcast(), this.notes_panel.root.clone().upcast(), this.files.editor_box.clone().upcast()] {
+            let fit = fit.clone();
+            widget.connect_visible_notify(move |_| fit());
+        }
+        let resized = fit.clone();
+        this.window.connect_realize(move |window| {
+            if let Some(surface) = window.surface() {
+                let fit = resized.clone();
+                surface.connect_width_notify(move |_| fit());
+            }
+        });
         this.wire(&new_button, &settings_button);
         let (weak, place) = (Rc::downgrade(&this), notes_place.downgrade());
         settings::on_change(move |_| {
@@ -2580,7 +2619,43 @@ impl App {
     }
 
     /// Hides the sidebar and the files panel (and brings them back).
+    /// What is open must fit the window's width: below what they need side by side, the
+    /// open file wins over the files panel, and both over the sidebar. Each comes back when
+    /// the window is wide enough again (with room to spare, so it doesn't flicker).
+    fn fit_width(&self) {
+        const CHAT: i32 = 400;
+        if self.fitting.replace(true) {
+            return;
+        }
+        let width = self.window.width();
+        if width > 0 {
+            let panel = self.side_panel();
+            let editor = self.files.editor_box.is_visible();
+            let need = |sidebar: bool, panel: bool| CHAT + i32::from(sidebar) * 290 + i32::from(panel) * 340 + i32::from(editor) * 320;
+            if self.fit_hid_panel.get() && need(self.sidebar.is_visible(), true) + 40 <= width {
+                self.fit_hid_panel.set(false);
+                panel.set_visible(true);
+            }
+            if self.fit_hid_sidebar.get() && need(true, panel.is_visible()) + 40 <= width {
+                self.fit_hid_sidebar.set(false);
+                self.sidebar.set_visible(true);
+            }
+            if need(self.sidebar.is_visible(), panel.is_visible()) > width && panel.is_visible() && editor {
+                self.fit_hid_panel.set(true);
+                panel.set_visible(false);
+            }
+            if need(self.sidebar.is_visible(), panel.is_visible()) > width && self.sidebar.is_visible() {
+                self.fit_hid_sidebar.set(true);
+                self.sidebar.set_visible(false);
+            }
+        }
+        self.fitting.set(false);
+    }
+
     fn zoom(&self) {
+        // (zoom decides by itself what shows: nothing is put back for a narrow window)
+        self.fit_hid_panel.set(false);
+        self.fit_hid_sidebar.set(false);
         let panel = self.side_panel();
         let zoomed = !self.sidebar.is_visible() && !panel.is_visible();
         if zoomed {
@@ -3776,7 +3851,7 @@ impl App {
             return;
         }
         self.toast_remote.set(Some(id));
-        self.reveal_toast(text, question);
+        self.reveal_toast(text, if question { Toast::Question } else { Toast::Note });
     }
 
     /// The toast shows a question still waiting (a lesser word doesn't replace it).
@@ -3785,14 +3860,37 @@ impl App {
         self.toast_question.get() && self.toast.reveals_child() && remote
     }
 
-    fn reveal_toast(self: &Rc<Self>, text: &str, question: bool) {
+    fn reveal_toast(self: &Rc<Self>, text: &str, kind: Toast) {
         self.toast_label.set_label(text);
         // "Show" only where there is an agent to show
         self.toast_go.set_visible(self.toast_remote.get().is_some());
-        self.toast_question.set(question);
+        self.toast_question.set(kind == Toast::Question);
+        // Gold only for a question; an error is red and stays until dismissed.
+        let (class, bead) = match kind {
+            Toast::Question => ("question", "blocked"),
+            Toast::Error => ("error", "failed"),
+            Toast::Note => ("note", "done"),
+        };
+        if let Some(toast_box) = self.toast.child() {
+            for c in ["question", "error", "note"] {
+                toast_box.remove_css_class(c);
+            }
+            toast_box.add_css_class(class);
+            if let Some(dot) = toast_box.first_child() {
+                for c in ["blocked", "failed", "done"] {
+                    dot.remove_css_class(c);
+                }
+                dot.add_css_class(bead);
+            }
+        }
         self.toast.set_reveal_child(true);
+        let priority = if kind == Toast::Note { gtk::AccessibleAnnouncementPriority::Medium } else { gtk::AccessibleAnnouncementPriority::High };
+        self.toast.announce(text, priority);
         if let Some(old) = self.toast_timeout.take() {
             old.remove();
+        }
+        if kind == Toast::Error {
+            return;
         }
         let weak = Rc::downgrade(self);
         let source = glib::timeout_add_seconds_local_once(12, move || {
