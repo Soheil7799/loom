@@ -1,6 +1,6 @@
 [package]
 name = "loomd"
-version = "0.7.4"
+version = "0.7.5"
 edition = "2024"
 description = "loom's core as its own program: agents, jobs, bridges and the API, with no window"
 license = "MIT"
