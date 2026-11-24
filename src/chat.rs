@@ -528,14 +528,14 @@ impl Chat {
         let crew_revealer = gtk::Revealer::builder().child(&crew_column).reveal_child(false).build();
         root.append(&crew_revealer);
 
-        let input = gtk::TextView::builder()
-            .wrap_mode(gtk::WrapMode::WordChar)
-            .accepts_tab(false)
-            .top_margin(8)
-            .bottom_margin(8)
-            .left_margin(10)
-            .right_margin(10)
-            .build();
+        // It paints typed code blocks as the chat's boxes (rich.rs).
+        let input = crate::rich::editor();
+        input.set_wrap_mode(gtk::WrapMode::WordChar);
+        input.set_accepts_tab(false);
+        input.set_top_margin(12);
+        input.set_bottom_margin(6);
+        input.set_left_margin(14);
+        input.set_right_margin(14);
         input.add_css_class("input");
         let input_scroller = gtk::ScrolledWindow::builder()
             .child(&input)
@@ -548,9 +548,9 @@ impl Chat {
             .label(HINT)
             .xalign(0.0)
             .valign(gtk::Align::Start)
-            .margin_start(14)
-            .margin_top(10)
-            .margin_end(14)
+            .margin_start(16)
+            .margin_top(12)
+            .margin_end(16)
             .ellipsize(pango::EllipsizeMode::End)
             .can_target(false)
             .build();
@@ -561,8 +561,9 @@ impl Chat {
         // Under the text: attach, the session's pickers and mode, what is happening, send.
         let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 6);
         toolbar.add_css_class("composer-bar");
-        let attach = gtk::Button::from_icon_name("text-x-generic-symbolic");
+        let attach = gtk::Button::with_label("@");
         attach.add_css_class("flat");
+        attach.add_css_class("mention");
         attach.add_css_class("round");
         attach.set_tooltip_text(Some("Mention a file (or drop files here)"));
         attach.update_property(&[gtk::accessible::Property::Label("Mention a file")]);
@@ -580,7 +581,7 @@ impl Chat {
         mic.set_tooltip_text(Some("Speak: click to record, click again to write it here"));
         mic.update_property(&[gtk::accessible::Property::Label("Speak")]);
         mic.set_visible(crate::stt::configured());
-        let send = gtk::Button::from_icon_name("mail-send-symbolic");
+        let send = gtk::Button::from_icon_name("go-up-symbolic");
         send.add_css_class("send");
         send.set_tooltip_text(Some("Send (Enter)"));
         send.update_property(&[gtk::accessible::Property::Label("Send")]);
@@ -1320,8 +1321,11 @@ impl Chat {
         self.input.connect_map(markdown_tags);
         self.input.buffer().connect_changed(move |buffer| {
             if let Some(chat) = weak.upgrade() {
-                // Marked once typing pauses for a moment (a long paste is not re-marked per key).
-                if !chat.markdown_due.replace(true) {
+                // Marked as typed, so nothing shows unstyled first; a long paste once typing
+                // pauses (it is not re-marked per key).
+                if buffer.char_count() < 20_000 {
+                    mark_markdown(buffer);
+                } else if !chat.markdown_due.replace(true) {
                     let (weak, buffer) = (Rc::downgrade(&chat), buffer.clone());
                     glib::timeout_add_local_once(Duration::from_millis(120), move || {
                         if let Some(chat) = weak.upgrade() {
@@ -1331,6 +1335,7 @@ impl Chat {
                     });
                 }
                 chat.placeholder.set_visible(buffer.char_count() == 0);
+                chat.refresh_send();
                 // Typed something of one's own: the prediction is not wanted.
                 if buffer.char_count() > 0 && chat.suggestion.borrow().as_deref().is_some_and(|s| buffer.text(&buffer.start_iter(), &buffer.end_iter(), false) != s) {
                     chat.set_suggestion(None);
@@ -1861,6 +1866,12 @@ impl Chat {
         self.call(&self.on_submit, (text, images));
     }
 
+    /// Send dims while there is nothing to send (and nothing to stop).
+    fn refresh_send(&self) {
+        let empty = self.input.buffer().char_count() == 0 && self.attachments.borrow().is_empty() && self.working_since.get().is_none();
+        if empty { self.send.add_css_class("empty") } else { self.send.remove_css_class("empty") }
+    }
+
     /// The microphone shown or not (speech to text set up or not).
     pub fn set_mic_visible(&self, shown: bool) {
         self.mic.set_visible(shown);
@@ -1974,6 +1985,7 @@ impl Chat {
 
     /// The attached images over the input, each with a × to take it off.
     fn show_attachments(self: &Rc<Self>) {
+        self.refresh_send();
         while let Some(child) = self.attach_box.first_child() {
             self.attach_box.remove(&child);
         }
@@ -2204,7 +2216,7 @@ impl Chat {
             }
         };
         let name = |m: &str| if about(m).0.is_empty() { m.to_owned() } else { about(m).0.to_owned() };
-        self.mode.set_label(&format!("Permissions · {}", name(mode)));
+        set_chip(&self.mode, "Permissions", &name(mode));
         // Not the default: tinted as a chip with a choice of its own; bypass in red.
         if mode == "default" { self.mode.remove_css_class("chosen") } else { self.mode.add_css_class("chosen") }
         if mode == "bypassPermissions" { self.mode.add_css_class("bypass-mode") } else { self.mode.remove_css_class("bypass-mode") }
@@ -2252,7 +2264,7 @@ impl Chat {
             let current = option["currentValue"].as_str().unwrap_or("");
             // "Fast mode · Off" reads as "Fast · Off": the chip is short, the menu says the rest.
             let short = name.strip_suffix(" mode").unwrap_or(name);
-            let mut label = format!("{short} · {}", chip_value(&values, current));
+            let mut label = chip_value(&values, current);
             let list = gtk::Box::new(gtk::Orientation::Vertical, 0);
             list.add_css_class("option-list");
             let popover = gtk::Popover::builder().child(&list).position(gtk::PositionType::Top).build();
@@ -2271,7 +2283,8 @@ impl Chat {
                 }
                 tip = format!("{tip} · {fast_name}: {}", chip_value(&fast_values, fast_current));
             }
-            let button = gtk::MenuButton::builder().label(&label).popover(&popover).build();
+            let button = gtk::MenuButton::builder().popover(&popover).build();
+            set_chip(&button, short, &label);
             button.add_css_class("chip-picker");
             button.add_css_class("flat");
             let own = chosen.iter().any(|c| c == id) || (joined && effort.is_some_and(|e| std::ptr::eq(*option, e)) && fast.is_some_and(|f| chosen.iter().any(|c| f["id"].as_str() == Some(c))));
@@ -2329,7 +2342,8 @@ impl Chat {
         let was = self.working_since.replace(since);
         self.tube.queue_draw();
         self.show_compact();
-        self.send.set_icon_name(if since.is_some() { "media-playback-stop-symbolic" } else { "mail-send-symbolic" });
+        self.send.set_icon_name(if since.is_some() { "media-playback-stop-symbolic" } else { "go-up-symbolic" });
+        self.refresh_send();
         self.send.set_tooltip_text(Some(if since.is_some() { "Stop (Esc)" } else { "Send (Enter)" }));
         self.send.update_property(&[gtk::accessible::Property::Label(if since.is_some() { "Stop" } else { "Send" })]);
         if since.is_some() {
@@ -4422,27 +4436,26 @@ fn markdown_tags(view: &gtk::TextView) {
     let table = view.buffer().tag_table();
     // Again (the theme changed): the tints only.
     if let Some(code) = table.lookup("md-code") {
-        code.set_background_rgba(Some(&tint(0.09)));
-        for (name, alpha) in [("md-mark", 0.4), ("md-quote", 0.7)] {
+        code.set_background_rgba(Some(&tint(0.08)));
+        for (name, alpha) in [("md-mark", 0.32), ("md-quote", 0.72)] {
             if let Some(tag) = table.lookup(name) {
                 tag.set_foreground_rgba(Some(&tint(alpha)));
             }
-        }
-        if let Some(block) = table.lookup("md-block") {
-            block.set_paragraph_background_rgba(Some(&tint(0.07)));
         }
         return;
     }
     let add = |tag: gtk::TextTag| {
         table.add(&tag);
     };
-    add(gtk::TextTag::builder().name("md-code").family("JetBrains Mono").background_rgba(&tint(0.09)).build());
-    add(gtk::TextTag::builder().name("md-block").family("JetBrains Mono").paragraph_background_rgba(&tint(0.07)).build());
-    add(gtk::TextTag::builder().name("md-mark").foreground_rgba(&tint(0.4)).build());
+    // Code blocks' boxes are painted (rich.rs ornaments); headings keep the text's size, so
+    // a line never jumps while typed.
+    add(gtk::TextTag::builder().name("md-code").family("JetBrains Mono").scale(0.94).background_rgba(&tint(0.08)).build());
+    add(gtk::TextTag::builder().name("md-block").family("JetBrains Mono").scale(0.94).left_margin(20).right_margin(20).build());
+    add(gtk::TextTag::builder().name("md-mark").foreground_rgba(&tint(0.32)).build());
     add(gtk::TextTag::builder().name("md-bold").weight(700).build());
     add(gtk::TextTag::builder().name("md-italic").style(pango::Style::Italic).build());
-    add(gtk::TextTag::builder().name("md-heading").weight(700).scale(1.15).build());
-    add(gtk::TextTag::builder().name("md-quote").style(pango::Style::Italic).foreground_rgba(&tint(0.7)).build());
+    add(gtk::TextTag::builder().name("md-heading").weight(700).build());
+    add(gtk::TextTag::builder().name("md-quote").style(pango::Style::Italic).foreground_rgba(&tint(0.72)).build());
 }
 
 /// Marks what is typed as Markdown: fenced blocks, `code`, **bold**, *italics*, # headings,
@@ -4531,6 +4544,20 @@ fn mark_markdown(buffer: &gtk::TextBuffer) {
             }
         }
         at += n + 1;
+    }
+}
+
+/// A composer chip's label: the setting's name dim, its value as it is ("Model  Opus 5.5").
+fn set_chip(button: &gtk::MenuButton, name: &str, value: &str) {
+    let markup = format!("<span alpha=\"55%\">{}</span>  {}", glib::markup_escape_text(name), glib::markup_escape_text(value));
+    match button.child().and_downcast::<gtk::Label>() {
+        Some(label) => label.set_markup(&markup),
+        None => {
+            let label = gtk::Label::new(None);
+            label.set_markup(&markup);
+            button.set_child(Some(&label));
+            button.set_always_show_arrow(true);
+        }
     }
 }
 

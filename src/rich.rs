@@ -88,6 +88,12 @@ glib::wrapper! {
     pub struct MsgView(ObjectSubclass<imp::MsgView>) @extends gtk::TextView, gtk::Widget, @implements gtk::Accessible, gtk::Buildable, gtk::ConstraintTarget, gtk::Scrollable;
 }
 
+/// The message box's text view: editable, and painting what `ornaments` paints for it (its
+/// typed code blocks, tagged "md-block", as the chat's rounded boxes).
+pub fn editor() -> gtk::TextView {
+    glib::Object::new::<MsgView>().upcast()
+}
+
 /// Space kept under a code block or a table (the last line's pixels below, not the box's).
 const BELOW: i32 = 14;
 
@@ -139,6 +145,25 @@ fn ornaments(view: &gtk::TextView, snapshot: &gtk::Snapshot) {
             }
             snapshot.pop();
             snapshot.append_border(&box_, &[1.0; 4], &[faint(0.14); 4]);
+        }
+    }
+    // The message box's code blocks (a tag on each of their lines): one box per block.
+    if let Some(block) = table.lookup("md-block") {
+        let mut boxes: Vec<(f32, f32)> = Vec::new();
+        for start in starts(&buffer, &block) {
+            let mut end = start;
+            end.forward_to_tag_toggle(Some(&block));
+            let (y0, y1) = (top(&start), bottom(&end));
+            match boxes.last_mut() {
+                Some(b) if y0 - b.1 < 2.0 => b.1 = y1,
+                _ => boxes.push((y0, y1)),
+            }
+        }
+        for (y0, y1) in boxes {
+            let box_ = RoundedRect::from_rect(Rect::new(8.0, y0, width - 16.0, y1 - y0), 6.0);
+            snapshot.push_rounded_clip(&box_);
+            snapshot.append_color(&faint(0.07), box_.bounds());
+            snapshot.pop();
         }
     }
     // Quotes: a bar beside each, through the blank lines between its paragraphs.
