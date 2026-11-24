@@ -287,6 +287,15 @@ pub fn copy_selected(from: &gtk::Widget) -> bool {
 
 /// Selection across messages: a drag that starts in one message's text and goes on into
 /// others selects them through (each view's own drag only selects inside it).
+/// shortcut: a temporary trace of the drag across messages (/tmp/loom-drag.log), to find
+/// where it stops on a real pointer; remove once that is fixed.
+fn trace(line: String) {
+    use std::io::Write;
+    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/loom-drag.log") {
+        let _ = writeln!(file, "{:.3} {line}", glib::monotonic_time() as f64 / 1e6);
+    }
+}
+
 pub fn span_selection(list: &gtk::Widget) {
     let drag = gtk::GestureDrag::new();
     drag.set_button(gdk::BUTTON_PRIMARY);
@@ -296,6 +305,8 @@ pub fn span_selection(list: &gtk::Widget) {
     drag.connect_drag_begin(glib::clone!(#[strong] start, move |drag, x, y| {
         let Some(list) = drag.widget() else { return };
         let view = message_at(&list, x, y);
+        let index = view.as_ref().and_then(|v| messages(&list).iter().position(|m| m == v));
+        trace(format!("begin at {x:.0},{y:.0} message {index:?} picked {:?}", list.pick(x, y, gtk::PickFlags::DEFAULT).map(|w| w.type_().name())));
         clear_span(view.as_ref());
         if let Some(last) = SELECTED.with(|s| s.borrow().upgrade()).filter(|last| Some(last) != view.as_ref()) {
             let buffer = last.buffer();
@@ -308,16 +319,32 @@ pub fn span_selection(list: &gtk::Widget) {
     // then: the pointer is followed by a motion controller, which nothing cancels)
     let motion = gtk::EventControllerMotion::new();
     motion.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let last_seen: std::rc::Rc<std::cell::Cell<Option<usize>>> = Default::default();
     motion.connect_motion(glib::clone!(#[strong] start, move |motion, x, y| {
-        if !motion.current_event_state().contains(gdk::ModifierType::BUTTON1_MASK) {
-            SPANNING.set(false);
+        let state = motion.current_event_state();
+        if !state.contains(gdk::ModifierType::BUTTON1_MASK) {
+            if SPANNING.replace(false) {
+                trace(format!("motion without button 1 (state {state:?}): span ends"));
+            }
             return;
         }
-        let (Some(list), Some(from)) = (motion.widget(), start.borrow().clone()) else { return };
+        let Some(list) = motion.widget() else { return };
+        let Some(from) = start.borrow().clone() else {
+            trace(format!("motion {x:.0},{y:.0} with button 1, but no start message"));
+            return;
+        };
+        let to = message_at(&list, x, y).and_then(|v| messages(&list).iter().position(|m| *m == v));
+        if to != last_seen.replace(to) {
+            trace(format!("motion {x:.0},{y:.0} over message {to:?} picked {:?}", list.pick(x, y, gtk::PickFlags::DEFAULT).map(|w| w.type_().name())));
+        }
         extend_span(&list, &from, x, y);
     }));
     list.add_controller(motion);
-    drag.connect_drag_end(|_, _, _| SPANNING.set(false));
+    drag.connect_drag_end(|_, _, _| {
+        trace("drag end".into());
+        SPANNING.set(false);
+    });
+    drag.connect_cancel(|_, _| trace("drag gesture cancelled (the text view claimed it)".into()));
     list.add_controller(drag);
 }
 
