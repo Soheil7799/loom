@@ -38,3 +38,10 @@ podman run --rm \
         cargo build --release --locked --workspace
         echo 'ci-check: passed'
     "
+
+# Files the build writes that are kept in git (the web page's API types, from the API spec):
+# changed by the build means the committed copy is stale.
+if ! git diff --quiet -- web/src/lib/api-types.ts; then
+    echo "ci-check: web/src/lib/api-types.ts is out of date (the build regenerated it): commit it." >&2
+    exit 1
+fi
