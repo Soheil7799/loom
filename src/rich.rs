@@ -150,7 +150,8 @@ fn ornaments(view: &gtk::TextView, snapshot: &gtk::Snapshot) {
     // Tables: the header line and the rows under it.
     if let (Some(head), Some(row)) = (table.lookup("table-head"), table.lookup("table-row")) {
         let more = table.lookup("table-more");
-        for start in starts(&buffer, &head) {
+        // (a wrapped header's later lines start the head tag again: not a table of their own)
+        for start in starts(&buffer, &head).into_iter().filter(|s| !more.as_ref().is_some_and(|m| s.has_tag(m))) {
             // (a row's own lines past its first, its cells wrapped: no line above them)
             let mut lines = vec![start];
             let mut header_end = start;
