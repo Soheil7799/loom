@@ -147,8 +147,6 @@ pub struct Chat {
     thoughts: RefCell<Vec<glib::WeakRef<gtk::Expander>>>,
     scroller: gtk::ScrolledWindow,
     list: gtk::Box,
-    /// Dots where the reply will be, while a turn has said nothing yet.
-    thinking: gtk::Box,
     plan: gtk::Box,
     plan_revealer: gtk::Revealer,
     pub input: gtk::TextView,
@@ -454,7 +452,6 @@ impl Chat {
 
         let list = gtk::Box::new(gtk::Orientation::Vertical, 16);
         list.add_css_class("messages");
-        crate::rich::span_selection(list.upcast_ref());
         let earlier = gtk::Button::builder().visible(false).halign(gtk::Align::Center).build();
         earlier.add_css_class("earlier");
         list.append(&earlier);
@@ -582,6 +579,7 @@ impl Chat {
         picture_button.update_property(&[gtk::accessible::Property::Label("Attach pictures")]);
         let working = gtk::Label::builder().xalign(0.0).hexpand(true).ellipsize(pango::EllipsizeMode::End).width_chars(4).build();
         working.add_css_class("working");
+        working.connect_label_notify(glib::clone!(#[weak] list, move |working| place_working(&list, working)));
         let mic = gtk::Button::from_icon_name("audio-input-microphone-symbolic");
         mic.add_css_class("flat");
         mic.add_css_class("mic");
@@ -610,7 +608,8 @@ impl Chat {
         shell_badge.add_css_class("shell-badge");
         shell_badge.set_tooltip_text(Some("Runs here, as you typed it. What it prints goes to Claude when it ends."));
         toolbar.append(&shell_badge);
-        toolbar.append(&working);
+        // (the turn's line, "✻ Pondering… (10s)", is at the end of the chat: `keep_working_last`)
+        toolbar.append(&gtk::Box::builder().hexpand(true).build());
         toolbar.append(&mic);
         toolbar.append(&send);
 
@@ -694,16 +693,6 @@ impl Chat {
             thoughts: RefCell::default(),
             scroller,
             list,
-            thinking: {
-                let dots = gtk::Box::new(gtk::Orientation::Horizontal, 5);
-                dots.add_css_class("thinking");
-                dots.set_halign(gtk::Align::Start);
-                for _ in 0..3 {
-                    dots.append(&gtk::Box::builder().css_classes(["thinking-dot"]).valign(gtk::Align::Center).build());
-                }
-                dots.update_property(&[gtk::accessible::Property::Label("Thinking")]);
-                dots
-            },
             plan,
             plan_revealer,
             input,
@@ -2403,29 +2392,15 @@ impl Chat {
         }
     }
 
-    /// The dots where the reply will be: shown while a turn runs and your message is still
-    /// the last thing in the chat (gone with the reply's first words or tool).
-    pub fn refresh_thinking(&self) {
-        let mut last = self.list.last_child();
-        if last.as_ref() == Some(self.thinking.upcast_ref()) {
-            last = last.and_then(|w| w.prev_sibling());
-        }
-        let want = self.working_since.get().is_some() && last.is_some_and(|w| w.has_css_class("msg-wrap-user"));
-        let shown = self.thinking.parent().is_some();
-        if want && (!shown || self.list.last_child().as_ref() != Some(self.thinking.upcast_ref())) {
-            if shown {
-                self.list.remove(&self.thinking);
-            }
-            self.list.append(&self.thinking);
-        } else if !want && shown {
-            self.list.remove(&self.thinking);
-        }
+    /// The turn's line ("✻ Pondering… (10s)", or what it waits for) stays the last thing in
+    /// the chat, as long as it says something.
+    pub fn keep_working_last(&self) {
+        place_working(&self.list, &self.working);
     }
 
     /// A turn runs (Some: since when) or not: the composer says so, and send becomes stop.
     pub fn set_working(self: &Rc<Self>, since: Option<std::time::Instant>) {
         let was = self.working_since.replace(since);
-        self.refresh_thinking();
         self.tube.queue_draw();
         self.show_compact();
         self.send.set_icon_name(if since.is_some() { "media-playback-stop-symbolic" } else { "go-up-symbolic" });
@@ -4743,6 +4718,21 @@ pub fn changed_lines<'a>(old: &'a str, new: &'a str) -> Vec<(char, &'a str)> {
 const BREATH_AFTER: std::time::Duration = std::time::Duration::from_millis(1500);
 
 const SUMMARY_START: &str = "This session is being continued from a previous conversation";
+
+/// `working` at the end of `list` while it says something, out of it while it doesn't.
+fn place_working(list: &gtk::Box, working: &gtk::Label) {
+    let shown = working.parent().is_some();
+    if working.label().is_empty() {
+        if shown {
+            list.remove(working);
+        }
+    } else if list.last_child().as_ref() != Some(working.upcast_ref()) {
+        if shown {
+            list.remove(working);
+        }
+        list.append(working);
+    }
+}
 
 /// A message's button: an icon, its name in the tooltip (and for screen readers).
 fn action_button(icon: &str, tip: &str) -> gtk::Button {

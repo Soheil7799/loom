@@ -86,13 +86,13 @@ impl Follow {
                         }
                     }
                     if matches!(self.of, Of::Conversation) {
-                        chat.refresh_thinking();
+                        chat.keep_working_last();
                         let mut new = match &before {
                             Some(before) if before.parent().as_ref() == Some(&list) => before.next_sibling(),
                             _ => list.first_child(),
                         };
                         while let Some(widget) = new {
-                            if !widget.has_css_class("thinking") {
+                            if !widget.has_css_class("working") {
                                 widget.add_css_class("enter");
                                 let held = widget.downgrade();
                                 gtk::glib::timeout_add_local_once(std::time::Duration::from_millis(400), move || {

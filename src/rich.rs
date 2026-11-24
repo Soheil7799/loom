@@ -245,18 +245,13 @@ fn starts(buffer: &gtk::TextBuffer, tag: &gtk::TextTag) -> Vec<gtk::TextIter> {
     out
 }
 
-/// One selection in the chat at a time: one made in `buffer` (`view`'s) clears the last
-/// (unless a drag is running it across messages, `span_selection`).
+/// One selection in the chat at a time: one made in `buffer` (`view`'s) clears the last.
 fn watch_selection(view: &gtk::TextView, buffer: &gtk::TextBuffer) {
     buffer.connect_has_selection_notify(glib::clone!(#[weak] view, move |buffer| {
         if !buffer.has_selection() {
             return;
         }
         let last = SELECTED.with(|s| s.replace(view.downgrade()));
-        if SPANNING.get() {
-            return;
-        }
-        clear_span(None);
         if let Some(last) = last.upgrade().filter(|last| *last != view) {
             let buffer = last.buffer();
             buffer.place_cursor(&buffer.iter_at_mark(&buffer.get_insert()));
@@ -270,124 +265,17 @@ thread_local! {
     /// Numbers for links' and copies' tags, never the same twice (a redraw from the middle
     /// keeps the tags before it).
     static NEXT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    /// The messages one selection runs across, in order (empty: it is in one message).
-    static SPAN: std::cell::RefCell<Vec<glib::WeakRef<gtk::TextView>>> = std::cell::RefCell::default();
-    /// A drag is selecting across messages: their selections don't clear each other.
-    static SPANNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Copies what is selected in the chat's text, if anything: whether it did.
 pub fn copy_selected(from: &gtk::Widget) -> bool {
-    let span: Vec<String> = SPAN.with(|s| s.borrow().iter().filter_map(|v| v.upgrade()).filter_map(|v| selection(&v)).collect());
-    let text = if span.is_empty() { SELECTED.with(|s| s.borrow().upgrade()).and_then(|view| selection(&view)) } else { Some(span.join("\n\n")) };
-    let Some(text) = text else { return false };
+    let Some(text) = SELECTED.with(|s| s.borrow().upgrade()).and_then(|view| selection(&view)) else { return false };
     from.clipboard().set_text(&text);
     true
 }
 
 /// Selection across messages: a drag that starts in one message's text and goes on into
 /// others selects them through (each view's own drag only selects inside it).
-/// shortcut: a temporary trace of the drag across messages (/tmp/loom-drag.log), to find
-/// where it stops on a real pointer; remove once that is fixed.
-fn trace(line: String) {
-    use std::io::Write;
-    if let Ok(mut file) = std::fs::OpenOptions::new().create(true).append(true).open("/tmp/loom-drag.log") {
-        let _ = writeln!(file, "{:.3} {line}", glib::monotonic_time() as f64 / 1e6);
-    }
-}
-
-pub fn span_selection(list: &gtk::Widget) {
-    let drag = gtk::GestureDrag::new();
-    drag.set_button(gdk::BUTTON_PRIMARY);
-    // Watched on the way down to the text views, never taken from them.
-    drag.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let start: std::rc::Rc<std::cell::RefCell<Option<gtk::TextView>>> = Default::default();
-    drag.connect_drag_begin(glib::clone!(#[strong] start, move |drag, x, y| {
-        let Some(list) = drag.widget() else { return };
-        let view = message_at(&list, x, y);
-        let index = view.as_ref().and_then(|v| messages(&list).iter().position(|m| m == v));
-        trace(format!("begin at {x:.0},{y:.0} message {index:?} picked {:?}", list.pick(x, y, gtk::PickFlags::DEFAULT).map(|w| w.type_().name())));
-        clear_span(view.as_ref());
-        if let Some(last) = SELECTED.with(|s| s.borrow().upgrade()).filter(|last| Some(last) != view.as_ref()) {
-            let buffer = last.buffer();
-            buffer.place_cursor(&buffer.iter_at_mark(&buffer.get_insert()));
-        }
-        SPANNING.set(view.is_some());
-        *start.borrow_mut() = view;
-    }));
-    // (the text view claims the drag once it selects, and a drag gesture here is cancelled
-    // then: the pointer is followed by a motion controller, which nothing cancels)
-    let motion = gtk::EventControllerMotion::new();
-    motion.set_propagation_phase(gtk::PropagationPhase::Capture);
-    let last_seen: std::rc::Rc<std::cell::Cell<Option<usize>>> = Default::default();
-    motion.connect_motion(glib::clone!(#[strong] start, move |motion, x, y| {
-        let state = motion.current_event_state();
-        if !state.contains(gdk::ModifierType::BUTTON1_MASK) {
-            if SPANNING.replace(false) {
-                trace(format!("motion without button 1 (state {state:?}): span ends"));
-            }
-            return;
-        }
-        let Some(list) = motion.widget() else { return };
-        let Some(from) = start.borrow().clone() else {
-            trace(format!("motion {x:.0},{y:.0} with button 1, but no start message"));
-            return;
-        };
-        let to = message_at(&list, x, y).and_then(|v| messages(&list).iter().position(|m| *m == v));
-        if to != last_seen.replace(to) {
-            trace(format!("motion {x:.0},{y:.0} over message {to:?} picked {:?}", list.pick(x, y, gtk::PickFlags::DEFAULT).map(|w| w.type_().name())));
-        }
-        extend_span(&list, &from, x, y);
-    }));
-    list.add_controller(motion);
-    // (GTK ends this gesture a moment after the press, once the text view takes the drag:
-    // the span goes on until the button is let go, which the motion controller sees)
-    drag.connect_drag_end(|_, _, _| trace("drag end".into()));
-    drag.connect_cancel(|_, _| trace("drag gesture cancelled (the text view claimed it)".into()));
-    list.add_controller(drag);
-}
-
-/// A selection begun in `from` runs to (x, y) in `list`: the messages between are selected
-/// whole, the one there up to that point (`from` selects its own part itself).
-fn extend_span(list: &gtk::Widget, from: &gtk::TextView, x: f64, y: f64) {
-    let Some(to) = message_at(list, x, y) else { return };
-    let views = messages(list);
-    let (Some(i), Some(j)) = (views.iter().position(|v| v == from), views.iter().position(|v| *v == to)) else { return };
-    let (lo, hi) = (i.min(j), i.max(j));
-    for (k, view) in views.iter().enumerate() {
-        let buffer = view.buffer();
-        if k == i {
-            continue;
-        } else if k < lo || k > hi {
-            if buffer.has_selection() {
-                buffer.place_cursor(&buffer.start_iter());
-            }
-        } else if k != j {
-            buffer.select_range(&buffer.start_iter(), &buffer.end_iter());
-        } else if let Some(point) = list.compute_point(view, &gtk::graphene::Point::new(x as f32, y as f32)) {
-            let (bx, by) = view.window_to_buffer_coords(gtk::TextWindowType::Widget, point.x() as i32, point.y() as i32);
-            let at = view.iter_at_location(bx, by).unwrap_or_else(|| if j > i { buffer.end_iter() } else { buffer.start_iter() });
-            if j > i { buffer.select_range(&buffer.start_iter(), &at) } else { buffer.select_range(&at, &buffer.end_iter()) }
-        }
-    }
-    SPAN.with(|s| *s.borrow_mut() = if lo == hi { Vec::new() } else { views[lo..=hi].iter().map(|v| v.downgrade()).collect() });
-}
-
-/// The message text view at (x, y) in `list`.
-fn message_at(list: &gtk::Widget, x: f64, y: f64) -> Option<gtk::TextView> {
-    let mut widget = list.pick(x, y, gtk::PickFlags::DEFAULT);
-    while let Some(w) = widget {
-        if w.is::<MsgView>() {
-            return w.downcast().ok();
-        }
-        if w == *list {
-            return None;
-        }
-        widget = w.parent();
-    }
-    None
-}
-
 /// Every message text view in `list`, top to bottom.
 fn messages(list: &gtk::Widget) -> Vec<gtk::TextView> {
     let mut out = Vec::new();
@@ -401,16 +289,6 @@ fn messages(list: &gtk::Widget) -> Vec<gtk::TextView> {
         child = w.next_sibling();
     }
     out
-}
-
-/// Ends a selection across messages: each loses its part (but `keep`).
-fn clear_span(keep: Option<&gtk::TextView>) {
-    for view in SPAN.with(|s| std::mem::take(&mut *s.borrow_mut())).iter().filter_map(|v| v.upgrade()) {
-        if Some(&view) != keep {
-            let buffer = view.buffer();
-            buffer.place_cursor(&buffer.start_iter());
-        }
-    }
 }
 
 /// What is selected in `view`, as a copy gives it (None: nothing).
