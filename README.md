@@ -66,7 +66,7 @@ switches them on and off, and opens them in loom's editor.
 
 loom runs on Linux and needs:
 
-- GTK 4.14 or later, GtkSourceView 5 and VTE (gtk4)
+- GTK 4.14 or later, GtkSourceView 5, VTE (gtk4) and librsvg (SVG pictures; for Mermaid diagrams also a Chromium-based browser)
 - Claude Code, logged in (loom uses your login)
 - git, for the Notes add-on
 

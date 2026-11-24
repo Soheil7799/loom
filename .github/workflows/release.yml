@@ -29,7 +29,7 @@ jobs:
       - name: Install GTK 4, GtkSourceView 5 and VTE
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends libgtk-4-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev
+          sudo apt-get install -y --no-install-recommends libgtk-4-dev libgtksourceview-5-dev libvte-2.91-gtk4-dev librsvg2-common
 
       - uses: oven-sh/setup-bun@v2
 
