@@ -1269,6 +1269,14 @@ export type BoardWorkParams = {
   agent?: string;
 };
 
+/** The same card tried by 2 or 3 new agents at once, each in a worktree of its own (branches card-<id>-try-<n>), to compare and keep one: the card goes to Doing, each logs its work on it. Result: {agents} */
+export type BoardTriesParams = {
+  project: string;
+  card: number;
+  /** 2 (default) or 3 */
+  tries?: number;
+};
+
 /** Done's cards moved to .loom/board-archive.md (a board of its own, newest first); new cards never take their ids. Result: {archived} */
 export type BoardArchiveParams = {
   project: string;
@@ -1436,6 +1444,7 @@ export interface Commands {
   "board_move": BoardMoveParams;
   "board_edit": BoardEditParams;
   "board_work": BoardWorkParams;
+  "board_tries": BoardTriesParams;
   "board_archive": BoardArchiveParams;
   "board_remove": BoardRemoveParams;
   "ask_done": AskDoneParams;
